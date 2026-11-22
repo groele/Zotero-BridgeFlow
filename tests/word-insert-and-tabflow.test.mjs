@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
-import { Win32BridgeService } from '../src/services/win32-bridge.ts';
+import { normalizeWordTitleForMatch, Win32BridgeService } from '../src/services/win32-bridge.ts';
 import { insertItemsIntoWord } from '../src/domains/word-cite/word-inserter.ts';
+import { WordSessionTracker } from '../src/domains/word-cite/session-tracker.ts';
+import { WordIntegrationPoller } from '../src/domains/word-cite/word-poller.ts';
 import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
 import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
 import { WorkspaceSpotlightEngine } from '../src/domains/workspace/spotlight-engine.ts';
@@ -194,6 +196,60 @@ test('TabFlow: virtual members lifecycle, sleep/wakeup, collectionToGroup & Spot
 	// 4. Spotlight >tabs lists tabs sorted by lastViewedAt
 	const cmdResults = spotlight.query('>tabs', mockWin);
 	assert.ok(cmdResults.some((r) => r.id.startsWith('cmd:')));
+
+	delete globalThis.Zotero;
+});
+
+test('WordCite: multi-window target verification, numeric index sorting & transient-empty snapshot guard', async () => {
+	// 1. Window title normalization & mismatch guard across multiple Word windows
+	assert.equal(normalizeWordTitleForMatch('PaperDraft.docx [兼容模式] - Microsoft Word'), 'PaperDraft.docx');
+	assert.equal(normalizeWordTitleForMatch('Review.docx - 已保存 - Word'), 'Review.docx');
+
+	const win32 = new Win32BridgeService();
+	win32.setLastDroppedWordTargetForTest('PaperDraft.docx [自动保存] - Word');
+	assert.equal(win32.verifyDroppedWordTarget('PaperDraft.docx - Microsoft Word'), true);
+	assert.equal(win32.verifyDroppedWordTarget('WrongManuscript.docx - Word'), false);
+
+	// 2. Numeric key sort ("0", "2", "10"), trashed exclusion, and 2-read empty confirmation
+	const kernel = new PluginKernel({ prefAdapter: createMemoryPrefs() });
+	kernel.init({ id: 'bridgeflow@groele', version: '0.0.5', rootURI: 'chrome://test/' });
+	const tracker = new WordSessionTracker(kernel.bus, win32);
+	const poller = new WordIntegrationPoller(kernel, tracker);
+
+	const mockSession = {
+		agent: 'WinWord',
+		doc: { filePath: 'D:\\Manuscript\\PaperDraft.docx' },
+		citationsByIndex: {
+			10: { citationItems: [{ id: 503 }], properties: { plainCitation: '[11]' } },
+			0: { citationItems: [{ id: 501 }], properties: { plainCitation: '[1]' } },
+			2: { citationItems: [{ id: 502 }], properties: { plainCitation: '[3]' } },
+			1: { citationItems: [{ id: 599 }], properties: { plainCitation: '[2]' } }, // trashed item -> ignored
+		},
+		citationsByItemID: {},
+	};
+
+	globalThis.Zotero = {
+		Items: {
+			get: (id) => (id === 599 ? { id: 599, deleted: true } : { id, deleted: false }),
+		},
+		Integration: { sessions: { s1: mockSession } },
+	};
+
+	await poller.pollOnce();
+	const ses = tracker.getActiveSession();
+	assert.ok(ses);
+	assert.deepEqual([...ses.itemCitations.keys()], [501, 502, 503]);
+	assert.equal(ses.itemCitations.get(501)?.ordinal, 1);
+	assert.equal(ses.itemCitations.get(503)?.ordinal, 11);
+
+	// Single transient empty snapshot must preserve prior citations
+	mockSession.citationsByIndex = {};
+	await poller.pollOnce();
+	assert.equal(tracker.getActiveSession()?.itemCitations.size, 3);
+
+	// Second consecutive empty snapshot confirms citations were actually removed
+	await poller.pollOnce();
+	assert.equal(tracker.getActiveSession()?.itemCitations.size, 0);
 
 	delete globalThis.Zotero;
 });

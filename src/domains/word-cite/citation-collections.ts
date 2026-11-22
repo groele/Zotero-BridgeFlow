@@ -91,9 +91,11 @@ export class WordCitationCollectionManager {
 				} catch { /* ignore */ }
 				await col.saveTx?.({ skipSelect: true });
 				this.sessionCollections.set(ses.sessionID, col);
+				this.refreshCollectionsView(ZoteroObj);
 			} else if (col.name !== colName) {
 				col.name = colName;
 				await col.saveTx?.({ skipSelect: true });
+				this.refreshCollectionsView(ZoteroObj);
 			}
 
 			const targetIDs = [...ses.itemCitations.keys()].filter((id) => Number.isSafeInteger(id) && id > 0);
@@ -116,6 +118,15 @@ export class WordCitationCollectionManager {
 				if (toRemove.length) await col.removeItems?.(toRemove);
 				if (toAdd.length) await col.addItems?.(toAdd);
 			}
+		}
+	}
+
+	private refreshCollectionsView(zoteroObj: any): void {
+		const wins: any[] = zoteroObj?.getMainWindows?.() || [];
+		for (const win of wins) {
+			try {
+				win?.ZoteroPane?.collectionsView?.refresh?.();
+			} catch { /* ignore */ }
 		}
 	}
 }

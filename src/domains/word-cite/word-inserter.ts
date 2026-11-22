@@ -44,7 +44,7 @@ export function resolveActiveSelectionForWord(win?: Window): any[] {
 	const pane = (targetWin as any)?.ZoteroPane;
 	if (!tabs || !pane) return [];
 
-	if (tabs.selectedIndex === 0) {
+	if (tabs.selectedID === 'zotero-pane' || tabs.selectedIndex === 0) {
 		const { items } = deduplicateRegularItems(pane.getSelectedItems?.() || []);
 		return items;
 	}
@@ -234,6 +234,7 @@ export async function insertItemsIntoWord(
 		kernel.logger.error('word-cite:insert', err);
 		return 'unavailable';
 	} finally {
+		win32.clearLastDroppedWordTarget();
 		restoreApps();
 		if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
 			integration.getApplication = origGetApp;

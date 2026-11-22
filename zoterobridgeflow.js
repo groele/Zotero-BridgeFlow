@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.5 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.6 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -3263,9 +3263,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           }
           await col.saveTx?.({ skipSelect: true });
           this.sessionCollections.set(ses.sessionID, col);
+          this.refreshCollectionsView(ZoteroObj);
         } else if (col.name !== colName) {
           col.name = colName;
           await col.saveTx?.({ skipSelect: true });
+          this.refreshCollectionsView(ZoteroObj);
         }
         const targetIDs = [...ses.itemCitations.keys()].filter((id) => Number.isSafeInteger(id) && id > 0);
         const existingRaw = col.getChildItems?.(true) || [];
@@ -3283,6 +3285,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         } else {
           if (toRemove.length) await col.removeItems?.(toRemove);
           if (toAdd.length) await col.addItems?.(toAdd);
+        }
+      }
+    }
+    refreshCollectionsView(zoteroObj) {
+      const wins = zoteroObj?.getMainWindows?.() || [];
+      for (const win of wins) {
+        try {
+          win?.ZoteroPane?.collectionsView?.refresh?.();
+        } catch {
         }
       }
     }
@@ -3333,7 +3344,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const tabs = targetWin?.Zotero_Tabs;
     const pane = targetWin?.ZoteroPane;
     if (!tabs || !pane) return [];
-    if (tabs.selectedIndex === 0) {
+    if (tabs.selectedID === "zotero-pane" || tabs.selectedIndex === 0) {
       const { items } = deduplicateRegularItems(pane.getSelectedItems?.() || []);
       return items;
     }
@@ -3497,6 +3508,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       kernel.logger.error("word-cite:insert", err);
       return "unavailable";
     } finally {
+      win32.clearLastDroppedWordTarget();
       restoreApps();
       if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
         integration.getApplication = origGetApp;
@@ -3535,6 +3547,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             const row = rest[0];
             this.activeDragItems = null;
             this.activeDragStartedAt = 0;
+            this.win32.clearLastDroppedWordTarget();
             const dragEnabled = this.kernel.prefs.get("wordCite.dragCite.enable");
             const selection = itemsView.selection;
             if (dragEnabled && typeof row === "number" && Number.isInteger(row) && selection && !selection.isSelected?.(row)) {
@@ -3887,12 +3900,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   };
 
   // src/domains/word-cite/word-poller.ts
+  var VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
   var WordIntegrationPoller = class {
     timer = null;
     viewRefreshTimer = null;
     unpatchExec = null;
     running = false;
+    polling = false;
+    execDepth = 0;
     idleRounds = 0;
+    emptyStreakBySession = /* @__PURE__ */ new Map();
     kernel;
     tracker;
     constructor(kernel, tracker) {
@@ -3903,8 +3920,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (this.running) return;
       this.running = true;
       this.idleRounds = 0;
+      this.emptyStreakBySession.clear();
       this.installHooks();
-      this.pollOnce();
+      void this.pollOnce();
       this.scheduleNext();
     }
     stop() {
@@ -3919,62 +3937,121 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       this.unpatchExec?.();
       this.unpatchExec = null;
+      this.emptyStreakBySession.clear();
     }
-    pollOnce() {
+    async pollOnce() {
+      if (this.polling || this.execDepth > 0) return false;
       const integration = globalThis.Zotero?.Integration;
       const sessionsMap = integration?.sessions;
       if (!sessionsMap) return false;
-      const rawSessions = [];
-      const entries = sessionsMap instanceof Map ? [...sessionsMap.entries()] : Object.entries(sessionsMap);
-      for (const [sessionID, session] of entries) {
-        if (!session) continue;
-        const agent = String(session.agent || "WinWord");
-        if (!/(WinWord|MacWord|Word)/i.test(agent)) continue;
-        const ordinalMap = /* @__PURE__ */ new Map();
-        const byIndex = session.citationsByIndex;
-        if (Array.isArray(byIndex) || byIndex && typeof byIndex === "object") {
-          const list = Array.isArray(byIndex) ? byIndex : Object.values(byIndex);
-          for (let idx = 0; idx < list.length; idx++) {
-            const cit = list[idx];
-            const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
-            const ordinal = Number(cit?.citationIndex ?? cit?.index ?? idx + 1);
-            const shortText = String(cit?.properties?.formattedCitation || cit?.text || "").trim();
-            for (const ci of cItems) {
-              const itemID = Number(ci?.id || ci?.itemID || 0);
-              if (!Number.isInteger(itemID) || itemID <= 0) continue;
-              if (!ordinalMap.has(itemID)) {
-                ordinalMap.set(itemID, { ordinal: ordinal > 0 ? ordinal : idx + 1, shortText });
-              }
+      this.polling = true;
+      try {
+        const entries = sessionsMap instanceof Map ? [...sessionsMap.entries()] : Object.entries(sessionsMap);
+        const activeIDs = /* @__PURE__ */ new Set();
+        const rawSessions = [];
+        for (const [sessionID, session] of entries) {
+          if (!session) continue;
+          const agent = String(session.agent || "WinWord");
+          if (!/(WinWord|MacWord|Word)/i.test(agent)) continue;
+          activeIDs.add(String(sessionID));
+          if ((!session.citationsByIndex || !session.citationsByItemID) && typeof session.updateFromDocument === "function") {
+            try {
+              await session.updateFromDocument(0);
+            } catch {
             }
           }
+          const parsed = this.extractSessionCitations(session);
+          const prevTracked = this.tracker.getAllSessions().find((s) => s.sessionID === String(sessionID));
+          if (!parsed.length && prevTracked && prevTracked.itemCitations.size > 0) {
+            const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
+            this.emptyStreakBySession.set(sessionID, streak);
+            if (streak < 2) {
+              rawSessions.push({
+                sessionID: String(sessionID),
+                documentPath: prevTracked.documentPath,
+                citations: [...prevTracked.itemCitations.entries()].map(([itemID, info]) => ({
+                  itemID,
+                  ordinal: info.ordinal,
+                  shortText: info.shortText
+                }))
+              });
+              continue;
+            }
+          } else if (parsed.length > 0) {
+            this.emptyStreakBySession.delete(sessionID);
+          }
+          const docPath = String(
+            session.doc?.filePath || session.filePath || session.documentPath || session.doc?._docId || session.name || sessionID
+          );
+          rawSessions.push({ sessionID: String(sessionID), documentPath: docPath, citations: parsed });
         }
-        const byItem = session.citationsByItemID;
-        if (byItem && typeof byItem === "object") {
-          for (const [rawID, list] of Object.entries(byItem)) {
-            const itemID = Number(rawID);
-            if (!Number.isInteger(itemID) || itemID <= 0 || ordinalMap.has(itemID)) continue;
-            const first = Array.isArray(list) ? list[0] : list;
-            const ordinal = Number(first?.citationIndex ?? first?.index ?? 1);
-            const shortText = String(first?.properties?.formattedCitation || first?.text || "").trim();
-            ordinalMap.set(itemID, { ordinal: ordinal > 0 ? ordinal : 1, shortText });
+        for (const key of this.emptyStreakBySession.keys()) {
+          if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
+        }
+        const changed = this.tracker.syncSessions(rawSessions);
+        if (changed) {
+          this.idleRounds = 0;
+          this.scheduleItemsViewRefresh();
+        } else {
+          this.idleRounds = Math.min(10, this.idleRounds + 1);
+        }
+        return changed;
+      } finally {
+        this.polling = false;
+      }
+    }
+    extractSessionCitations(session) {
+      const hostItems = globalThis.Zotero?.Items;
+      const ordinalMap = /* @__PURE__ */ new Map();
+      const recordHit = (itemID, ordinal, shortText) => {
+        if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
+        const zotItem = hostItems?.get?.(itemID);
+        if (zotItem && (zotItem.deleted === true || zotItem.inTrash?.() === true)) return;
+        const existing = ordinalMap.get(itemID);
+        if (!existing) {
+          ordinalMap.set(itemID, { ordinal, ordinals: [ordinal], shortText });
+        } else {
+          if (!existing.ordinals.includes(ordinal)) existing.ordinals.push(ordinal);
+          if (!existing.shortText && shortText) existing.shortText = shortText;
+        }
+      };
+      const byIndex = session.citationsByIndex;
+      if (byIndex && typeof byIndex === "object") {
+        const sortedKeys = Object.keys(byIndex).filter((k) => VALID_INDEX_KEY_RE.test(k)).sort((a, b) => Number(a) - Number(b));
+        for (let idx = 0; idx < sortedKeys.length; idx++) {
+          const cit = byIndex[sortedKeys[idx]];
+          const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
+          const rawOrdinal = Number(cit?.citationIndex ?? cit?.index ?? Number(sortedKeys[idx]) + 1);
+          const ordinal = rawOrdinal > 0 ? rawOrdinal : idx + 1;
+          const shortText = String(cit?.properties?.plainCitation || cit?.properties?.formattedCitation || cit?.text || "").trim();
+          for (const ci of cItems) {
+            recordHit(Number(ci?.id || ci?.itemID || 0), ordinal, shortText);
           }
         }
-        const citations = [...ordinalMap.entries()].map(([itemID, info]) => ({
+      }
+      const byItem = session.citationsByItemID;
+      if (byItem && typeof byItem === "object") {
+        for (const [rawID, list] of Object.entries(byItem)) {
+          const itemID = Number(rawID);
+          if (ordinalMap.has(itemID)) continue;
+          const entries = Array.isArray(list) ? list : [list];
+          for (const entry of entries) {
+            if (!entry) continue;
+            const ordinal = Number(entry.citationIndex ?? entry.index ?? 1);
+            const shortText = String(entry.properties?.plainCitation || entry.properties?.formattedCitation || entry.text || "").trim();
+            recordHit(itemID, ordinal > 0 ? ordinal : 1, shortText);
+          }
+        }
+      }
+      return [...ordinalMap.entries()].map(([itemID, info]) => {
+        const extraRefs = info.ordinals.length > 1 ? ` (${info.ordinals.join(",")})` : "";
+        const cleanShort = info.shortText || "";
+        return {
           itemID,
           ordinal: info.ordinal,
-          shortText: info.shortText
-        }));
-        const docPath = String(session.doc?.filePath || session.filePath || session.name || sessionID);
-        rawSessions.push({ sessionID: String(sessionID), documentPath: docPath, citations });
-      }
-      const changed = this.tracker.syncSessions(rawSessions);
-      if (changed) {
-        this.idleRounds = 0;
-        this.scheduleItemsViewRefresh();
-      } else {
-        this.idleRounds = Math.min(10, this.idleRounds + 1);
-      }
-      return changed;
+          shortText: cleanShort ? `${cleanShort}${extraRefs}` : extraRefs.trim()
+        };
+      });
     }
     scheduleItemsViewRefresh() {
       if (this.viewRefreshTimer !== null) return;
@@ -3998,12 +4075,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         "execCommand",
         "Zotero.Integration",
         (orig) => async (...args) => {
+          this.execDepth++;
           try {
             return await Promise.resolve(orig.apply(integration, args));
           } finally {
+            this.execDepth = Math.max(0, this.execDepth - 1);
             this.idleRounds = 0;
             setTimeout(() => {
-              if (this.running) this.pollOnce();
+              if (this.running) void this.pollOnce();
             }, 150);
           }
         }
@@ -4015,12 +4094,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.timer = setTimeout(() => {
         this.timer = null;
         if (!this.running) return;
-        try {
-          this.pollOnce();
-        } catch (err) {
-          this.kernel.logger.error("word-cite:poll", err);
-        }
-        this.scheduleNext();
+        void this.pollOnce().catch((err) => this.kernel.logger.error("word-cite:poll", err)).finally(() => {
+          if (this.running) this.scheduleNext();
+        });
       }, delay);
     }
   };
@@ -9171,8 +9247,25 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   };
 
   // src/services/win32-bridge.ts
+  function normalizeWordTitleForMatch(rawTitle) {
+    const cleaned = String(rawTitle || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned) return "";
+    const wordSuffixRe = /\s+[-–—]\s+(?:Microsoft\s+)?Word(?:\s*\([^)]*\))?$/i;
+    if (!wordSuffixRe.test(cleaned)) return cleaned;
+    let body = cleaned.replace(wordSuffixRe, "").trim();
+    const extMatch = body.match(/^(.+?\.(?:docx|docm|doc|dotx|dotm|rtf|odt))(?:\s*\[[^\]]*\]|\s+[-–—]\s+.*)*$/i);
+    if (extMatch) return extMatch[1].trim();
+    const statusRe = /(?:\s*\[(?:兼容模式|Compatibility Mode|只读|Read-Only|受保护的视图|Protected View|自动保存|AutoSave)[^\]]*\]|\s+[-–—]\s+(?:已保存.*|正在保存.*|上次保存.*|只读|兼容模式|受保护的视图|未保存|Saved.*|Saving.*|Last saved.*|Read-Only|Compatibility Mode|Protected View|Unsaved))\s*$/i;
+    let prev = "";
+    while (body && body !== prev) {
+      prev = body;
+      body = body.replace(statusRe, "").trim();
+    }
+    return body || cleaned;
+  }
   var Win32BridgeService = class {
     cached = null;
+    lastDroppedWordWindow = null;
     supportsNativeWin32() {
       const host2 = globalThis.Zotero;
       return typeof host2 === "undefined" || host2.isWin !== false;
@@ -9218,12 +9311,37 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         if (!this.isWinWordWindow(api, target)) {
           return { status: "non-word", windowTitle: this.readWindowTitle(api, target) };
         }
-        return { status: "word-confirmed", windowTitle: this.readWindowTitle(api, target) };
+        const title = this.readWindowTitle(api, target);
+        if (title) this.lastDroppedWordWindow = { title, at: Date.now() };
+        return { status: "word-confirmed", windowTitle: title };
       } catch {
         return { status: "unknown", windowTitle: "" };
       }
     }
-    verifyDroppedWordTarget() {
+    clearLastDroppedWordTarget() {
+      this.lastDroppedWordWindow = null;
+    }
+    setLastDroppedWordTargetForTest(title, at = Date.now()) {
+      this.lastDroppedWordWindow = title ? { title, at } : null;
+    }
+    verifyDroppedWordTarget(overrideActiveTitle) {
+      const recorded = this.lastDroppedWordWindow;
+      if (recorded?.title && Date.now() - recorded.at <= 15e3) {
+        let activeTitle = overrideActiveTitle;
+        if (activeTitle === void 0) {
+          const probed = this.probeWordWindowTitles();
+          activeTitle = probed.foregroundTitle || probed.visibleTitles[0] || "";
+        }
+        if (activeTitle) {
+          const matches = normalizeWordTitleForMatch(activeTitle) === normalizeWordTitleForMatch(recorded.title);
+          if (!matches) {
+            this.lastDroppedWordWindow = null;
+            return false;
+          }
+          return true;
+        }
+      }
+      if (!this.supportsNativeWin32()) return true;
       const cursor = this.probeCursorWordDropTarget();
       if (cursor.status === "word-confirmed") return true;
       return Boolean(this.probeForegroundWordTitle());

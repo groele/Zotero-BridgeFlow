@@ -38,6 +38,7 @@ export class DragCiteController {
 					const row = rest[0];
 					this.activeDragItems = null;
 					this.activeDragStartedAt = 0;
+					this.win32.clearLastDroppedWordTarget();
 					const dragEnabled = this.kernel.prefs.get('wordCite.dragCite.enable');
 					const selection = itemsView.selection;
 					if (dragEnabled && typeof row === 'number' && Number.isInteger(row) && selection && !selection.isSelected?.(row)) {

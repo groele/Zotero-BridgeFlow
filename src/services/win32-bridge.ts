@@ -27,12 +27,33 @@ interface NativeWin32Api {
 
 export type DropTargetResult = 'word-confirmed' | 'non-word' | 'unknown';
 
+export function normalizeWordTitleForMatch(rawTitle: string): string {
+	const cleaned = String(rawTitle || '')
+		.replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	if (!cleaned) return '';
+	const wordSuffixRe = /\s+[-–—]\s+(?:Microsoft\s+)?Word(?:\s*\([^)]*\))?$/i;
+	if (!wordSuffixRe.test(cleaned)) return cleaned;
+	let body = cleaned.replace(wordSuffixRe, '').trim();
+	const extMatch = body.match(/^(.+?\.(?:docx|docm|doc|dotx|dotm|rtf|odt))(?:\s*\[[^\]]*\]|\s+[-–—]\s+.*)*$/i);
+	if (extMatch) return extMatch[1].trim();
+	const statusRe = /(?:\s*\[(?:兼容模式|Compatibility Mode|只读|Read-Only|受保护的视图|Protected View|自动保存|AutoSave)[^\]]*\]|\s+[-–—]\s+(?:已保存.*|正在保存.*|上次保存.*|只读|兼容模式|受保护的视图|未保存|Saved.*|Saving.*|Last saved.*|Read-Only|Compatibility Mode|Protected View|Unsaved))\s*$/i;
+	let prev = '';
+	while (body && body !== prev) {
+		prev = body;
+		body = body.replace(statusRe, '').trim();
+	}
+	return body || cleaned;
+}
+
 /**
  * Shared Win32 ctypes bridge with deterministic handle disposal on shutdown.
  * Powers both drag-to-Word target confirmation and P1-B foreground Word title sync.
  */
 export class Win32BridgeService {
 	private cached: NativeWin32Api | null = null;
+	private lastDroppedWordWindow: { title: string; at: number } | null = null;
 
 	supportsNativeWin32(): boolean {
 		const host = (globalThis as any).Zotero;
@@ -82,13 +103,40 @@ export class Win32BridgeService {
 			if (!this.isWinWordWindow(api, target)) {
 				return { status: 'non-word', windowTitle: this.readWindowTitle(api, target) };
 			}
-			return { status: 'word-confirmed', windowTitle: this.readWindowTitle(api, target) };
+			const title = this.readWindowTitle(api, target);
+			if (title) this.lastDroppedWordWindow = { title, at: Date.now() };
+			return { status: 'word-confirmed', windowTitle: title };
 		} catch {
 			return { status: 'unknown', windowTitle: '' };
 		}
 	}
 
-	verifyDroppedWordTarget(): boolean {
+	clearLastDroppedWordTarget(): void {
+		this.lastDroppedWordWindow = null;
+	}
+
+	setLastDroppedWordTargetForTest(title: string, at = Date.now()): void {
+		this.lastDroppedWordWindow = title ? { title, at } : null;
+	}
+
+	verifyDroppedWordTarget(overrideActiveTitle?: string): boolean {
+		const recorded = this.lastDroppedWordWindow;
+		if (recorded?.title && Date.now() - recorded.at <= 15_000) {
+			let activeTitle = overrideActiveTitle;
+			if (activeTitle === undefined) {
+				const probed = this.probeWordWindowTitles();
+				activeTitle = probed.foregroundTitle || probed.visibleTitles[0] || '';
+			}
+			if (activeTitle) {
+				const matches = normalizeWordTitleForMatch(activeTitle) === normalizeWordTitleForMatch(recorded.title);
+				if (!matches) {
+					this.lastDroppedWordWindow = null;
+					return false;
+				}
+				return true;
+			}
+		}
+		if (!this.supportsNativeWin32()) return true;
 		const cursor = this.probeCursorWordDropTarget();
 		if (cursor.status === 'word-confirmed') return true;
 		return Boolean(this.probeForegroundWordTitle());
