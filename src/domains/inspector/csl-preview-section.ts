@@ -1,6 +1,7 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
+import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 
 interface PreviewPaneState {
@@ -20,6 +21,7 @@ const CSL_CSS = `
 `;
 
 export class CslPreviewSectionController {
+	public sectionID: string | false = false;
 	private readonly states = new Map<HTMLElement, PreviewPaneState>();
 	private unregisterFn: Disposable | null = null;
 	private readonly kernel: PluginKernel;
@@ -33,7 +35,7 @@ export class CslPreviewSectionController {
 	register(): void {
 		if (this.unregisterFn) return;
 		const icon = `${this.kernel.info.rootURI}assets/view.svg`;
-		this.unregisterFn = this.services.itemPanes.register({
+		const reg = this.services.itemPanes.register({
 			paneID: 'bridgeflow-csl-preview',
 			pluginID: this.kernel.info.id,
 			header: { l10nID: 'zbf-pane-csl-preview-header', icon },
@@ -45,6 +47,7 @@ export class CslPreviewSectionController {
 				const st: PreviewPaneState = { body, items: [], generation: 0, setEnabled };
 				this.states.set(body, st);
 				this.updateItems(st, item, setEnabled);
+				this.services.panePositions.observeAndQueue(body);
 			},
 			onDestroy: ({ body }: { body: HTMLElement }) => {
 				this.states.delete(body);
@@ -52,12 +55,14 @@ export class CslPreviewSectionController {
 			onItemChange: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				const st = this.states.get(body);
 				if (!st) return false;
+				this.services.panePositions.observeAndQueue(body);
 				return this.updateItems(st, item, setEnabled);
 			},
 			onRender: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				const st = this.states.get(body);
 				if (!st) return;
 				this.updateItems(st, item, setEnabled);
+				this.services.panePositions.observeAndQueue(body);
 				void this.renderState(body);
 			},
 			onAsyncRender: async ({ body }: { body: HTMLElement }) => {
@@ -67,6 +72,14 @@ export class CslPreviewSectionController {
 				void this.renderState(body);
 			},
 		});
+		this.sectionID = reg.sectionID;
+		this.unregisterFn = reg.dispose;
+		if (this.sectionID) {
+			this.services.panePositions.setTarget('csl-preview', {
+				sectionID: this.sectionID,
+				getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.cslPreview.position'), 'zotero-item-pane-header'),
+			});
+		}
 	}
 
 	async renderState(body: HTMLElement): Promise<void> {
@@ -113,6 +126,8 @@ export class CslPreviewSectionController {
 	}
 
 	unregister(): void {
+		this.services.panePositions.setTarget('csl-preview', null);
+		this.sectionID = false;
 		this.unregisterFn?.();
 		this.unregisterFn = null;
 		this.states.clear();

@@ -155,6 +155,15 @@ zbf-opt-show-cite =
     .label = In-text citation only
 zbf-opt-show-bib =
     .label = Bibliography only
+zbf-pref-ins-csl-position = Preview & Lookup sidebar position
+zbf-pref-ins-pdf-position = PDF Preview sidebar position
+zbf-pref-ins-folder-position = Folder Jump sidebar position
+zbf-opt-pos-top =
+    .label = Top of sidebar (recommended for CSL/Lookup)
+zbf-opt-pos-info =
+    .label = After Item Info
+zbf-opt-pos-bottom =
+    .label = Bottom of sidebar (recommended for PDF)
 zbf-pref-ins-csl-style = Custom CSL Style ID (blank = Quick Copy)
 zbf-pref-ins-fontsize = Font scale (em)
 zbf-pref-ins-spacing = Line spacing

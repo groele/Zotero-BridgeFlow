@@ -1,6 +1,7 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
 import { normalizeToRegularItemAsync, resolvePdfAttachments } from '../../services/item-resolution.ts';
+import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 
 interface FolderPaneState {
@@ -24,29 +25,39 @@ export class PdfFolderSectionController {
 	register(): void {
 		if (this.unregisterFn) return;
 		const icon = `${this.kernel.info.rootURI}assets/pdf-folder.svg`;
-		this.unregisterFn = this.services.itemPanes.register({
+		const reg = this.services.itemPanes.register({
 			paneID: 'bridgeflow-pdf-folder',
 			pluginID: this.kernel.info.id,
 			header: { l10nID: 'zbf-pane-pdf-folder-header', icon },
 			sidenav: { l10nID: 'zbf-pane-pdf-folder-sidenav', icon, orderable: true },
 			onInit: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				this.initBody(body, item, setEnabled);
+				this.services.panePositions.observeAndQueue(body);
 			},
 			onDestroy: ({ body }: { body: HTMLElement }) => {
 				this.states.delete(body);
 			},
 			onItemChange: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				this.updateState(body, item, setEnabled);
+				this.services.panePositions.observeAndQueue(body);
 				return Boolean(item);
 			},
 			onRender: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				this.updateState(body, item, setEnabled);
+				this.services.panePositions.observeAndQueue(body);
 			},
 			onToggle: ({ body, item }: { body: HTMLElement; item?: any }) => {
 				const target = item ?? this.states.get(body)?.item;
 				if (target) void this.revealAttachmentFolder(target);
 			},
 		});
+		this.unregisterFn = reg.dispose;
+		if (reg.sectionID) {
+			this.services.panePositions.setTarget('pdf-folder', {
+				sectionID: reg.sectionID,
+				getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.pdfFolder.position'), 'zotero-editpane-related'),
+			});
+		}
 	}
 
 	async revealAttachmentFolder(item: any): Promise<boolean> {
@@ -76,6 +87,7 @@ export class PdfFolderSectionController {
 	}
 
 	unregister(): void {
+		this.services.panePositions.setTarget('pdf-folder', null);
 		this.unregisterFn?.();
 		this.unregisterFn = null;
 		this.states.clear();

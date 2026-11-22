@@ -1,5 +1,6 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
+import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import type { CitationLookupEngine, LookupCandidate } from './citation-lookup-engine.ts';
 
@@ -17,6 +18,8 @@ const LOOKUP_CSS = `
 
 export class CitationLookupSectionController {
 	private unregisterFn: Disposable | null = null;
+	private sectionID: string | false = false;
+	private anchorSectionID: string | false = false;
 	private readonly kernel: PluginKernel;
 	private readonly services: ServiceContainer;
 	private readonly engine: CitationLookupEngine;
@@ -27,10 +30,15 @@ export class CitationLookupSectionController {
 		this.engine = engine;
 	}
 
+	setAnchorSectionID(anchorID: string | false): void {
+		this.anchorSectionID = anchorID;
+		this.syncPositionTarget();
+	}
+
 	register(): void {
 		if (this.unregisterFn) return;
 		const icon = `${this.kernel.info.rootURI}assets/lookup.svg`;
-		this.unregisterFn = this.services.itemPanes.register({
+		const reg = this.services.itemPanes.register({
 			paneID: 'bridgeflow-citation-lookup',
 			pluginID: this.kernel.info.id,
 			header: { l10nID: 'zbf-pane-lookup-header', icon },
@@ -38,20 +46,37 @@ export class CitationLookupSectionController {
 			onInit: ({ body, setEnabled }: { body: HTMLElement; setEnabled?: (v: boolean) => void }) => {
 				setEnabled?.(true);
 				this.mountUI(body);
+				this.services.panePositions.observeAndQueue(body);
 			},
-			onItemChange: ({ setEnabled }: { setEnabled?: (v: boolean) => void }) => {
+			onItemChange: ({ body, setEnabled }: { body: HTMLElement; setEnabled?: (v: boolean) => void }) => {
 				setEnabled?.(true);
+				this.services.panePositions.observeAndQueue(body);
 				return true;
 			},
-			onRender: ({ setEnabled }: { setEnabled?: (v: boolean) => void }) => {
+			onRender: ({ body, setEnabled }: { body: HTMLElement; setEnabled?: (v: boolean) => void }) => {
 				setEnabled?.(true);
+				this.services.panePositions.observeAndQueue(body);
 			},
 		});
+		this.sectionID = reg.sectionID;
+		this.unregisterFn = reg.dispose;
+		this.syncPositionTarget();
 	}
 
 	unregister(): void {
+		this.services.panePositions.setTarget('citation-lookup', null);
+		this.sectionID = false;
 		this.unregisterFn?.();
 		this.unregisterFn = null;
+	}
+
+	private syncPositionTarget(): void {
+		if (!this.sectionID) return;
+		this.services.panePositions.setTarget('citation-lookup', {
+			sectionID: this.sectionID,
+			getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.cslPreview.position'), 'zotero-item-pane-header'),
+			anchorAfterSectionID: this.anchorSectionID || undefined,
+		});
 	}
 
 	private mountUI(body: HTMLElement): void {

@@ -2,6 +2,7 @@ import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import { CitationHistoryStore } from './citation-history-store.ts';
 import { UnifiedClipboardService } from './clipboard-service.ts';
 import { CslFormattingEngine } from './csl-engine.ts';
+import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
 
@@ -10,6 +11,7 @@ export class ServiceContainer {
 	public readonly clipboard: UnifiedClipboardService;
 	public readonly history: CitationHistoryStore;
 	public readonly itemPanes: ItemPaneRegistryService;
+	public readonly panePositions: ItemPanePositionCoordinator;
 	public readonly win32: Win32BridgeService;
 
 	private readonly kernel: PluginKernel;
@@ -20,6 +22,7 @@ export class ServiceContainer {
 		this.clipboard = new UnifiedClipboardService(this.csl, kernel.bus);
 		this.history = new CitationHistoryStore();
 		this.itemPanes = new ItemPaneRegistryService();
+		this.panePositions = new ItemPanePositionCoordinator();
 		this.win32 = new Win32BridgeService();
 	}
 
@@ -58,6 +61,7 @@ export class ServiceContainer {
 	}
 
 	dispose(): void {
+		this.panePositions.dispose();
 		this.itemPanes.unregisterAll();
 		this.history.dispose();
 		this.csl.clearCache();

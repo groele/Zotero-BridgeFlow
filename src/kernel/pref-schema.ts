@@ -109,6 +109,10 @@ export const PREF_SCHEMA = {
 	'inspector.lookup.cacheMaxEntries': { defaultValue: 2000, min: 100, max: 100000, legacyKeys: ['extensions.zoteropreview.cacheMaxEntries'] },
 	'inspector.lookup.cacheTtlDays': { defaultValue: 90, min: 7, max: 3650, legacyKeys: ['extensions.zoteropreview.cacheTtlDays'] },
 	'inspector.pdfPreview.enable': { defaultValue: true, legacyKeys: ['extensions.zotero.tabflow.enablePdfPreviewSidenav'] },
+	'inspector.pdfPreview.position': {
+		defaultValue: 'zotero-editpane-related',
+		enumValues: ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'],
+	},
 	'inspector.pdfPreview.mode': {
 		defaultValue: 'section',
 		enumValues: ['section', 'full'],
@@ -118,6 +122,10 @@ export const PREF_SCHEMA = {
 	'inspector.pdfPreview.doubleClickOpen': { defaultValue: true, legacyKeys: ['extensions.zotero.tabflow.pdfPreviewDoubleClickOpen'] },
 	'inspector.pdfPreview.showPageBadge': { defaultValue: true, legacyKeys: ['extensions.zotero.tabflow.pdfPreviewShowPageBadge'] },
 	'inspector.pdfFolder.enable': { defaultValue: true, legacyKeys: ['extensions.zotero.tabflow.enablePdfFolderSidenav'] },
+	'inspector.pdfFolder.position': {
+		defaultValue: 'zotero-editpane-related',
+		enumValues: ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'],
+	},
 	'inspector.pdfFolder.openMode': {
 		defaultValue: 'reveal',
 		enumValues: ['reveal', 'folder'],

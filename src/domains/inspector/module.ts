@@ -58,6 +58,17 @@ export class InspectorDomainModule implements DomainModule {
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(
 				[
+					'inspector.cslPreview.position',
+					'inspector.pdfPreview.position',
+					'inspector.pdfFolder.position',
+				],
+				() => this.services.panePositions.queueAll(),
+			),
+		);
+
+		this.disposables.add(
+			this.kernel.prefs.observeKeys(
+				[
 					'inspector.cslPreview.citationstyle',
 					'inspector.cslPreview.whatToShow',
 					'inspector.cslPreview.fontsize',
@@ -88,6 +99,7 @@ export class InspectorDomainModule implements DomainModule {
 		if (this.kernel.prefs.get('inspector.cslPreview.enable')) this.cslPreview.register();
 		else this.cslPreview.unregister();
 
+		this.lookupSection.setAnchorSectionID(this.cslPreview.sectionID);
 		if (this.kernel.prefs.get('inspector.lookup.enable')) this.lookupSection.register();
 		else this.lookupSection.unregister();
 
@@ -96,5 +108,7 @@ export class InspectorDomainModule implements DomainModule {
 
 		if (this.kernel.prefs.get('inspector.pdfFolder.enable')) this.pdfFolder.register();
 		else this.pdfFolder.unregister();
+
+		this.services.panePositions.queueAll();
 	}
 }

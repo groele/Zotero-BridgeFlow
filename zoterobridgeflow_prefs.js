@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.2 - Preferences controller. */
+/* Zotero BridgeFlow v0.0.3 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -101,6 +101,10 @@
     "inspector.lookup.cacheMaxEntries": { defaultValue: 2e3, min: 100, max: 1e5, legacyKeys: ["extensions.zoteropreview.cacheMaxEntries"] },
     "inspector.lookup.cacheTtlDays": { defaultValue: 90, min: 7, max: 3650, legacyKeys: ["extensions.zoteropreview.cacheTtlDays"] },
     "inspector.pdfPreview.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfPreviewSidenav"] },
+    "inspector.pdfPreview.position": {
+      defaultValue: "zotero-editpane-related",
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+    },
     "inspector.pdfPreview.mode": {
       defaultValue: "section",
       enumValues: ["section", "full"],
@@ -110,6 +114,10 @@
     "inspector.pdfPreview.doubleClickOpen": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewDoubleClickOpen"] },
     "inspector.pdfPreview.showPageBadge": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewShowPageBadge"] },
     "inspector.pdfFolder.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfFolderSidenav"] },
+    "inspector.pdfFolder.position": {
+      defaultValue: "zotero-editpane-related",
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+    },
     "inspector.pdfFolder.openMode": {
       defaultValue: "reveal",
       enumValues: ["reveal", "folder"],
@@ -320,8 +328,8 @@
       const prefs = new UnifiedPrefService();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.2" }));
-        versionEl.textContent = `v${"0.0.2"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.3" }));
+        versionEl.textContent = `v${"0.0.3"}`;
       }
       const inputs = Array.from(pane.querySelectorAll("[data-zbf-pref]"));
       const syncAll = () => {

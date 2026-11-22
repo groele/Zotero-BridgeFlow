@@ -58,11 +58,13 @@ pref("extensions.zotero.bridgeflow.inspector.lookup.cacheDirectory", "");
 pref("extensions.zotero.bridgeflow.inspector.lookup.cacheMaxEntries", 2000);
 pref("extensions.zotero.bridgeflow.inspector.lookup.cacheTtlDays", 90);
 pref("extensions.zotero.bridgeflow.inspector.pdfPreview.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.position", "zotero-editpane-related");
 pref("extensions.zotero.bridgeflow.inspector.pdfPreview.mode", "section");
 pref("extensions.zotero.bridgeflow.inspector.pdfPreview.defaultZoom", 100);
 pref("extensions.zotero.bridgeflow.inspector.pdfPreview.doubleClickOpen", true);
 pref("extensions.zotero.bridgeflow.inspector.pdfPreview.showPageBadge", true);
 pref("extensions.zotero.bridgeflow.inspector.pdfFolder.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfFolder.position", "zotero-editpane-related");
 pref("extensions.zotero.bridgeflow.inspector.pdfFolder.openMode", "reveal");
 
 // Domain C: Word Citation Tracking & Governance

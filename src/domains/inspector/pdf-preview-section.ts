@@ -3,6 +3,7 @@ import type { Disposable } from '../../kernel/types.ts';
 import {
 	normalizeToRegularItemAsync, resolvePdfAttachments, type ResolvedPdfAttachment,
 } from '../../services/item-resolution.ts';
+import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 
 interface PdfPaneState {
@@ -33,7 +34,7 @@ export class PdfPreviewSectionController {
 		if (this.unregisterFn) return;
 		const icon = `${this.kernel.info.rootURI}assets/pdf-preview.svg`;
 		const sidenavIcon = `${this.kernel.info.rootURI}assets/pdf-preview-sidenav.svg`;
-		this.unregisterFn = this.services.itemPanes.register({
+		const reg = this.services.itemPanes.register({
 			paneID: 'bridgeflow-pdf-preview',
 			pluginID: this.kernel.info.id,
 			header: { l10nID: 'zbf-pane-pdf-preview-header', icon },
@@ -49,6 +50,7 @@ export class PdfPreviewSectionController {
 				}
 				this.states.set(body, { body, item: item ?? null, setEnabled });
 				setEnabled?.(Boolean(item));
+				this.services.panePositions.observeAndQueue(body);
 			},
 			onDestroy: ({ body }: { body: HTMLElement }) => {
 				this.states.delete(body);
@@ -58,17 +60,26 @@ export class PdfPreviewSectionController {
 				if (st) st.item = item ?? null;
 				const active = Boolean(item);
 				setEnabled?.(active);
+				this.services.panePositions.observeAndQueue(body);
 				return active;
 			},
 			onRender: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				const st = this.states.get(body);
 				if (st && item !== undefined) st.item = item;
 				setEnabled?.(Boolean(item ?? st?.item));
+				this.services.panePositions.observeAndQueue(body);
 			},
 			onAsyncRender: async ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
 				await this.renderCompareList(body, item ?? this.states.get(body)?.item, setEnabled);
 			},
 		});
+		this.unregisterFn = reg.dispose;
+		if (reg.sectionID) {
+			this.services.panePositions.setTarget('pdf-preview', {
+				sectionID: reg.sectionID,
+				getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.pdfPreview.position'), 'zotero-editpane-related'),
+			});
+		}
 	}
 
 	async resolveSameItemPdfs(item: any): Promise<ResolvedPdfAttachment[]> {
@@ -111,6 +122,7 @@ export class PdfPreviewSectionController {
 	}
 
 	unregister(): void {
+		this.services.panePositions.setTarget('pdf-preview', null);
 		this.unregisterFn?.();
 		this.unregisterFn = null;
 		this.states.clear();

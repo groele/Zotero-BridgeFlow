@@ -23,19 +23,23 @@ export interface ItemPaneSectionSpec {
 export class ItemPaneRegistryService {
 	private readonly registered = new Map<string, string>();
 
-	register(spec: ItemPaneSectionSpec): Disposable {
+	register(spec: ItemPaneSectionSpec): { sectionID: string | false; dispose: Disposable } {
 		if (this.registered.has(spec.paneID)) {
-			return () => this.unregister(spec.paneID);
+			const existing = this.registered.get(spec.paneID) || false;
+			return { sectionID: existing, dispose: () => this.unregister(spec.paneID) };
 		}
 		const manager = (globalThis as any).Zotero?.ItemPaneManager;
 		if (!manager?.registerSection) {
-			return () => {};
+			return { sectionID: false, dispose: () => {} };
 		}
 		const sectionID = manager.registerSection(spec);
 		if (sectionID) {
 			this.registered.set(spec.paneID, String(sectionID));
 		}
-		return () => this.unregister(spec.paneID);
+		return {
+			sectionID: sectionID ? String(sectionID) : false,
+			dispose: () => this.unregister(spec.paneID),
+		};
 	}
 
 	unregister(paneID: string): void {

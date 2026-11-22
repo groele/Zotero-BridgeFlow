@@ -267,6 +267,16 @@
 							</menulist>
 						</html:div>
 						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-csl-position" control="zbf-sel-csl-pos"></label>
+							<menulist id="zbf-sel-csl-pos" native="true" preference="extensions.zotero.bridgeflow.inspector.cslPreview.position">
+								<menupopup>
+									<menuitem value="zotero-item-pane-header" data-l10n-id="zbf-opt-pos-top"/>
+									<menuitem value="zotero-editpane-item-box" data-l10n-id="zbf-opt-pos-info"/>
+									<menuitem value="zotero-editpane-related" data-l10n-id="zbf-opt-pos-bottom"/>
+								</menupopup>
+							</menulist>
+						</html:div>
+						<html:div class="zbf-inline-field">
 							<label data-l10n-id="zbf-pref-ins-csl-style" control="zbf-input-csl-style"></label>
 							<html:input id="zbf-input-csl-style" class="zbf-text-input" type="text" data-zbf-pref="inspector.cslPreview.citationstyle"/>
 						</html:div>
@@ -329,6 +339,16 @@
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.enable" native="true" data-l10n-id="zbf-pref-ins-pdf-preview"/>
 					<html:div id="zbf-sub-pdf-preview" class="zbf-sub-stack">
 						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-pdf-position" control="zbf-sel-pdf-pos"></label>
+							<menulist id="zbf-sel-pdf-pos" native="true" preference="extensions.zotero.bridgeflow.inspector.pdfPreview.position">
+								<menupopup>
+									<menuitem value="zotero-item-pane-header" data-l10n-id="zbf-opt-pos-top"/>
+									<menuitem value="zotero-editpane-item-box" data-l10n-id="zbf-opt-pos-info"/>
+									<menuitem value="zotero-editpane-related" data-l10n-id="zbf-opt-pos-bottom"/>
+								</menupopup>
+							</menulist>
+						</html:div>
+						<html:div class="zbf-inline-field">
 							<label data-l10n-id="zbf-pref-ins-pdf-mode" control="zbf-sel-pdfmode"></label>
 							<menulist id="zbf-sel-pdfmode" native="true" preference="extensions.zotero.bridgeflow.inspector.pdfPreview.mode">
 								<menupopup>
@@ -349,14 +369,26 @@
 				<html:div class="zbf-cell">
 					<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-pdf-folder"></html:h2>
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfFolder.enable" native="true" data-l10n-id="zbf-pref-ins-pdf-folder"/>
-					<html:div id="zbf-sub-pdf-folder" class="zbf-sub-row">
-						<label data-l10n-id="zbf-pref-ins-folder-mode" control="zbf-sel-foldermode"></label>
-						<menulist id="zbf-sel-foldermode" native="true" preference="extensions.zotero.bridgeflow.inspector.pdfFolder.openMode">
-							<menupopup>
-								<menuitem value="reveal" data-l10n-id="zbf-opt-folder-reveal"/>
-								<menuitem value="folder" data-l10n-id="zbf-opt-folder-open"/>
-							</menupopup>
-						</menulist>
+					<html:div id="zbf-sub-pdf-folder" class="zbf-sub-stack">
+						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-folder-position" control="zbf-sel-folder-pos"></label>
+							<menulist id="zbf-sel-folder-pos" native="true" preference="extensions.zotero.bridgeflow.inspector.pdfFolder.position">
+								<menupopup>
+									<menuitem value="zotero-item-pane-header" data-l10n-id="zbf-opt-pos-top"/>
+									<menuitem value="zotero-editpane-item-box" data-l10n-id="zbf-opt-pos-info"/>
+									<menuitem value="zotero-editpane-related" data-l10n-id="zbf-opt-pos-bottom"/>
+								</menupopup>
+							</menulist>
+						</html:div>
+						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-folder-mode" control="zbf-sel-foldermode"></label>
+							<menulist id="zbf-sel-foldermode" native="true" preference="extensions.zotero.bridgeflow.inspector.pdfFolder.openMode">
+								<menupopup>
+									<menuitem value="reveal" data-l10n-id="zbf-opt-folder-reveal"/>
+									<menuitem value="folder" data-l10n-id="zbf-opt-folder-open"/>
+								</menupopup>
+							</menulist>
+						</html:div>
 					</html:div>
 				</html:div>
 			</html:div>

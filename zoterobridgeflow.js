@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -411,6 +411,128 @@
     }
   };
 
+  // src/services/pane-positioner.ts
+  function normalizePanePosition(raw, fallback = "zotero-item-pane-header") {
+    if (raw === "zotero-item-pane-header" || raw === "zotero-editpane-item-box" || raw === "zotero-editpane-related") {
+      return raw;
+    }
+    return fallback;
+  }
+  var ItemPanePositionCoordinator = class {
+    targets = /* @__PURE__ */ new Map();
+    observers = /* @__PURE__ */ new Map();
+    timers = /* @__PURE__ */ new Map();
+    running = /* @__PURE__ */ new Set();
+    dirty = /* @__PURE__ */ new Set();
+    setTarget(key, spec) {
+      if (!spec) this.targets.delete(key);
+      else this.targets.set(key, spec);
+    }
+    observeAndQueue(body) {
+      const owner = body?.closest?.("item-details");
+      if (!owner?.getPanes) return;
+      if (!this.observers.has(owner)) {
+        const parent = owner.getPanes().find((p) => p.contains?.(body))?.parentNode;
+        const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
+        if (parent && Observer) {
+          const obs = new Observer(() => this.queue(owner));
+          obs.observe(parent, { childList: true });
+          this.observers.set(owner, obs);
+        }
+      }
+      this.queue(owner);
+    }
+    queueAll() {
+      for (const owner of this.observers.keys()) {
+        this.queue(owner);
+      }
+    }
+    queue(owner) {
+      if (!owner?.getPanes || this.timers.has(owner)) return;
+      if (this.running.has(owner)) {
+        this.dirty.add(owner);
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.timers.delete(owner);
+        this.running.add(owner);
+        void this.applyAll(owner).finally(() => {
+          this.running.delete(owner);
+          if (this.dirty.has(owner)) {
+            this.dirty.delete(owner);
+            this.queue(owner);
+          }
+        });
+      }, 0);
+      this.timers.set(owner, timer);
+    }
+    dispose() {
+      for (const t of this.timers.values()) clearTimeout(t);
+      this.timers.clear();
+      for (const obs of this.observers.values()) obs.disconnect();
+      this.observers.clear();
+      this.targets.clear();
+      this.running.clear();
+      this.dirty.clear();
+    }
+    async applyAll(owner) {
+      if (owner.skipRender) return;
+      const independent = [];
+      const anchored = [];
+      for (const spec of this.targets.values()) {
+        if (spec.anchorAfterSectionID) {
+          anchored.push({ sectionID: spec.sectionID, anchorAfterSectionID: spec.anchorAfterSectionID });
+        } else {
+          independent.push(spec);
+        }
+      }
+      for (const spec of independent) {
+        await this.moveSectionToPosition(owner, spec.sectionID, spec.getPosition());
+      }
+      for (const spec of anchored) {
+        await this.moveSectionAfter(owner, spec.sectionID, spec.anchorAfterSectionID);
+      }
+    }
+    async moveSectionToPosition(owner, sectionID, position) {
+      const panes = owner.getPanes();
+      const current = panes.findIndex((p) => p.dataset.pane === sectionID);
+      if (current < 0) return;
+      let targetIdx = 0;
+      if (position === "zotero-editpane-related") {
+        targetIdx = panes.length;
+      } else if (position === "zotero-editpane-item-box") {
+        const info = panes.findIndex((p) => p.dataset.pane === "info");
+        targetIdx = info < 0 ? 0 : info + 1;
+      }
+      if (current === targetIdx || current === targetIdx - 1) return;
+      const targetPaneID = panes[targetIdx]?.dataset.pane;
+      await this.reorderPane(owner, sectionID, targetPaneID, targetIdx);
+    }
+    async moveSectionAfter(owner, sectionID, anchorSectionID) {
+      const panes = owner.getPanes();
+      const anchorIdx = panes.findIndex((p) => p.dataset.pane === anchorSectionID);
+      const currentIdx = panes.findIndex((p) => p.dataset.pane === sectionID);
+      if (anchorIdx < 0 || currentIdx < 0 || currentIdx === anchorIdx + 1) return;
+      const desiredPaneIndex = currentIdx < anchorIdx ? anchorIdx : anchorIdx + 1;
+      const targetPaneID = panes[anchorIdx + 1]?.dataset.pane;
+      await this.reorderPane(owner, sectionID, targetPaneID, desiredPaneIndex);
+    }
+    async reorderPane(owner, sectionID, targetPaneID, fallbackIdx) {
+      const sidenav = owner.sidenav;
+      if (sidenav?.container === owner && sidenav.changePaneOrder) {
+        const wrappers = Array.from(sidenav.querySelectorAll?.(".inherit-flex > .pin-wrapper") || []);
+        const sidenavTargetIdx = targetPaneID ? wrappers.findIndex((w) => w.querySelector(".btn[data-pane]")?.dataset.pane === targetPaneID) : wrappers.length;
+        await sidenav.changePaneOrder(
+          sectionID,
+          wrappers.length && sidenavTargetIdx >= 0 ? sidenavTargetIdx : fallbackIdx,
+          { persist: false, render: false }
+        );
+      } else if (owner.changePaneOrder) {
+        await owner.changePaneOrder(sectionID, fallbackIdx, { render: false });
+      }
+    }
+  };
+
   // src/domains/inspector/citation-lookup-section.ts
   var LOOKUP_CSS = `
 .zbf-lookup-root { display:flex; flex-direction:column; gap:6px; padding:4px 0; font:12px/1.45 system-ui,sans-serif; }
@@ -425,6 +547,8 @@
 `;
   var CitationLookupSectionController = class {
     unregisterFn = null;
+    sectionID = false;
+    anchorSectionID = false;
     kernel;
     services;
     engine;
@@ -433,10 +557,14 @@
       this.services = services;
       this.engine = engine;
     }
+    setAnchorSectionID(anchorID) {
+      this.anchorSectionID = anchorID;
+      this.syncPositionTarget();
+    }
     register() {
       if (this.unregisterFn) return;
       const icon = `${this.kernel.info.rootURI}assets/lookup.svg`;
-      this.unregisterFn = this.services.itemPanes.register({
+      const reg = this.services.itemPanes.register({
         paneID: "bridgeflow-citation-lookup",
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-lookup-header", icon },
@@ -444,19 +572,35 @@
         onInit: ({ body, setEnabled }) => {
           setEnabled?.(true);
           this.mountUI(body);
+          this.services.panePositions.observeAndQueue(body);
         },
-        onItemChange: ({ setEnabled }) => {
+        onItemChange: ({ body, setEnabled }) => {
           setEnabled?.(true);
+          this.services.panePositions.observeAndQueue(body);
           return true;
         },
-        onRender: ({ setEnabled }) => {
+        onRender: ({ body, setEnabled }) => {
           setEnabled?.(true);
+          this.services.panePositions.observeAndQueue(body);
         }
       });
+      this.sectionID = reg.sectionID;
+      this.unregisterFn = reg.dispose;
+      this.syncPositionTarget();
     }
     unregister() {
+      this.services.panePositions.setTarget("citation-lookup", null);
+      this.sectionID = false;
       this.unregisterFn?.();
       this.unregisterFn = null;
+    }
+    syncPositionTarget() {
+      if (!this.sectionID) return;
+      this.services.panePositions.setTarget("citation-lookup", {
+        sectionID: this.sectionID,
+        getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.cslPreview.position"), "zotero-item-pane-header"),
+        anchorAfterSectionID: this.anchorSectionID || void 0
+      });
     }
     mountUI(body) {
       const doc = body.ownerDocument;
@@ -552,6 +696,7 @@
 .zbf-csl-copy-btn:hover { background:color-mix(in srgb,currentColor 8%,transparent); }
 `;
   var CslPreviewSectionController = class {
+    sectionID = false;
     states = /* @__PURE__ */ new Map();
     unregisterFn = null;
     kernel;
@@ -563,7 +708,7 @@
     register() {
       if (this.unregisterFn) return;
       const icon = `${this.kernel.info.rootURI}assets/view.svg`;
-      this.unregisterFn = this.services.itemPanes.register({
+      const reg = this.services.itemPanes.register({
         paneID: "bridgeflow-csl-preview",
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-csl-preview-header", icon },
@@ -575,6 +720,7 @@
           const st = { body, items: [], generation: 0, setEnabled };
           this.states.set(body, st);
           this.updateItems(st, item, setEnabled);
+          this.services.panePositions.observeAndQueue(body);
         },
         onDestroy: ({ body }) => {
           this.states.delete(body);
@@ -582,12 +728,14 @@
         onItemChange: ({ body, item, setEnabled }) => {
           const st = this.states.get(body);
           if (!st) return false;
+          this.services.panePositions.observeAndQueue(body);
           return this.updateItems(st, item, setEnabled);
         },
         onRender: ({ body, item, setEnabled }) => {
           const st = this.states.get(body);
           if (!st) return;
           this.updateItems(st, item, setEnabled);
+          this.services.panePositions.observeAndQueue(body);
           void this.renderState(body);
         },
         onAsyncRender: async ({ body }) => {
@@ -597,6 +745,14 @@
           void this.renderState(body);
         }
       });
+      this.sectionID = reg.sectionID;
+      this.unregisterFn = reg.dispose;
+      if (this.sectionID) {
+        this.services.panePositions.setTarget("csl-preview", {
+          sectionID: this.sectionID,
+          getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.cslPreview.position"), "zotero-item-pane-header")
+        });
+      }
     }
     async renderState(body) {
       const st = this.states.get(body);
@@ -635,6 +791,8 @@
       }
     }
     unregister() {
+      this.services.panePositions.setTarget("csl-preview", null);
+      this.sectionID = false;
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
@@ -699,29 +857,39 @@
     register() {
       if (this.unregisterFn) return;
       const icon = `${this.kernel.info.rootURI}assets/pdf-folder.svg`;
-      this.unregisterFn = this.services.itemPanes.register({
+      const reg = this.services.itemPanes.register({
         paneID: "bridgeflow-pdf-folder",
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-pdf-folder-header", icon },
         sidenav: { l10nID: "zbf-pane-pdf-folder-sidenav", icon, orderable: true },
         onInit: ({ body, item, setEnabled }) => {
           this.initBody(body, item, setEnabled);
+          this.services.panePositions.observeAndQueue(body);
         },
         onDestroy: ({ body }) => {
           this.states.delete(body);
         },
         onItemChange: ({ body, item, setEnabled }) => {
           this.updateState(body, item, setEnabled);
+          this.services.panePositions.observeAndQueue(body);
           return Boolean(item);
         },
         onRender: ({ body, item, setEnabled }) => {
           this.updateState(body, item, setEnabled);
+          this.services.panePositions.observeAndQueue(body);
         },
         onToggle: ({ body, item }) => {
           const target = item ?? this.states.get(body)?.item;
           if (target) void this.revealAttachmentFolder(target);
         }
       });
+      this.unregisterFn = reg.dispose;
+      if (reg.sectionID) {
+        this.services.panePositions.setTarget("pdf-folder", {
+          sectionID: reg.sectionID,
+          getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.pdfFolder.position"), "zotero-editpane-related")
+        });
+      }
     }
     async revealAttachmentFolder(item) {
       if (!item) return false;
@@ -747,6 +915,7 @@
       }
     }
     unregister() {
+      this.services.panePositions.setTarget("pdf-folder", null);
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
@@ -805,7 +974,7 @@
       if (this.unregisterFn) return;
       const icon = `${this.kernel.info.rootURI}assets/pdf-preview.svg`;
       const sidenavIcon = `${this.kernel.info.rootURI}assets/pdf-preview-sidenav.svg`;
-      this.unregisterFn = this.services.itemPanes.register({
+      const reg = this.services.itemPanes.register({
         paneID: "bridgeflow-pdf-preview",
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-pdf-preview-header", icon },
@@ -821,6 +990,7 @@
           }
           this.states.set(body, { body, item: item ?? null, setEnabled });
           setEnabled?.(Boolean(item));
+          this.services.panePositions.observeAndQueue(body);
         },
         onDestroy: ({ body }) => {
           this.states.delete(body);
@@ -830,17 +1000,26 @@
           if (st) st.item = item ?? null;
           const active = Boolean(item);
           setEnabled?.(active);
+          this.services.panePositions.observeAndQueue(body);
           return active;
         },
         onRender: ({ body, item, setEnabled }) => {
           const st = this.states.get(body);
           if (st && item !== void 0) st.item = item;
           setEnabled?.(Boolean(item ?? st?.item));
+          this.services.panePositions.observeAndQueue(body);
         },
         onAsyncRender: async ({ body, item, setEnabled }) => {
           await this.renderCompareList(body, item ?? this.states.get(body)?.item, setEnabled);
         }
       });
+      this.unregisterFn = reg.dispose;
+      if (reg.sectionID) {
+        this.services.panePositions.setTarget("pdf-preview", {
+          sectionID: reg.sectionID,
+          getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.pdfPreview.position"), "zotero-editpane-related")
+        });
+      }
     }
     async resolveSameItemPdfs(item) {
       if (!item) return [];
@@ -879,6 +1058,7 @@
       body.append(root);
     }
     unregister() {
+      this.services.panePositions.setTarget("pdf-preview", null);
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
@@ -929,6 +1109,16 @@
       this.disposables.add(
         this.kernel.prefs.observeKeys(
           [
+            "inspector.cslPreview.position",
+            "inspector.pdfPreview.position",
+            "inspector.pdfFolder.position"
+          ],
+          () => this.services.panePositions.queueAll()
+        )
+      );
+      this.disposables.add(
+        this.kernel.prefs.observeKeys(
+          [
             "inspector.cslPreview.citationstyle",
             "inspector.cslPreview.whatToShow",
             "inspector.cslPreview.fontsize",
@@ -957,12 +1147,14 @@
       if (!this.active) return;
       if (this.kernel.prefs.get("inspector.cslPreview.enable")) this.cslPreview.register();
       else this.cslPreview.unregister();
+      this.lookupSection.setAnchorSectionID(this.cslPreview.sectionID);
       if (this.kernel.prefs.get("inspector.lookup.enable")) this.lookupSection.register();
       else this.lookupSection.unregister();
       if (this.kernel.prefs.get("inspector.pdfPreview.enable")) this.pdfPreview.register();
       else this.pdfPreview.unregister();
       if (this.kernel.prefs.get("inspector.pdfFolder.enable")) this.pdfFolder.register();
       else this.pdfFolder.unregister();
+      this.services.panePositions.queueAll();
     }
   };
 
@@ -3841,6 +4033,10 @@
     "inspector.lookup.cacheMaxEntries": { defaultValue: 2e3, min: 100, max: 1e5, legacyKeys: ["extensions.zoteropreview.cacheMaxEntries"] },
     "inspector.lookup.cacheTtlDays": { defaultValue: 90, min: 7, max: 3650, legacyKeys: ["extensions.zoteropreview.cacheTtlDays"] },
     "inspector.pdfPreview.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfPreviewSidenav"] },
+    "inspector.pdfPreview.position": {
+      defaultValue: "zotero-editpane-related",
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+    },
     "inspector.pdfPreview.mode": {
       defaultValue: "section",
       enumValues: ["section", "full"],
@@ -3850,6 +4046,10 @@
     "inspector.pdfPreview.doubleClickOpen": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewDoubleClickOpen"] },
     "inspector.pdfPreview.showPageBadge": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewShowPageBadge"] },
     "inspector.pdfFolder.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfFolderSidenav"] },
+    "inspector.pdfFolder.position": {
+      defaultValue: "zotero-editpane-related",
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+    },
     "inspector.pdfFolder.openMode": {
       defaultValue: "reveal",
       enumValues: ["reveal", "folder"],
@@ -4652,18 +4852,22 @@
     registered = /* @__PURE__ */ new Map();
     register(spec) {
       if (this.registered.has(spec.paneID)) {
-        return () => this.unregister(spec.paneID);
+        const existing = this.registered.get(spec.paneID) || false;
+        return { sectionID: existing, dispose: () => this.unregister(spec.paneID) };
       }
       const manager = globalThis.Zotero?.ItemPaneManager;
       if (!manager?.registerSection) {
-        return () => {
-        };
+        return { sectionID: false, dispose: () => {
+        } };
       }
       const sectionID = manager.registerSection(spec);
       if (sectionID) {
         this.registered.set(spec.paneID, String(sectionID));
       }
-      return () => this.unregister(spec.paneID);
+      return {
+        sectionID: sectionID ? String(sectionID) : false,
+        dispose: () => this.unregister(spec.paneID)
+      };
     }
     unregister(paneID) {
       const sectionID = this.registered.get(paneID);
@@ -4825,6 +5029,7 @@
     clipboard;
     history;
     itemPanes;
+    panePositions;
     win32;
     kernel;
     constructor(kernel) {
@@ -4833,6 +5038,7 @@
       this.clipboard = new UnifiedClipboardService(this.csl, kernel.bus);
       this.history = new CitationHistoryStore();
       this.itemPanes = new ItemPaneRegistryService();
+      this.panePositions = new ItemPanePositionCoordinator();
       this.win32 = new Win32BridgeService();
     }
     async init() {
@@ -4865,6 +5071,7 @@
       });
     }
     dispose() {
+      this.panePositions.dispose();
       this.itemPanes.unregisterAll();
       this.history.dispose();
       this.csl.clearCache();
