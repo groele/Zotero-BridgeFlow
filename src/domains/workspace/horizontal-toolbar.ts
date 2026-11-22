@@ -111,7 +111,9 @@ export class WorkspaceToolbarActions {
 		btn.type = 'button';
 		btn.className = `zbf-tb-btn${opts.attention ? ' attention' : ''}`;
 		btn.title = tooltip;
+		btn.setAttribute('tooltiptext', tooltip);
 		btn.setAttribute('aria-label', tooltip);
+		btn.setAttribute('data-action', icon);
 		if (opts.pressed !== undefined) btn.setAttribute('aria-pressed', String(opts.pressed));
 		btn.appendChild(createWorkspaceIcon(this.doc, icon, 15));
 

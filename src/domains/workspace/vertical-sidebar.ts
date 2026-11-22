@@ -339,6 +339,9 @@ export class WorkspaceVerticalSidebar {
 		btn.type = 'button';
 		btn.className = 'zbf-sb-icon-btn';
 		btn.title = title;
+		btn.setAttribute('tooltiptext', title);
+		btn.setAttribute('aria-label', title);
+		btn.setAttribute('data-action', icon);
 		btn.appendChild(createWorkspaceIcon(this.doc, icon, 14));
 		btn.addEventListener('click', () => onClick(btn));
 		container.appendChild(btn);

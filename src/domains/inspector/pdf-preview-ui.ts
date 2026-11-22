@@ -25,6 +25,7 @@ export interface CompareBarUI {
 	bar: HTMLDivElement;
 	countLabel: HTMLSpanElement;
 	prevAttBtn: HTMLButtonElement;
+	swapBtn: HTMLButtonElement;
 	selfBtn: HTMLButtonElement;
 	selectEl: HTMLSelectElement;
 	nextAttBtn: HTMLButtonElement;
@@ -33,6 +34,7 @@ export interface CompareBarUI {
 export interface CompareState {
 	mode: CompareMode;
 	pickedAttachmentID: number | null;
+	lastAttachmentID?: number | null;
 	currentAttachmentID: number;
 	tabType: string;
 }
@@ -173,6 +175,11 @@ export function createCompareBar(
 	prevAttBtn.title = '切换上一个 PDF 附件';
 	const nextAttBtn = createToolBtn(doc, '›', undefined, 'ztf-pdf-compare-nav ztf-pdf-next-att', 'next');
 	nextAttBtn.title = '切换下一个 PDF 附件';
+	const swapBtn = createXhtmlEl(doc, 'button');
+	swapBtn.type = 'button';
+	swapBtn.className = 'ztf-pdf-btn ztf-pdf-compare-btn ztf-pdf-swap-att';
+	swapBtn.textContent = '⇄';
+	swapBtn.title = '对比闪切：在当前与上一份对比 PDF 之间一键切换';
 	const selfBtn = createXhtmlEl(doc, 'button');
 	selfBtn.type = 'button';
 	selfBtn.className = 'ztf-pdf-btn ztf-pdf-compare-btn';
@@ -181,31 +188,44 @@ export function createCompareBar(
 	const selectEl = createXhtmlEl(doc, 'select');
 	selectEl.className = 'ztf-pdf-compare-select';
 	selectEl.setAttribute('data-l10n-id', 'zbf-pdf-compare-select');
+	const switchAttachment = (val: number) => {
+		if (!val) return;
+		const cur = getState();
+		const prevVal = Number(cur.pickedAttachmentID || selectEl.value || 0);
+		if (prevVal && prevVal !== val) cur.lastAttachmentID = prevVal;
+		selectEl.value = String(val);
+		onChange(val === cur.currentAttachmentID ? 'self' : 'sibling', val);
+	};
 	const cycleAttachment = (delta: number) => {
 		const opts = Array.from(selectEl.options || []) as HTMLOptionElement[];
 		if (opts.length <= 1) return;
 		const curIdx = Math.max(0, selectEl.selectedIndex);
 		const nextIdx = (curIdx + delta + opts.length) % opts.length;
-		const val = Number(opts[nextIdx]?.value || 0);
-		if (!val) return;
-		selectEl.value = String(val);
-		const cur = getState();
-		onChange(val === cur.currentAttachmentID ? 'self' : 'sibling', val);
+		switchAttachment(Number(opts[nextIdx]?.value || 0));
 	};
 	prevAttBtn.addEventListener('click', () => cycleAttachment(-1), { signal });
 	nextAttBtn.addEventListener('click', () => cycleAttachment(1), { signal });
+	swapBtn.addEventListener('click', () => {
+		const opts = Array.from(selectEl.options || []) as HTMLOptionElement[];
+		if (opts.length <= 1) return;
+		const cur = getState();
+		const curVal = Number(selectEl.value || 0);
+		const lastVal = Number(cur.lastAttachmentID || 0);
+		if (lastVal && lastVal !== curVal && opts.some((o) => Number(o.value) === lastVal)) {
+			switchAttachment(lastVal);
+		} else {
+			cycleAttachment(1);
+		}
+	}, { signal });
 	selfBtn.addEventListener('click', () => {
 		const cur = getState();
 		onChange(cur.mode === 'self' ? 'sibling' : 'self', null);
 	}, { signal });
 	selectEl.addEventListener('change', () => {
-		const val = Number(selectEl.value || 0);
-		if (!val) return;
-		const cur = getState();
-		onChange(val === cur.currentAttachmentID ? 'self' : 'sibling', val);
+		switchAttachment(Number(selectEl.value || 0));
 	}, { signal });
-	bar.append(countLabel, prevAttBtn, selectEl, nextAttBtn, selfBtn);
-	return { bar, countLabel, prevAttBtn, selfBtn, selectEl, nextAttBtn };
+	bar.append(countLabel, prevAttBtn, selectEl, nextAttBtn, swapBtn, selfBtn);
+	return { bar, countLabel, prevAttBtn, swapBtn, selfBtn, selectEl, nextAttBtn };
 }
 
 export function syncCompareBar(ui: CompareBarUI, st: CompareState, entries: readonly PdfAttachmentEntry[], activeAttachmentID: number): void {

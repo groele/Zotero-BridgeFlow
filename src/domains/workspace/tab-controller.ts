@@ -9,6 +9,7 @@ import {
 	buildVirtualMetaFromTracked,
 	collectRecentlyClosed,
 	computeTabMoveTarget,
+	disambiguateSameParentTabs,
 	focusOrOpenTrackedItem,
 	formatCreatorYear,
 	openItemAttachmentOrNote,
@@ -116,7 +117,7 @@ export class WorkspaceTabController {
 			}
 		}
 
-		return tracked;
+		return disambiguateSameParentTabs(tracked);
 	}
 
 	selectTab(win: Window, tabID: string): boolean {

@@ -226,16 +226,20 @@ export class PdfPreviewSectionController {
 			invalidateVisibleSlots(state, this.onRenderError);
 		}, opts);
 		state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
-		state.attSelect.addEventListener('change', () => {
-			const chosen = state.attachments.find((entry) => String(entry.id) === state.attSelect.value);
-			if (chosen) {
-				state.compare.pickedAttachmentID = chosen.id;
-				syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
-				if (chosen.attachment !== state.attachment) {
-					void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
-				}
+		const selectAttachmentById = (attId: number) => {
+			const chosen = state.attachments.find((entry) => entry.id === attId);
+			if (!chosen) return;
+			const prevId = Number(state.compare.pickedAttachmentID || state.attachment?.id || 0);
+			if (prevId && prevId !== chosen.id) state.compare.lastAttachmentID = prevId;
+			state.compare.pickedAttachmentID = chosen.id;
+			state.attSelect.value = String(chosen.id);
+			syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
+			if (chosen.attachment !== state.attachment) {
+				void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
 			}
-		}, opts);
+		};
+		state.attSelect.addEventListener('change', () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
+		state.doc.addEventListener('zbf:pdf-folder-attachment-selected', ((ev: CustomEvent) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))) as EventListener, opts);
 		state.pageLabel.addEventListener('click', () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
 		state.viewportEl.addEventListener('scroll', () => this.updateCurrentPageFromScroll(state), opts);
 		state.viewportEl.addEventListener('dblclick', (event: MouseEvent) => {

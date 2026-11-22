@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import {
 	locateItemInZoteroLibrary,
+	resolvePdfAttachments,
 	revealItemAttachmentInFilesystem,
 } from '../src/services/item-resolution.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
@@ -16,7 +17,7 @@ import { WordCitationCollectionManager } from '../src/domains/word-cite/citation
 import { CitationTagGovernance } from '../src/domains/word-cite/tag-governance.ts';
 import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
 import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
-import { formatReadingProgress } from '../src/domains/workspace/tab-actions-helpers.ts';
+import { disambiguateSameParentTabs, formatReadingProgress } from '../src/domains/workspace/tab-actions-helpers.ts';
 import {
 	pickCompareAttachment,
 	resolveAllPdfAttachments,
@@ -310,6 +311,21 @@ test('Multi-PDF discovery, selection, and comparison under a single parent item 
 	assert.equal(ctxReader.currentAttachmentID, 501);
 	assert.equal(pickCompareAttachment(ctxReader, 'sibling', null, 'reader')?.id, 502);
 	assert.equal(pickCompareAttachment(ctxReader, 'self', null, 'reader')?.id, 501);
+
+	// 5. Shared resolvePdfAttachments and disambiguateSameParentTabs for multi-PDF reader tabs
+	const sharedPdfs = await resolvePdfAttachments(pdf2);
+	assert.equal(sharedPdfs.length, 2);
+	assert.equal(sharedPdfs[0].title, 'Full Text PDF (Paper-Main.pdf)');
+	assert.equal(sharedPdfs[1].title, 'Supporting Information (Paper-Supplementary.pdf)');
+
+	const disambTabs = disambiguateSameParentTabs([
+		{ parentItemID: 500, title: 'Unified Paper Title', shortTitle: 'Unified', filename: 'Paper-Main.pdf' },
+		{ parentItemID: 500, title: 'Unified Paper Title', shortTitle: 'Unified', filename: 'Paper-Supplementary.pdf' },
+		{ parentItemID: 600, title: 'Single PDF Paper', shortTitle: 'Single', filename: 'Single.pdf' },
+	]);
+	assert.equal(disambTabs[0].title, 'Unified Paper Title (Paper-Main.pdf)');
+	assert.equal(disambTabs[1].title, 'Unified Paper Title (Paper-Supplementary.pdf)');
+	assert.equal(disambTabs[2].title, 'Single PDF Paper');
 
 	delete globalThis.Zotero;
 });

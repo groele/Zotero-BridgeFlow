@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.10 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.11 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -325,24 +325,40 @@
   async function resolvePdfAttachments(item) {
     if (isItemTrashedOrDeleted(item)) return [];
     const hostItems = globalThis.Zotero?.Items;
+    const owner = await normalizeToRegularItemAsync(item);
+    const target = owner || item;
     const candidates = [];
-    if (typeof item.isPDFAttachment === "function" && item.isPDFAttachment()) {
-      candidates.push(item);
-    } else if (typeof item.getAttachments === "function") {
-      const ids = item.getAttachments() || [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushIfPdf = (att) => {
+      if (!att || isItemTrashedOrDeleted(att) || !att.isPDFAttachment?.()) return;
+      const id = Number(att.id || 0);
+      if (id > 0 && seen.has(id)) return;
+      if (id > 0) seen.add(id);
+      candidates.push(att);
+    };
+    if (typeof target?.getBestAttachment === "function") {
+      const best = await target.getBestAttachment().catch(() => null);
+      pushIfPdf(best);
+    }
+    if (typeof target?.getAttachments === "function") {
+      const ids = target.getAttachments() || [];
       for (const id of ids) {
-        const att = hostItems?.getAsync ? await hostItems.getAsync(id) : hostItems?.get?.(id);
-        if (att && !isItemTrashedOrDeleted(att) && att.isPDFAttachment?.()) {
-          candidates.push(att);
-        }
+        const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
+        pushIfPdf(att);
       }
     }
-    return candidates.map((att) => ({
-      item: att,
-      id: Number(att.id || 0),
-      title: String(att.getField?.("title") || att.attachmentFilename || "PDF"),
-      filename: String(att.attachmentFilename || "")
-    }));
+    pushIfPdf(item);
+    return candidates.map((att) => {
+      const rawTitle = safeGetItemField(att, "title").trim();
+      const filename = String(att.attachmentFilename || "").trim();
+      const title = rawTitle && filename && rawTitle.toLowerCase() !== filename.toLowerCase() && !rawTitle.toLowerCase().endsWith(".pdf") ? `${rawTitle} (${filename})` : rawTitle || filename || "PDF";
+      return {
+        item: att,
+        id: Number(att.id || 0),
+        title,
+        filename
+      };
+    });
   }
   async function resolveBestFileAttachment(itemOrID) {
     const hostItems = globalThis.Zotero?.Items;
@@ -2243,8 +2259,26 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           st.selectedAttachment = hit.attachment;
           st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || "附件文件");
           st.meta.title = st.meta.textContent;
+          try {
+            const CustomEv = win?.CustomEvent || CustomEvent;
+            doc.dispatchEvent?.(new CustomEv("zbf:pdf-folder-attachment-selected", {
+              detail: { attachmentID: hit.id }
+            }));
+          } catch {
+          }
         }
       }, { signal: controller.signal });
+      doc.addEventListener("zbf:pdf-attachment-selected", ((ev) => {
+        const attID = Number(ev?.detail?.attachmentID || 0);
+        if (!attID || !st.entries.length) return;
+        const hit = st.entries.find((e) => e.id === attID);
+        if (hit && st.selectedAttachment !== hit.attachment) {
+          st.selectedAttachment = hit.attachment;
+          st.selectEl.value = String(hit.id);
+          st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || "附件文件");
+          st.meta.title = st.meta.textContent;
+        }
+      }), { signal: controller.signal });
       wrap.append(selectEl, meta, btn);
       body.append(wrap);
       this.states.set(body, st);
@@ -2644,6 +2678,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     prevAttBtn.title = "切换上一个 PDF 附件";
     const nextAttBtn = createToolBtn(doc, "›", void 0, "ztf-pdf-compare-nav ztf-pdf-next-att", "next");
     nextAttBtn.title = "切换下一个 PDF 附件";
+    const swapBtn = createXhtmlEl(doc, "button");
+    swapBtn.type = "button";
+    swapBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn ztf-pdf-swap-att";
+    swapBtn.textContent = "⇄";
+    swapBtn.title = "对比闪切：在当前与上一份对比 PDF 之间一键切换";
     const selfBtn = createXhtmlEl(doc, "button");
     selfBtn.type = "button";
     selfBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn";
@@ -2652,31 +2691,44 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const selectEl = createXhtmlEl(doc, "select");
     selectEl.className = "ztf-pdf-compare-select";
     selectEl.setAttribute("data-l10n-id", "zbf-pdf-compare-select");
+    const switchAttachment = (val) => {
+      if (!val) return;
+      const cur = getState();
+      const prevVal = Number(cur.pickedAttachmentID || selectEl.value || 0);
+      if (prevVal && prevVal !== val) cur.lastAttachmentID = prevVal;
+      selectEl.value = String(val);
+      onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
+    };
     const cycleAttachment = (delta) => {
       const opts = Array.from(selectEl.options || []);
       if (opts.length <= 1) return;
       const curIdx = Math.max(0, selectEl.selectedIndex);
       const nextIdx = (curIdx + delta + opts.length) % opts.length;
-      const val = Number(opts[nextIdx]?.value || 0);
-      if (!val) return;
-      selectEl.value = String(val);
-      const cur = getState();
-      onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
+      switchAttachment(Number(opts[nextIdx]?.value || 0));
     };
     prevAttBtn.addEventListener("click", () => cycleAttachment(-1), { signal });
     nextAttBtn.addEventListener("click", () => cycleAttachment(1), { signal });
+    swapBtn.addEventListener("click", () => {
+      const opts = Array.from(selectEl.options || []);
+      if (opts.length <= 1) return;
+      const cur = getState();
+      const curVal = Number(selectEl.value || 0);
+      const lastVal = Number(cur.lastAttachmentID || 0);
+      if (lastVal && lastVal !== curVal && opts.some((o) => Number(o.value) === lastVal)) {
+        switchAttachment(lastVal);
+      } else {
+        cycleAttachment(1);
+      }
+    }, { signal });
     selfBtn.addEventListener("click", () => {
       const cur = getState();
       onChange(cur.mode === "self" ? "sibling" : "self", null);
     }, { signal });
     selectEl.addEventListener("change", () => {
-      const val = Number(selectEl.value || 0);
-      if (!val) return;
-      const cur = getState();
-      onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
+      switchAttachment(Number(selectEl.value || 0));
     }, { signal });
-    bar.append(countLabel, prevAttBtn, selectEl, nextAttBtn, selfBtn);
-    return { bar, countLabel, prevAttBtn, selfBtn, selectEl, nextAttBtn };
+    bar.append(countLabel, prevAttBtn, selectEl, nextAttBtn, swapBtn, selfBtn);
+    return { bar, countLabel, prevAttBtn, swapBtn, selfBtn, selectEl, nextAttBtn };
   }
   function syncCompareBar(ui, st, entries, activeAttachmentID) {
     const visible = entries.length > 1;
@@ -2781,7 +2833,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const pageText = hasDoc ? `${state.currentPage} / ${state.numPages}` : "0 / 0";
     state.pageLabel.textContent = pageText;
     state.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
-    state.setSectionSummary?.(hasDoc ? pageText : "");
+    const attID = Number(state.attachment?.id) || 0;
+    const attIdx = attID > 0 ? state.attachments.findIndex((e) => e.id === attID) : -1;
+    const summaryText = hasDoc ? state.attachments.length > 1 && attIdx >= 0 ? `PDF ${attIdx + 1}/${state.attachments.length} · ${pageText}` : pageText : "";
+    state.setSectionSummary?.(summaryText);
     state.prevBtn.disabled = !hasDoc || state.currentPage <= 1;
     state.nextBtn.disabled = !hasDoc || state.currentPage >= state.numPages;
     state.openBtn.disabled = !state.attachment;
@@ -2789,6 +2844,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   async function renderPageSlot(state, slot, gen, onError) {
     if (!state.pdfDoc || state.generation !== gen || slot.rendering || slot.renderedZoom === state.zoom) return;
     slot.rendering = true;
+    const token = ++slot.renderToken;
     try {
       const w = Math.max(180, (state.viewportEl.clientWidth || state.body.clientWidth || 260) - 2);
       state.lastWidth = state.viewportEl.clientWidth || state.body.clientWidth || state.lastWidth;
@@ -2799,31 +2855,37 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         w,
         state.zoom,
         state.win.devicePixelRatio || 1,
-        () => state.generation !== gen,
+        () => state.generation !== gen || slot.renderToken !== token,
         (c) => {
           slot.cancelTask = c;
         }
       );
-      if (state.generation === gen && m.height > 0) {
+      if (state.generation === gen && slot.renderToken === token && m.height > 0) {
         slot.lastHeight = m.height;
         slot.card.removeAttribute("data-unrendered");
         slot.card.style.minBlockSize = "0";
         slot.renderedZoom = state.zoom;
       }
     } catch (error) {
-      if (state.generation === gen) onError(error);
+      if (state.generation === gen && slot.renderToken === token) onError(error);
     } finally {
-      slot.rendering = false;
-      slot.cancelTask = void 0;
+      if (slot.renderToken === token) {
+        slot.rendering = false;
+        slot.cancelTask = void 0;
+      }
     }
   }
   function invalidateVisibleSlots(state, onError) {
     for (const slot of state.slots) {
+      slot.renderToken += 1;
       slot.cancelTask?.();
+      slot.cancelTask = void 0;
+      slot.rendering = false;
       slot.renderedZoom = null;
     }
-    const startIdx = Math.max(0, state.currentPage - 1);
-    for (let i = startIdx; i < Math.min(state.slots.length, startIdx + 2); i++) {
+    const startIdx = Math.max(0, state.currentPage - 2);
+    const endIdx = Math.min(state.slots.length, Math.max(2, state.currentPage + 1));
+    for (let i = startIdx; i < endIdx; i++) {
       void renderPageSlot(state, state.slots[i], state.generation, onError);
     }
   }
@@ -2845,6 +2907,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const gen = state.generation;
     state.loading = true;
     state.attachment = att;
+    const nextAttID = Number(att?.id) || 0;
+    if (nextAttID > 0 && state.ownerID > 0) {
+      try {
+        const CustomEv = state.win?.CustomEvent || CustomEvent;
+        state.doc.dispatchEvent?.(new CustomEv("zbf:pdf-attachment-selected", {
+          detail: { ownerID: state.ownerID, attachmentID: nextAttID }
+        }));
+      } catch {
+      }
+    }
     syncPreviewControls(state);
     applyStatusMessage(state.statusEl, "zbf-pdf-preview-loading");
     try {
@@ -2948,7 +3020,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       });
       card.append(canvas, badge);
       frag.append(card);
-      state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, lastHeight: 0 });
+      state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, renderToken: 0, lastHeight: 0 });
     }
     state.viewportEl.append(frag);
     const Observer = state.win.IntersectionObserver;
@@ -3195,16 +3267,20 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         invalidateVisibleSlots(state, this.onRenderError);
       }, opts);
       state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
-      state.attSelect.addEventListener("change", () => {
-        const chosen = state.attachments.find((entry) => String(entry.id) === state.attSelect.value);
-        if (chosen) {
-          state.compare.pickedAttachmentID = chosen.id;
-          syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
-          if (chosen.attachment !== state.attachment) {
-            void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
-          }
+      const selectAttachmentById = (attId) => {
+        const chosen = state.attachments.find((entry) => entry.id === attId);
+        if (!chosen) return;
+        const prevId = Number(state.compare.pickedAttachmentID || state.attachment?.id || 0);
+        if (prevId && prevId !== chosen.id) state.compare.lastAttachmentID = prevId;
+        state.compare.pickedAttachmentID = chosen.id;
+        state.attSelect.value = String(chosen.id);
+        syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
+        if (chosen.attachment !== state.attachment) {
+          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
         }
-      }, opts);
+      };
+      state.attSelect.addEventListener("change", () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
+      state.doc.addEventListener("zbf:pdf-folder-attachment-selected", ((ev) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))), opts);
       state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
       state.viewportEl.addEventListener("scroll", () => this.updateCurrentPageFromScroll(state), opts);
       state.viewportEl.addEventListener("dblclick", (event) => {
@@ -5437,6 +5513,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     return "not-found";
   }
+  function disambiguateSameParentTabs(tabs) {
+    const counts = /* @__PURE__ */ new Map();
+    for (const t of tabs) {
+      if (t.parentItemID > 0) counts.set(t.parentItemID, (counts.get(t.parentItemID) || 0) + 1);
+    }
+    return tabs.map((t) => {
+      if (t.parentItemID > 0 && (counts.get(t.parentItemID) || 0) > 1 && t.filename) {
+        const suffix = ` (${t.filename})`;
+        const nextTitle = t.title.includes(t.filename) ? t.title : `${t.title}${suffix}`;
+        const nextShort = t.shortTitle.includes(t.filename) ? t.shortTitle : `${t.shortTitle}${suffix}`;
+        return { ...t, title: nextTitle, shortTitle: nextShort };
+      }
+      return t;
+    });
+  }
 
   // src/domains/workspace/tab-controller.ts
   var WorkspaceTabController = class {
@@ -5522,7 +5613,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           });
         }
       }
-      return tracked;
+      return disambiguateSameParentTabs(tracked);
     }
     selectTab(win, tabID) {
       const tabsApi = win.Zotero_Tabs;
@@ -6402,7 +6493,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       btn.type = "button";
       btn.className = `zbf-tb-btn${opts.attention ? " attention" : ""}`;
       btn.title = tooltip;
+      btn.setAttribute("tooltiptext", tooltip);
       btn.setAttribute("aria-label", tooltip);
+      btn.setAttribute("data-action", icon);
       if (opts.pressed !== void 0) btn.setAttribute("aria-pressed", String(opts.pressed));
       btn.appendChild(createWorkspaceIcon(this.doc, icon, 15));
       if (opts.count !== void 0 && opts.count > 0) {
@@ -7803,6 +7896,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       btn.type = "button";
       btn.className = "zbf-sb-icon-btn";
       btn.title = title;
+      btn.setAttribute("tooltiptext", title);
+      btn.setAttribute("aria-label", title);
+      btn.setAttribute("data-action", icon);
       btn.appendChild(createWorkspaceIcon(this.doc, icon, 14));
       btn.addEventListener("click", () => onClick(btn));
       container.appendChild(btn);

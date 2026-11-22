@@ -315,3 +315,21 @@ export async function focusOrOpenTrackedItem(
 	}
 	return 'not-found';
 }
+
+export function disambiguateSameParentTabs<T extends { parentItemID: number; title: string; shortTitle: string; filename: string }>(
+	tabs: T[],
+): T[] {
+	const counts = new Map<number, number>();
+	for (const t of tabs) {
+		if (t.parentItemID > 0) counts.set(t.parentItemID, (counts.get(t.parentItemID) || 0) + 1);
+	}
+	return tabs.map((t) => {
+		if (t.parentItemID > 0 && (counts.get(t.parentItemID) || 0) > 1 && t.filename) {
+			const suffix = ` (${t.filename})`;
+			const nextTitle = t.title.includes(t.filename) ? t.title : `${t.title}${suffix}`;
+			const nextShort = t.shortTitle.includes(t.filename) ? t.shortTitle : `${t.shortTitle}${suffix}`;
+			return { ...t, title: nextTitle, shortTitle: nextShort };
+		}
+		return t;
+	});
+}

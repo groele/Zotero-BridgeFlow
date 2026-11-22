@@ -14,6 +14,7 @@ export interface PageSlot {
 	canvas: HTMLCanvasElement;
 	renderedZoom: number | null;
 	rendering: boolean;
+	renderToken: number;
 	lastHeight: number;
 	cancelTask?: () => void;
 }
@@ -91,7 +92,12 @@ export function syncPreviewControls(state: PreviewState): void {
 	const pageText = hasDoc ? `${state.currentPage} / ${state.numPages}` : '0 / 0';
 	state.pageLabel.textContent = pageText;
 	state.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
-	state.setSectionSummary?.(hasDoc ? pageText : '');
+	const attID = Number(state.attachment?.id) || 0;
+	const attIdx = attID > 0 ? state.attachments.findIndex((e) => e.id === attID) : -1;
+	const summaryText = hasDoc
+		? (state.attachments.length > 1 && attIdx >= 0 ? `PDF ${attIdx + 1}/${state.attachments.length} · ${pageText}` : pageText)
+		: '';
+	state.setSectionSummary?.(summaryText);
 	state.prevBtn.disabled = !hasDoc || state.currentPage <= 1;
 	state.nextBtn.disabled = !hasDoc || state.currentPage >= state.numPages;
 	state.openBtn.disabled = !state.attachment;
@@ -105,6 +111,7 @@ export async function renderPageSlot(
 ): Promise<void> {
 	if (!state.pdfDoc || state.generation !== gen || slot.rendering || slot.renderedZoom === state.zoom) return;
 	slot.rendering = true;
+	const token = ++slot.renderToken;
 	try {
 		const w = Math.max(180, (state.viewportEl.clientWidth || state.body.clientWidth || 260) - 2);
 		state.lastWidth = state.viewportEl.clientWidth || state.body.clientWidth || state.lastWidth;
@@ -115,30 +122,36 @@ export async function renderPageSlot(
 			w,
 			state.zoom,
 			state.win.devicePixelRatio || 1,
-			() => state.generation !== gen,
+			() => state.generation !== gen || slot.renderToken !== token,
 			(c) => { slot.cancelTask = c; },
 		);
-		if (state.generation === gen && m.height > 0) {
+		if (state.generation === gen && slot.renderToken === token && m.height > 0) {
 			slot.lastHeight = m.height;
 			slot.card.removeAttribute('data-unrendered');
 			slot.card.style.minBlockSize = '0';
 			slot.renderedZoom = state.zoom;
 		}
 	} catch (error) {
-		if (state.generation === gen) onError(error);
+		if (state.generation === gen && slot.renderToken === token) onError(error);
 	} finally {
-		slot.rendering = false;
-		slot.cancelTask = undefined;
+		if (slot.renderToken === token) {
+			slot.rendering = false;
+			slot.cancelTask = undefined;
+		}
 	}
 }
 
 export function invalidateVisibleSlots(state: PreviewState, onError: (err: unknown) => void): void {
 	for (const slot of state.slots) {
+		slot.renderToken += 1;
 		slot.cancelTask?.();
+		slot.cancelTask = undefined;
+		slot.rendering = false;
 		slot.renderedZoom = null;
 	}
-	const startIdx = Math.max(0, state.currentPage - 1);
-	for (let i = startIdx; i < Math.min(state.slots.length, startIdx + 2); i++) {
+	const startIdx = Math.max(0, state.currentPage - 2);
+	const endIdx = Math.min(state.slots.length, Math.max(2, state.currentPage + 1));
+	for (let i = startIdx; i < endIdx; i++) {
 		void renderPageSlot(state, state.slots[i], state.generation, onError);
 	}
 }
@@ -167,6 +180,15 @@ export async function loadAttachmentPreviewDoc(
 	const gen = state.generation;
 	state.loading = true;
 	state.attachment = att;
+	const nextAttID = Number(att?.id) || 0;
+	if (nextAttID > 0 && state.ownerID > 0) {
+		try {
+			const CustomEv = (state.win as any)?.CustomEvent || CustomEvent;
+			state.doc.dispatchEvent?.(new CustomEv('zbf:pdf-attachment-selected', {
+				detail: { ownerID: state.ownerID, attachmentID: nextAttID },
+			}));
+		} catch { /* ignore */ }
+	}
 	syncPreviewControls(state);
 	applyStatusMessage(state.statusEl, 'zbf-pdf-preview-loading');
 	try {
@@ -270,7 +292,7 @@ function buildSlots(
 		});
 		card.append(canvas, badge);
 		frag.append(card);
-		state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, lastHeight: 0 });
+		state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, renderToken: 0, lastHeight: 0 });
 	}
 	state.viewportEl.append(frag);
 	const Observer = (state.win as Window & typeof globalThis).IntersectionObserver;

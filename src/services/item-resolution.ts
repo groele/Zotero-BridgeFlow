@@ -94,24 +94,42 @@ export function deduplicateRegularItems(items: readonly any[], maxItems = 100): 
 export async function resolvePdfAttachments(item: any): Promise<ResolvedPdfAttachment[]> {
 	if (isItemTrashedOrDeleted(item)) return [];
 	const hostItems = (globalThis as any).Zotero?.Items;
+	const owner = await normalizeToRegularItemAsync(item);
+	const target = owner || item;
 	const candidates: any[] = [];
-	if (typeof item.isPDFAttachment === 'function' && item.isPDFAttachment()) {
-		candidates.push(item);
-	} else if (typeof item.getAttachments === 'function') {
-		const ids: number[] = item.getAttachments() || [];
+	const seen = new Set<number>();
+	const pushIfPdf = (att: any) => {
+		if (!att || isItemTrashedOrDeleted(att) || !att.isPDFAttachment?.()) return;
+		const id = Number(att.id || 0);
+		if (id > 0 && seen.has(id)) return;
+		if (id > 0) seen.add(id);
+		candidates.push(att);
+	};
+	if (typeof target?.getBestAttachment === 'function') {
+		const best = await target.getBestAttachment().catch(() => null);
+		pushIfPdf(best);
+	}
+	if (typeof target?.getAttachments === 'function') {
+		const ids: number[] = target.getAttachments() || [];
 		for (const id of ids) {
-			const att = hostItems?.getAsync ? await hostItems.getAsync(id) : hostItems?.get?.(id);
-			if (att && !isItemTrashedOrDeleted(att) && att.isPDFAttachment?.()) {
-				candidates.push(att);
-			}
+			const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
+			pushIfPdf(att);
 		}
 	}
-	return candidates.map((att) => ({
-		item: att,
-		id: Number(att.id || 0),
-		title: String(att.getField?.('title') || att.attachmentFilename || 'PDF'),
-		filename: String(att.attachmentFilename || ''),
-	}));
+	pushIfPdf(item);
+	return candidates.map((att) => {
+		const rawTitle = safeGetItemField(att, 'title').trim();
+		const filename = String(att.attachmentFilename || '').trim();
+		const title = (rawTitle && filename && rawTitle.toLowerCase() !== filename.toLowerCase() && !rawTitle.toLowerCase().endsWith('.pdf'))
+			? `${rawTitle} (${filename})`
+			: (rawTitle || filename || 'PDF');
+		return {
+			item: att,
+			id: Number(att.id || 0),
+			title,
+			filename,
+		};
+	});
 }
 
 export async function resolveBestFileAttachment(itemOrID: any): Promise<any | null> {

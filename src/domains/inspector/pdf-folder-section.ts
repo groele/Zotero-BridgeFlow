@@ -128,8 +128,25 @@ export class PdfFolderSectionController {
 				st.selectedAttachment = hit.attachment;
 				st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || '附件文件');
 				st.meta.title = st.meta.textContent;
+				try {
+					const CustomEv = (win as any)?.CustomEvent || CustomEvent;
+					doc.dispatchEvent?.(new CustomEv('zbf:pdf-folder-attachment-selected', {
+						detail: { attachmentID: hit.id },
+					}));
+				} catch { /* ignore */ }
 			}
 		}, { signal: controller.signal });
+		doc.addEventListener('zbf:pdf-attachment-selected', ((ev: CustomEvent) => {
+			const attID = Number(ev?.detail?.attachmentID || 0);
+			if (!attID || !st.entries.length) return;
+			const hit = st.entries.find((e) => e.id === attID);
+			if (hit && st.selectedAttachment !== hit.attachment) {
+				st.selectedAttachment = hit.attachment;
+				st.selectEl.value = String(hit.id);
+				st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || '附件文件');
+				st.meta.title = st.meta.textContent;
+			}
+		}) as EventListener, { signal: controller.signal });
 
 		wrap.append(selectEl, meta, btn);
 		body.append(wrap);
