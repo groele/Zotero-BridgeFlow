@@ -1,22 +1,38 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none" role="img" aria-label="Zotero BridgeFlow - Kinetic Tiles">
+  <title>Zotero BridgeFlow</title>
   <defs>
-    <linearGradient id="zbf-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#2563EB"/>
-      <stop offset="100%" stop-color="#0D9488"/>
+    <linearGradient id="bf5-left" x1="12" y1="24" x2="62" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#818CF8"/>
+      <stop offset="55%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#2563EB"/>
     </linearGradient>
-    <linearGradient id="zbf-arch" x1="12" y1="38" x2="52" y2="22" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.96"/>
-      <stop offset="100%" stop-color="#CCFBF1" stop-opacity="0.98"/>
+    <linearGradient id="bf5-right" x1="66" y1="24" x2="116" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#14B8A6"/>
+      <stop offset="100%" stop-color="#059669"/>
     </linearGradient>
+    <linearGradient id="bf5-beam" x1="28" y1="48" x2="100" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FACC15"/>
+      <stop offset="50%" stop-color="#F97316"/>
+      <stop offset="100%" stop-color="#FB7185"/>
+    </linearGradient>
+    <filter id="bf5-sh" x="-18%" y="-18%" width="136%" height="136%">
+      <feDropShadow dx="0" dy="5" stdDeviation="4.5" flood-color="#0F172A" flood-opacity="0.22"/>
+    </filter>
   </defs>
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#zbf-bg)"/>
-  <!-- Bridge arch connecting reading (left) and writing (right) -->
-  <path d="M12 42 C18 22, 46 22, 52 42" stroke="url(#zbf-arch)" stroke-width="4.5" stroke-linecap="round"/>
-  <path d="M11 42 H53" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round" stroke-opacity="0.92"/>
-  <!-- Support pillars -->
-  <path d="M22 33 V42 M32 28 V42 M42 33 V42" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-opacity="0.85"/>
-  <!-- Reading node (left) & Writing node (right) -->
-  <circle cx="16" cy="21" r="4" fill="#FFFFFF"/>
-  <circle cx="48" cy="21" r="4" fill="#CCFBF1"/>
-  <path d="M21 21 H43" stroke="#FFFFFF" stroke-width="2" stroke-dasharray="3 3" stroke-linecap="round" stroke-opacity="0.75"/>
+  <g filter="url(#bf5-sh)">
+    <!-- Left Tilted Reading Tile -->
+    <rect x="15" y="28" width="44" height="72" rx="14" transform="rotate(-10 37 64)" fill="url(#bf5-left)"/>
+    <rect x="24" y="42" width="22" height="6.5" rx="3.25" transform="rotate(-10 35 45)" fill="#FFFFFF" fill-opacity="0.88"/>
+    <rect x="27" y="80" width="16" height="6" rx="3" transform="rotate(-10 35 83)" fill="#C7D2FE" fill-opacity="0.72"/>
+
+    <!-- Right Tilted Writing Tile -->
+    <rect x="69" y="28" width="44" height="72" rx="14" transform="rotate(10 91 64)" fill="url(#bf5-right)"/>
+    <rect x="82" y="42" width="22" height="6.5" rx="3.25" transform="rotate(10 93 45)" fill="#FFFFFF" fill-opacity="0.88"/>
+    <rect x="85" y="80" width="16" height="6" rx="3" transform="rotate(10 93 83)" fill="#CCFBF1" fill-opacity="0.72"/>
+
+    <!-- Bold Kinetic Bridge Capsule Linking Both Tiles -->
+    <rect x="34" y="53" width="60" height="22" rx="11" fill="#FFFFFF"/>
+    <rect x="39" y="58" width="50" height="12" rx="6" fill="url(#bf5-beam)"/>
+  </g>
 </svg>

@@ -1,6 +1,12 @@
+<div align="center">
+
+<img src="assets/bridgeflow.svg" alt="Zotero BridgeFlow Logo" width="96" height="96" />
+
 # Zotero BridgeFlow（桥引）
 
 > 当前版本：**0.0.1** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+
+</div>
 
 **Zotero BridgeFlow（桥引）** 是将 **Zotero TabFlow**（多标签阅读工作区）、**Zotero ViewFlow**（侧栏引文预览与反向逆查）与 **Zotero CiteFlow**（Microsoft Word 写作引用追踪与拖拽直插）深度融合为一体的一站式科研读写工作台插件，彻底打通 **「多篇沉浸精读 ➔ 即时引文检阅/反查 ➔ Word 写作引用追踪」** 闭环。
 
@@ -23,6 +29,12 @@ npm install
 npm test
 npm run build:xpi
 ```
+
+## 安装包完整性校验 (`v0.0.1`)
+
+- 文件名：`Zotero-BridgeFlow-0.0.1.xpi`（`44,781` 字节，17 个条目）
+- SHA-256：`F4D5A892C0EF1754ABCB49F86775FA26FDCF5361949B6C4FE0432EC065F95D9D`
+- SHA-512：`78b7b05e8a893e29e85516ea4aceb4e845815909831aac60ec3eae5702bb4bc5047c6429268098bc7ec4195ed19106802d7ec8ad48ecd42ee56f9da54c2ed84e`
 
 ## 开源协议与致谢
 
