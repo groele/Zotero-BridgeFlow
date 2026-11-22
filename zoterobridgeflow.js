@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.5 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -205,6 +205,21 @@
                       preferExistingTab: true,
                       assignToActiveGroup: false
                     }, win);
+                  }
+                });
+              }
+            }
+            if (this.wordCite.isActive() && this.kernel.prefs.get("wordCite.dragCite.enable")) {
+              const insertLabel = "插入当前文献到 Word 光标处";
+              if (!term || insertLabel.toLowerCase().includes(term) || "word".includes(term) || "cite".includes(term)) {
+                out.push({
+                  id: "cmd:cite-selected-word",
+                  category: "command",
+                  title: `> ${insertLabel}`,
+                  subtitle: "在当前 Word 光标处生成原生 Zotero 可编辑引文域",
+                  badge: "WORD",
+                  action: async () => {
+                    await this.wordCite.citeCurrentSelection(win);
                   }
                 });
               }
@@ -3167,6 +3182,112 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/domains/word-cite/citation-collections.ts
+  var TEMP_COLLECTION_RELATION = "http://zotero.org/relations/temporary-citation-collection";
+  var TEMP_COLLECTION_MARKER = "BridgeFlow";
+  var WordCitationCollectionManager = class {
+    sessionCollections = /* @__PURE__ */ new Map();
+    syncQueue = Promise.resolve();
+    kernel;
+    constructor(kernel) {
+      this.kernel = kernel;
+    }
+    async purgeStaleCollections() {
+      const ZoteroObj = globalThis.Zotero;
+      const colsApi = ZoteroObj?.Collections;
+      const libraryID = ZoteroObj?.Libraries?.userLibraryID;
+      if (typeof colsApi?.getByLibrary !== "function" || !libraryID) return;
+      const all = colsApi.getByLibrary(libraryID, true, true) || [];
+      const activeKeys = new Set([...this.sessionCollections.values()].map((c) => c?.key).filter(Boolean));
+      for (const col of all) {
+        if (!col || activeKeys.has(col.key)) continue;
+        try {
+          await col.loadDataType?.("relations");
+          const rels = col.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION) || [];
+          if (rels.includes(TEMP_COLLECTION_MARKER)) {
+            await col.eraseTx?.();
+          }
+        } catch (err) {
+          this.kernel.logger.error("word-cite:purge-collection", err);
+        }
+      }
+    }
+    sync(sessions) {
+      this.syncQueue = this.syncQueue.then(() => this.runSync(sessions)).catch((err) => this.kernel.logger.error("word-cite:collections", err));
+    }
+    async clearAll() {
+      await this.syncQueue;
+      for (const col of this.sessionCollections.values()) {
+        try {
+          await col?.eraseTx?.();
+        } catch (err) {
+          this.kernel.logger.error("word-cite:erase-collection", err);
+        }
+      }
+      this.sessionCollections.clear();
+    }
+    async runSync(sessions) {
+      const enabled = this.kernel.prefs.get("wordCite.collections.enable");
+      const ZoteroObj = globalThis.Zotero;
+      if (!ZoteroObj?.Collection || !ZoteroObj?.Libraries?.userLibraryID) return;
+      if (!enabled) {
+        for (const [sid, col] of this.sessionCollections) {
+          try {
+            await col?.eraseTx?.();
+          } catch {
+          }
+          this.sessionCollections.delete(sid);
+        }
+        return;
+      }
+      const activeIDs = new Set(sessions.map((s) => s.sessionID));
+      for (const [sid, col] of this.sessionCollections) {
+        if (!activeIDs.has(sid)) {
+          try {
+            await col?.eraseTx?.();
+          } catch {
+          }
+          this.sessionCollections.delete(sid);
+        }
+      }
+      for (const ses of sessions) {
+        let col = this.sessionCollections.get(ses.sessionID);
+        const colName = `📝 ${ses.displayName}`;
+        if (!col || col.deleted) {
+          col = new ZoteroObj.Collection();
+          col.libraryID = ZoteroObj.Libraries.userLibraryID;
+          col.name = colName;
+          try {
+            col.addRelation?.(TEMP_COLLECTION_RELATION, TEMP_COLLECTION_MARKER);
+          } catch {
+          }
+          await col.saveTx?.({ skipSelect: true });
+          this.sessionCollections.set(ses.sessionID, col);
+        } else if (col.name !== colName) {
+          col.name = colName;
+          await col.saveTx?.({ skipSelect: true });
+        }
+        const targetIDs = [...ses.itemCitations.keys()].filter((id) => Number.isSafeInteger(id) && id > 0);
+        const existingRaw = col.getChildItems?.(true) || [];
+        const existingIDs = existingRaw.map((x) => typeof x === "number" ? x : Number(x?.id || 0)).filter((id) => id > 0);
+        const targetSet = new Set(targetIDs);
+        const currentSet = new Set(existingIDs);
+        const toRemove = existingIDs.filter((id) => !targetSet.has(id));
+        const toAdd = targetIDs.filter((id) => !currentSet.has(id));
+        if (!toRemove.length && !toAdd.length) continue;
+        if (typeof ZoteroObj.DB?.executeTransaction === "function") {
+          await ZoteroObj.DB.executeTransaction(async () => {
+            if (toRemove.length) await col.removeItems?.(toRemove);
+            if (toAdd.length) await col.addItems?.(toAdd);
+          });
+        } else {
+          if (toRemove.length) await col.removeItems?.(toRemove);
+          if (toAdd.length) await col.addItems?.(toAdd);
+        }
+      }
+    }
+  };
+
   // src/domains/word-cite/citation-column.ts
   var CitationColumnController = class {
     columnID = false;
@@ -3204,44 +3325,288 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/domains/word-cite/word-inserter.ts
+  var insertInFlight = false;
+  function resolveActiveSelectionForWord(win) {
+    const zotero = globalThis.Zotero;
+    const targetWin = win || zotero?.getMainWindow?.() || zotero?.getMainWindows?.()?.[0];
+    const tabs = targetWin?.Zotero_Tabs;
+    const pane = targetWin?.ZoteroPane;
+    if (!tabs || !pane) return [];
+    if (tabs.selectedIndex === 0) {
+      const { items } = deduplicateRegularItems(pane.getSelectedItems?.() || []);
+      return items;
+    }
+    const reader = zotero?.Reader?.getByTabID?.(tabs.selectedID);
+    const attachment = reader && zotero?.Items?.get?.(reader.itemID);
+    const candidate = attachment?.parentItem || attachment;
+    return candidate ? deduplicateRegularItems([candidate]).items : [];
+  }
+  async function insertItemsIntoWord(kernel, win32, rawItems, options = {}) {
+    if (insertInFlight) return "busy";
+    const { items } = deduplicateRegularItems(rawItems);
+    const selectedIDs = [...new Set(items.map((item) => Number(item?.id || 0)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (!selectedIDs.length) return "unavailable";
+    const host2 = globalThis.Zotero;
+    const integration = host2?.Integration;
+    const origCite = integration?.Session?.prototype?.cite;
+    if (typeof origCite !== "function" || typeof integration?.execCommand !== "function") {
+      return "unavailable";
+    }
+    const isMac = host2?.isMac === true;
+    if (!isMac && options.verifyCursor && !win32.verifyDroppedWordTarget()) {
+      return "non-word";
+    }
+    insertInFlight = true;
+    const origGetApp = integration.getApplication;
+    let wrappedGetApp = null;
+    const patchedApps = /* @__PURE__ */ new Map();
+    const restoreApps = () => {
+      for (const [app, origFn] of patchedApps) {
+        try {
+          app.getActiveDocument = origFn;
+        } catch {
+        }
+      }
+      patchedApps.clear();
+    };
+    if (!isMac && typeof origGetApp === "function") {
+      wrappedGetApp = function(...args) {
+        const app = Reflect.apply(origGetApp, this, args);
+        if (args[0] === "WinWord" && typeof app?.getDocument === "function" && typeof app?.getActiveDocument === "function") {
+          if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
+          app.getActiveDocument = function() {
+            return this.getDocument("");
+          };
+        }
+        return app;
+      };
+      integration.getApplication = wrappedGetApp;
+    }
+    const patchedCite = async function(field) {
+      if (typeof this._insertCitingResult !== "function" || typeof this.addCitation !== "function" || typeof integration.CitationEditInterface !== "function") {
+        return Reflect.apply(origCite, this, arguments);
+      }
+      let newField = false;
+      let activeField = field;
+      let citation;
+      let committed = false;
+      try {
+        if (activeField) {
+          activeField = await integration.Field.loadExisting(activeField);
+          if (activeField && activeField.type === 2) {
+            throw new host2.Exception.Alert("integration.error.notInCitation");
+          }
+          if (activeField && activeField.type === 1) {
+            citation = new integration.Citation(activeField, await activeField.unserialize(), await activeField.getNoteIndex());
+          } else {
+            newField = true;
+            activeField = new integration.CitationField(activeField?._field ?? activeField);
+            citation = new integration.Citation(activeField);
+          }
+        } else {
+          newField = true;
+          activeField = new integration.CitationField(await this.addField(true));
+          citation = new integration.Citation(activeField);
+        }
+        await citation.prepareForEditing();
+        let fieldIndexPromise;
+        let citationsByItemIDPromise;
+        if (!this.data?.prefs?.delayCitationUpdates || !Object.keys(this.citationsByItemID || {}).length || this._sessionUpToDate) {
+          fieldIndexPromise = this.getFields().then(async (fieldsList) => {
+            for (let i = 0, n = fieldsList.length; i < n; i++) {
+              if (await fieldsList[i].equals(activeField?._field)) {
+                activeField = new integration.CitationField(fieldsList[i]);
+                return i;
+              }
+            }
+            return -1;
+          });
+          citationsByItemIDPromise = this.updateFromDocument(0).then(() => this.citationsByItemID);
+        } else {
+          fieldIndexPromise = Promise.resolve(-1);
+          citationsByItemIDPromise = Promise.resolve(this.citationsByItemID);
+        }
+        const io = new integration.CitationEditInterface(
+          citation,
+          Boolean(this.style?.opt?.sort_citations),
+          fieldIndexPromise,
+          citationsByItemIDPromise
+        );
+        for (const id of selectedIDs) {
+          if (!io.citation.citationItems.some((c) => Number(c.id) === id)) {
+            io.citation.citationItems.push({ id });
+          }
+        }
+        if (!io.citation.citationItems.length) {
+          throw new host2.Exception.UserCancelled("inserting citation");
+        }
+        const [fieldIndex] = await Promise.all([fieldIndexPromise, citationsByItemIDPromise]);
+        const citations = await this._insertCitingResult(fieldIndex, activeField, io.citation);
+        let refreshedFields;
+        if (!this.data?.prefs?.delayCitationUpdates) {
+          if (citations.length !== 1) {
+            refreshedFields = await this.getFields(true);
+          }
+          await this.updateFromDocument(0);
+        }
+        for (const cit of citations) {
+          const idx = cit.fieldIndex ?? cit._fieldIndex;
+          if (refreshedFields) {
+            const rep = new integration.CitationField(refreshedFields[idx]);
+            if ("field" in cit) cit.field = rep;
+            else cit._field = rep;
+          }
+          const citField = cit.field ?? cit._field;
+          await this.addCitation(idx, await citField.getNoteIndex(), cit);
+          committed = true;
+        }
+        committed = true;
+        try {
+          options.onCommitted?.();
+        } catch {
+        }
+        return citations;
+      } catch (error) {
+        if (newField && !committed && typeof activeField?.delete === "function") {
+          try {
+            await activeField.delete();
+            await this.getFields(true);
+            await this.updateFromDocument(0);
+          } catch (cleanupErr) {
+            kernel.logger.error("word-cite:rollback", cleanupErr);
+          }
+        }
+        throw error;
+      }
+    };
+    integration.Session.prototype.cite = patchedCite;
+    try {
+      if (isMac) {
+        await integration.execCommand("MacWord16", "addEditCitation", "/Applications/Microsoft Word.app/", 2);
+      } else {
+        if (options.verifyCursor && !win32.verifyDroppedWordTarget()) {
+          return "non-word";
+        }
+        await integration.execCommand("WinWord", "addEditCitation", null, 1);
+      }
+      return "inserted";
+    } catch (err) {
+      const name = String(err?.name || "");
+      if (name.includes("UserCancelled")) return "cancelled";
+      kernel.logger.error("word-cite:insert", err);
+      return "unavailable";
+    } finally {
+      restoreApps();
+      if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
+        integration.getApplication = origGetApp;
+      }
+      if (integration.Session.prototype.cite === patchedCite) {
+        integration.Session.prototype.cite = origCite;
+      }
+      insertInFlight = false;
+    }
+  }
+
   // src/domains/word-cite/drag-cite-controller.ts
   var DragCiteController = class {
-    busy = false;
     windowDisposers = /* @__PURE__ */ new Map();
+    activeDragItems = null;
+    activeDragStartedAt = 0;
     kernel;
     win32;
-    constructor(kernel, win32) {
+    onInserted;
+    constructor(kernel, win32, onInserted = () => {
+    }) {
       this.kernel = kernel;
       this.win32 = win32;
+      this.onInserted = onInserted;
     }
     attachWindow(win) {
-      if (!this.win32.supportsNativeWin32() || this.windowDisposers.has(win)) return;
+      if (this.windowDisposers.has(win)) return;
+      const disposers = [];
       const itemsView = win.ZoteroPane?.itemsView;
-      if (!itemsView || typeof itemsView.onDragStart !== "function") return;
-      const unpatch = this.kernel.runtime.patch(
-        itemsView,
-        "onDragStart",
-        "itemsView",
-        (orig) => (event, ...rest) => {
-          const res = orig.call(itemsView, event, ...rest);
-          if (!this.kernel.prefs.get("wordCite.dragCite.enable")) return res;
-          const selected = win.ZoteroPane?.getSelectedItems?.() || [];
-          const { items } = deduplicateRegularItems(selected);
-          if (!items.length) return res;
-          try {
-            event?.dataTransfer?.clearData?.("text/html");
-            event?.dataTransfer?.setData?.("text/plain", "");
-          } catch {
+      if (itemsView && typeof itemsView.onDragStart === "function" && (this.win32.supportsNativeWin32() || globalThis.Zotero?.isMac)) {
+        const unpatch = this.kernel.runtime.patch(
+          itemsView,
+          "onDragStart",
+          "itemsView",
+          (orig) => (event, ...rest) => {
+            const row = rest[0];
+            this.activeDragItems = null;
+            this.activeDragStartedAt = 0;
+            const dragEnabled = this.kernel.prefs.get("wordCite.dragCite.enable");
+            const selection = itemsView.selection;
+            if (dragEnabled && typeof row === "number" && Number.isInteger(row) && selection && !selection.isSelected?.(row)) {
+              selection.select?.(row);
+            }
+            const res = orig.call(itemsView, event, ...rest);
+            if (res === false || !dragEnabled) return res;
+            const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+            const { items } = deduplicateRegularItems(selected);
+            if (!items.length) return res;
+            this.activeDragItems = items;
+            this.activeDragStartedAt = Date.now();
+            try {
+              event?.dataTransfer?.clearData?.("text/html");
+              event?.dataTransfer?.setData?.("text/plain", "");
+            } catch {
+            }
+            return res;
           }
-          const onDragEnd = () => {
-            win.removeEventListener?.("dragend", onDragEnd, true);
+        );
+        disposers.push(unpatch);
+        const doc2 = win.document;
+        if (doc2?.addEventListener) {
+          const onDragEnd = (ev) => {
+            const items = this.activeDragItems;
+            const startedAt = this.activeDragStartedAt;
+            this.activeDragItems = null;
+            this.activeDragStartedAt = 0;
+            if (!items?.length || !this.kernel.prefs.get("wordCite.dragCite.enable")) return;
+            const dt = ev.dataTransfer;
+            if (dt?.mozUserCancelled) return;
+            if (startedAt > 0 && Date.now() - startedAt > 6e4) return;
             void this.handleDropEnd(items);
           };
-          win.addEventListener?.("dragend", onDragEnd, { once: true, capture: true });
-          return res;
+          doc2.addEventListener("dragend", onDragEnd, true);
+          disposers.push(() => doc2.removeEventListener("dragend", onDragEnd, true));
         }
-      );
-      this.windowDisposers.set(win, unpatch);
+      }
+      const doc = win.document;
+      const itemMenu = doc?.getElementById?.("zotero-itemmenu");
+      if (doc && itemMenu) {
+        const mi = doc.createXULElement ? doc.createXULElement("menuitem") : doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "menuitem");
+        mi.id = "zbf-item-insert-word-cite";
+        mi.setAttribute("label", "BridgeFlow：插入引文到 Word 当前光标");
+        const onShowing = () => {
+          const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+          const valid = deduplicateRegularItems(selected).items;
+          mi.hidden = !this.kernel.prefs.get("wordCite.dragCite.enable");
+          if (!valid.length) mi.setAttribute("disabled", "true");
+          else mi.removeAttribute("disabled");
+        };
+        const onCommand = () => {
+          const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+          void this.insertItems(selected);
+        };
+        itemMenu.addEventListener("popupshowing", onShowing);
+        mi.addEventListener("command", onCommand);
+        itemMenu.appendChild(mi);
+        disposers.push(() => {
+          itemMenu.removeEventListener("popupshowing", onShowing);
+          mi.removeEventListener("command", onCommand);
+          mi.remove();
+        });
+      }
+      this.windowDisposers.set(win, () => {
+        for (const fn of disposers.reverse()) {
+          try {
+            fn();
+          } catch {
+          }
+        }
+      });
     }
     detachWindow(win) {
       const disposer = this.windowDisposers.get(win);
@@ -3252,24 +3617,41 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     async handleDropEnd(items) {
       if (!this.kernel.prefs.get("wordCite.dragCite.enable")) return "unavailable";
       const probe = this.win32.probeCursorWordDropTarget();
-      if (probe.status !== "word-confirmed") return "non-word";
-      if (this.busy) return "busy";
-      this.busy = true;
-      try {
-        const integration = globalThis.Zotero?.Integration;
-        if (!integration?.execCommand) return "unavailable";
-        await integration.execCommand("WinWord", "addEditCitation", items.map((i) => i.id));
-        return "inserted";
-      } catch (err) {
-        this.kernel.logger.error("word-cite:drag", err);
-        return "unavailable";
-      } finally {
-        this.busy = false;
+      if (probe.status !== "word-confirmed" && !globalThis.Zotero?.isMac) {
+        if (probe.status === "unknown") {
+          this.notifyHint("未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。");
+        }
+        return "non-word";
       }
+      return insertItemsIntoWord(this.kernel, this.win32, items, {
+        verifyCursor: true,
+        onCommitted: this.onInserted
+      });
+    }
+    async insertItems(items) {
+      if (!this.kernel.prefs.get("wordCite.dragCite.enable")) return "unavailable";
+      const result = await insertItemsIntoWord(this.kernel, this.win32, items, {
+        verifyCursor: false,
+        onCommitted: this.onInserted
+      });
+      if (result === "unavailable") {
+        this.notifyHint("插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。");
+      }
+      return result;
     }
     disposeAll() {
       for (const disposer of this.windowDisposers.values()) disposer();
       this.windowDisposers.clear();
+    }
+    notifyHint(message) {
+      try {
+        const pw = new globalThis.Zotero.ProgressWindow();
+        pw.changeHeadline("Zotero BridgeFlow · Word 引用");
+        pw.addDescription(message);
+        pw.show();
+        pw.startCloseTimer(4e3);
+      } catch {
+      }
     }
   };
 
@@ -3507,6 +3889,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   // src/domains/word-cite/word-poller.ts
   var WordIntegrationPoller = class {
     timer = null;
+    viewRefreshTimer = null;
     unpatchExec = null;
     running = false;
     idleRounds = 0;
@@ -3530,6 +3913,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         clearTimeout(this.timer);
         this.timer = null;
       }
+      if (this.viewRefreshTimer !== null) {
+        clearTimeout(this.viewRefreshTimer);
+        this.viewRefreshTimer = null;
+      }
       this.unpatchExec?.();
       this.unpatchExec = null;
     }
@@ -3541,25 +3928,67 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const entries = sessionsMap instanceof Map ? [...sessionsMap.entries()] : Object.entries(sessionsMap);
       for (const [sessionID, session] of entries) {
         if (!session) continue;
-        const citations = [];
+        const agent = String(session.agent || "WinWord");
+        if (!/(WinWord|MacWord|Word)/i.test(agent)) continue;
+        const ordinalMap = /* @__PURE__ */ new Map();
+        const byIndex = session.citationsByIndex;
+        if (Array.isArray(byIndex) || byIndex && typeof byIndex === "object") {
+          const list = Array.isArray(byIndex) ? byIndex : Object.values(byIndex);
+          for (let idx = 0; idx < list.length; idx++) {
+            const cit = list[idx];
+            const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
+            const ordinal = Number(cit?.citationIndex ?? cit?.index ?? idx + 1);
+            const shortText = String(cit?.properties?.formattedCitation || cit?.text || "").trim();
+            for (const ci of cItems) {
+              const itemID = Number(ci?.id || ci?.itemID || 0);
+              if (!Number.isInteger(itemID) || itemID <= 0) continue;
+              if (!ordinalMap.has(itemID)) {
+                ordinalMap.set(itemID, { ordinal: ordinal > 0 ? ordinal : idx + 1, shortText });
+              }
+            }
+          }
+        }
         const byItem = session.citationsByItemID;
         if (byItem && typeof byItem === "object") {
           for (const [rawID, list] of Object.entries(byItem)) {
             const itemID = Number(rawID);
-            if (!Number.isInteger(itemID) || itemID <= 0) continue;
+            if (!Number.isInteger(itemID) || itemID <= 0 || ordinalMap.has(itemID)) continue;
             const first = Array.isArray(list) ? list[0] : list;
             const ordinal = Number(first?.citationIndex ?? first?.index ?? 1);
             const shortText = String(first?.properties?.formattedCitation || first?.text || "").trim();
-            citations.push({ itemID, ordinal, shortText });
+            ordinalMap.set(itemID, { ordinal: ordinal > 0 ? ordinal : 1, shortText });
           }
         }
+        const citations = [...ordinalMap.entries()].map(([itemID, info]) => ({
+          itemID,
+          ordinal: info.ordinal,
+          shortText: info.shortText
+        }));
         const docPath = String(session.doc?.filePath || session.filePath || session.name || sessionID);
         rawSessions.push({ sessionID: String(sessionID), documentPath: docPath, citations });
       }
       const changed = this.tracker.syncSessions(rawSessions);
-      if (changed) this.idleRounds = 0;
-      else this.idleRounds = Math.min(10, this.idleRounds + 1);
+      if (changed) {
+        this.idleRounds = 0;
+        this.scheduleItemsViewRefresh();
+      } else {
+        this.idleRounds = Math.min(10, this.idleRounds + 1);
+      }
       return changed;
+    }
+    scheduleItemsViewRefresh() {
+      if (this.viewRefreshTimer !== null) return;
+      const delay = this.kernel.prefs.get("wordCite.itemsViewRefreshDebounceMs");
+      this.viewRefreshTimer = setTimeout(() => {
+        this.viewRefreshTimer = null;
+        const wins = globalThis.Zotero?.getMainWindows?.() || [];
+        for (const win of wins) {
+          try {
+            win.ZoteroPane?.itemsView?.refresh?.();
+          } catch {
+          }
+        }
+      }, Math.max(20, delay));
     }
     installHooks() {
       const integration = globalThis.Zotero?.Integration;
@@ -3603,39 +4032,54 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     tracker;
     tagGovernance;
     dragCite;
+    collections;
     column;
     poller;
     disposables = new DisposableStack();
+    tagDebounceTimer = null;
     active = false;
     kernel;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.tracker = new WordSessionTracker(kernel.bus, services.win32);
       this.tagGovernance = new CitationTagGovernance(kernel.prefs);
-      this.dragCite = new DragCiteController(kernel, services.win32);
-      this.column = new CitationColumnController(kernel, this.tracker);
+      this.collections = new WordCitationCollectionManager(kernel);
       this.poller = new WordIntegrationPoller(kernel, this.tracker);
+      this.dragCite = new DragCiteController(kernel, services.win32, () => {
+        this.poller.pollOnce();
+      });
+      this.column = new CitationColumnController(kernel, this.tracker);
     }
     isActive() {
       return this.active;
+    }
+    async citeCurrentSelection(win) {
+      const items = resolveActiveSelectionForWord(win);
+      if (items.length) await this.dragCite.insertItems(items);
     }
     start() {
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
+      void this.collections.purgeStaleCollections();
       this.column.register();
       this.poller.start();
       this.disposables.add(
         this.kernel.bus.on("citation:snapshot-updated", () => {
-          void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
+          this.scheduleTagSync();
+          this.collections.sync(this.tracker.getAllSessions());
         })
       );
       this.disposables.add(
         this.kernel.prefs.observeKeys(
           ["wordCite.citationTags.enable", "wordCite.citationTags.text"],
-          () => {
-            void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
-          }
+          () => this.scheduleTagSync()
+        )
+      );
+      this.disposables.add(
+        this.kernel.prefs.observeKeys(
+          ["wordCite.collections.enable"],
+          () => this.collections.sync(this.tracker.getAllSessions())
         )
       );
     }
@@ -3649,55 +4093,298 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     stop() {
       if (!this.active) return;
       this.active = false;
+      if (this.tagDebounceTimer !== null) {
+        clearTimeout(this.tagDebounceTimer);
+        this.tagDebounceTimer = null;
+      }
       this.poller.stop();
       this.column.unregister();
       this.dragCite.disposeAll();
+      void this.collections.clearAll();
       this.tracker.clear();
       this.disposables.disposeAll();
     }
+    scheduleTagSync() {
+      if (this.tagDebounceTimer !== null) clearTimeout(this.tagDebounceTimer);
+      const delay = this.kernel.prefs.get("wordCite.citationTagDebounceMs");
+      this.tagDebounceTimer = setTimeout(() => {
+        this.tagDebounceTimer = null;
+        if (!this.active) return;
+        void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
+      }, Math.max(0, delay));
+    }
   };
 
-  // src/domains/workspace/spotlight-engine.ts
-  var SpotlightEngine = class {
-    providers = /* @__PURE__ */ new Map();
+  // src/domains/workspace/spotlight-library.ts
+  var SpotlightLibraryIndex = class {
+    entries = [];
+    loaded = false;
+    loading = null;
     tabs;
     constructor(tabs) {
       this.tabs = tabs;
     }
-    registerProvider(provider) {
-      this.providers.set(provider.id, provider);
-      return () => {
-        this.providers.delete(provider.id);
-      };
+    warmUp(win) {
+      if (this.loaded || this.loading) return;
+      this.loading = this.build(win).finally(() => {
+        this.loading = null;
+      });
     }
-    query(rawTerm, win) {
-      const term = rawTerm.trim().toLowerCase();
-      const results = [];
-      const tracked = this.tabs.buildTrackedTabs(win);
-      for (const tab of tracked) {
-        const haystack = `${tab.title} ${tab.remark} ${tab.source} ${tab.collection}`.toLowerCase();
-        if (term && !haystack.includes(term)) continue;
-        results.push({
-          id: `tab:${tab.key}`,
+    invalidate() {
+      this.loaded = false;
+    }
+    query(needle, win, openItemIDs, limit = 15) {
+      if (!needle || needle.length < 2) return [];
+      if (!this.loaded && !this.loading) this.warmUp(win);
+      const out = [];
+      for (const item of this.entries) {
+        if (openItemIDs.has(item.id)) continue;
+        if (!item.searchText.includes(needle)) continue;
+        out.push({
+          id: `lib:${item.key}`,
           category: "tab",
-          title: tab.remark ? `${tab.remark} · ${tab.title}` : tab.title,
-          subtitle: [tab.source, tab.collection].filter(Boolean).join(" · ") || void 0,
-          badge: tab.pinned ? "PIN" : tab.sleeping ? "SLEEP" : tab.virtual ? "VIRTUAL" : void 0,
-          action: () => {
-            if (tab.tabID) this.tabs.selectTab(win, tab.tabID);
-            else void this.tabs.focusOrOpenItem(win, { itemID: tab.parentItemID, attachmentID: tab.itemID });
+          title: item.title,
+          subtitle: item.hint || "文库文献（点击在阅读器中打开）",
+          badge: "文库",
+          action: async () => {
+            await this.tabs.openVirtualOrItem(win, item.id);
           }
         });
+        if (out.length >= limit) break;
       }
-      const sortedProviders = [...this.providers.values()].sort((a, b) => b.priority - a.priority);
-      for (const provider of sortedProviders) {
+      return out;
+    }
+    async build(win) {
+      const ZoteroObj = globalThis.Zotero;
+      const itemsApi = ZoteroObj?.Items;
+      if (typeof itemsApi?.getAll !== "function") return;
+      const libsApi = ZoteroObj?.Libraries;
+      const libs = libsApi?.getAll?.();
+      const libIDs = Array.isArray(libs) ? [...new Set(libs.map((l) => Number(l?.libraryID || 0)).filter((id) => id > 0))] : [Number(libsApi?.userLibraryID || 1)];
+      const next = [];
+      for (const libraryID of libIDs) {
         try {
-          const extra = provider.query(term, win);
-          if (extra?.length) results.push(...extra);
+          const items = await itemsApi.getAll(libraryID, true, false, false);
+          if (!Array.isArray(items)) continue;
+          const libName = String(libsApi?.getName?.(libraryID) || "");
+          for (let i = 0; i < items.length; i++) {
+            if (i > 0 && i % 250 === 0 && win?.setTimeout) {
+              await new Promise((r) => win.setTimeout(r, 0));
+            }
+            const item = items[i];
+            if (!item?.isRegularItem?.() || item.deleted) continue;
+            const rawTitle = String(item.getField?.("title") || item.key || "");
+            const title = rawTitle.replace(/<[^>]+>/g, "").trim();
+            if (!title) continue;
+            const author = String(item.firstCreator || "");
+            const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+            const pub = String(item.getField?.("publicationTitle") || item.getField?.("proceedingsTitle") || "");
+            next.push({
+              id: Number(item.id),
+              key: `${libraryID}:${item.key}`,
+              title,
+              hint: [libName, author, year, pub].filter(Boolean).join(" · "),
+              searchText: `${title} ${author} ${year} ${pub} ${libName}`.toLowerCase()
+            });
+          }
         } catch {
         }
       }
-      return results;
+      this.entries = next;
+      this.loaded = true;
+    }
+  };
+
+  // src/domains/workspace/spotlight-engine.ts
+  var WorkspaceSpotlightEngine = class {
+    providers = /* @__PURE__ */ new Set();
+    prefs;
+    store;
+    tabs;
+    libraryIndex;
+    wordCitedBadges = /* @__PURE__ */ new Map();
+    constructor(prefs, store, tabs) {
+      this.prefs = prefs;
+      this.store = store;
+      this.tabs = tabs;
+      this.libraryIndex = new SpotlightLibraryIndex(tabs);
+    }
+    invalidateLibraryIndex() {
+      this.libraryIndex.invalidate();
+    }
+    setWordCitationBadges(badges) {
+      this.wordCitedBadges = new Map(badges);
+    }
+    registerProvider(provider) {
+      this.providers.add(provider);
+      return () => {
+        this.providers.delete(provider);
+      };
+    }
+    query(rawTerm, win) {
+      const trimmed = rawTerm.trim();
+      const isCommand = trimmed.startsWith(">");
+      const needle = (isCommand ? trimmed.slice(1) : trimmed).trim().toLowerCase();
+      const scored = [];
+      const tracked = this.tabs.buildTrackedTabs(win);
+      if (isCommand) {
+        if (needle === "tabs" || needle === "recent") {
+          const sorted = [...tracked].sort((a, b) => (b.lastViewedAt || 0) - (a.lastViewedAt || 0));
+          for (const tab of sorted) {
+            const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name;
+            scored.push({
+              score: 100,
+              item: {
+                id: `recent:${tab.key}`,
+                category: "tab",
+                title: this.tabs.getDisplayTitle(tab),
+                subtitle: [groupName, tab.creatorYear].filter(Boolean).join(" · "),
+                badge: tab.virtual ? "虚拟" : tab.sleeping ? "休眠" : "最近",
+                action: () => {
+                  if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
+                  else this.tabs.selectTab(win, tab.tabID);
+                }
+              }
+            });
+          }
+        }
+        for (const cmd of this.buildBuiltInCommands(win)) {
+          if (!needle || needle === "tabs" || `${cmd.title} ${cmd.subtitle || ""}`.toLowerCase().includes(needle)) {
+            scored.push({ score: 90, item: cmd });
+          }
+        }
+      }
+      for (const provider of [...this.providers].sort((a, b) => b.priority - a.priority)) {
+        try {
+          for (const item of provider.query(needle, win)) {
+            scored.push({ score: 80 + (provider.priority || 0) * 0.1, item });
+          }
+        } catch {
+        }
+      }
+      if (!isCommand) {
+        for (const group of this.store.state.groups) {
+          if (!needle || group.name.toLowerCase().includes(needle)) {
+            const firstOpen = tracked.find((t) => t.groupId === group.id && !t.virtual);
+            scored.push({
+              score: needle ? 85 : 55,
+              item: {
+                id: `group:${group.id}`,
+                category: "collection",
+                title: `分组：${group.name}`,
+                subtitle: `${group.memberKeys.length} 个成员${firstOpen ? " · 点击定位首篇文献" : ""}`,
+                badge: "分组",
+                action: () => {
+                  this.store.setCollapsed(group.id, false);
+                  if (firstOpen) this.tabs.selectTab(win, firstOpen.tabID);
+                }
+              }
+            });
+          }
+        }
+        for (const tab of tracked) {
+          const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name || "";
+          const displayTitle = this.tabs.getDisplayTitle(tab);
+          const hay = `${displayTitle} ${tab.title} ${tab.shortTitle} ${tab.creatorYear} ${tab.source} ${tab.collection} ${tab.remark} ${groupName}`.toLowerCase();
+          if (needle && !hay.includes(needle)) continue;
+          const citeInfo = this.wordCitedBadges.get(tab.parentItemID) || this.wordCitedBadges.get(tab.itemID);
+          const tags = [];
+          if (groupName) tags.push(groupName);
+          if (tab.pinned) tags.push("已固定");
+          if (tab.sleeping) tags.push("已休眠");
+          if (tab.virtual) tags.push("虚拟");
+          if (citeInfo) tags.push(`Word [${citeInfo.ordinal}]`);
+          scored.push({
+            score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 70,
+            item: {
+              id: `tab:${tab.key}`,
+              category: "tab",
+              title: displayTitle,
+              subtitle: [tab.creatorYear, tab.collection].filter(Boolean).join(" · ") || "已打开阅读标签页",
+              badge: tags.join(" · ") || void 0,
+              action: () => {
+                if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
+                else this.tabs.selectTab(win, tab.tabID);
+              }
+            }
+          });
+        }
+        if (needle.length >= 2) {
+          const openIDs = /* @__PURE__ */ new Set();
+          for (const t of tracked) {
+            if (t.itemID > 0) openIDs.add(t.itemID);
+            if (t.parentItemID > 0) openIDs.add(t.parentItemID);
+          }
+          for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15)) {
+            scored.push({ score: 45, item: libItem });
+          }
+        }
+      }
+      return scored.sort((a, b) => b.score - a.score).slice(0, 40).map((s) => s.item);
+    }
+    buildBuiltInCommands(win) {
+      return [
+        {
+          id: "cmd:auto-group",
+          category: "command",
+          title: "> 按集合自动分组当前标签页",
+          subtitle: "为未分组的阅读标签页按所属 Zotero 集合归组",
+          badge: "命令",
+          action: () => {
+            this.tabs.autoGroupByCollection(win);
+          }
+        },
+        {
+          id: "cmd:sleep-inactive",
+          category: "command",
+          title: "> 休眠所有非活动标签页",
+          subtitle: "卸载后台未固定的阅读器以释放内存",
+          badge: "命令",
+          action: () => {
+            this.tabs.sleepInactiveTabs(win);
+          }
+        },
+        {
+          id: "cmd:toggle-sidebar",
+          category: "command",
+          title: "> 切换左侧竖版工作区侧栏",
+          subtitle: "展开或收起 Zotero 左侧文献工作区面板",
+          badge: "命令",
+          action: () => {
+            this.prefs.set("workspace.enableVerticalSidebar", !this.prefs.get("workspace.enableVerticalSidebar"));
+          }
+        },
+        {
+          id: "cmd:toggle-compact-topbar",
+          category: "command",
+          title: "> 切换顶部横栏精简模式",
+          subtitle: "在完整横向分栏与精简标签栏间切换",
+          badge: "命令",
+          action: () => {
+            this.prefs.set("workspace.compactTopBar", !this.prefs.get("workspace.compactTopBar"));
+          }
+        },
+        {
+          id: "cmd:save-snapshot",
+          category: "command",
+          title: "> 保存当前工作区快照",
+          subtitle: "保存当前所有分组、固定标签与备注配置",
+          badge: "命令",
+          action: () => {
+            this.store.saveSession(`快照 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
+          }
+        },
+        {
+          id: "cmd:undo-close",
+          category: "command",
+          title: "> 恢复最近关闭的标签页",
+          subtitle: "重新打开刚才关闭的文献阅读器",
+          badge: "命令",
+          action: () => {
+            this.tabs.undoCloseTab(win);
+          }
+        }
+      ];
     }
   };
 
@@ -3781,13 +4468,38 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return () => this.listeners.delete(listener);
     }
     createGroup(name, color) {
-      const trimmed = name.trim() || "Group";
+      const trimmed = name.trim() || "新分组";
       const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const chosen = color || GROUP_PALETTE[this.state.groups.length % GROUP_PALETTE.length];
       const group = { id, name: trimmed, color: chosen, memberKeys: [] };
       this.state.groups.push(group);
       this.save();
       return group;
+    }
+    assignKeyRelative(key, groupId, anchorKey, after) {
+      for (const g of this.state.groups) {
+        g.memberKeys = g.memberKeys.filter((k) => k !== key);
+      }
+      if (groupId) {
+        const target = this.state.groups.find((g) => g.id === groupId);
+        if (target) {
+          const idx = target.memberKeys.indexOf(anchorKey);
+          if (idx >= 0) {
+            target.memberKeys.splice(after ? idx + 1 : idx, 0, key);
+          } else {
+            target.memberKeys.push(key);
+          }
+        }
+      }
+      this.save();
+    }
+    deleteSession(sessionId) {
+      const before = this.state.sessions.length + this.state.rollingSessions.length;
+      this.state.sessions = this.state.sessions.filter((s) => s.id !== sessionId);
+      this.state.rollingSessions = this.state.rollingSessions.filter((s) => s.id !== sessionId);
+      if (this.state.sessions.length + this.state.rollingSessions.length === before) return false;
+      this.save();
+      return true;
     }
     renameGroup(groupId, name) {
       const group = this.state.groups.find((g) => g.id === groupId);
@@ -3924,11 +4636,179 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/domains/workspace/tab-actions-helpers.ts
+  function computeTabMoveTarget(ids, draggedTabID, targetTabID, after) {
+    const from = ids.indexOf(draggedTabID);
+    const to = ids.indexOf(targetTabID);
+    if (from < 0 || to < 0 || from === to) return -1;
+    let target = after ? to + 1 : to;
+    if (from < target) target -= 1;
+    return target;
+  }
+  async function openItemAttachmentOrNote(win, store, itemID, groupId, openInBackground = false) {
+    try {
+      const hostItems = globalThis.Zotero?.Items;
+      const item = itemID > 0 ? hostItems?.get?.(itemID) : null;
+      if (!item || item.deleted) return false;
+      const isNote = item.isNote?.() === true;
+      const target = isNote || item.isAttachment?.() ? item : await item.getBestAttachment?.();
+      if (!target || target.deleted) return false;
+      const key = `item:${target.id}`;
+      const altKey = `item:${item.id}`;
+      const nativeTabs = Array.isArray(win.Zotero_Tabs?._tabs) ? win.Zotero_Tabs._tabs : [];
+      const existing = nativeTabs.find((t) => Number(t?.data?.itemID || 0) === target.id);
+      if (existing) {
+        if (!openInBackground) win.Zotero_Tabs?.select?.(existing.id);
+      } else if (isNote) {
+        await globalThis.Zotero?.Notes?.open?.(target.id, void 0, { openInBackground });
+      } else {
+        if (target.isFileAttachment?.() && typeof target.fileExists === "function" && !await target.fileExists()) {
+          return false;
+        }
+        await globalThis.Zotero?.Reader?.open?.(target.id, void 0, { openInBackground });
+      }
+      if (groupId !== void 0) {
+        store.assignToGroup(key, groupId || null);
+      }
+      store.removeVirtualMember(key);
+      store.removeVirtualMember(altKey);
+      return true;
+    } catch (error) {
+      globalThis.Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+      return false;
+    }
+  }
+  async function revealAttachmentFile(win, itemID) {
+    try {
+      const item = itemID > 0 ? globalThis.Zotero?.Items?.get?.(itemID) : null;
+      if (!item) return false;
+      const att = item.isFileAttachment?.() ? item : await item.getBestAttachment?.();
+      if (!att) return false;
+      const filePath = await att.getFilePathAsync?.() || att.getFilePath?.();
+      const nsFile = filePath ? globalThis.Zotero?.File?.pathToFile?.(filePath) : null;
+      if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === "function") {
+        await Promise.resolve(nsFile.reveal());
+        return true;
+      }
+      const pane = win.ZoteroPane || globalThis.Zotero?.getMainWindow?.()?.ZoteroPane;
+      if (pane?.showAttachmentInFilesystem) {
+        await pane.showAttachmentInFilesystem(att.id);
+        return true;
+      }
+      const folder = nsFile?.parent?.path;
+      if (folder && globalThis.Zotero?.launchFile) {
+        await globalThis.Zotero.launchFile(folder);
+        return true;
+      }
+    } catch (error) {
+      globalThis.Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+    return false;
+  }
+  async function selectItemInLibrary(win, itemID, switchCollection) {
+    const item = itemID > 0 ? globalThis.Zotero?.Items?.get?.(itemID) : null;
+    if (!item) return false;
+    const primary = normalizeToRegularItem(item) || item;
+    const pane = win.ZoteroPane;
+    const tabsApi = win.Zotero_Tabs;
+    if (!pane) return false;
+    if (tabsApi && tabsApi.selectedID !== "zotero-pane") {
+      tabsApi.select?.("zotero-pane");
+    }
+    if (switchCollection) {
+      const cols = primary.getCollections?.() || [];
+      if (cols.length && pane.collectionsView?.selectCollection) {
+        await pane.collectionsView.selectCollection(cols[0]);
+      }
+    }
+    return Boolean(await pane.selectItem?.(primary.id, true));
+  }
+  function buildVirtualMetaFromTracked(tab) {
+    return {
+      key: tab.key,
+      itemID: tab.itemID,
+      parentItemID: tab.parentItemID,
+      title: tab.title,
+      shortTitle: tab.shortTitle,
+      filename: tab.filename,
+      source: tab.source,
+      creatorYear: tab.creatorYear,
+      collection: tab.collection,
+      type: tab.type
+    };
+  }
+  function formatCreatorYear(item) {
+    if (!item) return "";
+    const first = String(item.firstCreator || "");
+    const date = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+    return [first, date].filter(Boolean).join(", ");
+  }
+  function resolvePrimaryCollectionName(item) {
+    if (!item || typeof item.getCollections !== "function") return "";
+    const ids = item.getCollections() || [];
+    if (!ids.length) return "";
+    const col = globalThis.Zotero?.Collections?.get?.(ids[0]);
+    return String(col?.name || "");
+  }
+  function autoGroupTrackedByCollection(win, store, strategy, tracked) {
+    const pane = win.ZoteroPane;
+    const activeCol = pane?.getSelectedCollections?.()?.[0] || pane?.getSelectedCollection?.();
+    const activeColName = String(activeCol?.name || "");
+    const hostItems = globalThis.Zotero?.Items;
+    const hostCols = globalThis.Zotero?.Collections;
+    let grouped = 0;
+    for (const tab of tracked) {
+      if (tab.virtual || tab.groupId) continue;
+      const item = hostItems?.get?.(tab.parentItemID || tab.itemID);
+      const colIDs = item?.getCollections?.() || [];
+      const colNames = colIDs.map((id) => String(hostCols?.get?.(id)?.name || "")).filter(Boolean);
+      if (!colNames.length) continue;
+      let chosen = "";
+      if (strategy === "active" && activeColName && colNames.includes(activeColName)) chosen = activeColName;
+      else if (strategy === "existing") chosen = colNames.find((n) => store.state.groups.some((g) => g.name === n)) || colNames[0];
+      else chosen = colNames[0];
+      if (!chosen) continue;
+      const group = store.state.groups.find((g) => g.name === chosen) ?? store.createGroup(chosen);
+      store.assignToGroup(tab.key, group.id);
+      grouped++;
+    }
+    return grouped;
+  }
+  async function restoreSessionTabsAndLayout(win, store, session, openLimit = 10) {
+    const keysToOpen = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const g of session.groups) {
+      for (const k of g.memberKeys) {
+        if (!seen.has(k)) {
+          seen.add(k);
+          keysToOpen.push({ key: k, groupId: g.id });
+        }
+      }
+    }
+    for (const k of session.pinnedKeys) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        keysToOpen.push({ key: k });
+      }
+    }
+    let opened = 0;
+    for (const entry of keysToOpen) {
+      if (opened >= openLimit) break;
+      const match = /^item:(\d+)$/.exec(entry.key);
+      if (match) {
+        const id = Number(match[1]);
+        if (await openItemAttachmentOrNote(win, store, id, entry.groupId, true)) opened++;
+      }
+    }
+    return opened;
+  }
+
   // src/domains/workspace/tab-controller.ts
   var WorkspaceTabController = class {
     prefs;
     store;
     clipboard;
+    closedStack = [];
     constructor(prefs, store, clipboard) {
       this.prefs = prefs;
       this.store = store;
@@ -3959,8 +4839,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const shortTitle = String(displayItem?.getField?.("shortTitle") || title);
         const filename = String(rawItem?.attachmentFilename || "");
         const source = String(displayItem?.getField?.("publicationTitle") || displayItem?.getField?.("proceedingsTitle") || "");
-        const creatorYear = this.formatCreatorYear(displayItem);
-        const collection = this.resolvePrimaryCollectionName(displayItem);
+        const creatorYear = formatCreatorYear(displayItem);
+        const collection = resolvePrimaryCollectionName(displayItem);
         tracked.push({
           tabID: String(tab.id || ""),
           key,
@@ -3975,7 +4855,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           collection,
           groupId: this.store.groupOfKey(key),
           pinned: this.store.isPinned(key),
-          sleeping: this.store.isSleeping(key),
+          sleeping: this.store.isSleeping(key) || String(tab.type || "").endsWith("-unloaded"),
           virtual: false,
           remark: this.store.state.remarks[key] || "",
           lastViewedAt: this.store.state.lastViewedAt[key] || 0
@@ -4035,18 +4915,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         if (options.protectPinned && t.pinned) continue;
         if (options.protectSelected && id === selectedID) continue;
         if (t.groupId && (options.preserveVirtual ?? true) && this.prefs.get("workspace.enableVirtualMembers")) {
-          this.store.saveVirtualMember({
-            key: t.key,
-            itemID: t.itemID,
-            parentItemID: t.parentItemID,
-            title: t.title,
-            shortTitle: t.shortTitle,
-            filename: t.filename,
-            source: t.source,
-            creatorYear: t.creatorYear,
-            collection: t.collection,
-            type: t.type
-          });
+          this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
+        }
+        if (t.itemID > 0) {
+          this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId });
+          if (this.closedStack.length > 20) this.closedStack.shift();
         }
         toClose.push(id);
       }
@@ -4054,16 +4927,56 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       tabsApi.close(toClose.length === 1 ? toClose[0] : toClose);
       return toClose.length;
     }
+    undoCloseTab(win) {
+      const tabsApi = win.Zotero_Tabs;
+      if (typeof tabsApi?.undoClose === "function") {
+        try {
+          void Promise.resolve(tabsApi.undoClose());
+          return true;
+        } catch {
+        }
+      }
+      const last = this.closedStack.pop();
+      if (!last) return false;
+      void this.openVirtualOrItem(win, last.itemID, last.groupId || void 0, false);
+      return true;
+    }
     sleepTab(win, tabID) {
       if (!this.prefs.get("workspace.enableTabSleep")) return false;
       const tabsApi = win.Zotero_Tabs;
       const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
-      if (!tracked || tracked.pinned || tracked.virtual) return false;
+      if (!tracked || tracked.pinned || tracked.virtual || tracked.sleeping) return false;
+      if (tabsApi?.canUnload?.(tabID) === false) return false;
       if (typeof tabsApi?.unload === "function") {
         tabsApi.unload(tabID);
       }
       this.store.setSleeping(tracked.key, true);
       return true;
+    }
+    sleepInactiveTabs(win) {
+      if (!this.prefs.get("workspace.enableTabSleep")) return 0;
+      const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+      let count = 0;
+      for (const tab of this.buildTrackedTabs(win)) {
+        if (!tab.virtual && !tab.pinned && !tab.sleeping && tab.tabID !== selectedID) {
+          if (this.sleepTab(win, tab.tabID)) count++;
+        }
+      }
+      return count;
+    }
+    sleepIdleTabs(win, now = Date.now()) {
+      const minutes = this.prefs.get("workspace.autoSleepMinutes");
+      if (!this.prefs.get("workspace.enableTabSleep") || minutes <= 0) return 0;
+      const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+      const cutoff = now - minutes * 6e4;
+      let count = 0;
+      for (const tab of this.buildTrackedTabs(win)) {
+        if (tab.virtual || tab.pinned || tab.sleeping || tab.tabID === selectedID) continue;
+        if (tab.lastViewedAt > 0 && tab.lastViewedAt < cutoff) {
+          if (this.sleepTab(win, tab.tabID)) count++;
+        }
+      }
+      return count;
     }
     async reloadTab(win, tabID) {
       const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
@@ -4071,10 +4984,38 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.store.setSleeping(tracked.key, false);
       this.selectTab(win, tabID);
       const reader = globalThis.Zotero?.Reader?.getByTabID?.(tabID);
-      if (typeof reader?.reload === "function") {
-        await reader.reload();
-      }
+      if (typeof reader?.reload === "function") await reader.reload();
       return true;
+    }
+    moveTabRelative(win, draggedTabID, targetTabID, after) {
+      const tabsApi = win.Zotero_Tabs;
+      if (!tabsApi?.move) return false;
+      const ids = (Array.isArray(tabsApi._tabs) ? tabsApi._tabs : []).map((t) => String(t?.id || ""));
+      const targetIdx = computeTabMoveTarget(ids, draggedTabID, targetTabID, after);
+      if (targetIdx < 0) return false;
+      tabsApi.move(draggedTabID, targetIdx);
+      return true;
+    }
+    openVirtualOrItem(win, itemID, groupId, openInBackground = false) {
+      return openItemAttachmentOrNote(win, this.store, itemID, groupId, openInBackground);
+    }
+    async restoreSession(win, session) {
+      this.store.restoreSessionLayout(session);
+      return restoreSessionTabsAndLayout(win, this.store, session);
+    }
+    async openGroupVirtuals(win, groupId) {
+      const virtuals = this.buildTrackedTabs(win).filter((t) => t.virtual && t.groupId === groupId);
+      let opened = 0;
+      for (const v of virtuals) {
+        if (await this.openVirtualOrItem(win, v.itemID, groupId, true)) opened++;
+      }
+      return opened;
+    }
+    revealTabAttachment(win, itemID) {
+      return revealAttachmentFile(win, itemID);
+    }
+    showInLibrary(win, itemID, switchCollection = false) {
+      return selectItemInLibrary(win, itemID, switchCollection);
     }
     async archiveAndCloseGroup(win, groupId) {
       const group = this.store.state.groups.find((g) => g.id === groupId);
@@ -4084,32 +5025,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return this.closeTabs(win, ids, { preserveVirtual: true, protectPinned: true });
     }
     autoGroupByCollection(win) {
-      const strategy = this.prefs.get("workspace.multiCollectionStrategy");
-      const activeColName = String(win.ZoteroPane?.getSelectedCollection?.()?.name || "");
-      const tracked = this.buildTrackedTabs(win).filter((t) => !t.virtual && !t.groupId);
-      const hostItems = globalThis.Zotero?.Items;
-      const hostCols = globalThis.Zotero?.Collections;
-      let grouped = 0;
-      for (const tab of tracked) {
-        const item = hostItems?.get?.(tab.parentItemID || tab.itemID);
-        const colIDs = item?.getCollections?.() || [];
-        const colNames = colIDs.map((id) => String(hostCols?.get?.(id)?.name || "")).filter(Boolean);
-        if (!colNames.length) continue;
-        let chosen = "";
-        if (strategy === "active" && activeColName && colNames.includes(activeColName)) {
-          chosen = activeColName;
-        } else if (strategy === "existing") {
-          chosen = colNames.find((n) => this.store.state.groups.some((g) => g.name === n)) || colNames[0];
-        } else {
-          chosen = colNames[0];
-        }
-        if (!chosen) continue;
-        let group = this.store.state.groups.find((g) => g.name === chosen);
-        if (!group) group = this.store.createGroup(chosen);
+      return autoGroupTrackedByCollection(
+        win,
+        this.store,
+        this.prefs.get("workspace.multiCollectionStrategy"),
+        this.buildTrackedTabs(win)
+      );
+    }
+    collectionToGroup(win, collectionName) {
+      const targetCols = this.buildTrackedTabs(win).filter((t) => (t.collection || "未分类") === collectionName);
+      if (!targetCols.length) return 0;
+      const group = this.store.state.groups.find((g) => g.name === collectionName) ?? this.store.createGroup(collectionName);
+      for (const tab of targetCols) {
         this.store.assignToGroup(tab.key, group.id);
-        grouped++;
       }
-      return grouped;
+      return targetCols.length;
     }
     getDisplayTitle(tab) {
       const titleMode = this.prefs.get("workspace.verticalTabTitleMode");
@@ -4120,22 +5050,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (mode === "title") return base;
       return `${tab.remark} · ${base}`;
     }
-    /**
-     * Unified copy citation action — delegates to shared UnifiedClipboardService
-     * so tab-menu copies automatically populate reverse-lookup history.
-     */
     async copyTabCitation(win, tabID) {
       const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
       if (!tracked) return false;
-      const hostItems = globalThis.Zotero?.Items;
-      const item = hostItems?.get?.(tracked.parentItemID || tracked.itemID);
+      const item = globalThis.Zotero?.Items?.get?.(tracked.parentItemID || tracked.itemID);
       if (!item) return false;
       return this.clipboard.copyItems([item], { source: "tab-menu" });
     }
-    /**
-     * Cross-domain hook: focus an already-open tab matching itemID/attachmentID,
-     * or open it in reader and optionally assign it to the active tab's group.
-     */
     async focusOrOpenItem(win, req) {
       const tracked = this.buildTrackedTabs(win);
       const match = tracked.find(
@@ -4149,6 +5070,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const targetAttachmentID = req.attachmentID || req.itemID;
       if (typeof reader?.open === "function" && targetAttachmentID > 0) {
         await reader.open(targetAttachmentID);
+        this.store.removeVirtualMember(`item:${targetAttachmentID}`);
+        this.store.removeVirtualMember(`item:${req.itemID}`);
         if (req.assignToActiveGroup) {
           const selectedID = String(win.Zotero_Tabs?.selectedID || "");
           const activeTab = tracked.find((t) => t.tabID === selectedID);
@@ -4160,10 +5083,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       return "not-found";
     }
-    /**
-     * Cross-domain hook: group all currently open tabs whose parent/item ID
-     * belongs to the provided set (e.g. items cited in the active Word document).
-     */
     groupOpenTabsByItemIDs(win, groupName, itemIDs) {
       const idSet = new Set(itemIDs);
       if (!idSet.size) return null;
@@ -4171,11 +5090,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         (t) => !t.virtual && (idSet.has(t.parentItemID) || idSet.has(t.itemID))
       );
       if (!matching.length) return null;
-      const existing = this.store.state.groups.find((g) => g.name === groupName);
-      const group = existing ?? this.store.createGroup(groupName);
-      for (const tab of matching) {
-        this.store.assignToGroup(tab.key, group.id);
-      }
+      const group = this.store.state.groups.find((g) => g.name === groupName) ?? this.store.createGroup(groupName);
+      for (const tab of matching) this.store.assignToGroup(tab.key, group.id);
       return { groupId: group.id, count: matching.length };
     }
     findStaleTabs(win, now = Date.now()) {
@@ -4185,20 +5101,113 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         (t) => !t.virtual && !t.pinned && t.lastViewedAt > 0 && t.lastViewedAt < cutoff
       );
     }
-    formatCreatorYear(item) {
-      if (!item) return "";
-      const first = String(item.firstCreator || "");
-      const date = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
-      return [first, date].filter(Boolean).join(", ");
-    }
-    resolvePrimaryCollectionName(item) {
-      if (!item || typeof item.getCollections !== "function") return "";
-      const ids = item.getCollections() || [];
-      if (!ids.length) return "";
-      const col = globalThis.Zotero?.Collections?.get?.(ids[0]);
-      return String(col?.name || "");
-    }
   };
+
+  // src/domains/workspace/popup-menu-helpers.ts
+  function createFloatingPopup(doc, anchor, event, minWidth = 210) {
+    const host2 = doc.documentElement || doc.body;
+    if (!host2) return null;
+    const pop = doc.createElement("div");
+    pop.className = "zbf-popup-menu";
+    pop.style.minWidth = `${minWidth}px`;
+    host2.appendChild(pop);
+    const rect = anchor.getBoundingClientRect();
+    const rawX = event?.clientX && event.clientX > 0 ? event.clientX : rect.left;
+    const rawY = event?.clientY && event.clientY > 0 ? event.clientY : rect.bottom + 4;
+    const winW = doc.defaultView?.innerWidth || 1200;
+    const winH = doc.defaultView?.innerHeight || 800;
+    const popW = pop.offsetWidth || minWidth;
+    const left = Math.max(8, Math.min(rawX, winW - popW - 12));
+    const top = Math.max(8, Math.min(rawY, winH - 280));
+    pop.style.left = `${left}px`;
+    pop.style.top = `${top}px`;
+    return pop;
+  }
+  function addPopupButton(doc, pop, label, onClick, closePopup, options = {}) {
+    const btn = doc.createElement("button");
+    btn.type = "button";
+    btn.className = `zbf-popup-item${options.danger ? " danger" : ""}`;
+    btn.textContent = label;
+    if (options.disabled) btn.disabled = true;
+    btn.addEventListener("click", () => {
+      closePopup();
+      onClick();
+    });
+    pop.appendChild(btn);
+    return btn;
+  }
+  function addPopupSeparator(doc, pop) {
+    const sep = doc.createElement("div");
+    sep.className = "zbf-popup-sep";
+    pop.appendChild(sep);
+  }
+  function openTextPromptModal(win, title, placeholder, initialValue, onConfirm) {
+    const doc = win.document;
+    const host2 = doc.documentElement || doc.body;
+    if (!host2) return;
+    const backdrop = doc.createElement("div");
+    backdrop.id = "zbf-hub-backdrop";
+    backdrop.style.zIndex = "100020";
+    const modal = doc.createElement("div");
+    modal.className = "zbf-hub-box";
+    modal.style.maxWidth = "420px";
+    const head = doc.createElement("div");
+    head.className = "zbf-hub-head";
+    const h3 = doc.createElement("div");
+    h3.className = "zbf-hub-title";
+    h3.textContent = title;
+    const closeBtn = doc.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "zbf-hub-close";
+    closeBtn.textContent = "✕";
+    const input = doc.createElement("input");
+    input.type = "text";
+    input.className = "zbf-hub-input";
+    input.placeholder = placeholder;
+    input.value = initialValue;
+    const actions = doc.createElement("div");
+    actions.className = "zbf-hub-actions";
+    actions.style.justifyContent = "flex-end";
+    const cancelBtn = doc.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "zbf-hub-btn";
+    cancelBtn.textContent = "取消";
+    const okBtn = doc.createElement("button");
+    okBtn.type = "button";
+    okBtn.className = "zbf-hub-btn primary";
+    okBtn.textContent = "确定";
+    const cleanup = () => backdrop.remove();
+    closeBtn.addEventListener("click", cleanup);
+    cancelBtn.addEventListener("click", cleanup);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) cleanup();
+    });
+    const submit = () => {
+      const val = input.value;
+      cleanup();
+      onConfirm(val);
+    };
+    okBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (e) => {
+      const ke = e;
+      if (ke.key === "Enter") {
+        ke.preventDefault();
+        submit();
+      } else if (ke.key === "Escape") {
+        ke.preventDefault();
+        cleanup();
+      }
+    });
+    head.append(h3, closeBtn);
+    actions.append(cancelBtn, okBtn);
+    modal.append(head, input, actions);
+    backdrop.appendChild(modal);
+    host2.appendChild(backdrop);
+    win.setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 10);
+  }
 
   // src/domains/workspace/workspace-icons.ts
   var SVG_NS2 = "http://www.w3.org/2000/svg";
@@ -4208,10 +5217,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     folder: "M2 4.5 C2 3.7 2.7 3 3.5 3 H6.5 L8 4.5 H12.5 C13.3 4.5 14 5.2 14 6 V11.5 C14 12.3 13.3 13 12.5 13 H3.5 C2.7 13 2 12.3 2 11.5 Z",
     sleep: "M11.5 10.5 A4.5 4.5 0 0 1 5.5 4.5 A5 5 0 1 0 11.5 10.5 Z",
     sidebar: "M2.5 3 H13.5 V13 H2.5 Z M6 3 V13",
+    topbar: "M2.5 3 H13.5 V13 H2.5 Z M2.5 6.5 H13.5",
     search: "M7 11.5 A4.5 4.5 0 1 1 7 2.5 A4.5 4.5 0 0 1 7 11.5 Z M10.5 10.5 L14 14",
     pin: "M5 3 H11 L10 7.5 L12 9.5 H8 V13.5 M8 9.5 H4 L6 7.5 Z",
     close: "M4 4 L12 12 M12 4 L4 12",
-    archive: "M2.5 3.5 H13.5 V6 H2.5 Z M3.5 6 V12.5 H12.5 V6 M6.5 8.5 H9.5"
+    archive: "M2.5 3.5 H13.5 V6 H2.5 Z M3.5 6 V12.5 H12.5 V6 M6.5 8.5 H9.5",
+    clock: "M8 2.5 A5.5 5.5 0 1 1 8 13.5 A5.5 5.5 0 1 1 8 2.5 Z M8 5 V8.2 L10.2 9.5",
+    pdf: "M4 2.5 H9.5 L12.5 5.5 V13.5 H4 Z M9 2.5 V6 H12.5 M6 9 H10.5 M6 11.2 H9.5",
+    note: "M3.5 2.5 H12.5 V11 L10 13.5 H3.5 Z M5.5 6 H10.5 M5.5 8.5 H9",
+    virtual: "M8 2.5 A5.5 5.5 0 1 1 7.9 2.5 Z"
   };
   function createWorkspaceIcon(doc, name, size = 14) {
     const svg = doc.createElementNS(SVG_NS2, "svg");
@@ -4226,17 +5240,153 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     path.setAttribute("stroke-width", "1.5");
     path.setAttribute("stroke-linecap", "round");
     path.setAttribute("stroke-linejoin", "round");
+    if (name === "virtual") path.setAttribute("stroke-dasharray", "2.5 2.2");
     svg.append(path);
     return svg;
   }
 
+  // src/domains/workspace/pinned-strip.ts
+  var HorizontalPinnedStrip = class {
+    win;
+    doc;
+    prefs;
+    tabs;
+    menus;
+    hover;
+    activeMorePopup = null;
+    outsideHandler = null;
+    constructor(win, prefs, tabs, menus, hover) {
+      this.win = win;
+      this.doc = win.document;
+      this.prefs = prefs;
+      this.tabs = tabs;
+      this.menus = menus;
+      this.hover = hover;
+    }
+    render(container, pinnedTabs, selectedID) {
+      if (!this.prefs.get("workspace.enablePinnedTabs") || !pinnedTabs.length) return;
+      const strip = this.doc.createElement("div");
+      strip.className = "zbf-pinned-strip";
+      const maxVisible = 5;
+      const iconOnly = this.prefs.get("workspace.pinnedIconOnly");
+      const visible = pinnedTabs.slice(0, maxVisible);
+      const overflow = pinnedTabs.slice(maxVisible);
+      for (const tab of visible) {
+        const chip = this.doc.createElement("button");
+        chip.type = "button";
+        chip.className = `zbf-pinned-chip${iconOnly ? " icon-only" : ""}${tab.tabID === selectedID ? " selected" : ""}`;
+        chip.title = tab.title;
+        chip.appendChild(createWorkspaceIcon(this.doc, "pin", 12));
+        if (!iconOnly) {
+          const span = this.doc.createElement("span");
+          span.textContent = this.tabs.getDisplayTitle(tab);
+          chip.appendChild(span);
+        }
+        chip.addEventListener("click", () => this.tabs.selectTab(this.win, tab.tabID));
+        chip.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          this.menus.openTabMenu(chip, tab, e);
+        });
+        this.hover.attach(chip, tab);
+        strip.appendChild(chip);
+      }
+      if (overflow.length) {
+        const moreBtn = this.doc.createElement("button");
+        moreBtn.type = "button";
+        moreBtn.className = "zbf-pinned-more";
+        moreBtn.textContent = `+${overflow.length}`;
+        moreBtn.title = `另外 ${overflow.length} 个已固定标签页`;
+        moreBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.openOverflowPopup(moreBtn, overflow, e);
+        });
+        strip.appendChild(moreBtn);
+      }
+      container.appendChild(strip);
+    }
+    destroy() {
+      this.closePopup();
+    }
+    openOverflowPopup(anchor, overflow, event) {
+      this.closePopup();
+      const pop = createFloatingPopup(this.doc, anchor, event, 230);
+      if (!pop) return;
+      const close = () => this.closePopup();
+      for (const tab of overflow) {
+        addPopupButton(this.doc, pop, `📌 ${this.tabs.getDisplayTitle(tab)}`, () => {
+          this.tabs.selectTab(this.win, tab.tabID);
+        }, close);
+      }
+      this.activeMorePopup = pop;
+      this.outsideHandler = (e) => {
+        if (!pop.contains(e.target)) this.closePopup();
+      };
+      this.win.setTimeout(() => {
+        if (this.outsideHandler) this.doc.addEventListener("mousedown", this.outsideHandler, true);
+      }, 15);
+    }
+    closePopup() {
+      this.activeMorePopup?.remove();
+      this.activeMorePopup = null;
+      if (this.outsideHandler) {
+        this.doc.removeEventListener("mousedown", this.outsideHandler, true);
+        this.outsideHandler = null;
+      }
+    }
+  };
+
+  // src/domains/workspace/workspace-drag.ts
+  var BRIDGEFLOW_TAB_MIME = "application/x-zotero-bridgeflow-tab";
+  function hasBridgeFlowDraggedTab(dt) {
+    if (!dt?.types) return false;
+    return Array.from(dt.types).includes(BRIDGEFLOW_TAB_MIME);
+  }
+  function hasZoteroDraggedItems(dt) {
+    if (!dt?.types) return false;
+    const types = Array.from(dt.types);
+    return types.includes("zotero/item") || types.includes("text/x-moz-url");
+  }
+  function parseZoteroDraggedItemIDs(dt) {
+    if (!dt) return [];
+    const raw = dt.getData("zotero/item") || "";
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.map((v) => Number(typeof v === "object" ? v?.id : v)).filter((n) => Number.isFinite(n) && n > 0);
+      }
+    } catch {
+    }
+    return raw.split(/[\s,;]+/).map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  }
+  function beginTabDrag(dt, key, tabID) {
+    if (!dt) return;
+    try {
+      dt.effectAllowed = "move";
+      dt.setData(BRIDGEFLOW_TAB_MIME, JSON.stringify({ key, tabID }));
+      dt.setData("text/plain", key);
+    } catch {
+    }
+  }
+  function readTabDragPayload(dt) {
+    if (!dt) return null;
+    try {
+      const raw = dt.getData(BRIDGEFLOW_TAB_MIME);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.key) return { key: String(parsed.key), tabID: String(parsed.tabID || "") };
+      }
+    } catch {
+    }
+    const plain = dt.getData("text/plain");
+    if (plain && (plain.startsWith("item:") || plain.startsWith("tab:"))) {
+      return { key: plain, tabID: "" };
+    }
+    return null;
+  }
+
   // src/domains/workspace/horizontal-bar.ts
-  var HorizontalBarController = class {
-    groupBar = null;
-    pinnedStrip = null;
-    toolbarBar = null;
-    badges = /* @__PURE__ */ new Map();
-    draggedKey = null;
+  var WorkspaceHorizontalBar = class {
     win;
     doc;
     prefs;
@@ -4244,372 +5394,497 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     tabs;
     menus;
     hover;
-    spotlightPanel;
-    workspacePopover;
+    toolbar;
+    pinnedStrip;
     onRefresh;
-    constructor(win, doc, prefs, store, tabs, menus, hover, spotlightPanel, workspacePopover, onRefresh) {
+    inlineEl = null;
+    headingClickTimer = 0;
+    constructor(win, prefs, store, tabs, menus, hover, toolbar, onRefresh) {
       this.win = win;
-      this.doc = doc;
+      this.doc = win.document;
       this.prefs = prefs;
       this.store = store;
       this.tabs = tabs;
       this.menus = menus;
       this.hover = hover;
-      this.spotlightPanel = spotlightPanel;
-      this.workspacePopover = workspacePopover;
+      this.toolbar = toolbar;
       this.onRefresh = onRefresh;
-    }
-    setCitationBadges(badges) {
-      this.badges = badges;
-      this.render();
-    }
-    mount() {
-      const host2 = this.doc?.getElementById?.("tab-bar-container");
-      const inner = host2?.querySelector(".tab-bar-inner-container");
-      if (!host2 || !inner) return false;
-      if (!this.pinnedStrip) {
-        const strip = this.h("div", "zbf-pinned-strip");
-        strip.hidden = true;
-        this.bindWheel(strip);
-        this.pinnedStrip = strip;
-      }
-      if (!this.groupBar) {
-        const bar = this.h("div");
-        bar.id = "zbf-inline";
-        this.bindWheel(bar);
-        this.groupBar = bar;
-      }
-      const wrapper = inner.querySelector(".tabs-wrapper");
-      if (this.pinnedStrip.parentElement !== inner) inner.insertBefore(this.pinnedStrip, wrapper);
-      if (this.groupBar.parentElement !== inner) inner.insertBefore(this.groupBar, wrapper);
-      if (!this.toolbarBar) {
-        const actions = this.h("div");
-        actions.id = "zbf-toolbar-actions";
-        this.toolbarBar = actions;
-      }
-      const nativeToolbar = this.doc.getElementById("zotero-tabs-toolbar") || inner;
-      if (this.toolbarBar.parentElement !== nativeToolbar) {
-        nativeToolbar.append(this.toolbarBar);
-      }
-      return true;
+      this.pinnedStrip = new HorizontalPinnedStrip(win, prefs, tabs, menus, hover);
     }
     render() {
-      const host2 = this.doc?.getElementById?.("tab-bar-container");
-      if (!host2 || !this.mount()) return;
-      const compactTop = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed") && this.prefs.get("workspace.compactTopBar");
-      const inlineOn = this.prefs.get("workspace.enableHorizontalGroups") && !compactTop;
-      host2.toggleAttribute("data-zbf-inline", inlineOn);
-      if (this.groupBar) this.groupBar.hidden = !inlineOn;
-      if (inlineOn) {
-        const tracked = this.tabs.buildTrackedTabs(this.win);
-        this.renderPinned(tracked);
-        this.renderGroupedTabs(tracked);
-      } else if (this.pinnedStrip) {
-        this.pinnedStrip.hidden = true;
+      this.toolbar.render();
+      const tabBar = this.doc.getElementById("tab-bar-container");
+      const inner = tabBar?.querySelector(".tab-bar-inner-container");
+      if (!tabBar || !inner) return;
+      const enabled = this.prefs.get("workspace.enableHorizontalGroups") && !this.prefs.get("workspace.compactTopBar");
+      if (!enabled) {
+        tabBar.removeAttribute("data-zbf-inline");
+        this.inlineEl?.setAttribute("hidden", "true");
+        return;
       }
-      this.renderToolbarButtons();
-    }
-    dispose() {
-      this.pinnedStrip?.remove();
-      this.pinnedStrip = null;
-      this.groupBar?.remove();
-      this.groupBar = null;
-      this.toolbarBar?.remove();
-      this.toolbarBar = null;
-    }
-    renderPinned(tracked) {
-      if (!this.pinnedStrip) return;
-      const pinned = this.prefs.get("workspace.enablePinnedTabs") ? tracked.filter((t) => !t.virtual && t.pinned) : [];
-      this.pinnedStrip.hidden = pinned.length === 0;
-      this.pinnedStrip.textContent = "";
-      if (!pinned.length) return;
-      const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
-      const iconOnly = this.prefs.get("workspace.pinnedIconOnly");
-      for (const tab of pinned) {
-        const chip = this.h("button", `zbf-pinned-chip${tab.tabID === selectedID ? " selected" : ""}${iconOnly ? " icon-only" : ""}`);
-        chip.type = "button";
-        chip.title = this.tabs.getDisplayTitle(tab);
-        chip.append(createWorkspaceIcon(this.doc, "pin", 12));
-        if (!iconOnly) {
-          const span = this.h("span");
-          span.textContent = this.tabs.getDisplayTitle(tab);
-          chip.append(span);
-        }
-        chip.addEventListener("click", () => {
-          this.tabs.selectTab(this.win, tab.tabID);
-          this.onRefresh();
-        });
-        chip.addEventListener("contextmenu", (e) => this.menus.openTabMenu(e, tab));
-        this.pinnedStrip.append(chip);
+      tabBar.setAttribute("data-zbf-inline", "1");
+      if (!this.inlineEl || !this.inlineEl.isConnected) {
+        this.doc.getElementById("zbf-inline")?.remove();
+        const inline = this.doc.createElement("div");
+        inline.id = "zbf-inline";
+        inner.appendChild(inline);
+        this.inlineEl = inline;
       }
-    }
-    renderGroupedTabs(tracked) {
-      if (!this.groupBar || this.groupBar.querySelector(".zbf-inline-edit")) return;
-      this.groupBar.textContent = "";
+      this.inlineEl.removeAttribute("hidden");
+      this.inlineEl.textContent = "";
       const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
-      const unpinned = tracked.filter((t) => !t.pinned);
+      const tracked = this.tabs.buildTrackedTabs(this.win);
+      const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
+      const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
+      this.pinnedStrip.render(this.inlineEl, pinnedTabs, selectedID);
+      const compactMode = this.prefs.get("workspace.horizontalTabCompactMode");
+      const compactInactive = compactMode === "compact" || compactMode === "auto" && unpinned.length > 5;
       for (const group of this.store.state.groups) {
         const members = unpinned.filter((t) => t.groupId === group.id);
-        const collapsed = this.store.state.collapsed.includes(group.id);
-        const section = this.h("div", "zbf-hsection");
-        section.setAttribute("data-grouped", "true");
-        section.style.setProperty("--zbf-gcolor", group.color);
-        const pill = this.h("button", "zbf-group-pill");
-        pill.type = "button";
-        pill.style.backgroundColor = group.color;
-        pill.textContent = `${group.name} (${members.length})`;
-        pill.addEventListener("click", () => {
-          this.store.setCollapsed(group.id, !collapsed);
-          this.onRefresh();
-        });
-        pill.addEventListener("dblclick", (e) => {
-          e.stopPropagation();
-          this.beginInlineEdit(pill, group.name, (val) => this.store.renameGroup(group.id, val));
-        });
-        pill.addEventListener("contextmenu", (e) => this.menus.openGroupMenu(e, group));
-        pill.addEventListener("dragover", (e) => {
-          if (this.draggedKey) e.preventDefault();
-        });
-        pill.addEventListener("drop", (e) => {
-          e.preventDefault();
-          if (this.draggedKey) {
-            this.store.assignToGroup(this.draggedKey, group.id);
-            this.draggedKey = null;
-            this.onRefresh();
-          }
-        });
-        section.append(pill);
-        if (!collapsed) {
-          for (const tab of members) section.append(this.buildTabChip(tab, selectedID, group.name));
-        }
-        this.groupBar.append(section);
+        if (!members.length && !this.store.state.groups.length) continue;
+        this.inlineEl.appendChild(this.buildGroupSection(group, members, selectedID, compactInactive));
       }
       const ungrouped = unpinned.filter((t) => !t.groupId);
       if (ungrouped.length) {
-        const loose = this.h("div", "zbf-hsection");
-        for (const tab of ungrouped) loose.append(this.buildTabChip(tab, selectedID, ""));
-        this.groupBar.append(loose);
+        const sec = this.doc.createElement("div");
+        sec.className = "zbf-hsection";
+        for (const tab of ungrouped) {
+          sec.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
+        }
+        this.inlineEl.appendChild(sec);
       }
-      const addBtn = this.h("button", "zbf-add-group");
+      const addBtn = this.doc.createElement("button");
       addBtn.type = "button";
-      addBtn.title = "New Tab Group";
-      addBtn.append(createWorkspaceIcon(this.doc, "plus", 13));
+      addBtn.className = "zbf-add-group";
+      addBtn.title = "新建标签页分组（或拖放标签到此处建组）";
+      addBtn.appendChild(createWorkspaceIcon(this.doc, "plus", 14));
       addBtn.addEventListener("click", () => {
-        this.beginInlineEdit(addBtn, "", (val) => {
-          this.store.createGroup(val);
-        }, "Group name...");
+        openTextPromptModal(this.win, "新建分组", "输入分组名称...", "新分组", (name) => {
+          if (!name.trim()) return;
+          this.store.createGroup(name);
+          this.onRefresh();
+        });
       });
-      this.groupBar.append(addBtn);
+      this.bindDropToNewGroup(addBtn);
+      this.inlineEl.appendChild(addBtn);
     }
-    buildTabChip(tab, selectedID, groupName) {
-      const cls = [
-        "zbf-htab",
-        tab.tabID && tab.tabID === selectedID ? "selected" : "",
-        tab.sleeping ? "sleeping" : "",
-        tab.virtual ? "virtual" : ""
-      ].filter(Boolean).join(" ");
-      const chip = this.h("div", cls);
-      chip.draggable = true;
-      chip.addEventListener("dragstart", () => {
-        this.draggedKey = tab.key;
+    destroy() {
+      if (this.headingClickTimer) this.win.clearTimeout(this.headingClickTimer);
+      this.doc.getElementById("tab-bar-container")?.removeAttribute("data-zbf-inline");
+      this.inlineEl?.remove();
+      this.inlineEl = null;
+      this.pinnedStrip.destroy();
+      this.toolbar.destroy();
+    }
+    buildGroupSection(group, members, selectedID, compactInactive) {
+      const sec = this.doc.createElement("div");
+      sec.className = "zbf-hsection";
+      sec.setAttribute("data-grouped", "true");
+      sec.style.setProperty("--zbf-gcolor", group.color);
+      const isCollapsed = this.store.state.collapsed.includes(group.id);
+      const head = this.doc.createElement("button");
+      head.type = "button";
+      head.className = "zbf-hheading";
+      head.title = `${group.name} (${members.length}) · 单击折叠/展开，双击重命名，右键管理`;
+      const dot = this.doc.createElement("span");
+      dot.className = "zbf-sb-group-dot";
+      dot.style.background = group.color;
+      const nameSpan = this.doc.createElement("span");
+      nameSpan.textContent = `${isCollapsed ? "▸ " : ""}${group.name} (${members.length})`;
+      head.append(dot, nameSpan);
+      head.addEventListener("click", () => {
+        if (this.headingClickTimer) this.win.clearTimeout(this.headingClickTimer);
+        this.headingClickTimer = this.win.setTimeout(() => {
+          this.headingClickTimer = 0;
+          this.store.setCollapsed(group.id, !this.store.state.collapsed.includes(group.id));
+          this.onRefresh();
+        }, 210);
       });
-      chip.addEventListener("dragend", () => {
-        this.draggedKey = null;
+      head.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        if (this.headingClickTimer) {
+          this.win.clearTimeout(this.headingClickTimer);
+          this.headingClickTimer = 0;
+        }
+        this.startInlineRename(head, group);
       });
-      const title = this.h("span", "zbf-htab-title");
-      const badge = this.badges.get(tab.parentItemID) || this.badges.get(tab.itemID);
-      const prefix = tab.virtual ? "◌ " : badge && this.prefs.get("fusion.sidebarCiteBadge") ? `[${badge.ordinal}] ` : "";
-      title.textContent = `${prefix}${this.tabs.getDisplayTitle(tab)}`;
-      chip.append(title);
-      if (tab.tabID) {
-        const closeBtn = this.h("button", "zbf-htab-close");
+      head.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        this.menus.openGroupMenu(head, group, e);
+      });
+      this.bindDropToGroup(head, group.id);
+      sec.appendChild(head);
+      if (!isCollapsed) {
+        const body = this.doc.createElement("div");
+        body.className = "zbf-hsection-body";
+        for (const tab of members) {
+          body.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
+        }
+        sec.appendChild(body);
+      }
+      return sec;
+    }
+    buildTabChip(tab, selectedID, compactInactive) {
+      const isSelected = !tab.virtual && tab.tabID === selectedID;
+      const collapsed = compactInactive && !isSelected;
+      const chip = this.doc.createElement("div");
+      chip.className = `zbf-htab${isSelected ? " selected" : ""}${tab.sleeping ? " sleeping" : ""}${tab.virtual ? " virtual" : ""}${collapsed ? " zbf-chip-collapsed" : ""}`;
+      chip.title = this.tabs.getDisplayTitle(tab);
+      if (!tab.virtual) {
+        chip.draggable = true;
+        chip.addEventListener("dragstart", (e) => beginTabDrag(e.dataTransfer, tab.key, tab.tabID));
+      }
+      const titleEl = this.doc.createElement("span");
+      titleEl.className = "zbf-htab-title";
+      titleEl.textContent = collapsed ? "···" : this.tabs.getDisplayTitle(tab);
+      chip.appendChild(titleEl);
+      if (!tab.virtual && !collapsed) {
+        const closeBtn = this.doc.createElement("button");
         closeBtn.type = "button";
-        closeBtn.append(createWorkspaceIcon(this.doc, "close", 11));
+        closeBtn.className = "zbf-htab-close";
+        closeBtn.title = "关闭标签页";
+        closeBtn.appendChild(createWorkspaceIcon(this.doc, "close", 11));
         closeBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          void this.tabs.closeTabs(this.win, [tab.tabID], { protectPinned: true }).then(() => this.onRefresh());
+          void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
         });
-        chip.append(closeBtn);
+        chip.appendChild(closeBtn);
       }
       chip.addEventListener("click", () => {
-        if (tab.tabID) this.tabs.selectTab(this.win, tab.tabID);
-        else void this.tabs.focusOrOpenItem(this.win, { itemID: tab.parentItemID, attachmentID: tab.itemID });
-        this.onRefresh();
+        if (tab.virtual) void this.tabs.openVirtualOrItem(this.win, tab.itemID, tab.groupId).then(() => this.onRefresh());
+        else this.tabs.selectTab(this.win, tab.tabID);
       });
       chip.addEventListener("auxclick", (e) => {
-        if (e.button === 1 && tab.tabID) {
-          e.preventDefault();
-          void this.tabs.closeTabs(this.win, [tab.tabID], { protectPinned: true }).then(() => this.onRefresh());
-        }
+        if (e.button !== 1) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (!tab.virtual) void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
       });
-      chip.addEventListener("contextmenu", (e) => this.menus.openTabMenu(e, tab));
-      if (this.prefs.get("workspace.enableHoverPreview")) {
-        chip.addEventListener("mouseenter", () => this.hover.scheduleShow(chip, tab, groupName, badge));
-        chip.addEventListener("mouseleave", () => this.hover.hide());
-      }
+      chip.addEventListener("contextmenu", (e) => {
+        if (!this.prefs.get("workspace.enableTabContextMenu")) return;
+        e.preventDefault();
+        this.menus.openTabMenu(chip, tab, e);
+      });
+      this.bindDropToChip(chip, tab);
+      this.hover.attach(chip, tab);
       return chip;
     }
-    renderToolbarButtons() {
-      if (!this.toolbarBar) return;
-      this.toolbarBar.textContent = "";
-      if (this.prefs.get("workspace.enableVerticalSidebar")) {
-        const collapsed = this.prefs.get("workspace.verticalSidebarCollapsed");
-        this.toolbarBar.append(this.mkBtn("sidebar", "侧栏", "Toggle vertical sidebar", !collapsed, () => {
-          this.prefs.set("workspace.verticalSidebarCollapsed", !collapsed);
-          this.onRefresh();
-        }));
-      }
-      this.toolbarBar.append(this.mkBtn("folder", "归组", "Auto-group tabs by Zotero collection", false, () => {
-        this.tabs.autoGroupByCollection(this.win);
-        this.onRefresh();
-      }));
-      if (this.prefs.get("workspace.enableSessions")) {
-        const wsBtn = this.mkBtn("archive", "工作区", "Workspaces & Snapshots", false, () => {
-          this.workspacePopover.toggle(wsBtn);
-        });
-        this.toolbarBar.append(wsBtn);
-      }
-      if (this.prefs.get("workspace.enableSpotlight")) {
-        const spotBtn = this.mkBtn("search", "Spotlight", "Spotlight Search (Ctrl+P)", false, () => {
-          this.spotlightPanel.toggle(spotBtn);
-        });
-        this.toolbarBar.append(spotBtn);
-      }
-      if (this.prefs.get("workspace.enableTabSleep")) {
-        this.toolbarBar.append(this.mkBtn("sleep", "休眠", "Sleep inactive tabs", false, () => {
-          const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
-          for (const tab of this.tabs.buildTrackedTabs(this.win)) {
-            if (tab.tabID && tab.tabID !== selectedID && !tab.pinned && !tab.sleeping && !tab.virtual) {
-              this.tabs.sleepTab(this.win, tab.tabID);
-            }
-          }
-          this.onRefresh();
-        }));
-      }
-    }
-    beginInlineEdit(anchor, initial, onCommit, placeholder = "") {
-      const input = this.h("input", "zbf-inline-edit");
+    startInlineRename(head, group) {
+      const input = this.doc.createElement("input");
       input.type = "text";
-      input.value = initial;
-      if (placeholder) input.placeholder = placeholder;
+      input.className = "zbf-inline-edit";
+      input.value = group.name;
+      head.replaceWith(input);
+      input.focus();
+      input.select();
       let done = false;
-      const finish = (save) => {
+      const finish = (commit) => {
         if (done) return;
         done = true;
-        input.replaceWith(anchor);
-        if (save && input.value.trim()) onCommit(input.value.trim());
+        if (commit && input.value.trim()) this.store.renameGroup(group.id, input.value);
         this.onRefresh();
       };
       input.addEventListener("keydown", (e) => {
         const ke = e;
-        e.stopPropagation();
-        if (ke.key === "Enter") {
-          e.preventDefault();
-          finish(true);
-        } else if (ke.key === "Escape") {
-          e.preventDefault();
-          finish(false);
-        }
+        if (ke.key === "Enter") finish(true);
+        else if (ke.key === "Escape") finish(false);
       });
       input.addEventListener("blur", () => finish(true));
-      anchor.replaceWith(input);
-      input.focus();
-      input.select();
     }
-    bindWheel(area) {
-      area.addEventListener("wheel", (e) => {
-        if (e.ctrlKey || area.scrollWidth <= area.clientWidth) return;
-        e.preventDefault();
-        area.scrollLeft += e.deltaX || e.deltaY;
-      }, { passive: false });
+    bindDropToGroup(el, groupId) {
+      el.addEventListener("dragover", (e) => {
+        const de = e;
+        if (!hasBridgeFlowDraggedTab(de.dataTransfer) && !hasZoteroDraggedItems(de.dataTransfer)) return;
+        de.preventDefault();
+        el.style.outline = "2px solid var(--zbf-accent)";
+      });
+      el.addEventListener("dragleave", () => {
+        el.style.outline = "";
+      });
+      el.addEventListener("drop", (e) => {
+        el.style.outline = "";
+        const de = e;
+        const payload = readTabDragPayload(de.dataTransfer);
+        if (payload) {
+          de.preventDefault();
+          this.store.assignToGroup(payload.key, groupId);
+          this.onRefresh();
+          return;
+        }
+        const ids = parseZoteroDraggedItemIDs(de.dataTransfer);
+        if (ids.length) {
+          de.preventDefault();
+          void Promise.all(ids.map((id) => this.tabs.openVirtualOrItem(this.win, id, groupId, true))).then(() => this.onRefresh());
+        }
+      });
     }
-    mkBtn(icon, label, title, pressed, onClick) {
-      const btn = this.h("button", "zbf-tb-btn");
+    bindDropToChip(el, target) {
+      el.addEventListener("dragover", (e) => {
+        const de = e;
+        if (!hasBridgeFlowDraggedTab(de.dataTransfer) && !hasZoteroDraggedItems(de.dataTransfer)) return;
+        de.preventDefault();
+        el.setAttribute("data-zbf-drop", "stack");
+      });
+      el.addEventListener("dragleave", () => el.removeAttribute("data-zbf-drop"));
+      el.addEventListener("drop", (e) => {
+        el.removeAttribute("data-zbf-drop");
+        const de = e;
+        const payload = readTabDragPayload(de.dataTransfer);
+        if (payload && payload.key !== target.key) {
+          de.preventDefault();
+          if (target.groupId) {
+            this.store.assignToGroup(payload.key, target.groupId);
+            if (payload.tabID && target.tabID) this.tabs.moveTabRelative(this.win, payload.tabID, target.tabID, true);
+          } else {
+            const newGrp = this.store.createGroup(this.tabs.getDisplayTitle(target).slice(0, 18));
+            this.store.assignToGroup(target.key, newGrp.id);
+            this.store.assignToGroup(payload.key, newGrp.id);
+          }
+          this.onRefresh();
+          return;
+        }
+        const ids = parseZoteroDraggedItemIDs(de.dataTransfer);
+        if (ids.length) {
+          de.preventDefault();
+          void Promise.all(ids.map((id) => this.tabs.openVirtualOrItem(this.win, id, target.groupId || void 0, true))).then(() => this.onRefresh());
+        }
+      });
+    }
+    bindDropToNewGroup(btn) {
+      btn.addEventListener("dragover", (e) => {
+        const de = e;
+        if (!hasBridgeFlowDraggedTab(de.dataTransfer) && !hasZoteroDraggedItems(de.dataTransfer)) return;
+        de.preventDefault();
+      });
+      btn.addEventListener("drop", (e) => {
+        const de = e;
+        const payload = readTabDragPayload(de.dataTransfer);
+        if (payload) {
+          de.preventDefault();
+          const grp = this.store.createGroup("新分组");
+          this.store.assignToGroup(payload.key, grp.id);
+          this.onRefresh();
+          return;
+        }
+        const ids = parseZoteroDraggedItemIDs(de.dataTransfer);
+        if (ids.length) {
+          de.preventDefault();
+          const grp = this.store.createGroup("新分组");
+          void Promise.all(ids.map((id) => this.tabs.openVirtualOrItem(this.win, id, grp.id, true))).then(() => this.onRefresh());
+        }
+      });
+    }
+  };
+
+  // src/domains/workspace/horizontal-toolbar.ts
+  var WorkspaceToolbarActions = class {
+    win;
+    doc;
+    prefs;
+    tabs;
+    popover;
+    onToggleSpotlight;
+    onRefresh;
+    hostEl = null;
+    constructor(win, prefs, tabs, popover, onToggleSpotlight, onRefresh) {
+      this.win = win;
+      this.doc = win.document;
+      this.prefs = prefs;
+      this.tabs = tabs;
+      this.popover = popover;
+      this.onToggleSpotlight = onToggleSpotlight;
+      this.onRefresh = onRefresh;
+    }
+    render() {
+      const bar = this.doc.getElementById("zotero-tabs-toolbar");
+      if (!bar) return;
+      if (!this.hostEl || !this.hostEl.isConnected) {
+        this.doc.getElementById("zbf-toolbar-actions")?.remove();
+        const wrap = this.doc.createElement("div");
+        wrap.id = "zbf-toolbar-actions";
+        bar.prepend(wrap);
+        this.hostEl = wrap;
+      }
+      this.hostEl.textContent = "";
+      const compact = this.prefs.get("workspace.compactTopBar");
+      const sidebarOn = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed");
+      const showStale = this.prefs.get("workspace.enableStaleSuggestions");
+      const staleCount = showStale ? this.tabs.findStaleTabs(this.win).length : 0;
+      this.addBtn("topbar", compact ? "展开横版分栏" : "切换为精简顶栏", () => {
+        this.prefs.set("workspace.compactTopBar", !compact);
+        this.onRefresh();
+      }, { pressed: compact });
+      this.addBtn("sidebar", "展开/收起左侧竖版文献工作区", () => {
+        const cur = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed");
+        if (!this.prefs.get("workspace.enableVerticalSidebar")) {
+          this.prefs.set("workspace.enableVerticalSidebar", true);
+          this.prefs.set("workspace.verticalSidebarCollapsed", false);
+        } else {
+          this.prefs.set("workspace.verticalSidebarCollapsed", cur);
+        }
+        this.onRefresh();
+      }, { pressed: sidebarOn });
+      this.addBtn("folder", "按所属 Zotero 集合自动分组当前标签页", () => {
+        this.tabs.autoGroupByCollection(this.win);
+        this.onRefresh();
+      });
+      if (this.prefs.get("workspace.enableSessions")) {
+        this.addBtn("bridge", "打开工作区快照、模板与 JSON 备份中心", (btn) => {
+          this.popover.openHub(btn);
+        });
+      }
+      if (this.prefs.get("workspace.enableSpotlight")) {
+        this.addBtn("search", "打开快速查找与命令面板 (Ctrl+P)", () => {
+          this.onToggleSpotlight();
+        });
+      }
+      if (this.prefs.get("workspace.enableTabSleep")) {
+        this.addBtn("sleep", "休眠所有后台非固定标签页以释放内存", () => {
+          this.tabs.sleepInactiveTabs(this.win);
+          this.onRefresh();
+        });
+      }
+      if (showStale && staleCount > 0) {
+        this.addBtn("clock", `查看超过阈值天数的陈旧标签页（${staleCount} 篇）`, (btn, ev) => {
+          this.popover.openStaleMenu(btn, ev);
+        }, { count: staleCount, attention: true });
+      }
+    }
+    destroy() {
+      this.hostEl?.remove();
+      this.hostEl = null;
+    }
+    addBtn(icon, tooltip, onClick, opts = {}) {
+      if (!this.hostEl) return;
+      const btn = this.doc.createElement("button");
       btn.type = "button";
-      btn.title = title;
-      btn.setAttribute("aria-pressed", String(pressed));
-      const span = this.h("span");
-      span.textContent = label;
-      btn.append(createWorkspaceIcon(this.doc, icon, 14), span);
-      btn.addEventListener("click", onClick);
-      return btn;
-    }
-    h(tag, className) {
-      const el = this.doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-      if (className) el.className = className;
-      return el;
+      btn.className = `zbf-tb-btn${opts.attention ? " attention" : ""}`;
+      btn.title = tooltip;
+      btn.setAttribute("aria-label", tooltip);
+      if (opts.pressed !== void 0) btn.setAttribute("aria-pressed", String(opts.pressed));
+      btn.appendChild(createWorkspaceIcon(this.doc, icon, 15));
+      if (opts.count !== void 0 && opts.count > 0) {
+        const badge = this.doc.createElement("span");
+        badge.className = "zbf-tb-count";
+        badge.textContent = opts.count > 99 ? "99+" : String(opts.count);
+        btn.appendChild(badge);
+      }
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        onClick(btn, e);
+      });
+      this.hostEl.appendChild(btn);
     }
   };
 
   // src/domains/workspace/hover-card.ts
-  var HoverCardController = class {
-    card = null;
-    showTimer = null;
-    win;
+  function formatRelativeTimeZh(ts) {
+    if (!ts) return "";
+    const diffMin = Math.max(0, Math.floor((Date.now() - ts) / 6e4));
+    if (diffMin < 1) return "刚刚";
+    if (diffMin < 60) return `${diffMin} 分钟前`;
+    const diffHours = Math.floor(diffMin / 60);
+    if (diffHours < 24) return `${diffHours} 小时前`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays} 天前`;
+  }
+  var WorkspaceHoverCard = class {
     doc;
-    constructor(win, doc) {
-      this.win = win;
+    prefs;
+    store;
+    cardEl = null;
+    showTimer = 0;
+    hideTimer = 0;
+    wordCiteMap = /* @__PURE__ */ new Map();
+    constructor(doc, prefs, store) {
       this.doc = doc;
+      this.prefs = prefs;
+      this.store = store;
     }
-    scheduleShow(anchor, tab, groupName, badge) {
+    setWordCitationBadges(badges) {
+      this.wordCiteMap = new Map(badges);
+    }
+    attach(target, tab) {
+      target.addEventListener("mouseenter", () => {
+        if (!this.prefs.get("workspace.enableHoverPreview")) return;
+        this.clearTimers();
+        const win = this.doc.defaultView || globalThis;
+        this.showTimer = win.setTimeout(() => this.show(target, tab), 260);
+      });
+      target.addEventListener("mouseleave", () => {
+        this.clearTimers();
+        const win = this.doc.defaultView || globalThis;
+        this.hideTimer = win.setTimeout(() => this.hide(), 90);
+      });
+      target.addEventListener("mousedown", () => this.hide());
+    }
+    show(anchor, tab) {
       this.hide();
-      this.showTimer = this.win.setTimeout?.(() => {
-        this.showTimer = null;
-        this.show(anchor, tab, groupName, badge);
-      }, 380) ?? null;
+      const host2 = this.doc.documentElement || this.doc.body;
+      if (!host2) return;
+      const card = this.doc.createElement("div");
+      card.className = "zbf-hover-card";
+      card.setAttribute("data-zbf-hover-card", "1");
+      const titleEl = this.doc.createElement("div");
+      titleEl.className = "zbf-hc-title";
+      titleEl.textContent = tab.title;
+      card.appendChild(titleEl);
+      const subParts = [tab.creatorYear, tab.source].filter(Boolean);
+      if (subParts.length) {
+        const subEl = this.doc.createElement("div");
+        subEl.className = "zbf-hc-meta";
+        subEl.textContent = subParts.join(" · ");
+        card.appendChild(subEl);
+      }
+      if (tab.remark) {
+        const remarkEl = this.doc.createElement("div");
+        remarkEl.className = "zbf-hc-note";
+        remarkEl.textContent = `备注：${tab.remark}`;
+        card.appendChild(remarkEl);
+      }
+      const group = tab.groupId ? this.store.state.groups.find((g) => g.id === tab.groupId) : null;
+      const statusParts = [];
+      if (group) statusParts.push(`分组：${group.name}`);
+      if (tab.collection) statusParts.push(`集合：${tab.collection}`);
+      const citeInfo = this.wordCiteMap.get(tab.parentItemID) || this.wordCiteMap.get(tab.itemID);
+      if (citeInfo) statusParts.push(`Word [${citeInfo.ordinal}] (${citeInfo.documentName})`);
+      if (tab.pinned) statusParts.push("已固定");
+      if (tab.sleeping) statusParts.push("已休眠");
+      if (tab.virtual) statusParts.push("虚拟成员");
+      const rel = formatRelativeTimeZh(tab.lastViewedAt);
+      if (rel) statusParts.push(`上次阅读：${rel}`);
+      if (statusParts.length) {
+        const footEl = this.doc.createElement("div");
+        footEl.className = "zbf-hc-meta";
+        footEl.textContent = statusParts.join(" · ");
+        card.appendChild(footEl);
+      }
+      host2.appendChild(card);
+      const rect = anchor.getBoundingClientRect();
+      const winW = this.doc.defaultView?.innerWidth || 1200;
+      const winH = this.doc.defaultView?.innerHeight || 800;
+      const cardW = card.offsetWidth || 320;
+      const cardH = card.offsetHeight || 110;
+      const left = Math.max(12, Math.min(rect.left, winW - cardW - 14));
+      const top = rect.bottom + 8 + cardH <= winH ? rect.bottom + 8 : Math.max(12, rect.top - cardH - 8);
+      card.style.left = `${left}px`;
+      card.style.top = `${top}px`;
+      this.cardEl = card;
     }
     hide() {
-      if (this.showTimer !== null) {
-        this.win.clearTimeout?.(this.showTimer);
-        this.showTimer = null;
-      }
-      if (this.card) this.card.hidden = true;
+      this.clearTimers();
+      this.cardEl?.remove();
+      this.cardEl = null;
     }
-    dispose() {
+    destroy() {
       this.hide();
-      this.card?.remove();
-      this.card = null;
     }
-    ensureCard() {
-      if (this.card?.isConnected) return this.card;
-      const root = this.doc?.documentElement;
-      if (!root) return null;
-      const el = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      el.id = "zbf-hover-card";
-      el.className = "zbf-hover-card";
-      el.hidden = true;
-      root.append(el);
-      this.card = el;
-      return el;
-    }
-    show(anchor, tab, groupName, badge) {
-      const card = this.ensureCard();
-      if (!card) return;
-      card.textContent = "";
-      const title = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      title.className = "zbf-hc-title";
-      title.textContent = tab.title;
-      card.append(title);
-      const lines = [];
-      if (tab.creatorYear) lines.push(tab.creatorYear);
-      if (tab.source) lines.push(tab.source);
-      if (tab.collection) lines.push(`Collection: ${tab.collection}`);
-      if (groupName) lines.push(`Group: ${groupName}`);
-      if (tab.remark) lines.push(`Note: ${tab.remark}`);
-      if (badge) lines.push(`Word [${badge.ordinal}] · ${badge.documentName}`);
-      if (tab.lastViewedAt > 0) {
-        lines.push(`Viewed: ${new Date(tab.lastViewedAt).toLocaleString()}`);
-      }
-      for (const line of lines) {
-        const row = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-        row.className = "zbf-hc-meta";
-        row.textContent = line;
-        card.append(row);
-      }
-      const rect = anchor.getBoundingClientRect();
-      card.style.left = `${Math.min((this.win.innerWidth || 900) - 300, Math.max(8, rect.right + 8))}px`;
-      card.style.top = `${Math.min((this.win.innerHeight || 700) - 180, Math.max(8, rect.top))}px`;
-      card.hidden = false;
+    clearTimers() {
+      const win = this.doc.defaultView || globalThis;
+      if (this.showTimer) win.clearTimeout(this.showTimer);
+      if (this.hideTimer) win.clearTimeout(this.hideTimer);
+      this.showTimer = 0;
+      this.hideTimer = 0;
     }
   };
 
@@ -4669,14 +5944,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.subPopup.textContent = "";
       const selected = this.win.ZoteroPane?.getSelectedItems?.() || [];
       this.addItem(this.subPopup, "+ 打开到新分组…", () => {
-        this.win.setTimeout?.(() => {
-          const promptSvc = globalThis.Services?.prompt;
-          const fallback = String(selected[0]?.getField?.("title") || "New Group").slice(0, 30);
-          const input = { value: fallback };
-          if (promptSvc?.prompt && !promptSvc.prompt(this.win, "打开到新分组", "分组名称：", input, null, {})) return;
-          const g = this.store.createGroup(input.value || fallback);
+        const fallback = String(selected[0]?.getField?.("title") || "新分组").slice(0, 30);
+        openTextPromptModal(this.win, "打开到新分组", "输入分组名称...", fallback, (name) => {
+          const g = this.store.createGroup(name || fallback);
           void this.openIntoGroup(selected, g.id);
-        }, 0);
+        });
       });
       if (this.store.state.groups.length) this.subPopup.append(this.xul("menuseparator"));
       for (const g of this.store.state.groups) {
@@ -4707,323 +5979,855 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   };
 
   // src/domains/workspace/spotlight-panel.ts
-  var SpotlightPanelController = class {
-    panel = null;
-    input = null;
-    resultsEl = null;
-    entries = [];
-    activeIndex = 0;
+  var WorkspaceSpotlightPanel = class {
     win;
     doc;
     engine;
-    constructor(win, doc, engine) {
+    backdrop = null;
+    inputEl = null;
+    listEl = null;
+    results = [];
+    activeIndex = 0;
+    constructor(win, engine) {
       this.win = win;
-      this.doc = doc;
+      this.doc = win.document;
       this.engine = engine;
     }
-    open(anchor) {
-      this.ensureMounted();
-      if (!this.panel || !this.input) return;
-      this.input.value = "";
-      this.activeIndex = 0;
-      this.renderResults();
-      try {
-        if (anchor && typeof this.panel.openPopup === "function") {
-          this.panel.openPopup(anchor, "bottomleft topleft", 0, 4, false, false);
-        } else if (typeof this.panel.openPopupAtScreen === "function") {
-          const x = Math.round((this.win.screenX || 0) + (this.win.outerWidth || 1e3) / 2 - 240);
-          const y = Math.round((this.win.screenY || 0) + 120);
-          this.panel.openPopupAtScreen(x, y, false);
+    isOpen() {
+      return Boolean(this.backdrop?.isConnected);
+    }
+    open(initialQuery = "") {
+      if (this.isOpen()) {
+        if (this.inputEl && initialQuery) {
+          this.inputEl.value = initialQuery;
+          this.renderResults(initialQuery);
         }
-      } catch {
-      }
-    }
-    close() {
-      try {
-        this.panel?.hidePopup?.();
-      } catch {
-      }
-    }
-    toggle(anchor) {
-      if (this.panel?.state === "open") this.close();
-      else this.open(anchor);
-    }
-    dispose() {
-      this.close();
-      this.panel?.remove?.();
-      this.panel = null;
-      this.input = null;
-      this.resultsEl = null;
-    }
-    ensureMounted() {
-      if (this.panel) return;
-      const popupset = this.doc.getElementById("mainPopupSet") || this.doc.querySelector("popupset");
-      if (!popupset) return;
-      const xul = this.doc.createXULElement ? this.doc.createXULElement("panel") : this.doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "panel");
-      xul.id = "zbf-spotlight-panel";
-      xul.setAttribute("orient", "vertical");
-      const box = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      box.className = "zbf-spot-box";
-      const input = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "input");
-      input.type = "search";
-      input.className = "zbf-spot-input";
-      input.placeholder = "Search tabs, remarks, Word citations, or commands...";
-      const results = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      results.className = "zbf-spot-results";
-      box.append(input, results);
-      xul.append(box);
-      popupset.append(xul);
-      xul.addEventListener("popupshown", () => {
-        input.focus();
-        input.select();
-      });
-      input.addEventListener("input", () => {
-        this.activeIndex = 0;
-        this.renderResults();
-      });
-      box.addEventListener("keydown", (e) => {
-        if (e.isComposing) return;
-        if (e.key === "Escape") {
-          e.preventDefault();
-          this.close();
-        } else if (e.key === "ArrowDown") {
-          e.preventDefault();
-          this.activeIndex = Math.min(Math.max(0, this.entries.length - 1), this.activeIndex + 1);
-          this.highlightActive();
-        } else if (e.key === "ArrowUp") {
-          e.preventDefault();
-          this.activeIndex = Math.max(0, this.activeIndex - 1);
-          this.highlightActive();
-        } else if (e.key === "Enter") {
-          e.preventDefault();
-          const item = this.entries[this.activeIndex];
-          if (item) {
-            void item.action();
-            this.close();
-          }
-        }
-      });
-      this.panel = xul;
-      this.input = input;
-      this.resultsEl = results;
-    }
-    renderResults() {
-      if (!this.resultsEl || !this.input) return;
-      this.entries = this.engine.query(this.input.value, this.win);
-      this.resultsEl.textContent = "";
-      if (!this.entries.length) {
-        const empty = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-        empty.style.cssText = "padding:10px;opacity:0.65;text-align:center;";
-        empty.textContent = "No matching tabs or commands";
-        this.resultsEl.append(empty);
+        this.inputEl?.focus();
         return;
       }
-      this.entries.forEach((entry, idx) => {
-        const row = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-        row.type = "button";
-        row.className = `zbf-spot-row${idx === this.activeIndex ? " active" : ""}`;
-        const title = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        title.textContent = entry.title;
-        row.append(title);
-        if (entry.badge) {
-          const badge = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-          badge.className = "zbf-spot-badge";
-          badge.textContent = entry.badge;
-          row.append(badge);
-        }
-        row.addEventListener("click", () => {
-          void entry.action();
-          this.close();
-        });
-        this.resultsEl.append(row);
+      const host2 = this.doc.documentElement || this.doc.body;
+      if (!host2) return;
+      const backdrop = this.doc.createElement("div");
+      backdrop.id = "zbf-spotlight-backdrop";
+      backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) this.close();
       });
+      const panel = this.doc.createElement("div");
+      panel.id = "zbf-spotlight-panel";
+      const input = this.doc.createElement("input");
+      input.id = "zbf-spotlight-input";
+      input.type = "text";
+      input.placeholder = "搜索已打开文献、分组、备注，或输入 > 执行命令（>tabs 按最近阅读）...";
+      input.value = initialQuery;
+      input.addEventListener("input", () => this.renderResults(input.value));
+      input.addEventListener("keydown", (e) => this.handleKeydown(e));
+      const list = this.doc.createElement("div");
+      list.id = "zbf-spotlight-list";
+      panel.appendChild(input);
+      panel.appendChild(list);
+      backdrop.appendChild(panel);
+      host2.appendChild(backdrop);
+      this.backdrop = backdrop;
+      this.inputEl = input;
+      this.listEl = list;
+      this.renderResults(initialQuery);
+      this.win.setTimeout(() => input.focus(), 10);
     }
-    highlightActive() {
-      if (!this.resultsEl) return;
-      Array.from(this.resultsEl.children).forEach((el, idx) => {
-        el.classList.toggle("active", idx === this.activeIndex);
-      });
+    toggle() {
+      if (this.isOpen()) this.close();
+      else this.open();
+    }
+    close() {
+      this.backdrop?.remove();
+      this.backdrop = null;
+      this.inputEl = null;
+      this.listEl = null;
+      this.results = [];
+    }
+    destroy() {
+      this.close();
+    }
+    renderResults(rawQuery) {
+      if (!this.listEl) return;
+      this.listEl.textContent = "";
+      this.results = this.engine.query(rawQuery, this.win);
+      this.activeIndex = 0;
+      if (!this.results.length) {
+        const empty = this.doc.createElement("div");
+        empty.className = "zbf-spotlight-empty";
+        empty.textContent = "没有匹配的结果。试试输入 > 查看全部工作区命令，或输入文献标题/备注。";
+        this.listEl.appendChild(empty);
+        return;
+      }
+      for (let i = 0; i < this.results.length; i++) {
+        const item = this.results[i];
+        const row = this.doc.createElement("button");
+        row.type = "button";
+        row.className = `zbf-spotlight-item${i === this.activeIndex ? " active" : ""}`;
+        row.addEventListener("mouseenter", () => this.setActive(i));
+        row.addEventListener("click", () => {
+          this.close();
+          void Promise.resolve(item.action());
+        });
+        const title = this.doc.createElement("div");
+        title.className = "zbf-spotlight-title";
+        title.textContent = item.title;
+        row.appendChild(title);
+        if (item.subtitle) {
+          const sub = this.doc.createElement("div");
+          sub.className = "zbf-spotlight-sub";
+          sub.textContent = item.subtitle;
+          row.appendChild(sub);
+        }
+        this.listEl.appendChild(row);
+      }
+    }
+    setActive(idx) {
+      if (!this.results.length) return;
+      this.activeIndex = (idx + this.results.length) % this.results.length;
+      const children = this.listEl?.children;
+      if (!children) return;
+      for (let i = 0; i < children.length; i++) {
+        children[i].classList.toggle("active", i === this.activeIndex);
+      }
+    }
+    handleKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.close();
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        this.setActive(this.activeIndex + 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        this.setActive(this.activeIndex - 1);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const picked = this.results[this.activeIndex];
+        if (picked) {
+          this.close();
+          void Promise.resolve(picked.action());
+        }
+      }
     }
   };
 
   // src/domains/workspace/tab-context-menu.ts
-  var TabContextMenuController = class {
-    popups = /* @__PURE__ */ new Set();
+  var WorkspaceTabContextMenu = class {
     win;
     doc;
     prefs;
     store;
     tabs;
     onRefresh;
-    constructor(win, doc, prefs, store, tabs, onRefresh) {
+    activePopup = null;
+    boundOutside = null;
+    constructor(win, prefs, store, tabs, onRefresh) {
       this.win = win;
-      this.doc = doc;
+      this.doc = win.document;
       this.prefs = prefs;
       this.store = store;
       this.tabs = tabs;
       this.onRefresh = onRefresh;
     }
-    openTabMenu(event, tab) {
-      if (!this.prefs.get("workspace.enableTabContextMenu")) return;
-      event.preventDefault();
-      event.stopPropagation();
-      this.openAt(event, (popup) => {
-        if (this.prefs.get("workspace.enablePinnedTabs")) {
-          this.addItem(popup, tab.pinned ? "Unpin Tab" : "📌 Pin Tab (Protect)", () => {
-            this.store.setPinned(tab.key, !tab.pinned);
-            this.onRefresh();
-          });
-        }
-        if (this.prefs.get("workspace.enableTabRemarks")) {
-          this.addItem(popup, tab.remark ? "✎ Edit Tab Remark…" : "✎ Set Tab Remark…", () => {
-            this.deferPrompt("Tab Remark", "Remark (max 300 chars):", tab.remark, (val) => {
-              this.store.setRemark(tab.key, val);
-              this.onRefresh();
-            });
-          });
-        }
-        if (this.prefs.get("workspace.enableTabSleep") && !tab.pinned && tab.tabID) {
-          this.addItem(popup, tab.sleeping ? "⚡ Wake Tab" : "💤 Sleep Tab (Free Memory)", () => {
-            if (tab.sleeping) this.tabs.selectTab(this.win, tab.tabID);
-            else this.tabs.sleepTab(this.win, tab.tabID);
-            this.onRefresh();
-          });
-        }
-        const moveMenu = this.xul("menu");
-        moveMenu.setAttribute("label", "Move to Group");
-        const movePop = this.xul("menupopup");
-        moveMenu.append(movePop);
-        popup.append(moveMenu);
-        this.addItem(movePop, "+ New Group…", () => {
-          this.deferPrompt("New Group", "Group name:", "", (name) => {
-            if (!name.trim()) return;
-            const g = this.store.createGroup(name);
-            this.store.assignToGroup(tab.key, g.id);
-            this.onRefresh();
-          });
-        });
-        for (const g of this.store.state.groups) {
-          this.addItem(movePop, g.name, () => {
-            this.store.assignToGroup(tab.key, g.id);
-            this.onRefresh();
-          }, { type: "radio", checked: tab.groupId === g.id });
-        }
-        if (tab.groupId) {
-          this.addItem(movePop, "Remove from Group", () => {
-            this.store.assignToGroup(tab.key, null);
-            this.onRefresh();
-          });
-        }
-        popup.append(this.xul("menuseparator"));
-        if (this.prefs.get("workspace.enableCopyReference") && tab.tabID) {
-          this.addItem(popup, "📋 Copy Citation (→ Lookup History)", () => {
-            void this.tabs.copyTabCitation(this.win, tab.tabID);
-          });
-        }
-        if (this.prefs.get("workspace.enableShowInFilesystem") && tab.itemID > 0) {
-          this.addItem(popup, "📁 Reveal Attachment in Folder", () => {
-            this.win.ZoteroPane?.showAttachmentInFilesystem?.(tab.itemID);
-          });
-        }
-        if (this.prefs.get("workspace.enableReloadTab") && tab.tabID) {
-          this.addItem(popup, "↻ Reload Tab", () => {
-            void this.tabs.reloadTab(this.win, tab.tabID).then(() => this.onRefresh());
-          });
-        }
-        if (tab.tabID) {
-          popup.append(this.xul("menuseparator"));
-          this.addItem(popup, "Close Tab", () => {
-            void this.tabs.closeTabs(this.win, [tab.tabID], { protectPinned: false }).then(() => this.onRefresh());
-          });
-        }
-      });
-    }
-    openGroupMenu(event, group) {
-      event.preventDefault();
-      event.stopPropagation();
-      this.openAt(event, (popup) => {
-        this.addItem(popup, "✎ Rename Group…", () => {
-          this.deferPrompt("Rename Group", "Group name:", group.name, (val) => {
-            this.store.renameGroup(group.id, val);
-            this.onRefresh();
-          });
-        });
-        const colorMenu = this.xul("menu");
-        colorMenu.setAttribute("label", "Group Color");
-        const colorPop = this.xul("menupopup");
-        colorMenu.append(colorPop);
-        popup.append(colorMenu);
-        GROUP_PALETTE.forEach((c, idx) => {
-          this.addItem(colorPop, `Color ${idx + 1} (${c})`, () => {
-            this.store.setGroupColor(group.id, c);
-            this.onRefresh();
-          });
-        });
-        this.addItem(popup, "💾 Save to Workspace & Close Group", () => {
-          void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
-        });
-        this.addItem(popup, "Close All Tabs in Group", () => {
-          const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => t.groupId === group.id && t.tabID).map((t) => t.tabID);
-          void this.tabs.closeTabs(this.win, ids, { protectPinned: true }).then(() => this.onRefresh());
-        });
-        this.addItem(popup, "Delete Group (Keep Tabs)", () => {
-          this.store.removeGroup(group.id);
+    openTabMenu(anchor, tab, event) {
+      if (tab.virtual) {
+        this.openVirtualMenu(anchor, tab, event);
+        return;
+      }
+      this.close();
+      const pop = createFloatingPopup(this.doc, anchor, event, 215);
+      if (!pop) return;
+      const close = () => this.close();
+      addPopupButton(this.doc, pop, "➕ 新建分组并加入", () => {
+        openTextPromptModal(this.win, "新建分组", "输入分组名称...", "新分组", (name) => {
+          if (!name.trim()) return;
+          const grp = this.store.createGroup(name);
+          this.store.assignToGroup(tab.key, grp.id);
           this.onRefresh();
         });
-      });
-    }
-    dispose() {
-      for (const p of this.popups) p.remove();
-      this.popups.clear();
-    }
-    openAt(event, build) {
-      const popupset = this.doc.getElementById("mainPopupSet") || this.doc.querySelector("popupset");
-      if (!popupset) return;
-      const popup = this.xul("menupopup");
-      popupset.append(popup);
-      this.popups.add(popup);
-      popup.addEventListener("popuphidden", (e) => {
-        if (e.target === popup) {
-          this.popups.delete(popup);
-          popup.remove();
-        }
-      });
-      build(popup);
-      popup.openPopupAtScreen(event.screenX, event.screenY, true);
-    }
-    xul(tag) {
-      return this.doc.createXULElement ? this.doc.createXULElement(tag) : this.doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", tag);
-    }
-    addItem(popup, label, action, attrs = {}) {
-      const mi = this.xul("menuitem");
-      mi.setAttribute("label", label);
-      for (const [k, v] of Object.entries(attrs)) {
-        if (v !== false) mi.setAttribute(k, String(v));
+      }, close);
+      for (const group of this.store.state.groups) {
+        const inThis = tab.groupId === group.id;
+        addPopupButton(this.doc, pop, `${inThis ? "✓ " : "   "}加入分组：${group.name}`, () => {
+          this.store.assignToGroup(tab.key, group.id);
+          this.onRefresh();
+        }, close);
       }
-      mi.addEventListener("command", action);
-      popup.append(mi);
-    }
-    deferPrompt(title, msg, initial, onOk) {
-      this.win.setTimeout?.(() => {
-        const promptSvc = globalThis.Services?.prompt;
-        if (!promptSvc?.prompt) return;
-        const input = { value: initial };
-        if (promptSvc.prompt(this.win, title, msg, input, null, {})) {
-          onOk(input.value);
+      if (tab.groupId) {
+        addPopupButton(this.doc, pop, "从当前分组移出", () => {
+          this.store.assignToGroup(tab.key, null);
+          this.onRefresh();
+        }, close);
+      }
+      addPopupSeparator(this.doc, pop);
+      if (this.prefs.get("workspace.enablePinnedTabs")) {
+        addPopupButton(this.doc, pop, tab.pinned ? "📌 取消固定标签" : "📌 固定此标签", () => {
+          this.store.setPinned(tab.key, !tab.pinned);
+          this.onRefresh();
+        }, close);
+      }
+      if (this.prefs.get("workspace.enableTabSleep") && !tab.pinned) {
+        addPopupButton(this.doc, pop, tab.sleeping ? "⚡ 唤醒并重新加载" : "🌙 休眠释放内存", () => {
+          if (tab.sleeping) void this.tabs.reloadTab(this.win, tab.tabID);
+          else this.tabs.sleepTab(this.win, tab.tabID);
+          this.onRefresh();
+        }, close);
+      }
+      if (this.prefs.get("workspace.enableTabRemarks")) {
+        addPopupButton(this.doc, pop, tab.remark ? "✎ 编辑标签页备注" : "✎ 添加标签页备注", () => {
+          openTextPromptModal(this.win, "设置标签页备注", "输入简短备注（留空清除）...", tab.remark || "", (val) => {
+            this.store.setRemark(tab.key, val);
+            this.onRefresh();
+          });
+        }, close);
+      }
+      addPopupSeparator(this.doc, pop);
+      if (this.prefs.get("workspace.enableCopyReference")) {
+        addPopupButton(this.doc, pop, "📋 复制标准引文（并记入反查）", () => {
+          void this.tabs.copyTabCitation(this.win, tab.tabID);
+        }, close);
+      }
+      if (tab.itemID > 0) {
+        addPopupButton(this.doc, pop, "📚 在文献库中定位", () => {
+          void this.tabs.showInLibrary(this.win, tab.itemID, true);
+        }, close);
+        if (this.prefs.get("workspace.enableShowInFilesystem")) {
+          addPopupButton(this.doc, pop, "📂 在文件管理器中显示", () => {
+            void this.tabs.revealTabAttachment(this.win, tab.itemID);
+          }, close);
         }
-      }, 0);
+      }
+      if (this.prefs.get("workspace.enableReloadTab")) {
+        addPopupButton(this.doc, pop, "🔄 重新加载此标签页", () => {
+          void this.tabs.reloadTab(this.win, tab.tabID).then(() => this.onRefresh());
+        }, close);
+      }
+      addPopupButton(this.doc, pop, "↩ 恢复最近关闭的标签页", () => {
+        this.tabs.undoCloseTab(this.win);
+        this.onRefresh();
+      }, close);
+      addPopupSeparator(this.doc, pop);
+      addPopupButton(this.doc, pop, "关闭右侧标签页", () => {
+        const open = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual);
+        const idx = open.findIndex((t) => t.tabID === tab.tabID);
+        if (idx >= 0) void this.tabs.closeTabs(this.win, open.slice(idx + 1).map((t) => t.tabID), { protectPinned: true });
+      }, close);
+      addPopupButton(this.doc, pop, "关闭其他未固定标签页", () => {
+        const others = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.tabID !== tab.tabID).map((t) => t.tabID);
+        void this.tabs.closeTabs(this.win, others, { protectPinned: true });
+      }, close);
+      addPopupButton(this.doc, pop, "关闭当前标签页", () => {
+        void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+      }, close, { danger: true });
+      this.bindPopup(pop);
+    }
+    openVirtualMenu(anchor, tab, event) {
+      this.close();
+      const pop = createFloatingPopup(this.doc, anchor, event, 200);
+      if (!pop) return;
+      const close = () => this.close();
+      addPopupButton(this.doc, pop, "📖 加载并打开文献", () => {
+        void this.tabs.openVirtualOrItem(this.win, tab.itemID, tab.groupId).then(() => this.onRefresh());
+      }, close);
+      if (tab.itemID > 0) {
+        addPopupButton(this.doc, pop, "📚 在文献库中定位", () => {
+          void this.tabs.showInLibrary(this.win, tab.itemID, true);
+        }, close);
+      }
+      addPopupButton(this.doc, pop, "🗑 从分组移除虚拟成员", () => {
+        this.store.removeVirtualMember(tab.key);
+        this.store.assignToGroup(tab.key, null);
+        this.onRefresh();
+      }, close, { danger: true });
+      this.bindPopup(pop);
+    }
+    openGroupMenu(anchor, group, event) {
+      this.close();
+      const pop = createFloatingPopup(this.doc, anchor, event, 210);
+      if (!pop) return;
+      const close = () => this.close();
+      const isCollapsed = this.store.state.collapsed.includes(group.id);
+      addPopupButton(this.doc, pop, isCollapsed ? "▾ 展开此分组" : "▸ 折叠此分组", () => {
+        this.store.setCollapsed(group.id, !isCollapsed);
+        this.onRefresh();
+      }, close);
+      addPopupButton(this.doc, pop, "✎ 重命名分组", () => {
+        openTextPromptModal(this.win, "重命名分组", "输入新的分组名称...", group.name, (val) => {
+          if (this.store.renameGroup(group.id, val)) this.onRefresh();
+        });
+      }, close);
+      const swatchRow = this.doc.createElement("div");
+      swatchRow.className = "zbf-color-row";
+      for (const color of GROUP_PALETTE) {
+        const swatch = this.doc.createElement("button");
+        swatch.type = "button";
+        swatch.className = `zbf-color-swatch${color === group.color ? " active" : ""}`;
+        swatch.style.background = color;
+        swatch.title = color;
+        swatch.addEventListener("click", () => {
+          this.store.setGroupColor(group.id, color);
+          this.close();
+          this.onRefresh();
+        });
+        swatchRow.appendChild(swatch);
+      }
+      pop.appendChild(swatchRow);
+      addPopupButton(this.doc, pop, "🎨 自定义十六进制颜色...", () => {
+        openTextPromptModal(this.win, "自定义分组颜色", "例如 #3b82f6", group.color, (hex) => {
+          if (/^#[0-9a-fA-F]{3,8}$/.test(hex.trim())) {
+            this.store.setGroupColor(group.id, hex.trim());
+            this.onRefresh();
+          }
+        });
+      }, close);
+      const hasVirtual = this.tabs.buildTrackedTabs(this.win).some((t) => t.virtual && t.groupId === group.id);
+      if (hasVirtual) {
+        addPopupButton(this.doc, pop, "📖 打开组内全部虚拟文献", () => {
+          void this.tabs.openGroupVirtuals(this.win, group.id).then(() => this.onRefresh());
+        }, close);
+      }
+      addPopupSeparator(this.doc, pop);
+      addPopupButton(this.doc, pop, "📦 归档为快照并关闭组内标签", () => {
+        void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+      }, close);
+      addPopupButton(this.doc, pop, "解散分组（保留已打开标签）", () => {
+        this.store.removeGroup(group.id);
+        this.onRefresh();
+      }, close, { danger: true });
+      this.bindPopup(pop);
+    }
+    close() {
+      this.activePopup?.remove();
+      this.activePopup = null;
+      if (this.boundOutside) {
+        this.doc.removeEventListener("mousedown", this.boundOutside, true);
+        this.boundOutside = null;
+      }
+    }
+    destroy() {
+      this.close();
+    }
+    bindPopup(pop) {
+      this.activePopup = pop;
+      this.boundOutside = (e) => {
+        if (!pop.contains(e.target)) this.close();
+      };
+      this.win.setTimeout(() => {
+        if (this.boundOutside) this.doc.addEventListener("mousedown", this.boundOutside, true);
+      }, 15);
+    }
+  };
+
+  // src/domains/workspace/sidebar-keyboard.ts
+  function visibleNavItems(list) {
+    if (!list) return [];
+    return Array.from(list.querySelectorAll("[data-zbf-nav]")).filter(
+      (el) => Boolean(el) && typeof el.focus === "function" && !el.closest?.("[hidden]")
+    );
+  }
+  function bindSidebarKeyboardNavigation(aside, list, searchInput, onClearSearch) {
+    aside.addEventListener("keydown", (ev) => {
+      const e = ev;
+      if (e.isComposing || e.keyCode === 229) return;
+      const target = e.target;
+      if (target === searchInput) {
+        if (e.key === "ArrowDown") {
+          const first = visibleNavItems(list)[0];
+          if (first) {
+            e.preventDefault();
+            first.focus();
+            first.scrollIntoView({ block: "nearest" });
+          }
+        } else if (e.key === "Escape" && searchInput.value) {
+          e.preventDefault();
+          onClearSearch();
+        }
+        return;
+      }
+      if (target && (target.matches("input, textarea, select") || target.isContentEditable)) return;
+      if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
+        return;
+      }
+      const items = visibleNavItems(list);
+      if (!items.length) return;
+      const current = target?.closest("[data-zbf-nav]");
+      const idx = current ? items.indexOf(current) : -1;
+      let nextIdx = -1;
+      if (e.key === "ArrowDown") nextIdx = idx < 0 ? 0 : Math.min(items.length - 1, idx + 1);
+      else if (e.key === "ArrowUp") nextIdx = idx <= 0 ? 0 : idx - 1;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = items.length - 1;
+      if (nextIdx >= 0 && items[nextIdx]) {
+        e.preventDefault();
+        items[nextIdx].focus();
+        items[nextIdx].scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (current && e.key === "Enter" && target === current) {
+        e.preventDefault();
+        current.click();
+      }
+    });
+  }
+
+  // src/domains/workspace/sidebar-list-helpers.ts
+  function buildSidebarTabRow(deps, tab) {
+    const { win, doc, prefs, store, tabs, menus, hover, selection, wordCiteMap, selectedID, onRefresh } = deps;
+    const isSelected = !tab.virtual && tab.tabID === selectedID;
+    const row = doc.createElement("div");
+    row.className = `zbf-vtab-row${isSelected ? " selected" : ""}${tab.sleeping ? " sleeping" : ""}${tab.virtual ? " virtual" : ""}`;
+    row.tabIndex = 0;
+    row.setAttribute("data-zbf-nav", "row");
+    row.title = tab.title;
+    const rowH = prefs.get("workspace.verticalTabRowHeight");
+    if (rowH >= 28 && rowH <= 72) row.style.minHeight = `${rowH}px`;
+    selection.addCheckbox(row, tab);
+    const iconName = tab.pinned ? "pin" : tab.sleeping ? "sleep" : tab.virtual ? "virtual" : tab.type.includes("note") ? "note" : "pdf";
+    row.appendChild(createWorkspaceIcon(doc, iconName, 13));
+    const main = doc.createElement("div");
+    main.className = "zbf-vtab-main";
+    const titleEl = doc.createElement("div");
+    titleEl.className = "zbf-vtab-title";
+    titleEl.textContent = tabs.getDisplayTitle(tab);
+    main.appendChild(titleEl);
+    const subMode = prefs.get("workspace.verticalTabSubtitleMode");
+    let subText = "";
+    if (tab.remark && prefs.get("workspace.enableTabRemarks")) {
+      subText = `备注：${tab.remark}`;
+    } else if (subMode !== "none") {
+      if (subMode === "source") subText = tab.source || tab.creatorYear || tab.collection;
+      else if (subMode === "creatorYear") subText = tab.creatorYear || tab.source || tab.collection;
+      else if (subMode === "collection") subText = tab.collection || tab.creatorYear || tab.source;
+    }
+    if (subText) {
+      const subEl = doc.createElement("div");
+      subEl.className = "zbf-vtab-sub";
+      subEl.textContent = subText;
+      main.appendChild(subEl);
+    }
+    row.appendChild(main);
+    const right = doc.createElement("div");
+    right.className = "zbf-vtab-right";
+    const citeInfo = wordCiteMap.get(tab.parentItemID) || wordCiteMap.get(tab.itemID);
+    if (citeInfo) {
+      const badge = doc.createElement("span");
+      badge.className = "zbf-cite-badge";
+      badge.textContent = `[${citeInfo.ordinal}]`;
+      badge.title = `${citeInfo.documentName}: ${citeInfo.shortText}`;
+      right.appendChild(badge);
+    }
+    if (!tab.virtual && tab.itemID > 0 && prefs.get("workspace.enableShowInFilesystem")) {
+      const folderBtn = doc.createElement("button");
+      folderBtn.type = "button";
+      folderBtn.className = "zbf-row-btn";
+      folderBtn.title = "在文件管理器中显示";
+      folderBtn.appendChild(createWorkspaceIcon(doc, "folder", 12));
+      folderBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void tabs.revealTabAttachment(win, tab.itemID);
+      });
+      right.appendChild(folderBtn);
+    }
+    if (!tab.virtual && !tab.pinned && prefs.get("workspace.enableTabSleep")) {
+      const sleepBtn = doc.createElement("button");
+      sleepBtn.type = "button";
+      sleepBtn.className = "zbf-row-btn";
+      sleepBtn.title = tab.sleeping ? "唤醒并重新加载" : "休眠释放内存";
+      sleepBtn.appendChild(createWorkspaceIcon(doc, "sleep", 12));
+      sleepBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (tab.sleeping) void tabs.reloadTab(win, tab.tabID).then(onRefresh);
+        else {
+          tabs.sleepTab(win, tab.tabID);
+          onRefresh();
+        }
+      });
+      right.appendChild(sleepBtn);
+    }
+    const closeBtn = doc.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "zbf-row-btn";
+    closeBtn.title = tab.virtual ? "移除虚拟成员" : "关闭标签页";
+    closeBtn.appendChild(createWorkspaceIcon(doc, "close", 12));
+    closeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (tab.virtual) {
+        store.removeVirtualMember(tab.key);
+        store.assignToGroup(tab.key, null);
+        onRefresh();
+      } else {
+        void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true });
+      }
+    });
+    right.appendChild(closeBtn);
+    row.appendChild(right);
+    if (!tab.virtual) {
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => beginTabDrag(e.dataTransfer, tab.key, tab.tabID));
+    }
+    bindRowDropTarget(deps, row, tab);
+    row.addEventListener("click", () => {
+      if (tab.virtual) void tabs.openVirtualOrItem(win, tab.itemID, tab.groupId).then(() => onRefresh());
+      else tabs.selectTab(win, tab.tabID);
+    });
+    row.addEventListener("auxclick", (e) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true });
+    });
+    row.addEventListener("contextmenu", (e) => {
+      if (!prefs.get("workspace.enableTabContextMenu")) return;
+      e.preventDefault();
+      menus.openTabMenu(row, tab, e);
+    });
+    hover.attach(row, tab);
+    return row;
+  }
+  function bindSidebarGroupDrop(head, groupId, win, store, tabs, onRefresh) {
+    head.addEventListener("dragover", (e) => {
+      const de = e;
+      if (!hasBridgeFlowDraggedTab(de.dataTransfer) && !hasZoteroDraggedItems(de.dataTransfer)) return;
+      de.preventDefault();
+      head.style.background = "var(--zbf-accent-soft)";
+    });
+    head.addEventListener("dragleave", () => {
+      head.style.background = "";
+    });
+    head.addEventListener("drop", (e) => {
+      head.style.background = "";
+      const de = e;
+      const payload = readTabDragPayload(de.dataTransfer);
+      if (payload) {
+        de.preventDefault();
+        store.assignToGroup(payload.key, groupId);
+        onRefresh();
+        return;
+      }
+      const ids = parseZoteroDraggedItemIDs(de.dataTransfer);
+      if (ids.length) {
+        de.preventDefault();
+        void Promise.all(ids.map((id) => tabs.openVirtualOrItem(win, id, groupId, true))).then(() => onRefresh());
+      }
+    });
+  }
+  function bindSidebarSplitter(doc, aside, splitter, prefs) {
+    let dragging = false;
+    splitter.addEventListener("mousedown", (e) => {
+      const me = e;
+      me.preventDefault();
+      dragging = true;
+      const startX = me.clientX;
+      const startW = aside.getBoundingClientRect().width || 276;
+      const onMove = (ev) => {
+        if (!dragging) return;
+        const mv = ev;
+        const next = Math.max(200, Math.min(440, Math.round(startW + (mv.clientX - startX))));
+        aside.style.width = `${next}px`;
+      };
+      const onUp = () => {
+        if (!dragging) return;
+        dragging = false;
+        const w = Math.round(aside.getBoundingClientRect().width || 276);
+        prefs.set("workspace.verticalSidebarWidth", Math.max(200, Math.min(440, w)));
+        doc.removeEventListener("mousemove", onMove);
+        doc.removeEventListener("mouseup", onUp);
+      };
+      doc.addEventListener("mousemove", onMove);
+      doc.addEventListener("mouseup", onUp);
+    });
+  }
+  function bindRowDropTarget(deps, row, target) {
+    const { win, store, tabs, onRefresh } = deps;
+    const clearZone = () => row.removeAttribute("data-zbf-drop");
+    row.addEventListener("dragover", (e) => {
+      const de = e;
+      if (!hasBridgeFlowDraggedTab(de.dataTransfer) && !hasZoteroDraggedItems(de.dataTransfer)) return;
+      de.preventDefault();
+      const rect = row.getBoundingClientRect();
+      const ratio = rect.height > 0 ? (de.clientY - rect.top) / rect.height : 0.5;
+      const zone = ratio < 0.28 ? "before" : ratio > 0.72 ? "after" : "join";
+      row.setAttribute("data-zbf-drop", zone);
+    });
+    row.addEventListener("dragleave", clearZone);
+    row.addEventListener("drop", (e) => {
+      const zone = row.getAttribute("data-zbf-drop") || "join";
+      clearZone();
+      const de = e;
+      const payload = readTabDragPayload(de.dataTransfer);
+      if (payload && payload.key !== target.key) {
+        de.preventDefault();
+        if (zone === "join") {
+          if (target.groupId) store.assignToGroup(payload.key, target.groupId);
+          else {
+            const newGrp = store.createGroup(tabs.getDisplayTitle(target).slice(0, 18));
+            store.assignToGroup(target.key, newGrp.id);
+            store.assignToGroup(payload.key, newGrp.id);
+          }
+        } else {
+          const after = zone === "after";
+          store.assignKeyRelative(payload.key, target.groupId || null, target.key, after);
+          if (payload.tabID && target.tabID) tabs.moveTabRelative(win, payload.tabID, target.tabID, after);
+        }
+        onRefresh();
+        return;
+      }
+      const ids = parseZoteroDraggedItemIDs(de.dataTransfer);
+      if (ids.length) {
+        de.preventDefault();
+        void Promise.all(ids.map((id) => tabs.openVirtualOrItem(win, id, target.groupId || void 0, true))).then(() => onRefresh());
+      }
+    });
+  }
+
+  // src/domains/workspace/sidebar-sections-helpers.ts
+  function renderSidebarEmptyBox(doc, win, hasAnyTabs, onClearSearch, onOpenHub) {
+    const box = doc.createElement("div");
+    box.className = "zbf-sb-empty";
+    const msg = doc.createElement("div");
+    msg.textContent = hasAnyTabs ? "未找到匹配的文献标签页" : "当前没有打开的文献标签页";
+    box.appendChild(msg);
+    if (hasAnyTabs) {
+      const clearBtn = doc.createElement("button");
+      clearBtn.type = "button";
+      clearBtn.className = "zbf-sb-empty-btn";
+      clearBtn.textContent = "清除搜索条件";
+      clearBtn.addEventListener("click", onClearSearch);
+      box.appendChild(clearBtn);
+    } else {
+      const libBtn = doc.createElement("button");
+      libBtn.type = "button";
+      libBtn.className = "zbf-sb-empty-btn";
+      libBtn.textContent = "返回「我的文库」";
+      libBtn.addEventListener("click", () => win.Zotero_Tabs?.select?.("zotero-pane"));
+      const sesBtn = doc.createElement("button");
+      sesBtn.type = "button";
+      sesBtn.className = "zbf-sb-empty-btn";
+      sesBtn.textContent = "恢复最近会话快照";
+      sesBtn.addEventListener("click", onOpenHub);
+      box.append(libBtn, sesBtn);
+    }
+    return box;
+  }
+  function renderSidebarStatusBar(doc, win, statusEl, prefs, tabs, allTracked, onRefresh) {
+    statusEl.textContent = "";
+    const active = allTracked.filter((t) => !t.virtual && !t.sleeping).length;
+    const sleeping = allTracked.filter((t) => !t.virtual && t.sleeping).length;
+    const virtual = allTracked.filter((t) => t.virtual).length;
+    const counts = doc.createElement("span");
+    counts.textContent = `活动 ${active} · 休眠 ${sleeping} · 虚拟 ${virtual}`;
+    statusEl.appendChild(counts);
+    const budget = prefs.get("workspace.activeReaderBudget");
+    if (budget > 0 && active > budget && prefs.get("workspace.enableTabSleep")) {
+      const warn = doc.createElement("button");
+      warn.type = "button";
+      warn.className = "zbf-sb-budget-warn";
+      warn.textContent = `超出 ${budget} 篇上限 · 休眠后台`;
+      warn.addEventListener("click", () => {
+        tabs.sleepInactiveTabs(win);
+        onRefresh();
+      });
+      statusEl.appendChild(warn);
+    }
+  }
+  function appendSidebarSectionHead(doc, listEl, title, color) {
+    const head = doc.createElement("div");
+    head.className = "zbf-sb-group-head";
+    head.tabIndex = 0;
+    head.setAttribute("data-zbf-nav", "head");
+    const dot = doc.createElement("span");
+    dot.className = "zbf-sb-group-dot";
+    dot.style.background = color;
+    const span = doc.createElement("span");
+    span.textContent = title;
+    head.append(dot, span);
+    listEl.appendChild(head);
+  }
+  function renderSidebarCollectionsList(listEl, rowDeps, filtered) {
+    const { doc, win, tabs, onRefresh } = rowDeps;
+    const byCol = /* @__PURE__ */ new Map();
+    for (const tab of filtered) {
+      const col = tab.collection || "未分类";
+      const arr = byCol.get(col) || [];
+      arr.push(tab);
+      byCol.set(col, arr);
+    }
+    for (const [colName, colTabs] of byCol) {
+      const rowHead = doc.createElement("div");
+      rowHead.className = "zbf-sb-group-head-row";
+      const h = doc.createElement("div");
+      h.className = "zbf-sb-group-head";
+      h.textContent = `📁 ${colName} (${colTabs.length})`;
+      rowHead.appendChild(h);
+      if (colName !== "未分类") {
+        const toGrp = doc.createElement("button");
+        toGrp.type = "button";
+        toGrp.className = "zbf-sb-col-group-btn";
+        toGrp.textContent = "+";
+        toGrp.title = `将集合「${colName}」转为标签分组`;
+        toGrp.addEventListener("click", () => {
+          tabs.collectionToGroup(win, colName);
+          onRefresh();
+        });
+        rowHead.appendChild(toGrp);
+      }
+      listEl.appendChild(rowHead);
+      for (const tab of colTabs) listEl.appendChild(buildSidebarTabRow(rowDeps, tab));
+    }
+  }
+
+  // src/domains/workspace/sidebar-selection.ts
+  var SidebarSelection = class {
+    active = false;
+    selected = /* @__PURE__ */ new Set();
+    tracked = [];
+    toggleBtn;
+    controls;
+    countEl;
+    selectAllBtn;
+    groupSelect;
+    pinBtn;
+    unpinBtn;
+    closeBtn;
+    doc;
+    prefs;
+    store;
+    list;
+    onChange;
+    onCloseSelected;
+    constructor(doc, prefs, store, headerActions, aside, list, onChange, onCloseSelected) {
+      this.doc = doc;
+      this.prefs = prefs;
+      this.store = store;
+      this.list = list;
+      this.onChange = onChange;
+      this.onCloseSelected = onCloseSelected;
+      this.toggleBtn = this.btn("多选", () => {
+        this.active = !this.active;
+        this.selected.clear();
+        this.onChange();
+      });
+      this.toggleBtn.setAttribute("data-batch-toggle", "true");
+      headerActions.prepend(this.toggleBtn);
+      this.controls = this.h("div");
+      this.controls.className = "zbf-batch-controls";
+      this.controls.hidden = true;
+      this.countEl = this.h("span");
+      this.selectAllBtn = this.btn("全选可见", () => {
+        for (const cb of this.visibleCheckboxes()) {
+          this.selected.add(cb.value);
+          cb.checked = true;
+        }
+        this.updateControls();
+      });
+      this.groupSelect = this.h("select");
+      this.groupSelect.onchange = () => {
+        if (this.groupSelect.selectedIndex > 0) {
+          const targetGroupId = this.groupSelect.value;
+          for (const key of this.selectedKeys()) {
+            this.store.assignToGroup(key, targetGroupId);
+          }
+          this.onChange();
+        }
+        this.groupSelect.selectedIndex = 0;
+      };
+      this.pinBtn = this.btn("固定", () => {
+        for (const key of this.selectedKeys()) this.store.setPinned(key, true);
+        this.onChange();
+      });
+      this.unpinBtn = this.btn("取消固定", () => {
+        for (const key of this.selectedKeys()) this.store.setPinned(key, false);
+        this.onChange();
+      });
+      this.closeBtn = this.btn("关闭", () => {
+        const ids = [...this.selected];
+        this.selected.clear();
+        this.onCloseSelected(ids);
+      });
+      this.controls.append(this.countEl, this.selectAllBtn, this.groupSelect, this.pinBtn, this.unpinBtn, this.closeBtn);
+      aside.insertBefore(this.controls, list);
+    }
+    beginRender(tracked) {
+      const enabled = this.prefs.get("workspace.enableBatchSelection");
+      if (!enabled) {
+        this.active = false;
+        this.selected.clear();
+      }
+      this.tracked = tracked;
+      const open = new Set(tracked.map((t) => t.tabID).filter(Boolean));
+      for (const id of this.selected) if (!open.has(id)) this.selected.delete(id);
+      this.toggleBtn.hidden = !enabled;
+      this.toggleBtn.setAttribute("aria-pressed", String(this.active));
+      this.controls.hidden = !this.active;
+      if (!this.active) return;
+      const placeholder = this.h("option");
+      placeholder.disabled = true;
+      placeholder.selected = true;
+      placeholder.textContent = "移到分组…";
+      this.groupSelect.replaceChildren(placeholder);
+      for (const group of this.store.state.groups) {
+        const opt = this.h("option");
+        opt.value = group.id;
+        opt.textContent = group.name;
+        this.groupSelect.append(opt);
+      }
+    }
+    updateControls() {
+      if (!this.active) return;
+      const count = this.selected.size;
+      this.countEl.textContent = `已选 ${count}`;
+      this.selectAllBtn.disabled = !this.visibleCheckboxes().some((cb) => !cb.checked);
+      this.groupSelect.disabled = !count || !this.store.state.groups.length;
+      const pinOn = this.prefs.get("workspace.enablePinnedTabs");
+      this.pinBtn.hidden = !pinOn;
+      this.unpinBtn.hidden = !pinOn;
+      this.pinBtn.disabled = !count;
+      this.unpinBtn.disabled = !count;
+      this.closeBtn.disabled = !count;
+    }
+    addCheckbox(row, tab) {
+      if (!this.active || !tab.tabID) return;
+      const label = this.h("label");
+      label.className = "zbf-batch-target";
+      const check = this.h("input");
+      check.className = "zbf-batch-check";
+      check.type = "checkbox";
+      check.value = tab.tabID;
+      check.checked = this.selected.has(tab.tabID);
+      check.setAttribute("aria-label", tab.title);
+      check.onchange = () => {
+        if (check.checked) this.selected.add(tab.tabID);
+        else this.selected.delete(tab.tabID);
+        this.updateControls();
+      };
+      label.onclick = (e) => e.stopPropagation();
+      label.append(check);
+      row.prepend(label);
+    }
+    visibleCheckboxes() {
+      return Array.from(this.list.querySelectorAll(".zbf-batch-check")).filter((cb) => !cb.closest("[hidden]"));
+    }
+    selectedKeys() {
+      return [...new Set(this.tracked.filter((t) => this.selected.has(t.tabID)).map((t) => t.key))];
+    }
+    h(tag) {
+      return this.doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+    }
+    btn(label, onClick) {
+      const b = this.h("button");
+      b.type = "button";
+      b.textContent = label;
+      b.onclick = onClick;
+      return b;
     }
   };
 
   // src/domains/workspace/vertical-sidebar.ts
-  var VerticalSidebarController = class {
-    sidebar = null;
-    listEl = null;
-    statusEl = null;
-    searchInput = null;
-    viewMode = "groups";
-    badges = /* @__PURE__ */ new Map();
-    draggedKey = null;
+  var WorkspaceVerticalSidebar = class {
     win;
     doc;
     prefs;
@@ -5031,423 +6835,595 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     tabs;
     menus;
     hover;
+    popover;
+    onToggleSpotlight;
     onRefresh;
-    constructor(win, doc, prefs, store, tabs, menus, hover, onRefresh) {
+    asideEl = null;
+    listEl = null;
+    statusEl = null;
+    viewButtons = /* @__PURE__ */ new Map();
+    selection = null;
+    viewMode = "groups";
+    searchTerm = "";
+    wordCiteMap = /* @__PURE__ */ new Map();
+    constructor(win, prefs, store, tabs, menus, hover, popover, onToggleSpotlight, onRefresh) {
       this.win = win;
-      this.doc = doc;
+      this.doc = win.document;
       this.prefs = prefs;
       this.store = store;
       this.tabs = tabs;
       this.menus = menus;
       this.hover = hover;
+      this.popover = popover;
+      this.onToggleSpotlight = onToggleSpotlight;
       this.onRefresh = onRefresh;
     }
-    setCitationBadges(badges) {
-      this.badges = badges;
-      this.render();
-    }
-    mount() {
-      if (this.sidebar?.isConnected) return true;
-      const deck = this.win.Zotero_Tabs?.deck;
-      const deckParent = deck?.parentElement;
-      if (!deck || !deckParent) return false;
-      const aside = this.doc.createXULElement ? this.doc.createXULElement("vbox") : this.doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "vbox");
-      aside.id = "zbf-sidebar";
-      const header = this.h("div", "zbf-sb-header");
-      const title = this.h("span", "zbf-sb-title");
-      title.append(createWorkspaceIcon(this.doc, "bridge", 14), this.doc.createTextNode("BridgeFlow"));
-      const actions = this.h("div", "zbf-sb-actions");
-      actions.append(
-        this.mkIconBtn("plus", "New Group", () => this.promptNewGroup()),
-        this.mkIconBtn("folder", "Auto-Group by Collection", () => {
-          this.tabs.autoGroupByCollection(this.win);
-          this.onRefresh();
-        }),
-        this.mkIconBtn("sleep", "Sleep Inactive Tabs", () => this.sleepInactiveTabs()),
-        this.mkIconBtn("sidebar", "Collapse Sidebar", () => {
-          this.prefs.set("workspace.verticalSidebarCollapsed", !this.prefs.get("workspace.verticalSidebarCollapsed"));
-          this.onRefresh();
-        })
-      );
-      header.append(title, actions);
-      const searchWrap = this.h("div", "zbf-sb-search-wrap");
-      const search = this.h("input", "zbf-sb-search");
-      search.type = "search";
-      search.placeholder = "Filter tabs, remarks, collections...";
-      search.addEventListener("input", () => this.renderList());
-      searchWrap.append(search);
-      const views = this.h("div", "zbf-sb-views");
-      for (const [mode, label] of [["groups", "分组"], ["collection", "集合"], ["status", "状态"]]) {
-        const btn = this.h("button", `zbf-sb-view-btn${this.viewMode === mode ? " active" : ""}`);
-        btn.type = "button";
-        btn.textContent = label;
-        btn.addEventListener("click", () => {
-          this.viewMode = mode;
-          Array.from(views.children).forEach((el, idx) => {
-            el.classList.toggle("active", ["groups", "collection", "status"][idx] === mode);
-          });
-          this.renderList();
-        });
-        views.append(btn);
-      }
-      const list = this.h("div", "zbf-sb-list");
-      const status = this.h("div", "zbf-sb-status");
-      const splitter = this.h("div", "zbf-sb-splitter");
-      this.bindSplitter(splitter, aside);
-      aside.append(header, searchWrap, views, list, status, splitter);
-      deckParent.insertBefore(aside, deck);
-      this.sidebar = aside;
-      this.listEl = list;
-      this.statusEl = status;
-      this.searchInput = search;
-      return true;
+    setWordCitationBadges(badges) {
+      this.wordCiteMap = new Map(badges);
     }
     render() {
-      if (!this.prefs.get("workspace.enableVerticalSidebar")) {
-        this.dispose();
-        return;
+      const mainDeck = this.doc.getElementById("zotero-main-window-deck") || this.doc.querySelector("#main-deck, #zotero-pane-stack")?.parentElement || this.doc.getElementById("zotero-pane")?.parentElement;
+      if (!mainDeck) return;
+      if (!this.asideEl || !this.asideEl.isConnected) {
+        this.doc.getElementById("zbf-sidebar")?.remove();
+        this.buildShell(mainDeck);
       }
-      if (!this.mount() || !this.sidebar) return;
-      const collapsed = this.prefs.get("workspace.verticalSidebarCollapsed");
-      this.sidebar.setAttribute("data-collapsed", collapsed ? "true" : "false");
-      this.sidebar.style.width = `${this.prefs.get("workspace.verticalSidebarWidth")}px`;
-      if (!collapsed) this.renderList();
+      if (!this.asideEl) return;
+      const enabled = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed");
+      this.asideEl.toggleAttribute("hidden", !enabled);
+      this.asideEl.setAttribute("data-collapsed", enabled ? "false" : "true");
+      if (!enabled) return;
+      const savedW = this.prefs.get("workspace.verticalSidebarWidth");
+      if (savedW >= 200 && savedW <= 440) this.asideEl.style.width = `${savedW}px`;
+      const fontSize = this.prefs.get("workspace.verticalTabFontSize");
+      if (fontSize >= 11 && fontSize <= 18) this.asideEl.style.fontSize = `${fontSize}px`;
+      for (const [mode, btn] of this.viewButtons) {
+        btn.classList.toggle("active", mode === this.viewMode);
+      }
+      this.renderList();
     }
-    renderList() {
-      if (!this.listEl || !this.statusEl) return;
-      const tracked = this.tabs.buildTrackedTabs(this.win);
-      const filter = (this.searchInput?.value || "").trim().toLowerCase();
-      const visible = filter ? tracked.filter((t) => `${t.title} ${t.remark} ${t.source} ${t.collection}`.toLowerCase().includes(filter)) : tracked;
-      this.listEl.textContent = "";
-      if (this.viewMode === "groups") this.renderByGroups(visible);
-      else if (this.viewMode === "collection") this.renderByKey(visible, (t) => t.collection || "Uncategorized");
-      else this.renderByStatus(visible);
-      const activeCount = tracked.filter((t) => !t.sleeping && !t.virtual).length;
-      const sleepCount = tracked.filter((t) => t.sleeping).length;
-      const virtualCount = tracked.filter((t) => t.virtual).length;
-      this.statusEl.textContent = `Active ${activeCount} · Sleep ${sleepCount} · Virtual ${virtualCount}`;
-    }
-    dispose() {
-      this.sidebar?.remove();
-      this.sidebar = null;
+    destroy() {
+      this.asideEl?.remove();
+      this.asideEl = null;
       this.listEl = null;
       this.statusEl = null;
-      this.searchInput = null;
+      this.selection = null;
+      this.viewButtons.clear();
     }
-    renderByGroups(tabs) {
-      if (!this.listEl) return;
-      const pinned = this.prefs.get("workspace.enablePinnedTabs") ? tabs.filter((t) => t.pinned) : [];
-      if (pinned.length) {
-        const pHead = this.h("div", "zbf-sb-group-head");
-        pHead.textContent = `📌 Pinned (${pinned.length})`;
-        this.listEl.append(pHead);
-        for (const tab of pinned) this.listEl.append(this.buildRow(tab, "Pinned"));
-      }
-      for (const group of this.store.state.groups) {
-        const members = tabs.filter((t) => !t.pinned && t.groupId === group.id);
-        const collapsed = this.store.state.collapsed.includes(group.id);
-        const head = this.h("div", "zbf-sb-group-head");
-        const left = this.h("span");
-        left.style.cssText = "display:inline-flex;align-items:center;gap:6px;";
-        const dot = this.h("span", "zbf-sb-group-dot");
-        dot.style.backgroundColor = group.color;
-        left.append(dot, this.doc.createTextNode(`${group.name} (${members.length})`));
-        head.append(left);
-        head.addEventListener("click", () => {
-          this.store.setCollapsed(group.id, !collapsed);
-          this.renderList();
-        });
-        head.addEventListener("contextmenu", (e) => this.menus.openGroupMenu(e, group));
-        head.addEventListener("dragover", (e) => {
-          if (this.draggedKey) e.preventDefault();
-        });
-        head.addEventListener("drop", (e) => {
-          e.preventDefault();
-          if (this.draggedKey) {
-            this.store.assignToGroup(this.draggedKey, group.id);
-            this.draggedKey = null;
-            this.onRefresh();
-          }
-        });
-        this.listEl.append(head);
-        if (!collapsed) {
-          for (const tab of members) this.listEl.append(this.buildRow(tab, group.name));
-        }
-      }
-      for (const tab of tabs.filter((t) => !t.pinned && !t.groupId)) {
-        this.listEl.append(this.buildRow(tab, ""));
-      }
-    }
-    renderByKey(tabs, keyFn) {
-      if (!this.listEl) return;
-      const buckets = /* @__PURE__ */ new Map();
-      for (const t of tabs) {
-        const k = keyFn(t);
-        const arr = buckets.get(k) || [];
-        arr.push(t);
-        buckets.set(k, arr);
-      }
-      for (const [label, list] of buckets.entries()) {
-        const head = this.h("div", "zbf-sb-group-head");
-        head.textContent = `${label} (${list.length})`;
-        this.listEl.append(head);
-        for (const t of list) this.listEl.append(this.buildRow(t, label));
-      }
-    }
-    renderByStatus(tabs) {
-      this.renderByKey(tabs, (t) => {
-        if (this.badges.has(t.parentItemID) || this.badges.has(t.itemID)) return "Cited in Word";
-        if (t.pinned) return "Pinned";
-        if (t.sleeping) return "Sleeping";
-        if (t.virtual) return "Virtual";
-        return "Active";
+    buildShell(mainDeck) {
+      const aside = this.doc.createElement("aside");
+      aside.id = "zbf-sidebar";
+      const header = this.doc.createElement("div");
+      header.className = "zbf-sb-header";
+      const title = this.doc.createElement("div");
+      title.className = "zbf-sb-title";
+      title.appendChild(createWorkspaceIcon(this.doc, "bridge", 14));
+      const titleText = this.doc.createElement("span");
+      titleText.textContent = "BridgeFlow 文献工作区";
+      title.appendChild(titleText);
+      const actions = this.doc.createElement("div");
+      actions.className = "zbf-sb-actions";
+      header.append(title, actions);
+      aside.appendChild(header);
+      const searchWrap = this.doc.createElement("div");
+      searchWrap.className = "zbf-sb-search-wrap";
+      const searchInput = this.doc.createElement("input");
+      searchInput.type = "search";
+      searchInput.className = "zbf-sb-search";
+      searchInput.placeholder = "筛选标题、作者、备注、分组...";
+      searchInput.value = this.searchTerm;
+      searchInput.addEventListener("input", () => {
+        this.searchTerm = searchInput.value;
+        this.renderList();
       });
-    }
-    buildRow(tab, groupName) {
-      const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
-      const cls = ["zbf-vtab-row", tab.tabID === selectedID ? "selected" : "", tab.sleeping ? "sleeping" : "", tab.virtual ? "virtual" : ""].filter(Boolean).join(" ");
-      const row = this.h("div", cls);
-      row.draggable = true;
-      row.addEventListener("dragstart", () => {
-        this.draggedKey = tab.key;
+      searchWrap.appendChild(searchInput);
+      aside.appendChild(searchWrap);
+      const views = this.doc.createElement("div");
+      views.className = "zbf-sb-views";
+      for (const [mode, label] of [["groups", "分组"], ["collections", "集合"], ["status", "状态"]]) {
+        const vBtn = this.doc.createElement("button");
+        vBtn.type = "button";
+        vBtn.className = "zbf-sb-view-btn";
+        vBtn.textContent = label;
+        vBtn.addEventListener("click", () => {
+          this.viewMode = mode;
+          this.render();
+        });
+        this.viewButtons.set(mode, vBtn);
+        views.appendChild(vBtn);
+      }
+      aside.appendChild(views);
+      const list = this.doc.createElement("div");
+      list.className = "zbf-sb-list";
+      aside.appendChild(list);
+      const status = this.doc.createElement("div");
+      status.className = "zbf-sb-status";
+      aside.appendChild(status);
+      const splitter = this.doc.createElement("div");
+      splitter.className = "zbf-sb-splitter";
+      bindSidebarSplitter(this.doc, aside, splitter, this.prefs);
+      aside.appendChild(splitter);
+      this.selection = new SidebarSelection(
+        this.doc,
+        this.prefs,
+        this.store,
+        actions,
+        aside,
+        list,
+        () => this.onRefresh(),
+        (ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true })
+      );
+      bindSidebarKeyboardNavigation(aside, list, searchInput, () => {
+        this.searchTerm = "";
+        searchInput.value = "";
+        this.renderList();
       });
-      row.addEventListener("dragend", () => {
-        this.draggedKey = null;
+      this.addHeaderBtn(actions, "plus", "新建分组", () => {
+        openTextPromptModal(this.win, "新建分组", "输入分组名称...", "新分组", (val) => {
+          if (!val.trim()) return;
+          this.store.createGroup(val);
+          this.onRefresh();
+        });
       });
-      row.style.minHeight = `${this.prefs.get("workspace.verticalTabRowHeight")}px`;
-      row.style.fontSize = `${this.prefs.get("workspace.verticalTabFontSize")}px`;
-      const main = this.h("div", "zbf-vtab-main");
-      const title = this.h("span", "zbf-vtab-title");
-      title.textContent = `${tab.virtual ? "◌ " : ""}${this.tabs.getDisplayTitle(tab)}`;
-      main.append(title);
-      const subMode = this.prefs.get("workspace.verticalTabSubtitleMode");
-      const subText = subMode === "none" ? "" : subMode === "creatorYear" ? tab.creatorYear : subMode === "collection" ? tab.collection : tab.source || tab.creatorYear;
-      if (subText) {
-        const sub = this.h("span", "zbf-vtab-sub");
-        sub.textContent = subText;
-        main.append(sub);
-      }
-      row.append(main);
-      const right = this.h("div", "zbf-vtab-right");
-      const badgeInfo = this.badges.get(tab.parentItemID) || this.badges.get(tab.itemID);
-      if (badgeInfo && this.prefs.get("fusion.sidebarCiteBadge")) {
-        const badge = this.h("span", "zbf-cite-badge");
-        badge.textContent = `[${badgeInfo.ordinal}]`;
-        badge.title = `${badgeInfo.documentName}: ${badgeInfo.shortText}`;
-        right.append(badge);
-      }
-      if (tab.itemID > 0 && this.prefs.get("workspace.enableShowInFilesystem")) {
-        const folderBtn = this.mkIconBtn("folder", "Reveal PDF Folder", () => {
-          this.win.ZoteroPane?.showAttachmentInFilesystem?.(tab.itemID);
-        }, "zbf-row-btn");
-        folderBtn.addEventListener("click", (e) => e.stopPropagation());
-        right.append(folderBtn);
-      }
-      if (tab.tabID) {
-        const closeBtn = this.mkIconBtn("close", "Close tab", () => {
-          void this.tabs.closeTabs(this.win, [tab.tabID], { protectPinned: true }).then(() => this.onRefresh());
-        }, "zbf-row-btn");
-        closeBtn.addEventListener("click", (e) => e.stopPropagation());
-        right.append(closeBtn);
-      }
-      row.append(right);
-      row.addEventListener("click", () => {
-        if (tab.tabID) this.tabs.selectTab(this.win, tab.tabID);
-        else void this.tabs.focusOrOpenItem(this.win, { itemID: tab.parentItemID, attachmentID: tab.itemID });
+      this.addHeaderBtn(actions, "folder", "按集合自动分组", () => {
+        this.tabs.autoGroupByCollection(this.win);
         this.onRefresh();
       });
-      row.addEventListener("contextmenu", (e) => this.menus.openTabMenu(e, tab));
-      if (this.prefs.get("workspace.enableHoverPreview")) {
-        row.addEventListener("mouseenter", () => this.hover.scheduleShow(row, tab, groupName, badgeInfo));
-        row.addEventListener("mouseleave", () => this.hover.hide());
+      if (this.prefs.get("workspace.enableSpotlight")) {
+        this.addHeaderBtn(actions, "search", "打开快速查找 (Ctrl+P)", () => this.onToggleSpotlight());
       }
-      return row;
-    }
-    bindSplitter(splitter, aside) {
-      splitter.addEventListener("mousedown", (ev) => {
-        ev.preventDefault();
-        const startX = ev.clientX;
-        const startW = aside.getBoundingClientRect().width || this.prefs.get("workspace.verticalSidebarWidth");
-        const onMove = (m) => {
-          const next = Math.max(200, Math.min(440, Math.round(startW + (m.clientX - startX))));
-          aside.style.width = `${next}px`;
-        };
-        const onUp = () => {
-          this.win.removeEventListener("mousemove", onMove);
-          this.win.removeEventListener("mouseup", onUp);
-          const finalW = Math.round(aside.getBoundingClientRect().width || startW);
-          this.prefs.set("workspace.verticalSidebarWidth", finalW);
-        };
-        this.win.addEventListener("mousemove", onMove);
-        this.win.addEventListener("mouseup", onUp);
+      if (this.prefs.get("workspace.enableSessions")) {
+        this.addHeaderBtn(actions, "archive", "打开工作区快照中心", (btn) => this.popover.openHub(btn));
+      }
+      this.addHeaderBtn(actions, "close", "收起文献工作区侧栏", () => {
+        this.prefs.set("workspace.verticalSidebarCollapsed", true);
+        this.onRefresh();
       });
+      mainDeck.parentElement?.insertBefore(aside, mainDeck);
+      this.asideEl = aside;
+      this.listEl = list;
+      this.statusEl = status;
     }
-    promptNewGroup() {
-      const promptSvc = globalThis.Services?.prompt;
-      if (promptSvc?.prompt) {
-        const input = { value: "" };
-        if (!promptSvc.prompt(this.win, "New Tab Group", "Group name:", input, null, {})) return;
-        if (input.value.trim()) this.store.createGroup(input.value);
-      } else {
-        this.store.createGroup(`Group ${this.store.state.groups.length + 1}`);
-      }
-      this.onRefresh();
-    }
-    sleepInactiveTabs() {
+    renderList() {
+      if (!this.listEl || !this.selection) return;
+      this.listEl.textContent = "";
+      const needle = this.searchTerm.trim().toLowerCase();
+      const allTracked = this.tabs.buildTrackedTabs(this.win);
+      const filtered = needle ? allTracked.filter((t) => `${t.title} ${t.shortTitle} ${t.creatorYear} ${t.collection} ${t.remark}`.toLowerCase().includes(needle)) : allTracked;
+      this.selection.beginRender(filtered);
       const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
-      for (const tab of this.tabs.buildTrackedTabs(this.win)) {
-        if (tab.tabID && tab.tabID !== selectedID && !tab.pinned && !tab.sleeping && !tab.virtual) {
-          this.tabs.sleepTab(this.win, tab.tabID);
+      const rowDeps = {
+        win: this.win,
+        doc: this.doc,
+        prefs: this.prefs,
+        store: this.store,
+        tabs: this.tabs,
+        menus: this.menus,
+        hover: this.hover,
+        selection: this.selection,
+        wordCiteMap: this.wordCiteMap,
+        selectedID,
+        onRefresh: this.onRefresh
+      };
+      if (!filtered.length) {
+        this.renderEmptyState(allTracked.length > 0);
+      } else if (this.viewMode === "groups") {
+        const pinned = filtered.filter((t) => !t.virtual && t.pinned);
+        if (pinned.length) this.appendSimpleSection("已固定标签", "#f59e0b", pinned, rowDeps);
+        for (const grp of this.store.state.groups) {
+          const members = filtered.filter((t) => (t.virtual || !t.pinned) && t.groupId === grp.id);
+          const collapsed = this.store.state.collapsed.includes(grp.id);
+          const head = this.doc.createElement("button");
+          head.type = "button";
+          head.className = "zbf-sb-group-head";
+          head.tabIndex = 0;
+          head.setAttribute("data-zbf-nav", "head");
+          const dot = this.doc.createElement("span");
+          dot.className = "zbf-sb-group-dot";
+          dot.style.background = grp.color;
+          const label = this.doc.createElement("span");
+          label.textContent = `${collapsed ? "▸" : "▾"} ${grp.name} (${members.length})`;
+          head.append(dot, label);
+          head.addEventListener("click", () => {
+            this.store.setCollapsed(grp.id, !collapsed);
+            this.renderList();
+          });
+          head.addEventListener("dblclick", (e) => {
+            e.stopPropagation();
+            openTextPromptModal(this.win, "重命名分组", "输入新的分组名称...", grp.name, (val) => {
+              if (this.store.renameGroup(grp.id, val)) this.onRefresh();
+            });
+          });
+          head.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            this.menus.openGroupMenu(head, grp, e);
+          });
+          bindSidebarGroupDrop(head, grp.id, this.win, this.store, this.tabs, this.onRefresh);
+          this.listEl.appendChild(head);
+          if (!collapsed) {
+            for (const tab of members) this.listEl.appendChild(buildSidebarTabRow(rowDeps, tab));
+          }
         }
+        const ungrouped = filtered.filter((t) => !t.pinned && !t.groupId);
+        if (ungrouped.length) this.appendSimpleSection("未分组", "#64748b", ungrouped, rowDeps);
+      } else if (this.viewMode === "collections") {
+        renderSidebarCollectionsList(this.listEl, rowDeps, filtered);
+      } else {
+        this.renderStatusView(filtered, rowDeps);
       }
-      this.onRefresh();
+      this.renderFooter(allTracked);
+      this.selection.updateControls();
     }
-    mkIconBtn(icon, title, onClick, cls = "zbf-sb-icon-btn") {
-      const btn = this.h("button", cls);
+    renderStatusView(filtered, rowDeps) {
+      const cited = filtered.filter((t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID));
+      const pinned = filtered.filter((t) => !t.virtual && t.pinned);
+      const active = filtered.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
+      const sleeping = filtered.filter((t) => !t.virtual && t.sleeping);
+      const virtual = filtered.filter((t) => t.virtual);
+      if (cited.length) this.appendSimpleSection("Word 正在引用", "#0D9488", cited, rowDeps);
+      if (pinned.length) this.appendSimpleSection("已固定", "#f59e0b", pinned, rowDeps);
+      if (active.length) this.appendSimpleSection("当前活动", "#245ac7", active, rowDeps);
+      if (sleeping.length) this.appendSimpleSection("已休眠", "#8b5cf6", sleeping, rowDeps);
+      if (virtual.length) this.appendSimpleSection("虚拟保留", "#64748b", virtual, rowDeps);
+    }
+    appendSimpleSection(title, color, tabsList, rowDeps) {
+      if (!this.listEl) return;
+      appendSidebarSectionHead(this.doc, this.listEl, `${title} (${tabsList.length})`, color);
+      for (const tab of tabsList) this.listEl.appendChild(buildSidebarTabRow(rowDeps, tab));
+    }
+    renderEmptyState(hasAnyTabs) {
+      if (!this.listEl) return;
+      this.listEl.appendChild(renderSidebarEmptyBox(
+        this.doc,
+        this.win,
+        hasAnyTabs,
+        () => {
+          this.searchTerm = "";
+          const inp = this.asideEl?.querySelector(".zbf-sb-search");
+          if (inp) inp.value = "";
+          this.renderList();
+        },
+        () => this.popover.openHub()
+      ));
+    }
+    renderFooter(allTracked) {
+      if (this.statusEl) {
+        renderSidebarStatusBar(this.doc, this.win, this.statusEl, this.prefs, this.tabs, allTracked, this.onRefresh);
+      }
+    }
+    addHeaderBtn(container, icon, title, onClick) {
+      const btn = this.doc.createElement("button");
       btn.type = "button";
+      btn.className = "zbf-sb-icon-btn";
       btn.title = title;
-      btn.append(createWorkspaceIcon(this.doc, icon, 14));
-      btn.addEventListener("click", onClick);
-      return btn;
-    }
-    h(tag, className) {
-      const el = this.doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-      if (className) el.className = className;
-      return el;
+      btn.appendChild(createWorkspaceIcon(this.doc, icon, 14));
+      btn.addEventListener("click", () => onClick(btn));
+      container.appendChild(btn);
     }
   };
 
+  // src/domains/workspace/workspace-hub-helpers.ts
+  async function exportWorkspaceJson(win, store) {
+    const json = store.exportJson();
+    const ZoteroObj = globalThis.Zotero;
+    try {
+      const fp = ZoteroObj?.File?.FilePicker ? new ZoteroObj.File.FilePicker() : null;
+      if (fp?.init) {
+        fp.init(win, "导出工作区备份 (JSON)", fp.modeSave ?? 1);
+        fp.appendFilter("JSON 文件", "*.json");
+        fp.defaultString = `BridgeFlow-Workspace-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`;
+        const rv = await fp.show();
+        if (rv !== void 0 && fp.file) {
+          await ZoteroObj.File.putContentsAsync(fp.file, json);
+          return "已导出工作区 JSON 文件";
+        }
+        return "";
+      }
+    } catch {
+    }
+    try {
+      await win.navigator.clipboard?.writeText?.(json);
+      return "已复制工作区 JSON 到剪贴板";
+    } catch {
+      openTextPromptModal(win, "工作区 JSON 备份（请全选复制）", "", json, () => {
+      });
+      return "";
+    }
+  }
+  async function importWorkspaceJsonInteractive(win, store, onImported) {
+    const ZoteroObj = globalThis.Zotero;
+    try {
+      const fp = ZoteroObj?.File?.FilePicker ? new ZoteroObj.File.FilePicker() : null;
+      if (fp?.init) {
+        fp.init(win, "导入工作区备份 (JSON)", fp.modeOpen ?? 0);
+        fp.appendFilter("JSON 文件", "*.json");
+        const rv = await fp.show();
+        if (rv !== void 0 && fp.file) {
+          const content = await ZoteroObj.File.getContentsAsync(fp.file);
+          if (content && store.importJson(String(content))) {
+            onImported();
+          }
+          return;
+        }
+        return;
+      }
+    } catch {
+    }
+    openTextPromptModal(win, "导入工作区 JSON", "请在此粘贴工作区 JSON 内容...", "", (raw) => {
+      if (raw && store.importJson(raw)) {
+        onImported();
+      }
+    });
+  }
+  function renderSessionSection(doc, titleText, sessions, emptyText, onRestore, onDelete) {
+    const wrap = doc.createElement("div");
+    wrap.className = "zbf-hub-section";
+    const heading = doc.createElement("div");
+    heading.className = "zbf-hub-section-title";
+    heading.textContent = titleText;
+    wrap.appendChild(heading);
+    if (!sessions.length) {
+      const empty = doc.createElement("div");
+      empty.className = "zbf-hub-empty";
+      empty.textContent = emptyText;
+      wrap.appendChild(empty);
+      return wrap;
+    }
+    for (const session of sessions) {
+      const card = doc.createElement("div");
+      card.className = "zbf-hub-card";
+      const info = doc.createElement("div");
+      info.className = "zbf-hub-card-info";
+      const nameEl = doc.createElement("div");
+      nameEl.className = "zbf-hub-card-name";
+      nameEl.textContent = session.isTemplate ? `[模板] ${session.name}` : session.name;
+      const metaEl = doc.createElement("div");
+      metaEl.className = "zbf-hub-card-meta";
+      const dt = new Date(session.createdAt || Date.now()).toLocaleString();
+      metaEl.textContent = `${dt} · ${session.groups.length} 个分组 · ${session.pinnedKeys.length} 个固定`;
+      info.append(nameEl, metaEl);
+      const btns = doc.createElement("div");
+      btns.className = "zbf-hub-card-actions";
+      const restoreBtn = doc.createElement("button");
+      restoreBtn.type = "button";
+      restoreBtn.className = "zbf-hub-btn primary";
+      restoreBtn.textContent = "恢复";
+      restoreBtn.addEventListener("click", () => onRestore(session));
+      const delBtn = doc.createElement("button");
+      delBtn.type = "button";
+      delBtn.className = "zbf-hub-btn";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", () => onDelete(session.id));
+      btns.append(restoreBtn, delBtn);
+      card.append(info, btns);
+      wrap.appendChild(card);
+    }
+    return wrap;
+  }
+
   // src/domains/workspace/workspace-popover.ts
-  var WorkspacePopoverController = class {
-    panel = null;
-    listEl = null;
-    nameInput = null;
+  var WorkspacePopover = class {
     win;
     doc;
+    prefs;
     store;
     tabs;
     onRefresh;
-    constructor(win, doc, store, tabs, onRefresh) {
+    activeBackdrop = null;
+    activePopup = null;
+    boundOutside = null;
+    constructor(win, prefs, store, tabs, onRefresh) {
       this.win = win;
-      this.doc = doc;
+      this.doc = win.document;
+      this.prefs = prefs;
       this.store = store;
       this.tabs = tabs;
       this.onRefresh = onRefresh;
     }
-    toggle(anchor) {
-      this.ensureMounted();
-      if (!this.panel) return;
-      if (this.panel.state === "open") {
-        this.close();
-        return;
+    openHub(_anchor) {
+      this.close();
+      const host2 = this.doc.documentElement || this.doc.body;
+      if (!host2) return;
+      const backdrop = this.doc.createElement("div");
+      backdrop.id = "zbf-hub-backdrop";
+      backdrop.addEventListener("click", (e) => {
+        if (e.target === backdrop) this.close();
+      });
+      const modal = this.doc.createElement("div");
+      modal.className = "zbf-hub-box";
+      const header = this.doc.createElement("div");
+      header.className = "zbf-hub-head";
+      const title = this.doc.createElement("div");
+      title.className = "zbf-hub-title";
+      title.textContent = "工作区与会话快照中心";
+      const closeBtn = this.doc.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "zbf-hub-close";
+      closeBtn.textContent = "✕";
+      closeBtn.addEventListener("click", () => this.close());
+      header.append(title, closeBtn);
+      const nameInput = this.doc.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "zbf-hub-input";
+      nameInput.placeholder = "输入工作区快照或模板名称（如：论文修改轮次）...";
+      const statusEl = this.doc.createElement("div");
+      statusEl.className = "zbf-hub-status";
+      const actions = this.doc.createElement("div");
+      actions.className = "zbf-hub-actions";
+      const saveBtn = this.doc.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "zbf-hub-btn primary";
+      saveBtn.textContent = "保存当前快照";
+      saveBtn.addEventListener("click", () => {
+        const name = nameInput.value.trim() || `快照 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`;
+        this.store.saveSession(name, { isTemplate: false });
+        nameInput.value = "";
+        statusEl.textContent = `已保存工作区快照「${name}」`;
+        renderLists();
+      });
+      const tplBtn = this.doc.createElement("button");
+      tplBtn.type = "button";
+      tplBtn.className = "zbf-hub-btn";
+      tplBtn.textContent = "存为分组模板";
+      tplBtn.addEventListener("click", () => {
+        const name = nameInput.value.trim() || `模板 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`;
+        this.store.saveSession(name, { isTemplate: true });
+        nameInput.value = "";
+        statusEl.textContent = `已保存结构模板「${name}」`;
+        renderLists();
+      });
+      const exportBtn = this.doc.createElement("button");
+      exportBtn.type = "button";
+      exportBtn.className = "zbf-hub-btn";
+      exportBtn.textContent = "导出 JSON";
+      exportBtn.addEventListener("click", async () => {
+        const msg = await exportWorkspaceJson(this.win, this.store);
+        if (msg) statusEl.textContent = msg;
+      });
+      const importBtn = this.doc.createElement("button");
+      importBtn.type = "button";
+      importBtn.className = "zbf-hub-btn";
+      importBtn.textContent = "导入 JSON";
+      importBtn.addEventListener("click", async () => {
+        await importWorkspaceJsonInteractive(this.win, this.store, () => {
+          statusEl.textContent = "已导入工作区状态";
+          renderLists();
+          this.onRefresh();
+        });
+      });
+      actions.append(saveBtn, tplBtn, exportBtn, importBtn);
+      const listsWrap = this.doc.createElement("div");
+      listsWrap.className = "zbf-hub-lists";
+      const renderLists = () => {
+        listsWrap.textContent = "";
+        listsWrap.appendChild(renderSessionSection(
+          this.doc,
+          "已保存快照与模板",
+          this.store.state.sessions,
+          "暂无已保存的快照或模板，可在上方输入名称保存。",
+          (ses) => {
+            this.close();
+            void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
+          },
+          (id) => {
+            this.store.deleteSession(id);
+            renderLists();
+          }
+        ));
+        listsWrap.appendChild(renderSessionSection(
+          this.doc,
+          "自动滚动快照",
+          this.store.state.rollingSessions,
+          "暂无自动滚动快照。",
+          (ses) => {
+            this.close();
+            void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
+          },
+          (id) => {
+            this.store.deleteSession(id);
+            renderLists();
+          }
+        ));
+      };
+      renderLists();
+      modal.append(header, nameInput, actions, statusEl, listsWrap);
+      backdrop.appendChild(modal);
+      host2.appendChild(backdrop);
+      this.activeBackdrop = backdrop;
+      this.win.setTimeout(() => nameInput.focus(), 10);
+    }
+    openStaleMenu(anchor, event) {
+      this.close();
+      const pop = createFloatingPopup(this.doc, anchor, event, 280);
+      if (!pop) return;
+      const days = this.prefs.get("workspace.staleSuggestDays");
+      const stale = this.tabs.findStaleTabs(this.win);
+      const title = this.doc.createElement("div");
+      title.className = "zbf-popup-header";
+      title.textContent = `建议清理的标签页（超过 ${days} 天未查看：${stale.length} 篇）`;
+      pop.appendChild(title);
+      if (!stale.length) {
+        const empty = this.doc.createElement("div");
+        empty.className = "zbf-popup-empty";
+        empty.textContent = "当前没有长期未查看的陈旧标签页。";
+        pop.appendChild(empty);
+      } else {
+        for (const tab of stale.slice(0, 12)) {
+          const row = this.doc.createElement("div");
+          row.className = "zbf-stale-row";
+          const label = this.doc.createElement("span");
+          label.className = "zbf-stale-title";
+          label.textContent = this.tabs.getDisplayTitle(tab);
+          label.addEventListener("click", () => {
+            this.close();
+            this.tabs.selectTab(this.win, tab.tabID);
+            this.onRefresh();
+          });
+          const sleepBtn = this.doc.createElement("button");
+          sleepBtn.type = "button";
+          sleepBtn.className = "zbf-mini-btn";
+          sleepBtn.textContent = "休眠";
+          sleepBtn.addEventListener("click", () => {
+            this.tabs.sleepTab(this.win, tab.tabID);
+            this.close();
+            this.onRefresh();
+          });
+          const closeBtn = this.doc.createElement("button");
+          closeBtn.type = "button";
+          closeBtn.className = "zbf-mini-btn danger";
+          closeBtn.textContent = "关闭";
+          closeBtn.addEventListener("click", () => {
+            void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+            this.close();
+            this.onRefresh();
+          });
+          row.append(label, sleepBtn, closeBtn);
+          pop.appendChild(row);
+        }
+        addPopupSeparator(this.doc, pop);
+        const footer = this.doc.createElement("div");
+        footer.className = "zbf-stale-footer";
+        const sleepAll = this.doc.createElement("button");
+        sleepAll.type = "button";
+        sleepAll.className = "zbf-mini-btn";
+        sleepAll.textContent = "全部休眠";
+        sleepAll.addEventListener("click", () => {
+          for (const t of stale) this.tabs.sleepTab(this.win, t.tabID);
+          this.close();
+          this.onRefresh();
+        });
+        const closeAll = this.doc.createElement("button");
+        closeAll.type = "button";
+        closeAll.className = "zbf-mini-btn danger";
+        closeAll.textContent = "全部关闭";
+        closeAll.addEventListener("click", () => {
+          void this.tabs.closeTabs(this.win, stale.map((t) => t.tabID), { preserveVirtual: true, protectPinned: true });
+          this.close();
+          this.onRefresh();
+        });
+        footer.append(sleepAll, closeAll);
+        pop.appendChild(footer);
       }
-      this.render();
-      try {
-        this.panel.openPopup(anchor, "bottomleft topleft", 0, 4, false, false);
-      } catch {
-      }
+      this.activePopup = pop;
+      this.boundOutside = (e) => {
+        if (!pop.contains(e.target)) this.close();
+      };
+      this.win.setTimeout(() => {
+        if (this.boundOutside) this.doc.addEventListener("mousedown", this.boundOutside, true);
+      }, 15);
     }
     close() {
-      try {
-        this.panel?.hidePopup?.();
-      } catch {
+      this.activeBackdrop?.remove();
+      this.activeBackdrop = null;
+      this.activePopup?.remove();
+      this.activePopup = null;
+      if (this.boundOutside) {
+        this.doc.removeEventListener("mousedown", this.boundOutside, true);
+        this.boundOutside = null;
       }
     }
-    dispose() {
+    destroy() {
       this.close();
-      this.panel?.remove?.();
-      this.panel = null;
-      this.listEl = null;
-      this.nameInput = null;
-    }
-    ensureMounted() {
-      if (this.panel) return;
-      const popupset = this.doc?.getElementById?.("mainPopupSet") || this.doc?.querySelector?.("popupset");
-      if (!popupset) return;
-      const xul = this.doc.createXULElement ? this.doc.createXULElement("panel") : this.doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "panel");
-      xul.id = "zbf-workspace-panel";
-      xul.setAttribute("orient", "vertical");
-      const box = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      box.className = "zbf-spot-box";
-      box.style.width = "360px";
-      const row = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      row.style.cssText = "display:flex;gap:6px;";
-      const input = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "input");
-      input.type = "text";
-      input.className = "zbf-spot-input";
-      input.placeholder = "Workspace snapshot name...";
-      const saveBtn = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-      saveBtn.type = "button";
-      saveBtn.className = "zbf-tb-btn";
-      saveBtn.textContent = "Save";
-      saveBtn.addEventListener("click", () => {
-        this.store.saveSession(input.value || `Workspace ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`);
-        input.value = "";
-        this.render();
-        this.onRefresh();
-      });
-      row.append(input, saveBtn);
-      const list = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      list.className = "zbf-spot-results";
-      box.append(row, list);
-      xul.append(box);
-      popupset.append(xul);
-      this.panel = xul;
-      this.nameInput = input;
-      this.listEl = list;
-    }
-    render() {
-      if (!this.listEl) return;
-      this.listEl.textContent = "";
-      const all = [
-        ...this.store.state.sessions.map((s) => ({ session: s, kind: "Saved" })),
-        ...this.store.state.rollingSessions.map((s) => ({ session: s, kind: "Auto" }))
-      ];
-      if (!all.length) {
-        const empty = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-        empty.style.cssText = "padding:10px;opacity:0.65;text-align:center;";
-        empty.textContent = "No workspace snapshots yet";
-        this.listEl.append(empty);
-        return;
-      }
-      for (const { session, kind } of all) {
-        const item = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-        item.className = "zbf-spot-row";
-        const title = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        title.textContent = `${session.name} (${session.groups.length} groups)`;
-        const right = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        right.style.cssText = "display:inline-flex;gap:4px;align-items:center;";
-        const badge = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        badge.className = "zbf-spot-badge";
-        badge.textContent = kind;
-        const restoreBtn = this.doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-        restoreBtn.type = "button";
-        restoreBtn.className = "zbf-tb-btn";
-        restoreBtn.textContent = "Restore";
-        restoreBtn.addEventListener("click", () => {
-          void this.restoreSession(session);
-        });
-        right.append(badge, restoreBtn);
-        item.append(title, right);
-        this.listEl.append(item);
-      }
-    }
-    async restoreSession(session) {
-      this.store.restoreSessionLayout(session);
-      for (const group of session.groups) {
-        for (const key of group.memberKeys) {
-          const idMatch = key.match(/^item:(\d+)$/);
-          if (idMatch) {
-            await this.tabs.focusOrOpenItem(this.win, {
-              itemID: Number(idMatch[1]),
-              attachmentID: Number(idMatch[1]),
-              preferExistingTab: true
-            });
-          }
-        }
-      }
-      this.close();
-      this.onRefresh();
     }
   };
 
@@ -5459,281 +7435,466 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   --zbf-border: var(--material-border, light-dark(rgba(0,0,0,0.09), rgba(255,255,255,0.1)));
   --zbf-text: var(--fill-primary, light-dark(#1f2328, #e6edf3));
   --zbf-muted: var(--fill-secondary, light-dark(#6e7781, #9198a1));
-  --zbf-hover: light-dark(rgba(0,0,0,0.05), rgba(255,255,255,0.08));
+  --zbf-hover: light-dark(rgba(0,0,0,0.05), rgba(255,255,255,0.07));
   --zbf-accent: var(--accent-blue, light-dark(#245ac7, #6ea8fe));
+  --zbf-accent-soft: color-mix(in srgb, var(--zbf-accent) 13%, transparent);
 }
 
 #tab-bar-container[data-zbf-inline]:not([hidden]) { flex: 1 1 0%; min-width: 0; overflow: hidden; }
 #tab-bar-container[data-zbf-inline] > div { min-width: 0; flex: 1 1 0%; }
-#tab-bar-container[data-zbf-inline] .tab-bar-inner-container { min-width: 0; min-height: var(--tab-min-height, 36px); align-items: center; }
+#tab-bar-container[data-zbf-inline] .tab-bar-inner-container { --zbf-tab-height: 28px; min-width: 0; min-height: var(--tab-min-height, 36px); align-items: center; }
+#tab-bar-container[data-zbf-inline] ~ #zotero-tabs-toolbar { flex: 0 0 auto; -moz-window-dragging: no-drag; }
+#tab-bar-container[data-zbf-inline] .pinned-tabs { display: block !important; flex: 0 1 auto; min-width: 0; max-width: 42%; padding: 0; -moz-window-dragging: no-drag; }
+#tab-bar-container[data-zbf-inline] .pinned-tabs .tabs { padding: 4px 1px; position: static; overflow: visible; }
+#tab-bar-container[data-zbf-inline] .pinned-tabs .tab { flex: 0 1 200px; min-width: 0; max-width: 200px; height: var(--zbf-tab-height); -moz-window-dragging: no-drag; }
 #tab-bar-container[data-zbf-inline] .tabs-wrapper,
 #tab-bar-container[data-zbf-inline] .scroll-start-arrow,
 #tab-bar-container[data-zbf-inline] .scroll-end-arrow { display: none !important; }
 
-#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions * {
+#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop * {
   -moz-window-dragging: no-drag;
 }
 
 #zbf-inline {
   display: flex; align-items: center; flex: 1 1 0%; min-width: 0; min-height: var(--tab-min-height, 36px);
-  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; gap: 6px; padding: 0 6px;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; gap: 6px; padding: 0 6px; box-sizing: border-box;
   font: 12px system-ui, "Microsoft YaHei UI", sans-serif; color: var(--zbf-text);
 }
-#zbf-inline[hidden], .zbf-pinned-strip[hidden] { display: none !important; }
+#zbf-inline[hidden], .zbf-pinned-strip[hidden], .zbf-hheading[hidden], .zbf-hsection-body[hidden] { display: none !important; }
 
 .zbf-pinned-strip {
-  display: flex; align-items: center; gap: 4px; max-width: 32%; min-width: 0;
+  display: flex; align-items: center; gap: 4px; max-width: 35%; min-width: 0; min-height: var(--tab-min-height, 36px);
   padding-inline: 4px; border-inline-end: 1px solid var(--zbf-border);
-  overflow-x: auto; scrollbar-width: none; flex: 0 1 auto;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none; flex: 0 1 auto;
 }
 .zbf-pinned-chip {
-  display: inline-flex; align-items: center; gap: 4px; height: 26px; max-width: 120px; padding: 0 8px;
-  border: 0; border-radius: 6px; background: color-mix(in srgb, #f59e0b 14%, transparent);
-  color: var(--zbf-text); font: 12px system-ui, sans-serif; cursor: pointer; flex: none;
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 116px; padding: 0 9px;
+  border: 0; border-radius: 6px; background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: var(--zbf-text); font: 12px system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer; flex: none;
 }
 .zbf-pinned-chip.icon-only { max-width: 28px; padding: 0 7px; }
 .zbf-pinned-chip.selected { background: var(--zbf-card); box-shadow: 0 0 0 1px var(--zbf-border); font-weight: 600; }
 .zbf-pinned-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-pinned-more {
+  height: 28px; padding: 0 7px; border-radius: 6px; border: 1px solid var(--zbf-border);
+  background: var(--zbf-card); color: var(--zbf-muted); font: 600 11px system-ui, sans-serif; cursor: pointer; flex: none;
+}
 
-.zbf-hsection { position: relative; display: inline-flex; align-items: center; gap: 4px; height: 28px; flex: none; }
+.zbf-hsection { position: relative; display: inline-flex; align-items: center; flex: none; height: 28px; gap: 4px; }
+.zbf-hsection-body { display: contents; }
 .zbf-hsection[data-grouped="true"]::after {
   content: ""; position: absolute; left: 2px; right: 2px; bottom: -3px; height: 2px; border-radius: 1px;
-  background: var(--zbf-gcolor, var(--zbf-accent)); pointer-events: none;
+  background: color-mix(in srgb, var(--zbf-gcolor, var(--zbf-accent)) 72%, transparent); pointer-events: none;
 }
-.zbf-group-pill {
-  display: inline-flex; align-items: center; gap: 4px; height: 24px; max-width: 160px; padding: 0 9px;
-  border: 0; border-radius: 6px; color: #fff; font: 600 12px/1 system-ui, sans-serif;
-  cursor: pointer; white-space: nowrap; flex: none; overflow: hidden; text-overflow: ellipsis;
+.zbf-hheading {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 180px; height: 28px; padding: 0 9px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--zbf-text);
+  font: 600 12px/1 system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer; white-space: nowrap; flex: none;
+  overflow: hidden; text-overflow: ellipsis;
 }
+.zbf-hheading:hover { background: var(--zbf-hover); }
 .zbf-htab {
-  display: inline-flex; align-items: center; gap: 5px; height: 26px; max-width: 175px; padding: 0 8px;
-  border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--zbf-text);
-  font: 12px system-ui, sans-serif; cursor: pointer; flex: none;
+  display: inline-flex; align-items: center; gap: 4px; height: 28px; max-width: 185px; padding-inline: 10px 6px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--zbf-muted);
+  font: 12px system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer; flex: none; transition: background .12s, color .12s;
 }
-.zbf-htab:hover { background: var(--zbf-hover); }
-.zbf-htab.selected { background: var(--zbf-card); border-color: var(--zbf-border); font-weight: 600; }
-.zbf-htab.sleeping { opacity: 0.6; }
-.zbf-htab.virtual { opacity: 0.68; border-style: dashed; border-color: var(--zbf-border); }
-.zbf-htab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 132px; }
+.zbf-htab:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-htab.selected { background: var(--zbf-card); color: var(--zbf-text); box-shadow: 0 0 0 1px var(--zbf-border), 0 1px 2px rgba(0,0,0,0.06); font-weight: 600; }
+.zbf-htab.sleeping { opacity: 0.65; }
+.zbf-htab.virtual { opacity: 0.62; box-shadow: inset 0 0 0 1px var(--zbf-border); }
+.zbf-htab[data-zbf-drop="stack"] { outline: 2px solid var(--zbf-accent); outline-offset: -2px; }
+.zbf-htab.zbf-chip-collapsed { min-width: 30px; max-width: 36px; padding-inline: 8px; justify-content: center; background: color-mix(in srgb, currentColor 5%, transparent); }
+.zbf-htab.zbf-chip-collapsed .zbf-htab-close { display: none; }
+.zbf-htab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-htab-close {
-  display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
-  border: 0; border-radius: 4px; background: transparent; color: var(--zbf-muted); cursor: pointer; opacity: 0;
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; color: var(--zbf-muted); cursor: pointer; opacity: 0; flex: none;
 }
-.zbf-htab:hover .zbf-htab-close, .zbf-htab.selected .zbf-htab-close { opacity: 0.85; }
-.zbf-htab-close:hover { background: var(--zbf-hover); color: var(--zbf-text); opacity: 1; }
+.zbf-htab:hover .zbf-htab-close, .zbf-htab.selected .zbf-htab-close { opacity: 1; }
+.zbf-htab-close:hover { background: var(--zbf-hover); color: var(--zbf-text); }
 .zbf-add-group {
-  display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
-  border: 1px dashed var(--zbf-border); border-radius: 6px; background: transparent; color: var(--zbf-muted); cursor: pointer; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--zbf-muted); cursor: pointer; flex: none;
 }
-.zbf-add-group:hover { color: var(--zbf-text); background: var(--zbf-hover); }
+.zbf-add-group:hover { background: var(--zbf-hover); color: var(--zbf-text); }
 .zbf-inline-edit {
-  height: 24px; width: 120px; padding: 0 6px; border-radius: 5px;
-  border: 1px solid var(--zbf-accent); background: var(--zbf-card); color: var(--zbf-text); font: 12px system-ui, sans-serif;
+  height: 28px; min-width: 84px; max-width: 180px; padding: 0 8px; box-sizing: border-box;
+  border: 1.5px solid var(--zbf-accent); border-radius: 6px; background: var(--zbf-card); color: var(--zbf-text);
+  font: 12px system-ui, "Microsoft YaHei UI", sans-serif; outline: none;
 }
 
-#zbf-toolbar-actions { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; flex: none; }
-.zbf-tb-btn {
-  display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 7px;
-  border: 1px solid var(--zbf-border); border-radius: 6px;
-  background: var(--zbf-card); color: var(--zbf-text);
-  font: 500 12px/1 system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer;
+#zbf-toolbar-actions {
+  display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto;
+  margin-inline: 4px 6px; padding-inline-start: 5px; border-inline-start: 1px solid var(--zbf-border);
 }
-.zbf-tb-btn:hover { background: var(--zbf-hover); border-color: var(--zbf-accent); }
-.zbf-tb-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--zbf-accent) 14%, transparent); border-color: var(--zbf-accent); }
-.zbf-tb-icon { flex: none; display: inline-block; }
+#zbf-toolbar-actions[hidden] { display: none !important; }
+.zbf-tb-btn {
+  appearance: none; position: relative; display: inline-flex; align-items: center; justify-content: center;
+  flex: none; gap: 4px; height: 28px; min-width: 28px; box-sizing: border-box; padding: 0 6px;
+  border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--zbf-text);
+  font: 12px/1 system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer; white-space: nowrap;
+}
+.zbf-tb-btn:hover { background: var(--zbf-hover); }
+.zbf-tb-btn[aria-pressed="true"]::after {
+  content: ""; position: absolute; inset-inline: 8px; bottom: 2px; height: 1px; background: currentColor; opacity: .65;
+}
+.zbf-tb-count {
+  min-width: 13px; padding: 1px 3px; border: 1px solid var(--zbf-border); border-radius: 4px;
+  color: var(--zbf-muted); font-size: 10px; font-variant-numeric: tabular-nums; line-height: 1;
+}
+.zbf-tb-btn.attention .zbf-tb-count { color: var(--zbf-text); font-weight: 600; }
 
 #zbf-sidebar {
-  display: flex; flex-direction: column; width: 276px; min-width: 200px; max-width: 440px;
+  position: relative; z-index: 3; display: flex; flex-direction: column; width: 276px; min-width: 200px; max-width: 440px; min-height: 0;
   background: var(--zbf-surface); color: var(--zbf-text); border-inline-end: 1px solid var(--zbf-border);
-  font: 13px system-ui, "Microsoft YaHei UI", sans-serif; position: relative; flex: none;
+  font: 13px system-ui, "Microsoft YaHei UI", sans-serif; flex-shrink: 0; overflow: hidden;
 }
-#zbf-sidebar[data-collapsed="true"] { display: none; }
-.zbf-sb-splitter {
-  position: absolute; top: 0; right: -3px; bottom: 0; width: 6px; cursor: ew-resize; z-index: 5;
-}
-.zbf-sb-splitter:hover { background: color-mix(in srgb, var(--zbf-accent) 35%, transparent); }
-.zbf-sb-header { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--zbf-border); }
-.zbf-sb-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
-.zbf-sb-actions { display: inline-flex; align-items: center; gap: 3px; }
+#zbf-sidebar[hidden], #zbf-sidebar[data-collapsed="true"] { display: none !important; }
+.zbf-sb-splitter { position: absolute; top: 0; right: -3px; bottom: 0; width: 6px; cursor: col-resize; z-index: 5; }
+.zbf-sb-splitter:hover { background: var(--zbf-accent); opacity: 0.4; }
+.zbf-sb-header { display: flex; align-items: center; justify-content: space-between; height: 34px; padding: 0 8px 0 10px; border-bottom: 1px solid var(--zbf-border); }
+.zbf-sb-title { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 12px; }
+.zbf-sb-actions { display: inline-flex; align-items: center; gap: 2px; flex: none; }
 .zbf-sb-icon-btn {
   display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
-  padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--zbf-text); cursor: pointer;
+  padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--zbf-muted); cursor: pointer;
 }
-.zbf-sb-icon-btn:hover { background: var(--zbf-hover); }
-.zbf-sb-search-wrap { padding: 6px 10px; }
+.zbf-sb-icon-btn:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-sb-actions > button[data-batch-toggle] {
+  min-height: 22px; padding-inline: 5px; border: 1px solid var(--zbf-border); border-radius: 4px;
+  color: var(--zbf-text); background: var(--zbf-card); font: 11px system-ui, sans-serif; cursor: pointer;
+}
+.zbf-sb-actions > button[aria-pressed="true"] { background: var(--zbf-accent-soft); border-color: var(--zbf-accent); }
+.zbf-sb-search-wrap { padding: 8px 8px 4px; }
 .zbf-sb-search {
-  width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px;
-  border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text); font: 12px system-ui, sans-serif;
+  width: 100%; box-sizing: border-box; height: 26px; padding: 0 8px; border-radius: 5px;
+  border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text); font: 12px system-ui, sans-serif; outline: none;
 }
-.zbf-sb-views { display: flex; gap: 4px; padding: 0 10px 6px; border-bottom: 1px solid var(--zbf-border); }
+.zbf-sb-search:focus { border-color: var(--zbf-accent); }
+.zbf-sb-views { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--zbf-border); }
 .zbf-sb-view-btn {
-  flex: 1; height: 24px; border: 0; border-radius: 5px; background: transparent;
-  color: var(--zbf-muted); font: 500 12px/1 system-ui, sans-serif; cursor: pointer;
+  flex: 1; border: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--zbf-muted); padding: 6px 2px; font: 500 11.5px system-ui, sans-serif; cursor: pointer;
 }
-.zbf-sb-view-btn.active { background: var(--zbf-card); color: var(--zbf-text); box-shadow: 0 0 0 1px var(--zbf-border); font-weight: 600; }
-.zbf-sb-list { flex: 1 1 auto; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 3px; }
+.zbf-sb-view-btn.active { color: var(--zbf-accent); border-bottom-color: var(--zbf-accent); font-weight: 600; }
+
+.zbf-batch-controls {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; padding: 5px 8px;
+  border-bottom: 1px solid var(--zbf-border); font-size: 11px;
+}
+.zbf-batch-controls[hidden] { display: none !important; }
+.zbf-batch-controls button, .zbf-batch-controls select {
+  box-sizing: border-box; min-height: 22px; min-width: 0; max-width: 100%; padding-inline: 5px;
+  border: 1px solid var(--zbf-border); border-radius: 4px; color: var(--zbf-text); background: var(--zbf-card);
+  font: 11px system-ui, sans-serif; cursor: pointer;
+}
+.zbf-batch-controls :disabled { opacity: .5; cursor: default; }
+.zbf-batch-target { display: flex; align-items: center; flex: none; cursor: pointer; }
+.zbf-batch-check { margin: 0; accent-color: var(--zbf-accent); }
+
+.zbf-sb-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 6px 10px; display: flex; flex-direction: column; gap: 4px; }
+.zbf-sb-group-head-row { display: flex; align-items: center; gap: 2px; }
 .zbf-sb-group-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 6px;
-  padding: 4px 6px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 5px; flex: 1; min-width: 0;
+  border: 0; background: transparent; text-align: start; font: 600 11.5px system-ui, sans-serif; color: var(--zbf-muted); cursor: pointer;
 }
-.zbf-sb-group-head:hover { background: var(--zbf-hover); }
-.zbf-sb-group-dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
-.zbf-vtab-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 8px; border-radius: 6px; cursor: pointer; }
+.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-sb-group-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.zbf-sb-col-group-btn { border: 0; background: transparent; color: var(--zbf-muted); cursor: pointer; padding: 2px 6px; border-radius: 4px; font-size: 13px; flex: none; }
+.zbf-sb-col-group-btn:hover { background: var(--zbf-hover); color: var(--zbf-accent); }
+
+.zbf-vtab-row {
+  display: flex; align-items: center; gap: 7px; padding: 4px 8px; border-radius: 5px; cursor: pointer; border-left: 2px solid transparent;
+}
 .zbf-vtab-row:hover { background: var(--zbf-hover); }
-.zbf-vtab-row.selected { background: color-mix(in srgb, var(--zbf-accent) 13%, transparent); font-weight: 600; }
-.zbf-vtab-row.sleeping { opacity: 0.62; }
-.zbf-vtab-row.virtual { opacity: 0.68; border: 1px dashed var(--zbf-border); }
+.zbf-vtab-row.selected { background: var(--zbf-accent-soft); border-left-color: var(--zbf-accent); font-weight: 600; }
+.zbf-vtab-row.sleeping { opacity: 0.65; }
+.zbf-vtab-row.virtual { opacity: 0.64; border: 1px dashed var(--zbf-border); }
+.zbf-vtab-row[data-zbf-drop="join"] { outline: 2px solid var(--zbf-accent); outline-offset: -2px; }
+.zbf-vtab-row[data-zbf-drop="before"] { box-shadow: inset 0 2px 0 0 var(--zbf-accent); }
+.zbf-vtab-row[data-zbf-drop="after"] { box-shadow: inset 0 -2px 0 0 var(--zbf-accent); }
 .zbf-vtab-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
 .zbf-vtab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-vtab-sub { font-size: 11px; color: var(--zbf-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-vtab-right { display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .zbf-cite-badge { font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: #0D9488; color: #fff; }
 .zbf-row-btn {
-  display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px;
-  border: 0; border-radius: 4px; background: transparent; color: var(--zbf-muted); cursor: pointer; opacity: 0;
+  display: none; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border: 0; border-radius: 4px; background: transparent; color: var(--zbf-muted); cursor: pointer;
 }
-.zbf-vtab-row:hover .zbf-row-btn { opacity: 1; }
-.zbf-row-btn:hover { background: var(--zbf-hover); color: var(--zbf-text); }
-.zbf-sb-status { padding: 6px 10px; border-top: 1px solid var(--zbf-border); font-size: 11px; color: var(--zbf-muted); display: flex; justify-content: space-between; }
+.zbf-vtab-row:hover .zbf-row-btn, .zbf-vtab-row.selected .zbf-row-btn { display: inline-flex; }
+.zbf-row-btn:hover { background: var(--zbf-hover); color: var(--zbf-accent); }
+
+.zbf-sb-status {
+  padding: 6px 8px; border-top: 1px solid var(--zbf-border); font-size: 11px; color: var(--zbf-muted);
+  display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap;
+}
+.zbf-sb-budget-warn {
+  border: 1px solid color-mix(in srgb, #dc2626 40%, transparent); background: color-mix(in srgb, #dc2626 10%, transparent);
+  color: light-dark(#b91c1c, #fca5a5); border-radius: 4px; padding: 2px 6px; font: 11px system-ui, sans-serif; cursor: pointer;
+}
+.zbf-sb-empty { padding: 24px 12px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--zbf-muted); font-size: 12px; }
+.zbf-sb-empty-btn {
+  border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
+  border-radius: 6px; padding: 5px 12px; font: 12px system-ui, sans-serif; cursor: pointer;
+}
 
 .zbf-hover-card {
-  position: fixed; z-index: 9999; width: 280px; padding: 10px; border-radius: 8px;
+  position: fixed; z-index: 2147483647; width: 310px; padding: 10px 12px; border-radius: 8px;
   border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
-  box-shadow: 0 6px 20px rgba(0,0,0,0.22); pointer-events: none; font: 12px/1.45 system-ui, sans-serif;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.18); pointer-events: none; font: 12px/1.5 system-ui, sans-serif;
 }
-.zbf-hc-title { font-weight: 600; margin-bottom: 4px; }
-.zbf-hc-meta { font-size: 11px; color: var(--zbf-muted); }
+.zbf-hc-title { font-weight: 600; margin-bottom: 4px; line-height: 1.4; overflow-wrap: anywhere; }
+.zbf-hc-meta { font-size: 11px; color: var(--zbf-muted); overflow-wrap: anywhere; }
+.zbf-hc-note { margin-top: 5px; padding: 4px 7px; border-radius: 5px; background: var(--zbf-accent-soft); color: var(--zbf-accent); font-size: 11px; }
 
-.zbf-spot-box {
-  width: 480px; max-width: 90vw; padding: 10px; background: var(--zbf-card); color: var(--zbf-text);
-  display: flex; flex-direction: column; gap: 8px; font: 13px system-ui, sans-serif;
-}
-.zbf-spot-input {
-  width: 100%; box-sizing: border-box; padding: 7px 10px; border-radius: 6px;
-  border: 1px solid var(--zbf-border); background: var(--zbf-surface); color: var(--zbf-text); font: inherit;
-}
-.zbf-spot-results { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.zbf-spot-box { width: 510px; max-width: 90vw; padding: 10px 12px 12px; background: var(--zbf-card); color: var(--zbf-text); display: flex; flex-direction: column; gap: 8px; font: 13px system-ui, "Microsoft YaHei UI", sans-serif; }
+.zbf-spot-input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: none; border-bottom: 1px solid var(--zbf-border); background: transparent; color: var(--zbf-text); font: 13.5px system-ui, sans-serif; outline: none; }
+.zbf-spot-input:focus { border-bottom-color: var(--zbf-accent); }
+.zbf-spot-results { max-height: 420px; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
 .zbf-spot-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 6px 8px; border-radius: 6px; border: 0; background: transparent; color: inherit;
-  text-align: left; font: inherit; cursor: pointer;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer;
 }
-.zbf-spot-row.active, .zbf-spot-row:hover { background: color-mix(in srgb, var(--zbf-accent) 14%, transparent); }
-.zbf-spot-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--zbf-hover); color: var(--zbf-muted); flex: none; }
+.zbf-spot-row.active, .zbf-spot-row:hover { background: var(--zbf-accent-soft); border-color: color-mix(in srgb, var(--zbf-accent) 32%, transparent); }
+.zbf-spot-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--zbf-accent-soft); color: var(--zbf-accent); font-weight: 600; flex: none; }
+
+#zbf-hub-backdrop {
+  position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 68px; background: light-dark(rgba(15, 23, 42, 0.28), rgba(0, 0, 0, 0.52));
+}
+.zbf-hub-box {
+  width: 540px; max-width: calc(100vw - 32px); max-height: calc(100vh - 104px); overflow-y: auto; padding: 16px 18px;
+  border-radius: 10px; background: var(--zbf-card); color: var(--zbf-text); border: 1px solid var(--zbf-border);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28); font: 13px/1.5 system-ui, "Microsoft YaHei UI", sans-serif; display: flex; flex-direction: column; gap: 10px;
+}
+.zbf-hub-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.zbf-hub-title { font-size: 14px; font-weight: 600; }
+.zbf-hub-quickbar { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 8px; border: 1px solid var(--zbf-border); background: var(--zbf-surface); }
+.zbf-hub-input { width: 100%; box-sizing: border-box; height: 28px; padding: 0 9px; border: 1px solid var(--zbf-border); border-radius: 6px; background: var(--zbf-card); color: var(--zbf-text); font: 12px system-ui, sans-serif; outline: none; }
+.zbf-hub-actions { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.zbf-hub-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--zbf-border); background: var(--zbf-surface); }
+.zbf-hub-card-info { min-width: 0; flex: 1; }
+.zbf-hub-card-name { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-hub-card-meta { font-size: 11px; color: var(--zbf-muted); }
+.zbf-hub-card-actions { display: inline-flex; gap: 6px; flex: none; }
+.zbf-hub-section { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.zbf-hub-section-title { font-size: 12px; font-weight: 600; color: var(--zbf-muted); }
+.zbf-hub-empty, .zbf-hub-status { font-size: 12px; color: var(--zbf-muted); }
+.zbf-hub-lists { display: flex; flex-direction: column; gap: 10px; }
+.zbf-hub-close { border: 0; background: transparent; color: var(--zbf-muted); cursor: pointer; font-size: 14px; padding: 2px 6px; border-radius: 4px; }
+.zbf-hub-close:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-hub-btn { height: 25px; padding: 0 9px; border: 1px solid var(--zbf-border); border-radius: 5px; background: var(--zbf-card); color: var(--zbf-text); font: 11.5px system-ui, sans-serif; cursor: pointer; }
+.zbf-hub-btn:hover:not(:disabled) { background: var(--zbf-hover); }
+.zbf-hub-btn.primary { background: var(--zbf-accent); border-color: var(--zbf-accent); color: #fff; font-weight: 600; }
+
+#zbf-spotlight-backdrop {
+  position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center;
+  padding-top: 72px; background: light-dark(rgba(15, 23, 42, 0.25), rgba(0, 0, 0, 0.48));
+}
+#zbf-spotlight-panel {
+  width: 540px; max-width: calc(100vw - 32px); border-radius: 10px; background: var(--zbf-card); color: var(--zbf-text);
+  border: 1px solid var(--zbf-border); box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28); overflow: hidden;
+  font: 13px system-ui, "Microsoft YaHei UI", sans-serif;
+}
+#zbf-spotlight-input {
+  width: 100%; box-sizing: border-box; padding: 11px 14px; border: 0; border-bottom: 1px solid var(--zbf-border);
+  background: transparent; color: var(--zbf-text); font: 13.5px system-ui, sans-serif; outline: none;
+}
+#zbf-spotlight-list { max-height: 400px; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.zbf-spotlight-item {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 6px;
+  background: transparent; color: inherit; font: inherit; cursor: pointer;
+}
+.zbf-spotlight-item.active, .zbf-spotlight-item:hover { background: var(--zbf-accent-soft); }
+.zbf-spotlight-title { font-weight: 600; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-spotlight-sub, .zbf-spotlight-empty { font-size: 11px; color: var(--zbf-muted); padding: 2px 0; }
+.zbf-spotlight-empty { padding: 14px; text-align: center; }
+
+.zbf-popup-menu {
+  position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 2px; padding: 5px;
+  border-radius: 8px; border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22); font: 12px system-ui, "Microsoft YaHei UI", sans-serif;
+}
+.zbf-popup-item {
+  display: flex; align-items: center; width: 100%; text-align: left; padding: 6px 10px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--zbf-text); font: inherit; cursor: pointer;
+}
+.zbf-popup-item:hover { background: var(--zbf-hover); }
+.zbf-popup-item.danger { color: light-dark(#c62828, #f87171); }
+.zbf-popup-sep { height: 1px; margin: 3px 4px; background: var(--zbf-border); }
+.zbf-popup-header { padding: 4px 8px; font-weight: 600; font-size: 11.5px; color: var(--zbf-muted); }
+.zbf-popup-empty { padding: 10px 8px; font-size: 11.5px; color: var(--zbf-muted); }
+.zbf-color-row { display: flex; align-items: center; gap: 6px; padding: 5px 8px; }
+.zbf-color-swatch { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid transparent; cursor: pointer; padding: 0; }
+.zbf-color-swatch.active { border-color: var(--zbf-text); transform: scale(1.1); }
+.zbf-stale-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 5px; }
+.zbf-stale-row:hover { background: var(--zbf-hover); }
+.zbf-stale-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.zbf-stale-footer { display: flex; justify-content: flex-end; gap: 6px; padding: 4px 6px; }
+.zbf-mini-btn {
+  padding: 2px 7px; border-radius: 4px; border: 1px solid var(--zbf-border); background: var(--zbf-surface);
+  color: var(--zbf-text); font: 11px system-ui, sans-serif; cursor: pointer; flex: none;
+}
+.zbf-mini-btn.danger { color: light-dark(#c62828, #f87171); }
 `;
 
   // src/domains/workspace/workspace-ui.ts
   var WorkspaceWindowUI = class {
-    disposables = new DisposableStack();
     win;
+    doc;
     prefs;
-    store;
-    hover;
-    tabMenus;
-    itemMenus;
-    spotlightPanel;
-    workspacePopover;
-    horizontal;
-    sidebar;
-    mountRetryTimer = null;
-    constructor(win, prefs, store, tabs, spotlight) {
+    tabs;
+    styleEl = null;
+    hoverCard = null;
+    tabMenu = null;
+    itemMenu = null;
+    popover = null;
+    toolbar = null;
+    horizontal = null;
+    sidebar = null;
+    spotlightPanel = null;
+    tabObserver = null;
+    renderTimer = 0;
+    destroyed = false;
+    onKeydown = (ev) => {
+      const e = ev;
+      if (e.defaultPrevented) return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "p" && this.prefs.get("workspace.enableSpotlight")) {
+        e.preventDefault();
+        this.spotlightPanel?.toggle();
+      } else if (mod && !e.altKey && e.shiftKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        this.tabs.undoCloseTab(this.win);
+        this.scheduleRender(30);
+      }
+    };
+    onResize = () => {
+      this.scheduleRender(80);
+    };
+    constructor(win, prefs, store, tabs, spotlightEngine) {
       this.win = win;
+      this.doc = win.document;
       this.prefs = prefs;
-      this.store = store;
+      this.tabs = tabs;
+      if (!this.doc) return;
+      this.mountStyle();
       const refresh = () => this.render();
-      this.hover = new HoverCardController(win, win.document);
-      this.tabMenus = new TabContextMenuController(win, win.document, prefs, store, tabs, refresh);
-      this.itemMenus = new ItemContextMenuController(win, win.document, prefs, store, tabs, refresh);
-      this.spotlightPanel = new SpotlightPanelController(win, win.document, spotlight);
-      this.workspacePopover = new WorkspacePopoverController(win, win.document, store, tabs, refresh);
-      this.horizontal = new HorizontalBarController(
-        win,
-        win.document,
-        prefs,
-        store,
-        tabs,
-        this.tabMenus,
-        this.hover,
-        this.spotlightPanel,
-        this.workspacePopover,
-        refresh
-      );
-      this.sidebar = new VerticalSidebarController(
-        win,
-        win.document,
-        prefs,
-        store,
-        tabs,
-        this.tabMenus,
-        this.hover,
-        refresh
-      );
-    }
-    mount() {
-      const doc = this.win.document;
-      if (!doc) return;
-      if (doc.readyState === "loading") {
-        const onReady = () => {
-          this.mount();
-        };
-        doc.addEventListener("DOMContentLoaded", onReady, { once: true });
-        this.disposables.add(() => doc.removeEventListener("DOMContentLoaded", onReady));
-        return;
-      }
-      this.win.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
-      if (doc.documentElement && !doc.getElementById("zbf-workspace-style")) {
-        const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-        style.id = "zbf-workspace-style";
-        style.textContent = WORKSPACE_CSS;
-        doc.documentElement.append(style);
-        this.disposables.add(() => style.remove());
-      }
-      this.itemMenus.attach();
-      const onKeyDown = (ev) => {
-        if (!this.prefs.get("workspace.enableSpotlight")) return;
-        if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "p") {
-          ev.preventDefault();
-          ev.stopPropagation();
-          this.spotlightPanel.toggle();
-        }
-      };
-      this.win.addEventListener?.("keydown", onKeyDown, true);
-      this.disposables.add(() => this.win.removeEventListener?.("keydown", onKeyDown, true));
-      this.disposables.add(this.store.onChange(() => this.render()));
+      this.hoverCard = new WorkspaceHoverCard(this.doc, prefs, store);
+      this.popover = new WorkspacePopover(win, prefs, store, tabs, refresh);
+      this.spotlightPanel = new WorkspaceSpotlightPanel(win, spotlightEngine);
+      this.tabMenu = new WorkspaceTabContextMenu(win, prefs, store, tabs, refresh);
+      this.itemMenu = new ItemContextMenuController(win, this.doc, prefs, store, tabs, refresh);
+      this.toolbar = new WorkspaceToolbarActions(win, prefs, tabs, this.popover, () => this.spotlightPanel?.toggle(), refresh);
+      this.horizontal = new WorkspaceHorizontalBar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.toolbar, refresh);
+      this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, () => this.spotlightPanel?.toggle(), refresh);
+      this.itemMenu.attach();
+      this.attachObservers();
+      this.doc.addEventListener("keydown", this.onKeydown, true);
+      this.win.addEventListener("resize", this.onResize);
       this.render();
-      if (!doc.getElementById("zbf-toolbar-actions") && typeof this.win.setTimeout === "function") {
-        this.mountRetryTimer = this.win.setTimeout(() => {
-          this.mountRetryTimer = null;
-          this.itemMenus.attach();
-          this.render();
-        }, 300);
-      }
     }
     setCitationBadges(badges) {
-      this.horizontal.setCitationBadges(badges);
-      this.sidebar.setCitationBadges(badges);
+      this.hoverCard?.setWordCitationBadges(badges);
+      this.sidebar?.setWordCitationBadges(badges);
+      this.render();
     }
     render() {
-      this.horizontal.render();
-      this.sidebar.render();
-    }
-    dispose() {
-      if (this.mountRetryTimer !== null) {
-        this.win.clearTimeout?.(this.mountRetryTimer);
-        this.mountRetryTimer = null;
+      if (this.destroyed || !this.doc) return;
+      try {
+        this.horizontal?.render();
+        this.sidebar?.render();
+      } catch {
       }
-      this.hover.dispose();
-      this.tabMenus.dispose();
-      this.itemMenus.dispose();
-      this.workspacePopover.dispose();
-      this.spotlightPanel.dispose();
-      this.horizontal.dispose();
-      this.sidebar.dispose();
-      this.disposables.disposeAll();
+    }
+    destroy() {
+      if (this.destroyed) return;
+      this.destroyed = true;
+      if (this.renderTimer && typeof this.win.clearTimeout === "function") {
+        this.win.clearTimeout(this.renderTimer);
+      }
+      this.tabObserver?.disconnect();
+      this.tabObserver = null;
+      this.doc?.removeEventListener("keydown", this.onKeydown, true);
+      this.win.removeEventListener?.("resize", this.onResize);
+      this.horizontal?.destroy();
+      this.sidebar?.destroy();
+      this.tabMenu?.destroy();
+      this.itemMenu?.dispose();
+      this.popover?.destroy();
+      this.hoverCard?.destroy();
+      this.spotlightPanel?.destroy();
+      this.styleEl?.remove();
+      this.styleEl = null;
+    }
+    mountStyle() {
+      if (!this.doc) return;
+      this.doc.getElementById("zbf-workspace-style")?.remove();
+      const style = this.doc.createElement("style");
+      style.id = "zbf-workspace-style";
+      style.textContent = WORKSPACE_CSS;
+      const target = this.doc.head || this.doc.documentElement;
+      target?.appendChild(style);
+      this.styleEl = style;
+    }
+    attachObservers() {
+      if (!this.doc) return;
+      const tabBar = this.doc.getElementById("tab-bar-container");
+      const ObserverCtor = this.win.MutationObserver || globalThis.MutationObserver;
+      if (!tabBar || typeof ObserverCtor !== "function") return;
+      const obs = new ObserverCtor((mutations) => {
+        if (this.destroyed) return;
+        const external = mutations.some((m) => !this.isOwnNode(m.target));
+        if (external) this.scheduleRender(40);
+      });
+      obs.observe(tabBar, { childList: true, subtree: true, attributes: true, attributeFilter: ["selected", "class"] });
+      this.tabObserver = obs;
+    }
+    isOwnNode(node) {
+      if (!node) return false;
+      const el = typeof node.closest === "function" ? node : node.parentElement;
+      if (!el || typeof el.closest !== "function") return false;
+      return Boolean(el.closest("#zbf-inline, #zbf-toolbar-actions"));
+    }
+    scheduleRender(delayMs) {
+      if (this.destroyed) return;
+      if (this.renderTimer && typeof this.win.clearTimeout === "function") {
+        this.win.clearTimeout(this.renderTimer);
+      }
+      this.renderTimer = this.win.setTimeout(() => {
+        this.renderTimer = 0;
+        this.render();
+      }, delayMs);
     }
   };
 
   // src/domains/workspace/module.ts
+  var WATCHED_WORKSPACE_PREFS = [
+    "workspace.enableHorizontalGroups",
+    "workspace.horizontalTabCompactMode",
+    "workspace.compactTopBar",
+    "workspace.enableVerticalSidebar",
+    "workspace.verticalSidebarCollapsed",
+    "workspace.verticalSidebarWidth",
+    "workspace.enableBatchSelection",
+    "workspace.enablePinnedTabs",
+    "workspace.pinnedIconOnly",
+    "workspace.enableVirtualMembers",
+    "workspace.enableTabRemarks",
+    "workspace.remarkDisplayMode",
+    "workspace.verticalTabTitleMode",
+    "workspace.verticalTabSubtitleMode",
+    "workspace.verticalTabRowHeight",
+    "workspace.verticalTabFontSize",
+    "workspace.enableHoverPreview",
+    "workspace.enableSpotlight",
+    "workspace.enableSessions",
+    "workspace.enableTabSleep",
+    "workspace.activeReaderBudget",
+    "workspace.enableStaleSuggestions",
+    "workspace.staleSuggestDays"
+  ];
   var WorkspaceDomainModule = class {
     id = "workspace";
     enabledPref = "modules.workspace.enable";
@@ -5742,106 +7903,151 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     spotlight;
     kernel;
     disposables = new DisposableStack();
-    windowUIs = /* @__PURE__ */ new Map();
-    citationBadges = /* @__PURE__ */ new Map();
+    windows = /* @__PURE__ */ new Map();
     active = false;
+    latestBadges = /* @__PURE__ */ new Map();
+    maintenanceTimer = null;
+    autoGroupTimer = null;
+    lastRollingAt = 0;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.store = new WorkspaceStateStore(kernel.prefs);
       this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard);
-      this.spotlight = new SpotlightEngine(this.tabs);
+      this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
     }
-    isActive() {
-      return this.active;
-    }
-    start() {
+    async start() {
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
+      this.store.load();
+      this.disposables.add(this.store.onChange(() => this.refreshAllWindows()));
       this.disposables.add(
-        this.kernel.notifier.subscribe(["tab", "item", "collection"], () => {
-          for (const ui of this.windowUIs.values()) ui.render();
-          this.emitTabsSummary();
+        this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows())
+      );
+      this.disposables.add(
+        this.kernel.notifier.subscribe(["tab", "collection", "item"], ({ event, type, ids }) => {
+          if (type === "tab") {
+            this.handleTabEvent(event, ids.map(String));
+          } else if (event === "modify" || event === "add" || event === "delete") {
+            if (type === "item") this.spotlight.invalidateLibraryIndex();
+            this.refreshAllWindows();
+          }
         })
       );
-      this.disposables.add(
-        this.kernel.prefs.observeKeys(
-          [
-            "workspace.enableHorizontalGroups",
-            "workspace.compactTopBar",
-            "workspace.enableVerticalSidebar",
-            "workspace.enablePinnedTabs",
-            "workspace.pinnedIconOnly",
-            "workspace.enableTabRemarks",
-            "workspace.remarkDisplayMode",
-            "workspace.verticalTabTitleMode",
-            "workspace.verticalTabSubtitleMode",
-            "workspace.verticalSidebarWidth",
-            "workspace.verticalSidebarCollapsed",
-            "workspace.verticalTabRowHeight",
-            "workspace.verticalTabFontSize",
-            "workspace.enableHoverPreview",
-            "workspace.enableSpotlight",
-            "workspace.enableSessions",
-            "workspace.enableTabSleep",
-            "fusion.sidebarCiteBadge"
-          ],
-          () => {
-            for (const ui of this.windowUIs.values()) ui.render();
-          }
-        )
-      );
-    }
-    onMainWindowLoad(win) {
-      if (!this.active || this.windowUIs.has(win)) return;
-      const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight);
-      ui.setCitationBadges(this.citationBadges);
-      ui.mount();
-      this.windowUIs.set(win, ui);
-      this.emitTabsSummary();
-    }
-    onMainWindowUnload(win) {
-      const ui = this.windowUIs.get(win);
-      if (!ui) return;
-      this.windowUIs.delete(win);
-      ui.dispose();
+      for (const win of this.getMainWindows()) {
+        this.onMainWindowLoad(win);
+      }
+      this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 6e4);
     }
     stop() {
       if (!this.active) return;
       this.active = false;
-      for (const ui of this.windowUIs.values()) ui.dispose();
-      this.windowUIs.clear();
+      if (this.maintenanceTimer !== null) {
+        clearInterval(this.maintenanceTimer);
+        this.maintenanceTimer = null;
+      }
+      if (this.autoGroupTimer !== null) {
+        clearTimeout(this.autoGroupTimer);
+        this.autoGroupTimer = null;
+      }
+      for (const ui of this.windows.values()) {
+        ui.destroy();
+      }
+      this.windows.clear();
       this.disposables.disposeAll();
     }
-    // === Cross-domain controlled hooks (called by Layer 4 Bridges) ===
+    isActive() {
+      return this.active;
+    }
+    onMainWindowLoad(win) {
+      if (!this.active || this.windows.has(win)) return;
+      const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight);
+      ui.setCitationBadges(this.latestBadges);
+      this.windows.set(win, ui);
+    }
+    onMainWindowUnload(win) {
+      const ui = this.windows.get(win);
+      if (!ui) return;
+      ui.destroy();
+      this.windows.delete(win);
+    }
+    refreshAllWindows() {
+      for (const ui of this.windows.values()) {
+        ui.render();
+      }
+    }
+    setCitationBadges(badges) {
+      this.latestBadges = new Map(badges);
+      this.spotlight.setWordCitationBadges(badges);
+      for (const ui of this.windows.values()) {
+        ui.setCitationBadges(badges);
+      }
+    }
     registerSpotlightProvider(provider) {
       return this.spotlight.registerProvider(provider);
     }
-    setCitationBadges(badges) {
-      this.citationBadges = badges;
-      for (const ui of this.windowUIs.values()) ui.setCitationBadges(badges);
-    }
     async focusOrOpenItem(req, preferredWin) {
-      const targetWin = preferredWin || [...this.windowUIs.keys()][0] || globalThis.Zotero?.getMainWindow?.();
-      if (!targetWin) return "not-found";
-      return this.tabs.focusOrOpenItem(targetWin, req);
+      const win = preferredWin || this.getTargetWindow();
+      if (!win) return "not-found";
+      const res = await this.tabs.focusOrOpenItem(win, req);
+      this.refreshAllWindows();
+      return res;
     }
     groupOpenTabsByItemIDs(groupName, itemIDs, preferredWin) {
-      const targetWin = preferredWin || [...this.windowUIs.keys()][0] || globalThis.Zotero?.getMainWindow?.();
-      if (!targetWin) return null;
-      return this.tabs.groupOpenTabsByItemIDs(targetWin, groupName, itemIDs);
+      const win = preferredWin || this.getTargetWindow();
+      if (!win) return null;
+      const res = this.tabs.groupOpenTabsByItemIDs(win, groupName, itemIDs);
+      if (res) this.refreshAllWindows();
+      return res;
     }
-    emitTabsSummary() {
-      const openItemIDs = /* @__PURE__ */ new Set();
-      for (const win of this.windowUIs.keys()) {
-        for (const t of this.tabs.buildTrackedTabs(win)) {
-          if (!t.virtual && t.parentItemID > 0) openItemIDs.add(t.parentItemID);
+    handleTabEvent(event, tabIDs) {
+      for (const win of this.windows.keys()) {
+        const tracked = this.tabs.buildTrackedTabs(win);
+        for (const id of tabIDs) {
+          const tab = tracked.find((t) => t.tabID === id);
+          if (!tab) continue;
+          if (event === "select" || event === "add") {
+            this.store.touchViewed(tab.key);
+            this.store.removeVirtualMember(tab.key);
+            if (tab.sleeping) this.store.setSleeping(tab.key, false);
+            if (tab.groupId && this.store.state.collapsed.includes(tab.groupId)) {
+              this.store.setCollapsed(tab.groupId, false);
+            }
+          }
         }
       }
-      this.kernel.bus.emit("workspace:tabs-updated", {
-        windowCount: this.windowUIs.size,
-        openItemIDs: [...openItemIDs]
-      });
+      if (event === "add" && this.kernel.prefs.get("workspace.newTabMode") === "collection") {
+        if (this.autoGroupTimer !== null) clearTimeout(this.autoGroupTimer);
+        this.autoGroupTimer = setTimeout(() => {
+          this.autoGroupTimer = null;
+          for (const win of this.windows.keys()) this.tabs.autoGroupByCollection(win);
+          this.refreshAllWindows();
+        }, 80);
+      }
+      this.refreshAllWindows();
+    }
+    runPeriodicMaintenance() {
+      if (!this.active) return;
+      let changed = false;
+      for (const win of this.windows.keys()) {
+        if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
+      }
+      if (this.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - this.lastRollingAt > 9e5) {
+        if (this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {
+          this.store.saveSession(`自动滚动快照 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { rolling: true });
+          this.lastRollingAt = Date.now();
+        }
+      }
+      if (changed) this.refreshAllWindows();
+    }
+    getTargetWindow() {
+      const hostWin = globalThis.Zotero?.getMainWindow?.();
+      if (hostWin) return hostWin;
+      return this.windows.keys().next().value ?? null;
+    }
+    getMainWindows() {
+      const wins = globalThis.Zotero?.getMainWindows?.();
+      return Array.isArray(wins) ? wins : [];
     }
   };
 
@@ -7016,6 +9222,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       } catch {
         return { status: "unknown", windowTitle: "" };
       }
+    }
+    verifyDroppedWordTarget() {
+      const cursor = this.probeCursorWordDropTarget();
+      if (cursor.status === "word-confirmed") return true;
+      return Boolean(this.probeForegroundWordTitle());
     }
     dispose() {
       if (!this.cached) return;

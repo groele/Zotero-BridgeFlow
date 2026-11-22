@@ -3,12 +3,25 @@ import type { OpenItemRequestPayload } from '../../kernel/types.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
 import { normalizeToRegularItem } from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
-import type { TabCloseOptions, TrackedTab } from './types.ts';
+import {
+	autoGroupTrackedByCollection,
+	buildVirtualMetaFromTracked,
+	computeTabMoveTarget,
+	formatCreatorYear,
+	openItemAttachmentOrNote,
+	resolvePrimaryCollectionName,
+	restoreSessionTabsAndLayout,
+	revealAttachmentFile,
+	selectItemInLibrary,
+	type ClosedTabRecord,
+} from './tab-actions-helpers.ts';
+import type { TabCloseOptions, TrackedTab, WorkspaceSession } from './types.ts';
 
 export class WorkspaceTabController {
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly clipboard: UnifiedClipboardService;
+	private closedStack: ClosedTabRecord[] = [];
 
 	constructor(
 		prefs: UnifiedPrefService,
@@ -47,8 +60,8 @@ export class WorkspaceTabController {
 			const shortTitle = String(displayItem?.getField?.('shortTitle') || title);
 			const filename = String(rawItem?.attachmentFilename || '');
 			const source = String(displayItem?.getField?.('publicationTitle') || displayItem?.getField?.('proceedingsTitle') || '');
-			const creatorYear = this.formatCreatorYear(displayItem);
-			const collection = this.resolvePrimaryCollectionName(displayItem);
+			const creatorYear = formatCreatorYear(displayItem);
+			const collection = resolvePrimaryCollectionName(displayItem);
 
 			tracked.push({
 				tabID: String(tab.id || ''),
@@ -64,7 +77,7 @@ export class WorkspaceTabController {
 				collection,
 				groupId: this.store.groupOfKey(key),
 				pinned: this.store.isPinned(key),
-				sleeping: this.store.isSleeping(key),
+				sleeping: this.store.isSleeping(key) || String(tab.type || '').endsWith('-unloaded'),
 				virtual: false,
 				remark: this.store.state.remarks[key] || '',
 				lastViewedAt: this.store.state.lastViewedAt[key] || 0,
@@ -129,18 +142,11 @@ export class WorkspaceTabController {
 			if (options.protectPinned && t.pinned) continue;
 			if (options.protectSelected && id === selectedID) continue;
 			if (t.groupId && (options.preserveVirtual ?? true) && this.prefs.get('workspace.enableVirtualMembers')) {
-				this.store.saveVirtualMember({
-					key: t.key,
-					itemID: t.itemID,
-					parentItemID: t.parentItemID,
-					title: t.title,
-					shortTitle: t.shortTitle,
-					filename: t.filename,
-					source: t.source,
-					creatorYear: t.creatorYear,
-					collection: t.collection,
-					type: t.type,
-				});
+				this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
+			}
+			if (t.itemID > 0) {
+				this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId });
+				if (this.closedStack.length > 20) this.closedStack.shift();
 			}
 			toClose.push(id);
 		}
@@ -149,16 +155,58 @@ export class WorkspaceTabController {
 		return toClose.length;
 	}
 
+	undoCloseTab(win: Window): boolean {
+		const tabsApi = (win as any).Zotero_Tabs;
+		if (typeof tabsApi?.undoClose === 'function') {
+			try {
+				void Promise.resolve(tabsApi.undoClose());
+				return true;
+			} catch { /* fall back */ }
+		}
+		const last = this.closedStack.pop();
+		if (!last) return false;
+		void this.openVirtualOrItem(win, last.itemID, last.groupId || undefined, false);
+		return true;
+	}
+
 	sleepTab(win: Window, tabID: string): boolean {
 		if (!this.prefs.get('workspace.enableTabSleep')) return false;
 		const tabsApi = (win as any).Zotero_Tabs;
 		const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
-		if (!tracked || tracked.pinned || tracked.virtual) return false;
+		if (!tracked || tracked.pinned || tracked.virtual || tracked.sleeping) return false;
+		if (tabsApi?.canUnload?.(tabID) === false) return false;
 		if (typeof tabsApi?.unload === 'function') {
 			tabsApi.unload(tabID);
 		}
 		this.store.setSleeping(tracked.key, true);
 		return true;
+	}
+
+	sleepInactiveTabs(win: Window): number {
+		if (!this.prefs.get('workspace.enableTabSleep')) return 0;
+		const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+		let count = 0;
+		for (const tab of this.buildTrackedTabs(win)) {
+			if (!tab.virtual && !tab.pinned && !tab.sleeping && tab.tabID !== selectedID) {
+				if (this.sleepTab(win, tab.tabID)) count++;
+			}
+		}
+		return count;
+	}
+
+	sleepIdleTabs(win: Window, now = Date.now()): number {
+		const minutes = this.prefs.get('workspace.autoSleepMinutes');
+		if (!this.prefs.get('workspace.enableTabSleep') || minutes <= 0) return 0;
+		const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+		const cutoff = now - minutes * 60_000;
+		let count = 0;
+		for (const tab of this.buildTrackedTabs(win)) {
+			if (tab.virtual || tab.pinned || tab.sleeping || tab.tabID === selectedID) continue;
+			if (tab.lastViewedAt > 0 && tab.lastViewedAt < cutoff) {
+				if (this.sleepTab(win, tab.tabID)) count++;
+			}
+		}
+		return count;
 	}
 
 	async reloadTab(win: Window, tabID: string): Promise<boolean> {
@@ -167,10 +215,44 @@ export class WorkspaceTabController {
 		this.store.setSleeping(tracked.key, false);
 		this.selectTab(win, tabID);
 		const reader = (globalThis as any).Zotero?.Reader?.getByTabID?.(tabID);
-		if (typeof reader?.reload === 'function') {
-			await reader.reload();
-		}
+		if (typeof reader?.reload === 'function') await reader.reload();
 		return true;
+	}
+
+	moveTabRelative(win: Window, draggedTabID: string, targetTabID: string, after: boolean): boolean {
+		const tabsApi = (win as any).Zotero_Tabs;
+		if (!tabsApi?.move) return false;
+		const ids: string[] = (Array.isArray(tabsApi._tabs) ? tabsApi._tabs : []).map((t: any) => String(t?.id || ''));
+		const targetIdx = computeTabMoveTarget(ids, draggedTabID, targetTabID, after);
+		if (targetIdx < 0) return false;
+		tabsApi.move(draggedTabID, targetIdx);
+		return true;
+	}
+
+	openVirtualOrItem(win: Window, itemID: number, groupId?: string, openInBackground = false): Promise<boolean> {
+		return openItemAttachmentOrNote(win, this.store, itemID, groupId, openInBackground);
+	}
+
+	async restoreSession(win: Window, session: WorkspaceSession): Promise<number> {
+		this.store.restoreSessionLayout(session);
+		return restoreSessionTabsAndLayout(win, this.store, session);
+	}
+
+	async openGroupVirtuals(win: Window, groupId: string): Promise<number> {
+		const virtuals = this.buildTrackedTabs(win).filter((t) => t.virtual && t.groupId === groupId);
+		let opened = 0;
+		for (const v of virtuals) {
+			if (await this.openVirtualOrItem(win, v.itemID, groupId, true)) opened++;
+		}
+		return opened;
+	}
+
+	revealTabAttachment(win: Window, itemID: number): Promise<boolean> {
+		return revealAttachmentFile(win, itemID);
+	}
+
+	showInLibrary(win: Window, itemID: number, switchCollection = false): Promise<boolean> {
+		return selectItemInLibrary(win, itemID, switchCollection);
 	}
 
 	async archiveAndCloseGroup(win: Window, groupId: string): Promise<number> {
@@ -182,35 +264,22 @@ export class WorkspaceTabController {
 	}
 
 	autoGroupByCollection(win: Window): number {
-		const strategy = this.prefs.get('workspace.multiCollectionStrategy');
-		const activeColName = String((win as any).ZoteroPane?.getSelectedCollection?.()?.name || '');
-		const tracked = this.buildTrackedTabs(win).filter((t) => !t.virtual && !t.groupId);
-		const hostItems = (globalThis as any).Zotero?.Items;
-		const hostCols = (globalThis as any).Zotero?.Collections;
-		let grouped = 0;
+		return autoGroupTrackedByCollection(
+			win,
+			this.store,
+			this.prefs.get('workspace.multiCollectionStrategy'),
+			this.buildTrackedTabs(win),
+		);
+	}
 
-		for (const tab of tracked) {
-			const item = hostItems?.get?.(tab.parentItemID || tab.itemID);
-			const colIDs: number[] = item?.getCollections?.() || [];
-			const colNames = colIDs.map((id) => String(hostCols?.get?.(id)?.name || '')).filter(Boolean);
-			if (!colNames.length) continue;
-
-			let chosen = '';
-			if (strategy === 'active' && activeColName && colNames.includes(activeColName)) {
-				chosen = activeColName;
-			} else if (strategy === 'existing') {
-				chosen = colNames.find((n) => this.store.state.groups.some((g) => g.name === n)) || colNames[0];
-			} else {
-				chosen = colNames[0];
-			}
-			if (!chosen) continue;
-
-			let group = this.store.state.groups.find((g) => g.name === chosen);
-			if (!group) group = this.store.createGroup(chosen);
+	collectionToGroup(win: Window, collectionName: string): number {
+		const targetCols = this.buildTrackedTabs(win).filter((t) => (t.collection || '未分类') === collectionName);
+		if (!targetCols.length) return 0;
+		const group = this.store.state.groups.find((g) => g.name === collectionName) ?? this.store.createGroup(collectionName);
+		for (const tab of targetCols) {
 			this.store.assignToGroup(tab.key, group.id);
-			grouped++;
 		}
-		return grouped;
+		return targetCols.length;
 	}
 
 	getDisplayTitle(tab: { title: string; shortTitle?: string; filename?: string; remark?: string }): string {
@@ -227,29 +296,19 @@ export class WorkspaceTabController {
 		return `${tab.remark} · ${base}`;
 	}
 
-	/**
-	 * Unified copy citation action — delegates to shared UnifiedClipboardService
-	 * so tab-menu copies automatically populate reverse-lookup history.
-	 */
 	async copyTabCitation(win: Window, tabID: string): Promise<boolean> {
 		const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
 		if (!tracked) return false;
-		const hostItems = (globalThis as any).Zotero?.Items;
-		const item = hostItems?.get?.(tracked.parentItemID || tracked.itemID);
+		const item = (globalThis as any).Zotero?.Items?.get?.(tracked.parentItemID || tracked.itemID);
 		if (!item) return false;
 		return this.clipboard.copyItems([item], { source: 'tab-menu' });
 	}
 
-	/**
-	 * Cross-domain hook: focus an already-open tab matching itemID/attachmentID,
-	 * or open it in reader and optionally assign it to the active tab's group.
-	 */
 	async focusOrOpenItem(win: Window, req: OpenItemRequestPayload): Promise<'focused' | 'opened' | 'not-found'> {
 		const tracked = this.buildTrackedTabs(win);
 		const match = tracked.find(
 			(t) => !t.virtual && (
-				t.parentItemID === req.itemID
-				|| t.itemID === req.itemID
+				t.parentItemID === req.itemID || t.itemID === req.itemID
 				|| (req.attachmentID && t.itemID === req.attachmentID)
 			),
 		);
@@ -262,6 +321,8 @@ export class WorkspaceTabController {
 		const targetAttachmentID = req.attachmentID || req.itemID;
 		if (typeof reader?.open === 'function' && targetAttachmentID > 0) {
 			await reader.open(targetAttachmentID);
+			this.store.removeVirtualMember(`item:${targetAttachmentID}`);
+			this.store.removeVirtualMember(`item:${req.itemID}`);
 			if (req.assignToActiveGroup) {
 				const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
 				const activeTab = tracked.find((t) => t.tabID === selectedID);
@@ -274,10 +335,6 @@ export class WorkspaceTabController {
 		return 'not-found';
 	}
 
-	/**
-	 * Cross-domain hook: group all currently open tabs whose parent/item ID
-	 * belongs to the provided set (e.g. items cited in the active Word document).
-	 */
 	groupOpenTabsByItemIDs(win: Window, groupName: string, itemIDs: readonly number[]): { groupId: string; count: number } | null {
 		const idSet = new Set(itemIDs);
 		if (!idSet.size) return null;
@@ -285,11 +342,8 @@ export class WorkspaceTabController {
 			(t) => !t.virtual && (idSet.has(t.parentItemID) || idSet.has(t.itemID)),
 		);
 		if (!matching.length) return null;
-		const existing = this.store.state.groups.find((g) => g.name === groupName);
-		const group = existing ?? this.store.createGroup(groupName);
-		for (const tab of matching) {
-			this.store.assignToGroup(tab.key, group.id);
-		}
+		const group = this.store.state.groups.find((g) => g.name === groupName) ?? this.store.createGroup(groupName);
+		for (const tab of matching) this.store.assignToGroup(tab.key, group.id);
 		return { groupId: group.id, count: matching.length };
 	}
 
@@ -299,20 +353,5 @@ export class WorkspaceTabController {
 		return this.buildTrackedTabs(win).filter(
 			(t) => !t.virtual && !t.pinned && t.lastViewedAt > 0 && t.lastViewedAt < cutoff,
 		);
-	}
-
-	private formatCreatorYear(item: any): string {
-		if (!item) return '';
-		const first = String(item.firstCreator || '');
-		const date = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
-		return [first, date].filter(Boolean).join(', ');
-	}
-
-	private resolvePrimaryCollectionName(item: any): string {
-		if (!item || typeof item.getCollections !== 'function') return '';
-		const ids: number[] = item.getCollections() || [];
-		if (!ids.length) return '';
-		const col = (globalThis as any).Zotero?.Collections?.get?.(ids[0]);
-		return String(col?.name || '');
 	}
 }

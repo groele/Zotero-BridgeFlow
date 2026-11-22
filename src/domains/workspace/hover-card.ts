@@ -1,83 +1,131 @@
+import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
+import type { WorkspaceStateStore } from './state-store.ts';
 import type { TrackedTab } from './types.ts';
 
-export class HoverCardController {
-	private card: HTMLElement | null = null;
-	private showTimer: number | null = null;
-	private readonly win: Window;
-	private readonly doc: Document;
+function formatRelativeTimeZh(ts: number): string {
+	if (!ts) return '';
+	const diffMin = Math.max(0, Math.floor((Date.now() - ts) / 60_000));
+	if (diffMin < 1) return '刚刚';
+	if (diffMin < 60) return `${diffMin} 分钟前`;
+	const diffHours = Math.floor(diffMin / 60);
+	if (diffHours < 24) return `${diffHours} 小时前`;
+	const diffDays = Math.floor(diffHours / 24);
+	return `${diffDays} 天前`;
+}
 
-	constructor(win: Window, doc: Document) {
-		this.win = win;
+export class WorkspaceHoverCard {
+	private readonly doc: Document;
+	private readonly prefs: UnifiedPrefService;
+	private readonly store: WorkspaceStateStore;
+	private cardEl: HTMLElement | null = null;
+	private showTimer = 0;
+	private hideTimer = 0;
+	private wordCiteMap = new Map<number, CitationBadgeInfo>();
+
+	constructor(doc: Document, prefs: UnifiedPrefService, store: WorkspaceStateStore) {
 		this.doc = doc;
+		this.prefs = prefs;
+		this.store = store;
 	}
 
-	scheduleShow(anchor: HTMLElement, tab: TrackedTab, groupName: string, badge?: CitationBadgeInfo): void {
+	setWordCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
+		this.wordCiteMap = new Map(badges);
+	}
+
+	attach(target: HTMLElement, tab: TrackedTab): void {
+		target.addEventListener('mouseenter', () => {
+			if (!this.prefs.get('workspace.enableHoverPreview')) return;
+			this.clearTimers();
+			const win = this.doc.defaultView || (globalThis as any);
+			this.showTimer = win.setTimeout(() => this.show(target, tab), 260);
+		});
+		target.addEventListener('mouseleave', () => {
+			this.clearTimers();
+			const win = this.doc.defaultView || (globalThis as any);
+			this.hideTimer = win.setTimeout(() => this.hide(), 90);
+		});
+		target.addEventListener('mousedown', () => this.hide());
+	}
+
+	show(anchor: HTMLElement, tab: TrackedTab): void {
 		this.hide();
-		this.showTimer = this.win.setTimeout?.(() => {
-			this.showTimer = null;
-			this.show(anchor, tab, groupName, badge);
-		}, 380) ?? null;
+		const host = this.doc.documentElement || this.doc.body;
+		if (!host) return;
+
+		const card = this.doc.createElement('div');
+		card.className = 'zbf-hover-card';
+		card.setAttribute('data-zbf-hover-card', '1');
+
+		const titleEl = this.doc.createElement('div');
+		titleEl.className = 'zbf-hc-title';
+		titleEl.textContent = tab.title;
+		card.appendChild(titleEl);
+
+		const subParts = [tab.creatorYear, tab.source].filter(Boolean);
+		if (subParts.length) {
+			const subEl = this.doc.createElement('div');
+			subEl.className = 'zbf-hc-meta';
+			subEl.textContent = subParts.join(' · ');
+			card.appendChild(subEl);
+		}
+
+		if (tab.remark) {
+			const remarkEl = this.doc.createElement('div');
+			remarkEl.className = 'zbf-hc-note';
+			remarkEl.textContent = `备注：${tab.remark}`;
+			card.appendChild(remarkEl);
+		}
+
+		const group = tab.groupId ? this.store.state.groups.find((g) => g.id === tab.groupId) : null;
+		const statusParts: string[] = [];
+		if (group) statusParts.push(`分组：${group.name}`);
+		if (tab.collection) statusParts.push(`集合：${tab.collection}`);
+		const citeInfo = this.wordCiteMap.get(tab.parentItemID) || this.wordCiteMap.get(tab.itemID);
+		if (citeInfo) statusParts.push(`Word [${citeInfo.ordinal}] (${citeInfo.documentName})`);
+		if (tab.pinned) statusParts.push('已固定');
+		if (tab.sleeping) statusParts.push('已休眠');
+		if (tab.virtual) statusParts.push('虚拟成员');
+		const rel = formatRelativeTimeZh(tab.lastViewedAt);
+		if (rel) statusParts.push(`上次阅读：${rel}`);
+
+		if (statusParts.length) {
+			const footEl = this.doc.createElement('div');
+			footEl.className = 'zbf-hc-meta';
+			footEl.textContent = statusParts.join(' · ');
+			card.appendChild(footEl);
+		}
+
+		host.appendChild(card);
+		const rect = anchor.getBoundingClientRect();
+		const winW = this.doc.defaultView?.innerWidth || 1200;
+		const winH = this.doc.defaultView?.innerHeight || 800;
+		const cardW = card.offsetWidth || 320;
+		const cardH = card.offsetHeight || 110;
+		const left = Math.max(12, Math.min(rect.left, winW - cardW - 14));
+		const top = rect.bottom + 8 + cardH <= winH
+			? rect.bottom + 8
+			: Math.max(12, rect.top - cardH - 8);
+		card.style.left = `${left}px`;
+		card.style.top = `${top}px`;
+		this.cardEl = card;
 	}
 
 	hide(): void {
-		if (this.showTimer !== null) {
-			this.win.clearTimeout?.(this.showTimer);
-			this.showTimer = null;
-		}
-		if (this.card) this.card.hidden = true;
+		this.clearTimers();
+		this.cardEl?.remove();
+		this.cardEl = null;
 	}
 
-	dispose(): void {
+	destroy(): void {
 		this.hide();
-		this.card?.remove();
-		this.card = null;
 	}
 
-	private ensureCard(): HTMLElement | null {
-		if (this.card?.isConnected) return this.card;
-		const root = this.doc?.documentElement;
-		if (!root) return null;
-		const el = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-		el.id = 'zbf-hover-card';
-		el.className = 'zbf-hover-card';
-		el.hidden = true;
-		root.append(el);
-		this.card = el;
-		return el;
-	}
-
-	private show(anchor: HTMLElement, tab: TrackedTab, groupName: string, badge?: CitationBadgeInfo): void {
-		const card = this.ensureCard();
-		if (!card) return;
-		card.textContent = '';
-
-		const title = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-		title.className = 'zbf-hc-title';
-		title.textContent = tab.title;
-		card.append(title);
-
-		const lines: string[] = [];
-		if (tab.creatorYear) lines.push(tab.creatorYear);
-		if (tab.source) lines.push(tab.source);
-		if (tab.collection) lines.push(`Collection: ${tab.collection}`);
-		if (groupName) lines.push(`Group: ${groupName}`);
-		if (tab.remark) lines.push(`Note: ${tab.remark}`);
-		if (badge) lines.push(`Word [${badge.ordinal}] · ${badge.documentName}`);
-		if (tab.lastViewedAt > 0) {
-			lines.push(`Viewed: ${new Date(tab.lastViewedAt).toLocaleString()}`);
-		}
-
-		for (const line of lines) {
-			const row = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-			row.className = 'zbf-hc-meta';
-			row.textContent = line;
-			card.append(row);
-		}
-
-		const rect = anchor.getBoundingClientRect();
-		card.style.left = `${Math.min((this.win.innerWidth || 900) - 300, Math.max(8, rect.right + 8))}px`;
-		card.style.top = `${Math.min((this.win.innerHeight || 700) - 180, Math.max(8, rect.top))}px`;
-		card.hidden = false;
+	private clearTimers(): void {
+		const win = this.doc.defaultView || (globalThis as any);
+		if (this.showTimer) win.clearTimeout(this.showTimer);
+		if (this.hideTimer) win.clearTimeout(this.hideTimer);
+		this.showTimer = 0;
+		this.hideTimer = 0;
 	}
 }

@@ -70,13 +70,40 @@ export class WorkspaceStateStore {
 	}
 
 	createGroup(name: string, color?: string): TabGroup {
-		const trimmed = name.trim() || 'Group';
+		const trimmed = name.trim() || '新分组';
 		const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		const chosen = color || GROUP_PALETTE[this.state.groups.length % GROUP_PALETTE.length];
 		const group: TabGroup = { id, name: trimmed, color: chosen, memberKeys: [] };
 		this.state.groups.push(group);
 		this.save();
 		return group;
+	}
+
+	assignKeyRelative(key: string, groupId: string | null, anchorKey: string, after: boolean): void {
+		for (const g of this.state.groups) {
+			g.memberKeys = g.memberKeys.filter((k) => k !== key);
+		}
+		if (groupId) {
+			const target = this.state.groups.find((g) => g.id === groupId);
+			if (target) {
+				const idx = target.memberKeys.indexOf(anchorKey);
+				if (idx >= 0) {
+					target.memberKeys.splice(after ? idx + 1 : idx, 0, key);
+				} else {
+					target.memberKeys.push(key);
+				}
+			}
+		}
+		this.save();
+	}
+
+	deleteSession(sessionId: string): boolean {
+		const before = this.state.sessions.length + this.state.rollingSessions.length;
+		this.state.sessions = this.state.sessions.filter((s) => s.id !== sessionId);
+		this.state.rollingSessions = this.state.rollingSessions.filter((s) => s.id !== sessionId);
+		if (this.state.sessions.length + this.state.rollingSessions.length === before) return false;
+		this.save();
+		return true;
 	}
 
 	renameGroup(groupId: string, name: string): boolean {

@@ -1,153 +1,270 @@
+import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
+import { addPopupSeparator, createFloatingPopup } from './popup-menu-helpers.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
-import type { WorkspaceSession } from './types.ts';
+import {
+	exportWorkspaceJson,
+	importWorkspaceJsonInteractive,
+	renderSessionSection,
+} from './workspace-hub-helpers.ts';
 
-export class WorkspacePopoverController {
-	private panel: any = null;
-	private listEl: HTMLElement | null = null;
-	private nameInput: HTMLInputElement | null = null;
+export class WorkspacePopover {
 	private readonly win: Window;
 	private readonly doc: Document;
+	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
 	private readonly onRefresh: () => void;
+	private activeBackdrop: HTMLElement | null = null;
+	private activePopup: HTMLElement | null = null;
+	private boundOutside: ((e: Event) => void) | null = null;
 
 	constructor(
 		win: Window,
-		doc: Document,
+		prefs: UnifiedPrefService,
 		store: WorkspaceStateStore,
 		tabs: WorkspaceTabController,
 		onRefresh: () => void,
 	) {
 		this.win = win;
-		this.doc = doc;
+		this.doc = win.document;
+		this.prefs = prefs;
 		this.store = store;
 		this.tabs = tabs;
 		this.onRefresh = onRefresh;
 	}
 
-	toggle(anchor: Element): void {
-		this.ensureMounted();
-		if (!this.panel) return;
-		if (this.panel.state === 'open') {
-			this.close();
-			return;
+	openHub(_anchor?: HTMLElement): void {
+		this.close();
+		const host = this.doc.documentElement || this.doc.body;
+		if (!host) return;
+
+		const backdrop = this.doc.createElement('div');
+		backdrop.id = 'zbf-hub-backdrop';
+		backdrop.addEventListener('click', (e) => {
+			if (e.target === backdrop) this.close();
+		});
+
+		const modal = this.doc.createElement('div');
+		modal.className = 'zbf-hub-box';
+
+		const header = this.doc.createElement('div');
+		header.className = 'zbf-hub-head';
+		const title = this.doc.createElement('div');
+		title.className = 'zbf-hub-title';
+		title.textContent = '工作区与会话快照中心';
+		const closeBtn = this.doc.createElement('button');
+		closeBtn.type = 'button';
+		closeBtn.className = 'zbf-hub-close';
+		closeBtn.textContent = '✕';
+		closeBtn.addEventListener('click', () => this.close());
+		header.append(title, closeBtn);
+
+		const nameInput = this.doc.createElement('input') as HTMLInputElement;
+		nameInput.type = 'text';
+		nameInput.className = 'zbf-hub-input';
+		nameInput.placeholder = '输入工作区快照或模板名称（如：论文修改轮次）...';
+
+		const statusEl = this.doc.createElement('div');
+		statusEl.className = 'zbf-hub-status';
+
+		const actions = this.doc.createElement('div');
+		actions.className = 'zbf-hub-actions';
+
+		const saveBtn = this.doc.createElement('button');
+		saveBtn.type = 'button';
+		saveBtn.className = 'zbf-hub-btn primary';
+		saveBtn.textContent = '保存当前快照';
+		saveBtn.addEventListener('click', () => {
+			const name = nameInput.value.trim() || `快照 ${new Date().toLocaleTimeString()}`;
+			this.store.saveSession(name, { isTemplate: false });
+			nameInput.value = '';
+			statusEl.textContent = `已保存工作区快照「${name}」`;
+			renderLists();
+		});
+
+		const tplBtn = this.doc.createElement('button');
+		tplBtn.type = 'button';
+		tplBtn.className = 'zbf-hub-btn';
+		tplBtn.textContent = '存为分组模板';
+		tplBtn.addEventListener('click', () => {
+			const name = nameInput.value.trim() || `模板 ${new Date().toLocaleTimeString()}`;
+			this.store.saveSession(name, { isTemplate: true });
+			nameInput.value = '';
+			statusEl.textContent = `已保存结构模板「${name}」`;
+			renderLists();
+		});
+
+		const exportBtn = this.doc.createElement('button');
+		exportBtn.type = 'button';
+		exportBtn.className = 'zbf-hub-btn';
+		exportBtn.textContent = '导出 JSON';
+		exportBtn.addEventListener('click', async () => {
+			const msg = await exportWorkspaceJson(this.win, this.store);
+			if (msg) statusEl.textContent = msg;
+		});
+
+		const importBtn = this.doc.createElement('button');
+		importBtn.type = 'button';
+		importBtn.className = 'zbf-hub-btn';
+		importBtn.textContent = '导入 JSON';
+		importBtn.addEventListener('click', async () => {
+			await importWorkspaceJsonInteractive(this.win, this.store, () => {
+				statusEl.textContent = '已导入工作区状态';
+				renderLists();
+				this.onRefresh();
+			});
+		});
+
+		actions.append(saveBtn, tplBtn, exportBtn, importBtn);
+
+		const listsWrap = this.doc.createElement('div');
+		listsWrap.className = 'zbf-hub-lists';
+
+		const renderLists = () => {
+			listsWrap.textContent = '';
+			listsWrap.appendChild(renderSessionSection(
+				this.doc,
+				'已保存快照与模板',
+				this.store.state.sessions,
+				'暂无已保存的快照或模板，可在上方输入名称保存。',
+				(ses) => {
+					this.close();
+					void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
+				},
+				(id) => {
+					this.store.deleteSession(id);
+					renderLists();
+				},
+			));
+			listsWrap.appendChild(renderSessionSection(
+				this.doc,
+				'自动滚动快照',
+				this.store.state.rollingSessions,
+				'暂无自动滚动快照。',
+				(ses) => {
+					this.close();
+					void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
+				},
+				(id) => {
+					this.store.deleteSession(id);
+					renderLists();
+				},
+			));
+		};
+
+		renderLists();
+		modal.append(header, nameInput, actions, statusEl, listsWrap);
+		backdrop.appendChild(modal);
+		host.appendChild(backdrop);
+		this.activeBackdrop = backdrop;
+		this.win.setTimeout(() => nameInput.focus(), 10);
+	}
+
+	openStaleMenu(anchor: HTMLElement, event?: MouseEvent): void {
+		this.close();
+		const pop = createFloatingPopup(this.doc, anchor, event, 280);
+		if (!pop) return;
+
+		const days = this.prefs.get('workspace.staleSuggestDays');
+		const stale = this.tabs.findStaleTabs(this.win);
+		const title = this.doc.createElement('div');
+		title.className = 'zbf-popup-header';
+		title.textContent = `建议清理的标签页（超过 ${days} 天未查看：${stale.length} 篇）`;
+		pop.appendChild(title);
+
+		if (!stale.length) {
+			const empty = this.doc.createElement('div');
+			empty.className = 'zbf-popup-empty';
+			empty.textContent = '当前没有长期未查看的陈旧标签页。';
+			pop.appendChild(empty);
+		} else {
+			for (const tab of stale.slice(0, 12)) {
+				const row = this.doc.createElement('div');
+				row.className = 'zbf-stale-row';
+
+				const label = this.doc.createElement('span');
+				label.className = 'zbf-stale-title';
+				label.textContent = this.tabs.getDisplayTitle(tab);
+				label.addEventListener('click', () => {
+					this.close();
+					this.tabs.selectTab(this.win, tab.tabID);
+					this.onRefresh();
+				});
+
+				const sleepBtn = this.doc.createElement('button');
+				sleepBtn.type = 'button';
+				sleepBtn.className = 'zbf-mini-btn';
+				sleepBtn.textContent = '休眠';
+				sleepBtn.addEventListener('click', () => {
+					this.tabs.sleepTab(this.win, tab.tabID);
+					this.close();
+					this.onRefresh();
+				});
+
+				const closeBtn = this.doc.createElement('button');
+				closeBtn.type = 'button';
+				closeBtn.className = 'zbf-mini-btn danger';
+				closeBtn.textContent = '关闭';
+				closeBtn.addEventListener('click', () => {
+					void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+					this.close();
+					this.onRefresh();
+				});
+
+				row.append(label, sleepBtn, closeBtn);
+				pop.appendChild(row);
+			}
+
+			addPopupSeparator(this.doc, pop);
+			const footer = this.doc.createElement('div');
+			footer.className = 'zbf-stale-footer';
+
+			const sleepAll = this.doc.createElement('button');
+			sleepAll.type = 'button';
+			sleepAll.className = 'zbf-mini-btn';
+			sleepAll.textContent = '全部休眠';
+			sleepAll.addEventListener('click', () => {
+				for (const t of stale) this.tabs.sleepTab(this.win, t.tabID);
+				this.close();
+				this.onRefresh();
+			});
+
+			const closeAll = this.doc.createElement('button');
+			closeAll.type = 'button';
+			closeAll.className = 'zbf-mini-btn danger';
+			closeAll.textContent = '全部关闭';
+			closeAll.addEventListener('click', () => {
+				void this.tabs.closeTabs(this.win, stale.map((t) => t.tabID), { preserveVirtual: true, protectPinned: true });
+				this.close();
+				this.onRefresh();
+			});
+
+			footer.append(sleepAll, closeAll);
+			pop.appendChild(footer);
 		}
-		this.render();
-		try {
-			this.panel.openPopup(anchor, 'bottomleft topleft', 0, 4, false, false);
-		} catch { /* ignore */ }
+
+		this.activePopup = pop;
+		this.boundOutside = (e: Event) => {
+			if (!pop.contains(e.target as Node)) this.close();
+		};
+		this.win.setTimeout(() => {
+			if (this.boundOutside) this.doc.addEventListener('mousedown', this.boundOutside, true);
+		}, 15);
 	}
 
 	close(): void {
-		try { this.panel?.hidePopup?.(); } catch { /* ignore */ }
+		this.activeBackdrop?.remove();
+		this.activeBackdrop = null;
+		this.activePopup?.remove();
+		this.activePopup = null;
+		if (this.boundOutside) {
+			this.doc.removeEventListener('mousedown', this.boundOutside, true);
+			this.boundOutside = null;
+		}
 	}
 
-	dispose(): void {
+	destroy(): void {
 		this.close();
-		this.panel?.remove?.();
-		this.panel = null;
-		this.listEl = null;
-		this.nameInput = null;
-	}
-
-	private ensureMounted(): void {
-		if (this.panel) return;
-		const popupset = this.doc?.getElementById?.('mainPopupSet') || this.doc?.querySelector?.('popupset');
-		if (!popupset) return;
-		const xul = (this.doc as any).createXULElement
-			? (this.doc as any).createXULElement('panel')
-			: this.doc.createElementNS('http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul', 'panel');
-		xul.id = 'zbf-workspace-panel';
-		xul.setAttribute('orient', 'vertical');
-
-		const box = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-		box.className = 'zbf-spot-box';
-		box.style.width = '360px';
-
-		const row = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-		row.style.cssText = 'display:flex;gap:6px;';
-		const input = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'input') as HTMLInputElement;
-		input.type = 'text';
-		input.className = 'zbf-spot-input';
-		input.placeholder = 'Workspace snapshot name...';
-
-		const saveBtn = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
-		saveBtn.type = 'button';
-		saveBtn.className = 'zbf-tb-btn';
-		saveBtn.textContent = 'Save';
-		saveBtn.addEventListener('click', () => {
-			this.store.saveSession(input.value || `Workspace ${new Date().toLocaleTimeString()}`);
-			input.value = '';
-			this.render();
-			this.onRefresh();
-		});
-		row.append(input, saveBtn);
-
-		const list = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-		list.className = 'zbf-spot-results';
-
-		box.append(row, list);
-		xul.append(box);
-		popupset.append(xul);
-
-		this.panel = xul;
-		this.nameInput = input;
-		this.listEl = list;
-	}
-
-	private render(): void {
-		if (!this.listEl) return;
-		this.listEl.textContent = '';
-		const all: Array<{ session: WorkspaceSession; kind: string }> = [
-			...this.store.state.sessions.map((s) => ({ session: s, kind: 'Saved' })),
-			...this.store.state.rollingSessions.map((s) => ({ session: s, kind: 'Auto' })),
-		];
-		if (!all.length) {
-			const empty = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-			empty.style.cssText = 'padding:10px;opacity:0.65;text-align:center;';
-			empty.textContent = 'No workspace snapshots yet';
-			this.listEl.append(empty);
-			return;
-		}
-		for (const { session, kind } of all) {
-			const item = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
-			item.className = 'zbf-spot-row';
-			const title = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'span') as HTMLElement;
-			title.textContent = `${session.name} (${session.groups.length} groups)`;
-			const right = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'span') as HTMLElement;
-			right.style.cssText = 'display:inline-flex;gap:4px;align-items:center;';
-			const badge = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'span') as HTMLElement;
-			badge.className = 'zbf-spot-badge';
-			badge.textContent = kind;
-			const restoreBtn = this.doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
-			restoreBtn.type = 'button';
-			restoreBtn.className = 'zbf-tb-btn';
-			restoreBtn.textContent = 'Restore';
-			restoreBtn.addEventListener('click', () => {
-				void this.restoreSession(session);
-			});
-			right.append(badge, restoreBtn);
-			item.append(title, right);
-			this.listEl.append(item);
-		}
-	}
-
-	private async restoreSession(session: WorkspaceSession): Promise<void> {
-		this.store.restoreSessionLayout(session);
-		for (const group of session.groups) {
-			for (const key of group.memberKeys) {
-				const idMatch = key.match(/^item:(\d+)$/);
-				if (idMatch) {
-					await this.tabs.focusOrOpenItem(this.win, {
-						itemID: Number(idMatch[1]),
-						attachmentID: Number(idMatch[1]),
-						preferExistingTab: true,
-					});
-				}
-			}
-		}
-		this.close();
-		this.onRefresh();
 	}
 }

@@ -1,4 +1,5 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
+import { openTextPromptModal } from './popup-menu-helpers.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 
@@ -69,14 +70,11 @@ export class ItemContextMenuController {
 		this.subPopup.textContent = '';
 		const selected: any[] = (this.win as any).ZoteroPane?.getSelectedItems?.() || [];
 		this.addItem(this.subPopup, '+ 打开到新分组…', () => {
-			this.win.setTimeout?.(() => {
-				const promptSvc = (globalThis as any).Services?.prompt;
-				const fallback = String(selected[0]?.getField?.('title') || 'New Group').slice(0, 30);
-				const input = { value: fallback };
-				if (promptSvc?.prompt && !promptSvc.prompt(this.win, '打开到新分组', '分组名称：', input, null, {})) return;
-				const g = this.store.createGroup(input.value || fallback);
+			const fallback = String(selected[0]?.getField?.('title') || '新分组').slice(0, 30);
+			openTextPromptModal(this.win, '打开到新分组', '输入分组名称...', fallback, (name) => {
+				const g = this.store.createGroup(name || fallback);
 				void this.openIntoGroup(selected, g.id);
-			}, 0);
+			});
 		});
 
 		if (this.store.state.groups.length) this.subPopup.append(this.xul('menuseparator'));

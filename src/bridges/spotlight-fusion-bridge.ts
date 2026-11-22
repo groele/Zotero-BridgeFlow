@@ -77,7 +77,24 @@ export class SpotlightFusionBridge implements BridgeModule {
 						}
 					}
 
-					// 3. Clear citation caches command
+					// 3. One-click insert current selected paper into active Word cursor
+					if (this.wordCite.isActive() && this.kernel.prefs.get('wordCite.dragCite.enable')) {
+						const insertLabel = '插入当前文献到 Word 光标处';
+						if (!term || insertLabel.toLowerCase().includes(term) || 'word'.includes(term) || 'cite'.includes(term)) {
+							out.push({
+								id: 'cmd:cite-selected-word',
+								category: 'command',
+								title: `> ${insertLabel}`,
+								subtitle: '在当前 Word 光标处生成原生 Zotero 可编辑引文域',
+								badge: 'WORD',
+								action: async () => {
+									await this.wordCite.citeCurrentSelection(win);
+								},
+							});
+						}
+					}
+
+					// 4. Clear citation caches command
 					if (!term || 'clear cache'.includes(term)) {
 						out.push({
 							id: 'cmd:clear-citation-cache',

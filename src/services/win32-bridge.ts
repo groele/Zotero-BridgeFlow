@@ -88,6 +88,12 @@ export class Win32BridgeService {
 		}
 	}
 
+	verifyDroppedWordTarget(): boolean {
+		const cursor = this.probeCursorWordDropTarget();
+		if (cursor.status === 'word-confirmed') return true;
+		return Boolean(this.probeForegroundWordTitle());
+	}
+
 	dispose(): void {
 		if (!this.cached) return;
 		const { user32, kernel32 } = this.cached;

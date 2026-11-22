@@ -1,341 +1,338 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
-import type { HoverCardController } from './hover-card.ts';
+import type { WorkspaceHoverCard } from './hover-card.ts';
+import { openTextPromptModal } from './popup-menu-helpers.ts';
+import { bindSidebarKeyboardNavigation } from './sidebar-keyboard.ts';
+import {
+	bindSidebarGroupDrop,
+	bindSidebarSplitter,
+	buildSidebarTabRow,
+} from './sidebar-list-helpers.ts';
+import {
+	appendSidebarSectionHead,
+	renderSidebarCollectionsList,
+	renderSidebarEmptyBox,
+	renderSidebarStatusBar,
+} from './sidebar-sections-helpers.ts';
+import { SidebarSelection } from './sidebar-selection.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
-import type { TabContextMenuController } from './tab-context-menu.ts';
+import type { WorkspaceTabContextMenu } from './tab-context-menu.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 import type { TrackedTab } from './types.ts';
 import { createWorkspaceIcon } from './workspace-icons.ts';
+import type { WorkspacePopover } from './workspace-popover.ts';
 
-type ViewMode = 'groups' | 'collection' | 'status';
+type SidebarViewMode = 'groups' | 'collections' | 'status';
 
-export class VerticalSidebarController {
-	private sidebar: HTMLElement | null = null;
-	private listEl: HTMLElement | null = null;
-	private statusEl: HTMLElement | null = null;
-	private searchInput: HTMLInputElement | null = null;
-	private viewMode: ViewMode = 'groups';
-	private badges: ReadonlyMap<number, CitationBadgeInfo> = new Map();
-	private draggedKey: string | null = null;
-
+export class WorkspaceVerticalSidebar {
 	private readonly win: Window;
 	private readonly doc: Document;
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
-	private readonly menus: TabContextMenuController;
-	private readonly hover: HoverCardController;
+	private readonly menus: WorkspaceTabContextMenu;
+	private readonly hover: WorkspaceHoverCard;
+	private readonly popover: WorkspacePopover;
+	private readonly onToggleSpotlight: () => void;
 	private readonly onRefresh: () => void;
+
+	private asideEl: HTMLElement | null = null;
+	private listEl: HTMLElement | null = null;
+	private statusEl: HTMLElement | null = null;
+	private viewButtons = new Map<SidebarViewMode, HTMLButtonElement>();
+	private selection: SidebarSelection | null = null;
+
+	private viewMode: SidebarViewMode = 'groups';
+	private searchTerm = '';
+	private wordCiteMap = new Map<number, CitationBadgeInfo>();
 
 	constructor(
 		win: Window,
-		doc: Document,
 		prefs: UnifiedPrefService,
 		store: WorkspaceStateStore,
 		tabs: WorkspaceTabController,
-		menus: TabContextMenuController,
-		hover: HoverCardController,
+		menus: WorkspaceTabContextMenu,
+		hover: WorkspaceHoverCard,
+		popover: WorkspacePopover,
+		onToggleSpotlight: () => void,
 		onRefresh: () => void,
 	) {
 		this.win = win;
-		this.doc = doc;
+		this.doc = win.document;
 		this.prefs = prefs;
 		this.store = store;
 		this.tabs = tabs;
 		this.menus = menus;
 		this.hover = hover;
+		this.popover = popover;
+		this.onToggleSpotlight = onToggleSpotlight;
 		this.onRefresh = onRefresh;
 	}
 
-	setCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
-		this.badges = badges;
-		this.render();
-	}
-
-	mount(): boolean {
-		if (this.sidebar?.isConnected) return true;
-		const deck: Element | undefined = (this.win as any).Zotero_Tabs?.deck;
-		const deckParent = deck?.parentElement;
-		if (!deck || !deckParent) return false;
-
-		const aside = (this.doc as any).createXULElement
-			? (this.doc as any).createXULElement('vbox')
-			: this.doc.createElementNS('http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul', 'vbox');
-		aside.id = 'zbf-sidebar';
-
-		const header = this.h('div', 'zbf-sb-header');
-		const title = this.h('span', 'zbf-sb-title');
-		title.append(createWorkspaceIcon(this.doc, 'bridge', 14), this.doc.createTextNode('BridgeFlow'));
-
-		const actions = this.h('div', 'zbf-sb-actions');
-		actions.append(
-			this.mkIconBtn('plus', 'New Group', () => this.promptNewGroup()),
-			this.mkIconBtn('folder', 'Auto-Group by Collection', () => { this.tabs.autoGroupByCollection(this.win); this.onRefresh(); }),
-			this.mkIconBtn('sleep', 'Sleep Inactive Tabs', () => this.sleepInactiveTabs()),
-			this.mkIconBtn('sidebar', 'Collapse Sidebar', () => {
-				this.prefs.set('workspace.verticalSidebarCollapsed', !this.prefs.get('workspace.verticalSidebarCollapsed'));
-				this.onRefresh();
-			}),
-		);
-		header.append(title, actions);
-
-		const searchWrap = this.h('div', 'zbf-sb-search-wrap');
-		const search = this.h('input', 'zbf-sb-search');
-		search.type = 'search';
-		search.placeholder = 'Filter tabs, remarks, collections...';
-		search.addEventListener('input', () => this.renderList());
-		searchWrap.append(search);
-
-		const views = this.h('div', 'zbf-sb-views');
-		for (const [mode, label] of [['groups', '分组'], ['collection', '集合'], ['status', '状态']] as const) {
-			const btn = this.h('button', `zbf-sb-view-btn${this.viewMode === mode ? ' active' : ''}`);
-			btn.type = 'button';
-			btn.textContent = label;
-			btn.addEventListener('click', () => {
-				this.viewMode = mode;
-				Array.from(views.children).forEach((el, idx) => {
-					el.classList.toggle('active', (['groups', 'collection', 'status'] as const)[idx] === mode);
-				});
-				this.renderList();
-			});
-			views.append(btn);
-		}
-
-		const list = this.h('div', 'zbf-sb-list');
-		const status = this.h('div', 'zbf-sb-status');
-		const splitter = this.h('div', 'zbf-sb-splitter');
-		this.bindSplitter(splitter, aside);
-
-		aside.append(header, searchWrap, views, list, status, splitter);
-		deckParent.insertBefore(aside, deck);
-
-		this.sidebar = aside;
-		this.listEl = list;
-		this.statusEl = status;
-		this.searchInput = search;
-		return true;
+	setWordCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
+		this.wordCiteMap = new Map(badges);
 	}
 
 	render(): void {
-		if (!this.prefs.get('workspace.enableVerticalSidebar')) {
-			this.dispose();
-			return;
+		const mainDeck = this.doc.getElementById('zotero-main-window-deck')
+			|| this.doc.querySelector('#main-deck, #zotero-pane-stack')?.parentElement
+			|| this.doc.getElementById('zotero-pane')?.parentElement;
+		if (!mainDeck) return;
+
+		if (!this.asideEl || !this.asideEl.isConnected) {
+			this.doc.getElementById('zbf-sidebar')?.remove();
+			this.buildShell(mainDeck);
 		}
-		if (!this.mount() || !this.sidebar) return;
-		const collapsed = this.prefs.get('workspace.verticalSidebarCollapsed');
-		this.sidebar.setAttribute('data-collapsed', collapsed ? 'true' : 'false');
-		this.sidebar.style.width = `${this.prefs.get('workspace.verticalSidebarWidth')}px`;
-		if (!collapsed) this.renderList();
+		if (!this.asideEl) return;
+
+		const enabled = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
+		this.asideEl.toggleAttribute('hidden', !enabled);
+		this.asideEl.setAttribute('data-collapsed', enabled ? 'false' : 'true');
+		if (!enabled) return;
+
+		const savedW = this.prefs.get('workspace.verticalSidebarWidth');
+		if (savedW >= 200 && savedW <= 440) this.asideEl.style.width = `${savedW}px`;
+		const fontSize = this.prefs.get('workspace.verticalTabFontSize');
+		if (fontSize >= 11 && fontSize <= 18) this.asideEl.style.fontSize = `${fontSize}px`;
+
+		for (const [mode, btn] of this.viewButtons) {
+			btn.classList.toggle('active', mode === this.viewMode);
+		}
+		this.renderList();
 	}
 
-	renderList(): void {
-		if (!this.listEl || !this.statusEl) return;
-		const tracked = this.tabs.buildTrackedTabs(this.win);
-		const filter = (this.searchInput?.value || '').trim().toLowerCase();
-		const visible = filter
-			? tracked.filter((t) => `${t.title} ${t.remark} ${t.source} ${t.collection}`.toLowerCase().includes(filter))
-			: tracked;
-
-		this.listEl.textContent = '';
-		if (this.viewMode === 'groups') this.renderByGroups(visible);
-		else if (this.viewMode === 'collection') this.renderByKey(visible, (t) => t.collection || 'Uncategorized');
-		else this.renderByStatus(visible);
-
-		const activeCount = tracked.filter((t) => !t.sleeping && !t.virtual).length;
-		const sleepCount = tracked.filter((t) => t.sleeping).length;
-		const virtualCount = tracked.filter((t) => t.virtual).length;
-		this.statusEl.textContent = `Active ${activeCount} · Sleep ${sleepCount} · Virtual ${virtualCount}`;
-	}
-
-	dispose(): void {
-		this.sidebar?.remove();
-		this.sidebar = null;
+	destroy(): void {
+		this.asideEl?.remove();
+		this.asideEl = null;
 		this.listEl = null;
 		this.statusEl = null;
-		this.searchInput = null;
+		this.selection = null;
+		this.viewButtons.clear();
 	}
 
-	private renderByGroups(tabs: readonly TrackedTab[]): void {
-		if (!this.listEl) return;
-		const pinned = this.prefs.get('workspace.enablePinnedTabs') ? tabs.filter((t) => t.pinned) : [];
-		if (pinned.length) {
-			const pHead = this.h('div', 'zbf-sb-group-head');
-			pHead.textContent = `📌 Pinned (${pinned.length})`;
-			this.listEl.append(pHead);
-			for (const tab of pinned) this.listEl.append(this.buildRow(tab, 'Pinned'));
-		}
+	private buildShell(mainDeck: Element): void {
+		const aside = this.doc.createElement('aside');
+		aside.id = 'zbf-sidebar';
 
-		for (const group of this.store.state.groups) {
-			const members = tabs.filter((t) => !t.pinned && t.groupId === group.id);
-			const collapsed = this.store.state.collapsed.includes(group.id);
-			const head = this.h('div', 'zbf-sb-group-head');
-			const left = this.h('span');
-			left.style.cssText = 'display:inline-flex;align-items:center;gap:6px;';
-			const dot = this.h('span', 'zbf-sb-group-dot');
-			dot.style.backgroundColor = group.color;
-			left.append(dot, this.doc.createTextNode(`${group.name} (${members.length})`));
-			head.append(left);
-			head.addEventListener('click', () => { this.store.setCollapsed(group.id, !collapsed); this.renderList(); });
-			head.addEventListener('contextmenu', (e) => this.menus.openGroupMenu(e as MouseEvent, group));
-			head.addEventListener('dragover', (e) => { if (this.draggedKey) e.preventDefault(); });
-			head.addEventListener('drop', (e) => {
-				e.preventDefault();
-				if (this.draggedKey) { this.store.assignToGroup(this.draggedKey, group.id); this.draggedKey = null; this.onRefresh(); }
-			});
-			this.listEl.append(head);
-			if (!collapsed) {
-				for (const tab of members) this.listEl.append(this.buildRow(tab, group.name));
-			}
-		}
-		for (const tab of tabs.filter((t) => !t.pinned && !t.groupId)) {
-			this.listEl.append(this.buildRow(tab, ''));
-		}
-	}
+		const header = this.doc.createElement('div');
+		header.className = 'zbf-sb-header';
+		const title = this.doc.createElement('div');
+		title.className = 'zbf-sb-title';
+		title.appendChild(createWorkspaceIcon(this.doc, 'bridge', 14));
+		const titleText = this.doc.createElement('span');
+		titleText.textContent = 'BridgeFlow 文献工作区';
+		title.appendChild(titleText);
 
-	private renderByKey(tabs: readonly TrackedTab[], keyFn: (t: TrackedTab) => string): void {
-		if (!this.listEl) return;
-		const buckets = new Map<string, TrackedTab[]>();
-		for (const t of tabs) {
-			const k = keyFn(t);
-			const arr = buckets.get(k) || [];
-			arr.push(t);
-			buckets.set(k, arr);
-		}
-		for (const [label, list] of buckets.entries()) {
-			const head = this.h('div', 'zbf-sb-group-head');
-			head.textContent = `${label} (${list.length})`;
-			this.listEl.append(head);
-			for (const t of list) this.listEl.append(this.buildRow(t, label));
-		}
-	}
+		const actions = this.doc.createElement('div');
+		actions.className = 'zbf-sb-actions';
+		header.append(title, actions);
+		aside.appendChild(header);
 
-	private renderByStatus(tabs: readonly TrackedTab[]): void {
-		this.renderByKey(tabs, (t) => {
-			if (this.badges.has(t.parentItemID) || this.badges.has(t.itemID)) return 'Cited in Word';
-			if (t.pinned) return 'Pinned';
-			if (t.sleeping) return 'Sleeping';
-			if (t.virtual) return 'Virtual';
-			return 'Active';
+		const searchWrap = this.doc.createElement('div');
+		searchWrap.className = 'zbf-sb-search-wrap';
+		const searchInput = this.doc.createElement('input') as HTMLInputElement;
+		searchInput.type = 'search';
+		searchInput.className = 'zbf-sb-search';
+		searchInput.placeholder = '筛选标题、作者、备注、分组...';
+		searchInput.value = this.searchTerm;
+		searchInput.addEventListener('input', () => {
+			this.searchTerm = searchInput.value;
+			this.renderList();
 		});
-	}
+		searchWrap.appendChild(searchInput);
+		aside.appendChild(searchWrap);
 
-	private buildRow(tab: TrackedTab, groupName: string): HTMLElement {
-		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
-		const cls = ['zbf-vtab-row', tab.tabID === selectedID ? 'selected' : '', tab.sleeping ? 'sleeping' : '', tab.virtual ? 'virtual' : ''].filter(Boolean).join(' ');
-		const row = this.h('div', cls);
-		row.draggable = true;
-		row.addEventListener('dragstart', () => { this.draggedKey = tab.key; });
-		row.addEventListener('dragend', () => { this.draggedKey = null; });
-		row.style.minHeight = `${this.prefs.get('workspace.verticalTabRowHeight')}px`;
-		row.style.fontSize = `${this.prefs.get('workspace.verticalTabFontSize')}px`;
-
-		const main = this.h('div', 'zbf-vtab-main');
-		const title = this.h('span', 'zbf-vtab-title');
-		title.textContent = `${tab.virtual ? '◌ ' : ''}${this.tabs.getDisplayTitle(tab)}`;
-		main.append(title);
-
-		const subMode = this.prefs.get('workspace.verticalTabSubtitleMode');
-		const subText = subMode === 'none' ? '' : subMode === 'creatorYear' ? tab.creatorYear : subMode === 'collection' ? tab.collection : (tab.source || tab.creatorYear);
-		if (subText) {
-			const sub = this.h('span', 'zbf-vtab-sub');
-			sub.textContent = subText;
-			main.append(sub);
+		const views = this.doc.createElement('div');
+		views.className = 'zbf-sb-views';
+		for (const [mode, label] of [['groups', '分组'], ['collections', '集合'], ['status', '状态']] as const) {
+			const vBtn = this.doc.createElement('button');
+			vBtn.type = 'button';
+			vBtn.className = 'zbf-sb-view-btn';
+			vBtn.textContent = label;
+			vBtn.addEventListener('click', () => {
+				this.viewMode = mode;
+				this.render();
+			});
+			this.viewButtons.set(mode, vBtn);
+			views.appendChild(vBtn);
 		}
-		row.append(main);
+		aside.appendChild(views);
 
-		const right = this.h('div', 'zbf-vtab-right');
-		const badgeInfo = this.badges.get(tab.parentItemID) || this.badges.get(tab.itemID);
-		if (badgeInfo && this.prefs.get('fusion.sidebarCiteBadge')) {
-			const badge = this.h('span', 'zbf-cite-badge');
-			badge.textContent = `[${badgeInfo.ordinal}]`;
-			badge.title = `${badgeInfo.documentName}: ${badgeInfo.shortText}`;
-			right.append(badge);
-		}
+		const list = this.doc.createElement('div');
+		list.className = 'zbf-sb-list';
+		aside.appendChild(list);
 
-		if (tab.itemID > 0 && this.prefs.get('workspace.enableShowInFilesystem')) {
-			const folderBtn = this.mkIconBtn('folder', 'Reveal PDF Folder', () => {
-				(this.win as any).ZoteroPane?.showAttachmentInFilesystem?.(tab.itemID);
-			}, 'zbf-row-btn');
-			folderBtn.addEventListener('click', (e) => e.stopPropagation());
-			right.append(folderBtn);
-		}
+		const status = this.doc.createElement('div');
+		status.className = 'zbf-sb-status';
+		aside.appendChild(status);
 
-		if (tab.tabID) {
-			const closeBtn = this.mkIconBtn('close', 'Close tab', () => {
-				void this.tabs.closeTabs(this.win, [tab.tabID], { protectPinned: true }).then(() => this.onRefresh());
-			}, 'zbf-row-btn');
-			closeBtn.addEventListener('click', (e) => e.stopPropagation());
-			right.append(closeBtn);
-		}
-		row.append(right);
+		const splitter = this.doc.createElement('div');
+		splitter.className = 'zbf-sb-splitter';
+		bindSidebarSplitter(this.doc, aside, splitter, this.prefs);
+		aside.appendChild(splitter);
 
-		row.addEventListener('click', () => {
-			if (tab.tabID) this.tabs.selectTab(this.win, tab.tabID);
-			else void this.tabs.focusOrOpenItem(this.win, { itemID: tab.parentItemID, attachmentID: tab.itemID });
+		this.selection = new SidebarSelection(
+			this.doc, this.prefs, this.store, actions, aside, list,
+			() => this.onRefresh(),
+			(ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true }),
+		);
+		bindSidebarKeyboardNavigation(aside, list, searchInput, () => {
+			this.searchTerm = '';
+			searchInput.value = '';
+			this.renderList();
+		});
+
+		this.addHeaderBtn(actions, 'plus', '新建分组', () => {
+			openTextPromptModal(this.win, '新建分组', '输入分组名称...', '新分组', (val) => {
+				if (!val.trim()) return;
+				this.store.createGroup(val);
+				this.onRefresh();
+			});
+		});
+		this.addHeaderBtn(actions, 'folder', '按集合自动分组', () => {
+			this.tabs.autoGroupByCollection(this.win);
 			this.onRefresh();
 		});
-		row.addEventListener('contextmenu', (e) => this.menus.openTabMenu(e as MouseEvent, tab));
-		if (this.prefs.get('workspace.enableHoverPreview')) {
-			row.addEventListener('mouseenter', () => this.hover.scheduleShow(row, tab, groupName, badgeInfo));
-			row.addEventListener('mouseleave', () => this.hover.hide());
+		if (this.prefs.get('workspace.enableSpotlight')) {
+			this.addHeaderBtn(actions, 'search', '打开快速查找 (Ctrl+P)', () => this.onToggleSpotlight());
 		}
-		return row;
-	}
-
-	private bindSplitter(splitter: HTMLElement, aside: HTMLElement): void {
-		splitter.addEventListener('mousedown', (ev: MouseEvent) => {
-			ev.preventDefault();
-			const startX = ev.clientX;
-			const startW = aside.getBoundingClientRect().width || this.prefs.get('workspace.verticalSidebarWidth');
-			const onMove = (m: MouseEvent) => {
-				const next = Math.max(200, Math.min(440, Math.round(startW + (m.clientX - startX))));
-				aside.style.width = `${next}px`;
-			};
-			const onUp = () => {
-				this.win.removeEventListener('mousemove', onMove);
-				this.win.removeEventListener('mouseup', onUp);
-				const finalW = Math.round(aside.getBoundingClientRect().width || startW);
-				this.prefs.set('workspace.verticalSidebarWidth', finalW);
-			};
-			this.win.addEventListener('mousemove', onMove);
-			this.win.addEventListener('mouseup', onUp);
+		if (this.prefs.get('workspace.enableSessions')) {
+			this.addHeaderBtn(actions, 'archive', '打开工作区快照中心', (btn) => this.popover.openHub(btn));
+		}
+		this.addHeaderBtn(actions, 'close', '收起文献工作区侧栏', () => {
+			this.prefs.set('workspace.verticalSidebarCollapsed', true);
+			this.onRefresh();
 		});
+
+		mainDeck.parentElement?.insertBefore(aside, mainDeck);
+		this.asideEl = aside;
+		this.listEl = list;
+		this.statusEl = status;
 	}
 
-	private promptNewGroup(): void {
-		const promptSvc = (globalThis as any).Services?.prompt;
-		if (promptSvc?.prompt) {
-			const input = { value: '' };
-			if (!promptSvc.prompt(this.win, 'New Tab Group', 'Group name:', input, null, {})) return;
-			if (input.value.trim()) this.store.createGroup(input.value);
-		} else {
-			this.store.createGroup(`Group ${this.store.state.groups.length + 1}`);
-		}
-		this.onRefresh();
-	}
+	private renderList(): void {
+		if (!this.listEl || !this.selection) return;
+		this.listEl.textContent = '';
 
-	private sleepInactiveTabs(): void {
+		const needle = this.searchTerm.trim().toLowerCase();
+		const allTracked = this.tabs.buildTrackedTabs(this.win);
+		const filtered = needle
+			? allTracked.filter((t) => `${t.title} ${t.shortTitle} ${t.creatorYear} ${t.collection} ${t.remark}`.toLowerCase().includes(needle))
+			: allTracked;
+
+		this.selection.beginRender(filtered);
 		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
-		for (const tab of this.tabs.buildTrackedTabs(this.win)) {
-			if (tab.tabID && tab.tabID !== selectedID && !tab.pinned && !tab.sleeping && !tab.virtual) {
-				this.tabs.sleepTab(this.win, tab.tabID);
+		const rowDeps = {
+			win: this.win, doc: this.doc, prefs: this.prefs, store: this.store, tabs: this.tabs, menus: this.menus,
+			hover: this.hover, selection: this.selection, wordCiteMap: this.wordCiteMap, selectedID, onRefresh: this.onRefresh,
+		};
+
+		if (!filtered.length) {
+			this.renderEmptyState(allTracked.length > 0);
+		} else if (this.viewMode === 'groups') {
+			const pinned = filtered.filter((t) => !t.virtual && t.pinned);
+			if (pinned.length) this.appendSimpleSection('已固定标签', '#f59e0b', pinned, rowDeps);
+
+			for (const grp of this.store.state.groups) {
+				const members = filtered.filter((t) => (t.virtual || !t.pinned) && t.groupId === grp.id);
+				const collapsed = this.store.state.collapsed.includes(grp.id);
+				const head = this.doc.createElement('button');
+				head.type = 'button';
+				head.className = 'zbf-sb-group-head';
+				head.tabIndex = 0;
+				head.setAttribute('data-zbf-nav', 'head');
+				const dot = this.doc.createElement('span');
+				dot.className = 'zbf-sb-group-dot';
+				dot.style.background = grp.color;
+				const label = this.doc.createElement('span');
+				label.textContent = `${collapsed ? '▸' : '▾'} ${grp.name} (${members.length})`;
+				head.append(dot, label);
+				head.addEventListener('click', () => {
+					this.store.setCollapsed(grp.id, !collapsed);
+					this.renderList();
+				});
+				head.addEventListener('dblclick', (e) => {
+					e.stopPropagation();
+					openTextPromptModal(this.win, '重命名分组', '输入新的分组名称...', grp.name, (val) => {
+						if (this.store.renameGroup(grp.id, val)) this.onRefresh();
+					});
+				});
+				head.addEventListener('contextmenu', (e) => {
+					e.preventDefault();
+					this.menus.openGroupMenu(head, grp, e as MouseEvent);
+				});
+				bindSidebarGroupDrop(head, grp.id, this.win, this.store, this.tabs, this.onRefresh);
+				this.listEl.appendChild(head);
+				if (!collapsed) {
+					for (const tab of members) this.listEl.appendChild(buildSidebarTabRow(rowDeps, tab));
+				}
 			}
+
+			const ungrouped = filtered.filter((t) => !t.pinned && !t.groupId);
+			if (ungrouped.length) this.appendSimpleSection('未分组', '#64748b', ungrouped, rowDeps);
+		} else if (this.viewMode === 'collections') {
+			renderSidebarCollectionsList(this.listEl, rowDeps, filtered);
+		} else {
+			this.renderStatusView(filtered, rowDeps);
 		}
-		this.onRefresh();
+
+		this.renderFooter(allTracked);
+		this.selection.updateControls();
 	}
 
-	private mkIconBtn(icon: Parameters<typeof createWorkspaceIcon>[1], title: string, onClick: () => void, cls = 'zbf-sb-icon-btn'): HTMLButtonElement {
-		const btn = this.h('button', cls);
+	private renderStatusView(filtered: readonly TrackedTab[], rowDeps: any): void {
+		const cited = filtered.filter((t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID));
+		const pinned = filtered.filter((t) => !t.virtual && t.pinned);
+		const active = filtered.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
+		const sleeping = filtered.filter((t) => !t.virtual && t.sleeping);
+		const virtual = filtered.filter((t) => t.virtual);
+		if (cited.length) this.appendSimpleSection('Word 正在引用', '#0D9488', cited, rowDeps);
+		if (pinned.length) this.appendSimpleSection('已固定', '#f59e0b', pinned, rowDeps);
+		if (active.length) this.appendSimpleSection('当前活动', '#245ac7', active, rowDeps);
+		if (sleeping.length) this.appendSimpleSection('已休眠', '#8b5cf6', sleeping, rowDeps);
+		if (virtual.length) this.appendSimpleSection('虚拟保留', '#64748b', virtual, rowDeps);
+	}
+
+	private appendSimpleSection(title: string, color: string, tabsList: TrackedTab[], rowDeps: any): void {
+		if (!this.listEl) return;
+		appendSidebarSectionHead(this.doc, this.listEl, `${title} (${tabsList.length})`, color);
+		for (const tab of tabsList) this.listEl.appendChild(buildSidebarTabRow(rowDeps, tab));
+	}
+
+	private renderEmptyState(hasAnyTabs: boolean): void {
+		if (!this.listEl) return;
+		this.listEl.appendChild(renderSidebarEmptyBox(
+			this.doc,
+			this.win,
+			hasAnyTabs,
+			() => {
+				this.searchTerm = '';
+				const inp = this.asideEl?.querySelector('.zbf-sb-search') as HTMLInputElement | null;
+				if (inp) inp.value = '';
+				this.renderList();
+			},
+			() => this.popover.openHub(),
+		));
+	}
+
+	private renderFooter(allTracked: readonly TrackedTab[]): void {
+		if (this.statusEl) {
+			renderSidebarStatusBar(this.doc, this.win, this.statusEl, this.prefs, this.tabs, allTracked, this.onRefresh);
+		}
+	}
+
+	private addHeaderBtn(
+		container: HTMLElement,
+		icon: Parameters<typeof createWorkspaceIcon>[1],
+		title: string,
+		onClick: (btn: HTMLButtonElement) => void,
+	): void {
+		const btn = this.doc.createElement('button');
 		btn.type = 'button';
+		btn.className = 'zbf-sb-icon-btn';
 		btn.title = title;
-		btn.append(createWorkspaceIcon(this.doc, icon, 14));
-		btn.addEventListener('click', onClick);
-		return btn;
-	}
-
-	private h<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string): HTMLElementTagNameMap[K] {
-		const el = this.doc.createElementNS('http://www.w3.org/1999/xhtml', tag) as HTMLElementTagNameMap[K];
-		if (className) el.className = className;
-		return el;
+		btn.appendChild(createWorkspaceIcon(this.doc, icon, 14));
+		btn.addEventListener('click', () => onClick(btn));
+		container.appendChild(btn);
 	}
 }

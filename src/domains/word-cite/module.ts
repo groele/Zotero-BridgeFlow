@@ -2,10 +2,12 @@ import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import { WordCitationCollectionManager } from './citation-collections.ts';
 import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
 import { WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
+import { resolveActiveSelectionForWord } from './word-inserter.ts';
 import { WordIntegrationPoller } from './word-poller.ts';
 
 export class WordCiteDomainModule implements DomainModule {
@@ -14,10 +16,12 @@ export class WordCiteDomainModule implements DomainModule {
 	public readonly tracker: WordSessionTracker;
 	public readonly tagGovernance: CitationTagGovernance;
 	public readonly dragCite: DragCiteController;
+	public readonly collections: WordCitationCollectionManager;
 
 	private readonly column: CitationColumnController;
 	private readonly poller: WordIntegrationPoller;
 	private readonly disposables = new DisposableStack();
+	private tagDebounceTimer: number | null = null;
 	private active = false;
 
 	private readonly kernel: PluginKernel;
@@ -26,34 +30,49 @@ export class WordCiteDomainModule implements DomainModule {
 		this.kernel = kernel;
 		this.tracker = new WordSessionTracker(kernel.bus, services.win32);
 		this.tagGovernance = new CitationTagGovernance(kernel.prefs);
-		this.dragCite = new DragCiteController(kernel, services.win32);
-		this.column = new CitationColumnController(kernel, this.tracker);
+		this.collections = new WordCitationCollectionManager(kernel);
 		this.poller = new WordIntegrationPoller(kernel, this.tracker);
+		this.dragCite = new DragCiteController(kernel, services.win32, () => {
+			this.poller.pollOnce();
+		});
+		this.column = new CitationColumnController(kernel, this.tracker);
 	}
 
 	isActive(): boolean {
 		return this.active;
 	}
 
+	async citeCurrentSelection(win?: Window): Promise<void> {
+		const items = resolveActiveSelectionForWord(win);
+		if (items.length) await this.dragCite.insertItems(items);
+	}
+
 	start(): void {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
+		void this.collections.purgeStaleCollections();
 		this.column.register();
 		this.poller.start();
 
 		this.disposables.add(
 			this.kernel.bus.on('citation:snapshot-updated', () => {
-				void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
+				this.scheduleTagSync();
+				this.collections.sync(this.tracker.getAllSessions());
 			}),
 		);
 
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(
 				['wordCite.citationTags.enable', 'wordCite.citationTags.text'],
-				() => {
-					void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
-				},
+				() => this.scheduleTagSync(),
+			),
+		);
+
+		this.disposables.add(
+			this.kernel.prefs.observeKeys(
+				['wordCite.collections.enable'],
+				() => this.collections.sync(this.tracker.getAllSessions()),
 			),
 		);
 	}
@@ -70,10 +89,25 @@ export class WordCiteDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		if (this.tagDebounceTimer !== null) {
+			clearTimeout(this.tagDebounceTimer);
+			this.tagDebounceTimer = null;
+		}
 		this.poller.stop();
 		this.column.unregister();
 		this.dragCite.disposeAll();
+		void this.collections.clearAll();
 		this.tracker.clear();
 		this.disposables.disposeAll();
+	}
+
+	private scheduleTagSync(): void {
+		if (this.tagDebounceTimer !== null) clearTimeout(this.tagDebounceTimer);
+		const delay = this.kernel.prefs.get('wordCite.citationTagDebounceMs');
+		this.tagDebounceTimer = setTimeout(() => {
+			this.tagDebounceTimer = null;
+			if (!this.active) return;
+			void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
+		}, Math.max(0, delay));
 	}
 }
