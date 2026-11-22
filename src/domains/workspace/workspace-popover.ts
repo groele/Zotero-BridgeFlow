@@ -5,6 +5,7 @@ import type { WorkspaceTabController } from './tab-controller.ts';
 import {
 	exportWorkspaceJson,
 	importWorkspaceJsonInteractive,
+	renderPublicationSuggestionsSection,
 	renderSessionSection,
 } from './workspace-hub-helpers.ts';
 
@@ -123,33 +124,42 @@ export class WorkspacePopover {
 
 		const renderLists = () => {
 			listsWrap.textContent = '';
+			const suggestions = renderPublicationSuggestionsSection(
+				this.doc,
+				this.store,
+				this.tabs.getPublicationSuggestions(this.win),
+				() => {
+					statusEl.textContent = '已按期刊 / 会议自动建立文献分组';
+					renderLists();
+					this.onRefresh();
+				},
+			);
+			if (suggestions) listsWrap.appendChild(suggestions);
+
+			const handlers = {
+				win: this.win,
+				store: this.store,
+				tabs: this.tabs,
+				onRestore: (ses: any, merge: boolean) => {
+					this.close();
+					void this.tabs.restoreSession(this.win, ses, merge).then(() => this.onRefresh());
+				},
+				onChanged: () => renderLists(),
+			};
+
 			listsWrap.appendChild(renderSessionSection(
 				this.doc,
 				'已保存快照与模板',
 				this.store.state.sessions,
 				'暂无已保存的快照或模板，可在上方输入名称保存。',
-				(ses) => {
-					this.close();
-					void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
-				},
-				(id) => {
-					this.store.deleteSession(id);
-					renderLists();
-				},
+				{ ...handlers, isRolling: false },
 			));
 			listsWrap.appendChild(renderSessionSection(
 				this.doc,
 				'自动滚动快照',
 				this.store.state.rollingSessions,
 				'暂无自动滚动快照。',
-				(ses) => {
-					this.close();
-					void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
-				},
-				(id) => {
-					this.store.deleteSession(id);
-					renderLists();
-				},
+				{ ...handlers, isRolling: true },
 			));
 		};
 

@@ -5,8 +5,11 @@ import { normalizeToRegularItem } from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import {
 	autoGroupTrackedByCollection,
+	buildPublicationSuggestions,
 	buildVirtualMetaFromTracked,
+	collectRecentlyClosed,
 	computeTabMoveTarget,
+	focusOrOpenTrackedItem,
 	formatCreatorYear,
 	openItemAttachmentOrNote,
 	resolvePrimaryCollectionName,
@@ -14,6 +17,7 @@ import {
 	revealAttachmentFile,
 	selectItemInLibrary,
 	type ClosedTabRecord,
+	type PublicationGroupSuggestion,
 } from './tab-actions-helpers.ts';
 import type { TabCloseOptions, TrackedTab, WorkspaceSession } from './types.ts';
 
@@ -145,7 +149,7 @@ export class WorkspaceTabController {
 				this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
 			}
 			if (t.itemID > 0) {
-				this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId });
+				this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId, title: t.title, closedAt: Date.now() });
 				if (this.closedStack.length > 20) this.closedStack.shift();
 			}
 			toClose.push(id);
@@ -233,9 +237,18 @@ export class WorkspaceTabController {
 		return openItemAttachmentOrNote(win, this.store, itemID, groupId, openInBackground);
 	}
 
-	async restoreSession(win: Window, session: WorkspaceSession): Promise<number> {
-		this.store.restoreSessionLayout(session);
+	async restoreSession(win: Window, session: WorkspaceSession, merge = true): Promise<number> {
+		this.store.restoreSessionLayout(session, merge);
 		return restoreSessionTabsAndLayout(win, this.store, session);
+	}
+
+	getRecentlyClosed(win: Window): ClosedTabRecord[] {
+		const openKeys = new Set(this.buildTrackedTabs(win).filter((t) => !t.virtual).map((t) => t.key));
+		return collectRecentlyClosed(win, this.closedStack, openKeys);
+	}
+
+	getPublicationSuggestions(win: Window): PublicationGroupSuggestion[] {
+		return buildPublicationSuggestions(this.buildTrackedTabs(win));
 	}
 
 	async openGroupVirtuals(win: Window, groupId: string): Promise<number> {
@@ -282,7 +295,7 @@ export class WorkspaceTabController {
 		return targetCols.length;
 	}
 
-	getDisplayTitle(tab: { title: string; shortTitle?: string; filename?: string; remark?: string }): string {
+	getDisplayTitle(tab: { key?: string; title: string; shortTitle?: string; filename?: string; remark?: string }): string {
 		const titleMode = this.prefs.get('workspace.verticalTabTitleMode');
 		const base = titleMode === 'shortTitle' && tab.shortTitle
 			? tab.shortTitle
@@ -290,7 +303,8 @@ export class WorkspaceTabController {
 				? tab.filename
 				: tab.title;
 		if (!this.prefs.get('workspace.enableTabRemarks') || !tab.remark) return base;
-		const mode = this.prefs.get('workspace.remarkDisplayMode');
+		const perTabMode = tab.key ? this.store.state.remarkModes[tab.key] : undefined;
+		const mode = perTabMode || this.prefs.get('workspace.remarkDisplayMode');
 		if (mode === 'remark') return tab.remark;
 		if (mode === 'title') return base;
 		return `${tab.remark} · ${base}`;
@@ -304,35 +318,14 @@ export class WorkspaceTabController {
 		return this.clipboard.copyItems([item], { source: 'tab-menu' });
 	}
 
-	async focusOrOpenItem(win: Window, req: OpenItemRequestPayload): Promise<'focused' | 'opened' | 'not-found'> {
-		const tracked = this.buildTrackedTabs(win);
-		const match = tracked.find(
-			(t) => !t.virtual && (
-				t.parentItemID === req.itemID || t.itemID === req.itemID
-				|| (req.attachmentID && t.itemID === req.attachmentID)
-			),
+	focusOrOpenItem(win: Window, req: OpenItemRequestPayload): Promise<'focused' | 'opened' | 'not-found'> {
+		return focusOrOpenTrackedItem(
+			win,
+			this.store,
+			this.buildTrackedTabs(win),
+			req,
+			(tabID) => this.selectTab(win, tabID),
 		);
-		if (match && (req.preferExistingTab ?? true)) {
-			this.selectTab(win, match.tabID);
-			return 'focused';
-		}
-
-		const reader = (globalThis as any).Zotero?.Reader;
-		const targetAttachmentID = req.attachmentID || req.itemID;
-		if (typeof reader?.open === 'function' && targetAttachmentID > 0) {
-			await reader.open(targetAttachmentID);
-			this.store.removeVirtualMember(`item:${targetAttachmentID}`);
-			this.store.removeVirtualMember(`item:${req.itemID}`);
-			if (req.assignToActiveGroup) {
-				const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
-				const activeTab = tracked.find((t) => t.tabID === selectedID);
-				if (activeTab?.groupId) {
-					this.store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
-				}
-			}
-			return 'opened';
-		}
-		return 'not-found';
 	}
 
 	groupOpenTabsByItemIDs(win: Window, groupName: string, itemIDs: readonly number[]): { groupId: string; count: number } | null {

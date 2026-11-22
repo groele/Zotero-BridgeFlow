@@ -6,6 +6,14 @@ export interface ClosedTabRecord {
 	key: string;
 	itemID: number;
 	groupId: string;
+	title: string;
+	closedAt: number;
+}
+
+export interface PublicationGroupSuggestion {
+	venue: string;
+	keys: string[];
+	titles: string[];
 }
 
 export function computeTabMoveTarget(
@@ -221,4 +229,87 @@ export async function restoreSessionTabsAndLayout(
 		}
 	}
 	return opened;
+}
+
+export function buildPublicationSuggestions(
+	tracked: readonly { key: string; source: string; title: string; groupId: string; virtual: boolean }[],
+): PublicationGroupSuggestion[] {
+	const buckets = new Map<string, { keys: string[]; titles: string[] }>();
+	for (const tab of tracked) {
+		if (tab.virtual || tab.groupId) continue;
+		const venue = tab.source.trim();
+		if (!venue) continue;
+		const entry = buckets.get(venue) ?? { keys: [], titles: [] };
+		entry.keys.push(tab.key);
+		entry.titles.push(tab.title);
+		buckets.set(venue, entry);
+	}
+	return [...buckets.entries()]
+		.filter(([, b]) => b.keys.length >= 2)
+		.map(([venue, b]) => ({ venue, keys: b.keys, titles: b.titles }))
+		.sort((a, b) => b.keys.length - a.keys.length);
+}
+
+export function collectRecentlyClosed(
+	win: Window,
+	localStack: readonly ClosedTabRecord[],
+	openKeys: ReadonlySet<string>,
+): ClosedTabRecord[] {
+	const out: ClosedTabRecord[] = [];
+	const seen = new Set<number>();
+	const push = (rec: ClosedTabRecord) => {
+		if (!rec.itemID || seen.has(rec.itemID) || openKeys.has(rec.key)) return;
+		seen.add(rec.itemID);
+		out.push(rec);
+	};
+	for (let i = localStack.length - 1; i >= 0; i--) push(localStack[i]);
+	const nativeClosed: any[] = (win as any).Zotero_Tabs?._recentlyClosedTabs || [];
+	for (let i = nativeClosed.length - 1; i >= 0; i--) {
+		const tab = nativeClosed[i];
+		const itemID = Number(tab?.data?.itemID || 0);
+		if (!itemID || seen.has(itemID)) continue;
+		const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
+		if (!item || item.deleted) continue;
+		push({
+			key: `item:${itemID}`,
+			itemID,
+			groupId: '',
+			title: String(tab?.title || item.getField?.('title') || `文献 #${itemID}`),
+			closedAt: Number(tab?.closedAt || 0),
+		});
+	}
+	return out.slice(0, 12);
+}
+
+export async function focusOrOpenTrackedItem(
+	win: Window,
+	store: WorkspaceStateStore,
+	tracked: readonly { tabID: string; itemID: number; parentItemID: number; groupId: string; virtual: boolean }[],
+	req: { itemID: number; attachmentID?: number; preferExistingTab?: boolean; assignToActiveGroup?: boolean },
+	onSelectTab: (tabID: string) => void,
+): Promise<'focused' | 'opened' | 'not-found'> {
+	const match = tracked.find(
+		(t) => !t.virtual && (
+			t.parentItemID === req.itemID || t.itemID === req.itemID
+			|| (req.attachmentID && t.itemID === req.attachmentID)
+		),
+	);
+	if (match && (req.preferExistingTab ?? true)) {
+		onSelectTab(match.tabID);
+		return 'focused';
+	}
+	const reader = (globalThis as any).Zotero?.Reader;
+	const targetAttachmentID = req.attachmentID || req.itemID;
+	if (typeof reader?.open === 'function' && targetAttachmentID > 0) {
+		await reader.open(targetAttachmentID);
+		store.removeVirtualMember(`item:${targetAttachmentID}`);
+		store.removeVirtualMember(`item:${req.itemID}`);
+		if (req.assignToActiveGroup) {
+			const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+			const activeTab = tracked.find((t) => t.tabID === selectedID);
+			if (activeTab?.groupId) store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
+		}
+		return 'opened';
+	}
+	return 'not-found';
 }

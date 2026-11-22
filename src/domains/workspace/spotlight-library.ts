@@ -30,8 +30,8 @@ export class SpotlightLibraryIndex {
 		this.loaded = false;
 	}
 
-	query(needle: string, win: Window, openItemIDs: ReadonlySet<number>, limit = 15): SpotlightItemResult[] {
-		if (!needle || needle.length < 2) return [];
+	query(needle: string, win: Window, openItemIDs: ReadonlySet<number>, limit = 15, minLen = 2): SpotlightItemResult[] {
+		if (!needle || needle.length < minLen) return [];
 		if (!this.loaded && !this.loading) this.warmUp(win);
 
 		const out: SpotlightItemResult[] = [];

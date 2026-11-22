@@ -49,6 +49,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 	private autoGroupTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastRollingAt = 0;
+	private viewedDirty = false;
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -169,6 +170,7 @@ export class WorkspaceDomainModule implements DomainModule {
 				if (!tab) continue;
 				if (event === 'select' || event === 'add') {
 					this.store.touchViewed(tab.key);
+					this.viewedDirty = true;
 					this.store.removeVirtualMember(tab.key);
 					if (tab.sleeping) this.store.setSleeping(tab.key, false);
 					if (tab.groupId && this.store.state.collapsed.includes(tab.groupId)) {
@@ -194,6 +196,10 @@ export class WorkspaceDomainModule implements DomainModule {
 		let changed = false;
 		for (const win of this.windows.keys()) {
 			if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
+		}
+		if (this.viewedDirty) {
+			this.viewedDirty = false;
+			this.store.save();
 		}
 		if (this.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - this.lastRollingAt > 900_000) {
 			if (this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {

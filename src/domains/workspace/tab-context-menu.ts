@@ -84,6 +84,15 @@ export class WorkspaceTabContextMenu {
 					this.onRefresh();
 				});
 			}, close);
+			if (tab.remark) {
+				const curMode = this.store.state.remarkModes[tab.key] || '';
+				for (const [m, lbl] of [['', '显示：跟随全局'], ['both', '显示：备注+标题'], ['remark', '显示：仅备注'], ['title', '显示：仅标题']] as const) {
+					addPopupButton(this.doc, pop, `${curMode === m ? '✓ ' : '   '}${lbl}`, () => {
+						this.store.setRemarkMode(tab.key, m);
+						this.onRefresh();
+					}, close);
+				}
+			}
 		}
 
 		addPopupSeparator(this.doc, pop);
@@ -94,6 +103,9 @@ export class WorkspaceTabContextMenu {
 		}
 		if (tab.itemID > 0) {
 			addPopupButton(this.doc, pop, '📚 在文献库中定位', () => {
+				void this.tabs.showInLibrary(this.win, tab.itemID, false);
+			}, close);
+			addPopupButton(this.doc, pop, '🗂 在集合树中定位所属集合', () => {
 				void this.tabs.showInLibrary(this.win, tab.itemID, true);
 			}, close);
 			if (this.prefs.get('workspace.enableShowInFilesystem')) {
@@ -122,8 +134,13 @@ export class WorkspaceTabContextMenu {
 			const others = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.tabID !== tab.tabID).map((t) => t.tabID);
 			void this.tabs.closeTabs(this.win, others, { protectPinned: true });
 		}, close);
-		addPopupButton(this.doc, pop, '关闭当前标签页', () => {
-			void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+		if (this.prefs.get('workspace.enableVirtualMembers') && tab.groupId) {
+			addPopupButton(this.doc, pop, '关闭标签（保留在分组）', () => {
+				void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+			}, close);
+		}
+		addPopupButton(this.doc, pop, '彻底关闭标签页', () => {
+			void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: false });
 		}, close, { danger: true });
 
 		this.bindPopup(pop);
@@ -203,8 +220,22 @@ export class WorkspaceTabContextMenu {
 		}
 
 		addPopupSeparator(this.doc, pop);
-		addPopupButton(this.doc, pop, '📦 归档为快照并关闭组内标签', () => {
-			void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+		addPopupButton(this.doc, pop, '折叠其他分组', () => {
+			this.store.collapseOtherGroups(group.id);
+			this.onRefresh();
+		}, close);
+		if (this.prefs.get('workspace.enableSessions')) {
+			addPopupButton(this.doc, pop, '📦 归档为快照并关闭组内标签', () => {
+				void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+			}, close);
+		}
+		addPopupButton(this.doc, pop, '仅保留本组（关闭其他标签）', () => {
+			const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId !== group.id).map((t) => t.tabID);
+			void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
+		}, close);
+		addPopupButton(this.doc, pop, '关闭组内所有已开标签', () => {
+			const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId === group.id).map((t) => t.tabID);
+			void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
 		}, close);
 		addPopupButton(this.doc, pop, '解散分组（保留已打开标签）', () => {
 			this.store.removeGroup(group.id);

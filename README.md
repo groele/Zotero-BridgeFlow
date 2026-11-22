@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.0.6** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.0.7** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -30,11 +30,11 @@ npm test
 npm run build:xpi
 ```
 
-## 安装包完整性校验 (`v0.0.6`)
+## 安装包完整性校验 (`v0.0.7`)
 
-- 文件名：`Zotero-BridgeFlow-0.0.6.xpi`（`116,134` 字节，18 个条目）
-- SHA-256：`21914A809D7631572194077FFDB24A743AC6000C7F3589CDD11FBEA49BCF4E8A`
-- SHA-512：`36eb60d1f5840e3a99c18b0b1d977c0cdcbf4ee810902a92e479f5531ccca249d93c90b3611fea8fec05c4bd320551b0864413dbad3aae7635861278d5a9f4a0`
+- 文件名：`Zotero-BridgeFlow-0.0.7.xpi`（`118,693` 字节，18 个条目）
+- SHA-256：`DC37418810638E9AC9FC3A056757A89351D6BD8A08D17A74B33253E1620B050B`
+- SHA-512：`8fa9d77b0a8cd6a636238aa59a798cc5474ab1fc99891212ad69439802cc3988cae2c8fa10608e3b26fa4307b823f1eef834623b501b3451f838d3ba1089db80`
 
 ## 开源协议与致谢
 

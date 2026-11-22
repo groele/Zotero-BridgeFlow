@@ -253,3 +253,107 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 
 	delete globalThis.Zotero;
 });
+
+test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replace & @library Spotlight', async () => {
+	const prefs = {
+		get(k) {
+			const defaults = {
+				'workspace.enableVirtualMembers': true,
+				'workspace.enableTabSleep': true,
+				'workspace.enableTabRemarks': true,
+				'workspace.enableSessions': true,
+				'workspace.multiCollectionStrategy': 'first',
+				'workspace.verticalTabTitleMode': 'title',
+				'workspace.remarkDisplayMode': 'both',
+				'workspace.staleSuggestDays': 7,
+			};
+			return defaults[k];
+		},
+		set() {},
+	};
+
+	const opened = [];
+	const mockWin = {
+		Zotero_Tabs: {
+			selectedID: 't1',
+			_tabs: [
+				{ id: 't1', type: 'reader', data: { itemID: 301 }, title: 'Paper One' },
+				{ id: 't2', type: 'reader', data: { itemID: 302 }, title: 'Paper Two' },
+				{ id: 't3', type: 'reader', data: { itemID: 303 }, title: 'Paper Three' },
+			],
+			_recentlyClosedTabs: [{ data: { itemID: 304 }, title: 'Closed Paper', closedAt: 1000 }],
+			select(id) { this.selectedID = id; },
+			close(ids) {
+				const rm = new Set(Array.isArray(ids) ? ids : [ids]);
+				this._tabs = this._tabs.filter((t) => !rm.has(t.id));
+			},
+		},
+	};
+	const makeArt = (id, title, pub) => ({
+		id,
+		firstCreator: 'Smith',
+		deleted: false,
+		isRegularItem: () => true,
+		getField: (f) => (f === 'title' ? title : f === 'publicationTitle' ? pub : f === 'year' ? '2026' : ''),
+		getCollections: () => [],
+		getBestAttachment: async () => ({ id, isAttachment: () => true, isFileAttachment: () => false }),
+	});
+	const itemsMap = new Map([
+		[301, makeArt(301, 'Paper One', 'Nature')],
+		[302, makeArt(302, 'Paper Two', 'Nature')],
+		[303, makeArt(303, 'Paper Three', 'Science')],
+		[304, makeArt(304, 'Closed Paper', 'Cell')],
+		[305, makeArt(305, 'Unopened Library Quantum Paper', 'PRL')],
+	]);
+	globalThis.Zotero = {
+		Libraries: { userLibraryID: 1 },
+		Items: {
+			get: (id) => itemsMap.get(id),
+			getAll: async () => [...itemsMap.values()],
+		},
+		Reader: { open: async (id) => { opened.push(id); } },
+	};
+
+	const store = new WorkspaceStateStore(prefs);
+	const tabs = new WorkspaceTabController(prefs, store, { copyItems: async () => true });
+	const spotlight = new WorkspaceSpotlightEngine(prefs, store, tabs);
+
+	// 1. Per-tab remark display mode override
+	store.setRemark('item:301', '核心基线');
+	assert.equal(tabs.getDisplayTitle({ key: 'item:301', title: 'Paper One', remark: '核心基线' }), '核心基线 · Paper One');
+	store.setRemarkMode('item:301', 'remark');
+	assert.equal(tabs.getDisplayTitle({ key: 'item:301', title: 'Paper One', remark: '核心基线' }), '核心基线');
+
+	// 2. Venue publication suggestions (>=2 tabs in Nature)
+	const sugs = tabs.getPublicationSuggestions(mockWin);
+	assert.equal(sugs.length, 1);
+	assert.equal(sugs[0].venue, 'Nature');
+	assert.deepEqual(sugs[0].keys, ['item:301', 'item:302']);
+
+	// 3. Hub session save, update, rename, merge & replace (creates pre-replace rolling backup)
+	const g1 = store.createGroup('Group A');
+	store.assignToGroup('item:301', g1.id);
+	const ses1 = store.saveSession('Draft Round 1');
+	assert.equal(store.renameSession(ses1.id, 'Renamed Round 1'), true);
+	store.assignToGroup('item:303', g1.id);
+	assert.equal(store.updateSession(ses1.id), true);
+
+	const g2 = store.createGroup('Group B');
+	store.restoreSessionLayout({
+		id: 'ext', name: 'External', createdAt: 1,
+		groups: [{ id: 'g-ext', name: 'Ext', color: '#000', memberKeys: ['item:302'] }],
+		pinnedKeys: ['item:302'], remarks: {},
+	}, false);
+	assert.equal(store.state.rollingSessions.some((r) => r.kind === 'pre-replace'), true);
+	assert.equal(store.state.groups.some((g) => g.id === g2.id), false);
+
+	// 4. Spotlight closed tabs + @library search
+	const emptyHits = spotlight.query('', mockWin);
+	assert.ok(emptyHits.some((h) => h.id === 'closed:item:304'));
+	spotlight.query('@quantum', mockWin);
+	await new Promise((r) => setTimeout(r, 20));
+	const libHits = spotlight.query('@quantum', mockWin);
+	assert.ok(libHits.some((h) => h.id === 'lib:1:undefined' || h.title.includes('Quantum')));
+
+	delete globalThis.Zotero;
+});

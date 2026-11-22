@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.6 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.7 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -4209,8 +4209,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     invalidate() {
       this.loaded = false;
     }
-    query(needle, win, openItemIDs, limit = 15) {
-      if (!needle || needle.length < 2) return [];
+    query(needle, win, openItemIDs, limit = 15, minLen = 2) {
+      if (!needle || needle.length < minLen) return [];
       if (!this.loaded && !this.loading) this.warmUp(win);
       const out = [];
       for (const item of this.entries) {
@@ -4300,7 +4300,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     query(rawTerm, win) {
       const trimmed = rawTerm.trim();
       const isCommand = trimmed.startsWith(">");
-      const needle = (isCommand ? trimmed.slice(1) : trimmed).trim().toLowerCase();
+      const isLibrary = trimmed.startsWith("@");
+      const needle = (isCommand || isLibrary ? trimmed.slice(1) : trimmed).trim().toLowerCase();
       const scored = [];
       const tracked = this.tabs.buildTrackedTabs(win);
       if (isCommand) {
@@ -4338,12 +4339,17 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         } catch {
         }
       }
-      if (!isCommand) {
+      if (isLibrary) {
+        const openIDs = /* @__PURE__ */ new Set();
+        for (const libItem of this.libraryIndex.query(needle, win, openIDs, 20, 1)) {
+          scored.push({ score: 95, item: libItem });
+        }
+      } else if (!isCommand) {
         for (const group of this.store.state.groups) {
           if (!needle || group.name.toLowerCase().includes(needle)) {
             const firstOpen = tracked.find((t) => t.groupId === group.id && !t.virtual);
             scored.push({
-              score: needle ? 85 : 55,
+              score: needle ? 85 : 58,
               item: {
                 id: `group:${group.id}`,
                 category: "collection",
@@ -4371,7 +4377,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (tab.virtual) tags.push("虚拟");
           if (citeInfo) tags.push(`Word [${citeInfo.ordinal}]`);
           scored.push({
-            score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 70,
+            score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 75,
             item: {
               id: `tab:${tab.key}`,
               category: "tab",
@@ -4385,13 +4391,47 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             }
           });
         }
+        for (const closed of this.tabs.getRecentlyClosed(win)) {
+          if (needle && !closed.title.toLowerCase().includes(needle)) continue;
+          scored.push({
+            score: 62,
+            item: {
+              id: `closed:${closed.key}`,
+              category: "tab",
+              title: closed.title,
+              subtitle: "重新打开最近关闭的文献标签页",
+              badge: "最近关闭",
+              action: () => {
+                void this.tabs.openVirtualOrItem(win, closed.itemID, closed.groupId || void 0);
+              }
+            }
+          });
+        }
+        if (this.prefs.get("workspace.enableSessions")) {
+          for (const ses of this.store.state.sessions.slice(0, 6)) {
+            if (needle && !ses.name.toLowerCase().includes(needle)) continue;
+            scored.push({
+              score: 52,
+              item: {
+                id: `session:${ses.id}`,
+                category: "collection",
+                title: `工作区：${ses.name}`,
+                subtitle: `${ses.groups.length} 个分组 · 点击合并恢复此工作区`,
+                badge: ses.isTemplate ? "模板" : "会话",
+                action: () => {
+                  void this.tabs.restoreSession(win, ses, true);
+                }
+              }
+            });
+          }
+        }
         if (needle.length >= 2) {
           const openIDs = /* @__PURE__ */ new Set();
           for (const t of tracked) {
             if (t.itemID > 0) openIDs.add(t.itemID);
             if (t.parentItemID > 0) openIDs.add(t.parentItemID);
           }
-          for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15)) {
+          for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15, 2)) {
             scored.push({ score: 45, item: libItem });
           }
         }
@@ -4411,6 +4451,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           }
         },
         {
+          id: "cmd:pub-group",
+          category: "command",
+          title: "> 按期刊 / 会议自动归组同期刊文献",
+          subtitle: "将同源期刊/会议（>=2篇）的未分组标签自动归组",
+          badge: "命令",
+          action: () => {
+            for (const sug of this.tabs.getPublicationSuggestions(win)) {
+              const grp = this.store.state.groups.find((g) => g.name === sug.venue) ?? this.store.createGroup(sug.venue);
+              for (const k of sug.keys) this.store.assignToGroup(k, grp.id);
+            }
+          }
+        },
+        {
           id: "cmd:sleep-inactive",
           category: "command",
           title: "> 休眠所有非活动标签页",
@@ -4427,7 +4480,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           subtitle: "展开或收起 Zotero 左侧文献工作区面板",
           badge: "命令",
           action: () => {
-            this.prefs.set("workspace.enableVerticalSidebar", !this.prefs.get("workspace.enableVerticalSidebar"));
+            const cur = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed");
+            if (!this.prefs.get("workspace.enableVerticalSidebar")) {
+              this.prefs.set("workspace.enableVerticalSidebar", true);
+              this.prefs.set("workspace.verticalSidebarCollapsed", false);
+            } else {
+              this.prefs.set("workspace.verticalSidebarCollapsed", cur);
+            }
           }
         },
         {
@@ -4488,6 +4547,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       pinnedKeys: [],
       sleepingKeys: [],
       remarks: {},
+      remarkModes: {},
       lastViewedAt: {},
       virtualMembers: {},
       sessions: [],
@@ -4518,6 +4578,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           pinnedKeys: Array.isArray(parsed?.pinnedKeys) ? parsed.pinnedKeys : [],
           sleepingKeys: Array.isArray(parsed?.sleepingKeys) ? parsed.sleepingKeys : [],
           remarks: parsed?.remarks && typeof parsed.remarks === "object" ? parsed.remarks : {},
+          remarkModes: parsed?.remarkModes && typeof parsed.remarkModes === "object" ? parsed.remarkModes : {},
           lastViewedAt: parsed?.lastViewedAt && typeof parsed.lastViewedAt === "object" ? parsed.lastViewedAt : {},
           virtualMembers: parsed?.virtualMembers && typeof parsed.virtualMembers === "object" ? parsed.virtualMembers : {},
           sessions: Array.isArray(parsed?.sessions) ? parsed.sessions : [],
@@ -4592,11 +4653,67 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.save();
       return true;
     }
-    restoreSessionLayout(session) {
-      this.state.groups = session.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
-      this.state.pinnedKeys = [...session.pinnedKeys];
+    restoreSessionLayout(session, merge = false) {
+      if (!merge) {
+        if (this.state.groups.length || this.state.pinnedKeys.length) {
+          this.saveSession(`恢复前备份 · ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { kind: "pre-replace", rolling: true });
+        }
+        this.state.groups = session.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
+        this.state.pinnedKeys = [...session.pinnedKeys];
+        this.state.remarks = { ...this.state.remarks, ...session.remarks };
+        this.save();
+        return;
+      }
+      for (const sg of session.groups) {
+        let existing = this.state.groups.find((g) => g.id === sg.id || g.name === sg.name);
+        if (!existing) {
+          existing = { id: sg.id, name: sg.name, color: sg.color, memberKeys: [] };
+          this.state.groups.push(existing);
+        }
+        for (const key of sg.memberKeys) {
+          if (!existing.memberKeys.includes(key)) existing.memberKeys.push(key);
+        }
+      }
+      const pins = /* @__PURE__ */ new Set([...this.state.pinnedKeys, ...session.pinnedKeys]);
+      this.state.pinnedKeys = [...pins];
       this.state.remarks = { ...this.state.remarks, ...session.remarks };
       this.save();
+    }
+    collapseOtherGroups(activeGroupId) {
+      this.state.collapsed = this.state.groups.filter((g) => g.id !== activeGroupId).map((g) => g.id);
+      this.save();
+    }
+    setRemarkMode(key, mode) {
+      if (mode) this.state.remarkModes[key] = mode;
+      else delete this.state.remarkModes[key];
+      this.save();
+    }
+    updateSession(sessionId) {
+      const ses = this.state.sessions.find((s) => s.id === sessionId);
+      if (!ses) return false;
+      ses.createdAt = Date.now();
+      ses.groups = this.state.groups.map((g) => ({ ...g, memberKeys: ses.isTemplate ? [] : [...g.memberKeys] }));
+      ses.pinnedKeys = ses.isTemplate ? [] : [...this.state.pinnedKeys];
+      ses.remarks = ses.isTemplate ? {} : { ...this.state.remarks };
+      this.save();
+      return true;
+    }
+    renameSession(sessionId, name) {
+      const trimmed = name.trim();
+      const ses = this.state.sessions.find((s) => s.id === sessionId);
+      if (!ses || !trimmed) return false;
+      ses.name = trimmed;
+      this.save();
+      return true;
+    }
+    promoteRollingSession(sessionId) {
+      const idx = this.state.rollingSessions.findIndex((s) => s.id === sessionId);
+      if (idx < 0) return false;
+      const [item] = this.state.rollingSessions.splice(idx, 1);
+      this.state.sessions.unshift({ ...item, kind: "manual" });
+      this.state.sessions = this.state.sessions.slice(0, MAX_MANUAL_SESSIONS);
+      this.save();
+      return true;
     }
     removeGroup(groupId) {
       const idx = this.state.groups.findIndex((g) => g.id === groupId);
@@ -4678,6 +4795,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         name: name.trim() || (/* @__PURE__ */ new Date()).toLocaleString(),
         createdAt: Date.now(),
         isTemplate: Boolean(options.isTemplate),
+        kind: options.kind ?? (options.isTemplate ? "template" : options.rolling ? "rolling" : "manual"),
         groups: this.state.groups.map((g) => ({
           ...g,
           memberKeys: options.isTemplate ? [] : [...g.memberKeys]
@@ -4878,6 +4996,68 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     return opened;
   }
+  function buildPublicationSuggestions(tracked) {
+    const buckets = /* @__PURE__ */ new Map();
+    for (const tab of tracked) {
+      if (tab.virtual || tab.groupId) continue;
+      const venue = tab.source.trim();
+      if (!venue) continue;
+      const entry = buckets.get(venue) ?? { keys: [], titles: [] };
+      entry.keys.push(tab.key);
+      entry.titles.push(tab.title);
+      buckets.set(venue, entry);
+    }
+    return [...buckets.entries()].filter(([, b]) => b.keys.length >= 2).map(([venue, b]) => ({ venue, keys: b.keys, titles: b.titles })).sort((a, b) => b.keys.length - a.keys.length);
+  }
+  function collectRecentlyClosed(win, localStack, openKeys) {
+    const out = [];
+    const seen = /* @__PURE__ */ new Set();
+    const push = (rec) => {
+      if (!rec.itemID || seen.has(rec.itemID) || openKeys.has(rec.key)) return;
+      seen.add(rec.itemID);
+      out.push(rec);
+    };
+    for (let i = localStack.length - 1; i >= 0; i--) push(localStack[i]);
+    const nativeClosed = win.Zotero_Tabs?._recentlyClosedTabs || [];
+    for (let i = nativeClosed.length - 1; i >= 0; i--) {
+      const tab = nativeClosed[i];
+      const itemID = Number(tab?.data?.itemID || 0);
+      if (!itemID || seen.has(itemID)) continue;
+      const item = globalThis.Zotero?.Items?.get?.(itemID);
+      if (!item || item.deleted) continue;
+      push({
+        key: `item:${itemID}`,
+        itemID,
+        groupId: "",
+        title: String(tab?.title || item.getField?.("title") || `文献 #${itemID}`),
+        closedAt: Number(tab?.closedAt || 0)
+      });
+    }
+    return out.slice(0, 12);
+  }
+  async function focusOrOpenTrackedItem(win, store, tracked, req, onSelectTab) {
+    const match = tracked.find(
+      (t) => !t.virtual && (t.parentItemID === req.itemID || t.itemID === req.itemID || req.attachmentID && t.itemID === req.attachmentID)
+    );
+    if (match && (req.preferExistingTab ?? true)) {
+      onSelectTab(match.tabID);
+      return "focused";
+    }
+    const reader = globalThis.Zotero?.Reader;
+    const targetAttachmentID = req.attachmentID || req.itemID;
+    if (typeof reader?.open === "function" && targetAttachmentID > 0) {
+      await reader.open(targetAttachmentID);
+      store.removeVirtualMember(`item:${targetAttachmentID}`);
+      store.removeVirtualMember(`item:${req.itemID}`);
+      if (req.assignToActiveGroup) {
+        const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+        const activeTab = tracked.find((t) => t.tabID === selectedID);
+        if (activeTab?.groupId) store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
+      }
+      return "opened";
+    }
+    return "not-found";
+  }
 
   // src/domains/workspace/tab-controller.ts
   var WorkspaceTabController = class {
@@ -4994,7 +5174,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
         }
         if (t.itemID > 0) {
-          this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId });
+          this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId, title: t.title, closedAt: Date.now() });
           if (this.closedStack.length > 20) this.closedStack.shift();
         }
         toClose.push(id);
@@ -5075,9 +5255,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     openVirtualOrItem(win, itemID, groupId, openInBackground = false) {
       return openItemAttachmentOrNote(win, this.store, itemID, groupId, openInBackground);
     }
-    async restoreSession(win, session) {
-      this.store.restoreSessionLayout(session);
+    async restoreSession(win, session, merge = true) {
+      this.store.restoreSessionLayout(session, merge);
       return restoreSessionTabsAndLayout(win, this.store, session);
+    }
+    getRecentlyClosed(win) {
+      const openKeys = new Set(this.buildTrackedTabs(win).filter((t) => !t.virtual).map((t) => t.key));
+      return collectRecentlyClosed(win, this.closedStack, openKeys);
+    }
+    getPublicationSuggestions(win) {
+      return buildPublicationSuggestions(this.buildTrackedTabs(win));
     }
     async openGroupVirtuals(win, groupId) {
       const virtuals = this.buildTrackedTabs(win).filter((t) => t.virtual && t.groupId === groupId);
@@ -5121,7 +5308,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const titleMode = this.prefs.get("workspace.verticalTabTitleMode");
       const base = titleMode === "shortTitle" && tab.shortTitle ? tab.shortTitle : titleMode === "filename" && tab.filename ? tab.filename : tab.title;
       if (!this.prefs.get("workspace.enableTabRemarks") || !tab.remark) return base;
-      const mode = this.prefs.get("workspace.remarkDisplayMode");
+      const perTabMode = tab.key ? this.store.state.remarkModes[tab.key] : void 0;
+      const mode = perTabMode || this.prefs.get("workspace.remarkDisplayMode");
       if (mode === "remark") return tab.remark;
       if (mode === "title") return base;
       return `${tab.remark} · ${base}`;
@@ -5133,31 +5321,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (!item) return false;
       return this.clipboard.copyItems([item], { source: "tab-menu" });
     }
-    async focusOrOpenItem(win, req) {
-      const tracked = this.buildTrackedTabs(win);
-      const match = tracked.find(
-        (t) => !t.virtual && (t.parentItemID === req.itemID || t.itemID === req.itemID || req.attachmentID && t.itemID === req.attachmentID)
+    focusOrOpenItem(win, req) {
+      return focusOrOpenTrackedItem(
+        win,
+        this.store,
+        this.buildTrackedTabs(win),
+        req,
+        (tabID) => this.selectTab(win, tabID)
       );
-      if (match && (req.preferExistingTab ?? true)) {
-        this.selectTab(win, match.tabID);
-        return "focused";
-      }
-      const reader = globalThis.Zotero?.Reader;
-      const targetAttachmentID = req.attachmentID || req.itemID;
-      if (typeof reader?.open === "function" && targetAttachmentID > 0) {
-        await reader.open(targetAttachmentID);
-        this.store.removeVirtualMember(`item:${targetAttachmentID}`);
-        this.store.removeVirtualMember(`item:${req.itemID}`);
-        if (req.assignToActiveGroup) {
-          const selectedID = String(win.Zotero_Tabs?.selectedID || "");
-          const activeTab = tracked.find((t) => t.tabID === selectedID);
-          if (activeTab?.groupId) {
-            this.store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
-          }
-        }
-        return "opened";
-      }
-      return "not-found";
     }
     groupOpenTabsByItemIDs(win, groupName, itemIDs) {
       const idSet = new Set(itemIDs);
@@ -6257,6 +6428,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             this.onRefresh();
           });
         }, close);
+        if (tab.remark) {
+          const curMode = this.store.state.remarkModes[tab.key] || "";
+          for (const [m, lbl] of [["", "显示：跟随全局"], ["both", "显示：备注+标题"], ["remark", "显示：仅备注"], ["title", "显示：仅标题"]]) {
+            addPopupButton(this.doc, pop, `${curMode === m ? "✓ " : "   "}${lbl}`, () => {
+              this.store.setRemarkMode(tab.key, m);
+              this.onRefresh();
+            }, close);
+          }
+        }
       }
       addPopupSeparator(this.doc, pop);
       if (this.prefs.get("workspace.enableCopyReference")) {
@@ -6266,6 +6446,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       if (tab.itemID > 0) {
         addPopupButton(this.doc, pop, "📚 在文献库中定位", () => {
+          void this.tabs.showInLibrary(this.win, tab.itemID, false);
+        }, close);
+        addPopupButton(this.doc, pop, "🗂 在集合树中定位所属集合", () => {
           void this.tabs.showInLibrary(this.win, tab.itemID, true);
         }, close);
         if (this.prefs.get("workspace.enableShowInFilesystem")) {
@@ -6293,8 +6476,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const others = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.tabID !== tab.tabID).map((t) => t.tabID);
         void this.tabs.closeTabs(this.win, others, { protectPinned: true });
       }, close);
-      addPopupButton(this.doc, pop, "关闭当前标签页", () => {
-        void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+      if (this.prefs.get("workspace.enableVirtualMembers") && tab.groupId) {
+        addPopupButton(this.doc, pop, "关闭标签（保留在分组）", () => {
+          void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+        }, close);
+      }
+      addPopupButton(this.doc, pop, "彻底关闭标签页", () => {
+        void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: false });
       }, close, { danger: true });
       this.bindPopup(pop);
     }
@@ -6364,8 +6552,22 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         }, close);
       }
       addPopupSeparator(this.doc, pop);
-      addPopupButton(this.doc, pop, "📦 归档为快照并关闭组内标签", () => {
-        void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+      addPopupButton(this.doc, pop, "折叠其他分组", () => {
+        this.store.collapseOtherGroups(group.id);
+        this.onRefresh();
+      }, close);
+      if (this.prefs.get("workspace.enableSessions")) {
+        addPopupButton(this.doc, pop, "📦 归档为快照并关闭组内标签", () => {
+          void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+        }, close);
+      }
+      addPopupButton(this.doc, pop, "仅保留本组（关闭其他标签）", () => {
+        const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId !== group.id).map((t) => t.tabID);
+        void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
+      }, close);
+      addPopupButton(this.doc, pop, "关闭组内所有已开标签", () => {
+        const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId === group.id).map((t) => t.tabID);
+        void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
       }, close);
       addPopupButton(this.doc, pop, "解散分组（保留已打开标签）", () => {
         this.store.removeGroup(group.id);
@@ -7216,9 +7418,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const rv = await fp.show();
         if (rv !== void 0 && fp.file) {
           const content = await ZoteroObj.File.getContentsAsync(fp.file);
-          if (content && store.importJson(String(content))) {
-            onImported();
-          }
+          if (content && store.importJson(String(content))) onImported();
           return;
         }
         return;
@@ -7226,17 +7426,49 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     } catch {
     }
     openTextPromptModal(win, "导入工作区 JSON", "请在此粘贴工作区 JSON 内容...", "", (raw) => {
-      if (raw && store.importJson(raw)) {
-        onImported();
-      }
+      if (raw && store.importJson(raw)) onImported();
     });
   }
-  function renderSessionSection(doc, titleText, sessions, emptyText, onRestore, onDelete) {
+  function renderPublicationSuggestionsSection(doc, store, suggestions, onApplied) {
+    if (!suggestions.length) return null;
     const wrap = doc.createElement("div");
     wrap.className = "zbf-hub-section";
     const heading = doc.createElement("div");
     heading.className = "zbf-hub-section-title";
-    heading.textContent = titleText;
+    heading.textContent = `期刊 / 会议智能分组建议 (${suggestions.length})`;
+    wrap.appendChild(heading);
+    for (const sug of suggestions.slice(0, 5)) {
+      const card = doc.createElement("div");
+      card.className = "zbf-hub-card";
+      const info = doc.createElement("div");
+      info.className = "zbf-hub-card-info";
+      const nameEl = doc.createElement("div");
+      nameEl.className = "zbf-hub-card-name";
+      nameEl.textContent = `📚 ${sug.venue}`;
+      const metaEl = doc.createElement("div");
+      metaEl.className = "zbf-hub-card-meta";
+      metaEl.textContent = `${sug.keys.length} 篇同源未分组文献`;
+      info.append(nameEl, metaEl);
+      const applyBtn = doc.createElement("button");
+      applyBtn.type = "button";
+      applyBtn.className = "zbf-hub-btn primary";
+      applyBtn.textContent = "一键归组";
+      applyBtn.addEventListener("click", () => {
+        const group = store.state.groups.find((g) => g.name === sug.venue) ?? store.createGroup(sug.venue);
+        for (const k of sug.keys) store.assignToGroup(k, group.id);
+        onApplied();
+      });
+      card.append(info, applyBtn);
+      wrap.appendChild(card);
+    }
+    return wrap;
+  }
+  function renderSessionSection(doc, titleText, sessions, emptyText, handlers) {
+    const wrap = doc.createElement("div");
+    wrap.className = "zbf-hub-section";
+    const heading = doc.createElement("div");
+    heading.className = "zbf-hub-section-title";
+    heading.textContent = `${titleText} (${sessions.length})`;
     wrap.appendChild(heading);
     if (!sessions.length) {
       const empty = doc.createElement("div");
@@ -7245,14 +7477,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       wrap.appendChild(empty);
       return wrap;
     }
+    const { win, store, isRolling, onRestore, onChanged } = handlers;
     for (const session of sessions) {
       const card = doc.createElement("div");
       card.className = "zbf-hub-card";
       const info = doc.createElement("div");
       info.className = "zbf-hub-card-info";
+      const icon = session.isTemplate ? "📐 " : session.kind === "pre-replace" ? "↩ " : isRolling ? "🕒 " : "💾 ";
       const nameEl = doc.createElement("div");
       nameEl.className = "zbf-hub-card-name";
-      nameEl.textContent = session.isTemplate ? `[模板] ${session.name}` : session.name;
+      nameEl.textContent = `${icon}${session.name}`;
       const metaEl = doc.createElement("div");
       metaEl.className = "zbf-hub-card-meta";
       const dt = new Date(session.createdAt || Date.now()).toLocaleString();
@@ -7260,17 +7494,55 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       info.append(nameEl, metaEl);
       const btns = doc.createElement("div");
       btns.className = "zbf-hub-card-actions";
-      const restoreBtn = doc.createElement("button");
-      restoreBtn.type = "button";
-      restoreBtn.className = "zbf-hub-btn primary";
-      restoreBtn.textContent = "恢复";
-      restoreBtn.addEventListener("click", () => onRestore(session));
+      const mergeBtn = doc.createElement("button");
+      mergeBtn.type = "button";
+      mergeBtn.className = "zbf-hub-btn primary";
+      mergeBtn.textContent = "合并恢复";
+      mergeBtn.title = "保留当前已打开文献与分组，合并会话布局并后台补开缺失文献";
+      mergeBtn.addEventListener("click", () => onRestore(session, true));
+      const replaceBtn = doc.createElement("button");
+      replaceBtn.type = "button";
+      replaceBtn.className = "zbf-hub-btn";
+      replaceBtn.textContent = "替换";
+      replaceBtn.title = "自动先保存恢复前备份，再替换为该快照布局";
+      replaceBtn.addEventListener("click", () => onRestore(session, false));
+      btns.append(mergeBtn, replaceBtn);
+      if (isRolling) {
+        const promoteBtn = doc.createElement("button");
+        promoteBtn.type = "button";
+        promoteBtn.className = "zbf-hub-btn";
+        promoteBtn.textContent = "转存";
+        promoteBtn.addEventListener("click", () => {
+          if (store.promoteRollingSession(session.id)) onChanged();
+        });
+        btns.appendChild(promoteBtn);
+      } else if (session.kind !== "pre-replace") {
+        const updateBtn = doc.createElement("button");
+        updateBtn.type = "button";
+        updateBtn.className = "zbf-hub-btn";
+        updateBtn.textContent = "更新";
+        updateBtn.addEventListener("click", () => {
+          if (store.updateSession(session.id)) onChanged();
+        });
+        const renameBtn = doc.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "zbf-hub-btn";
+        renameBtn.textContent = "重命名";
+        renameBtn.addEventListener("click", () => {
+          openTextPromptModal(win, "重命名快照", "输入新名称...", session.name, (val) => {
+            if (store.renameSession(session.id, val)) onChanged();
+          });
+        });
+        btns.append(updateBtn, renameBtn);
+      }
       const delBtn = doc.createElement("button");
       delBtn.type = "button";
       delBtn.className = "zbf-hub-btn";
       delBtn.textContent = "删除";
-      delBtn.addEventListener("click", () => onDelete(session.id));
-      btns.append(restoreBtn, delBtn);
+      delBtn.addEventListener("click", () => {
+        if (store.deleteSession(session.id)) onChanged();
+      });
+      btns.appendChild(delBtn);
       card.append(info, btns);
       wrap.appendChild(card);
     }
@@ -7372,33 +7644,40 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       listsWrap.className = "zbf-hub-lists";
       const renderLists = () => {
         listsWrap.textContent = "";
+        const suggestions = renderPublicationSuggestionsSection(
+          this.doc,
+          this.store,
+          this.tabs.getPublicationSuggestions(this.win),
+          () => {
+            statusEl.textContent = "已按期刊 / 会议自动建立文献分组";
+            renderLists();
+            this.onRefresh();
+          }
+        );
+        if (suggestions) listsWrap.appendChild(suggestions);
+        const handlers = {
+          win: this.win,
+          store: this.store,
+          tabs: this.tabs,
+          onRestore: (ses, merge) => {
+            this.close();
+            void this.tabs.restoreSession(this.win, ses, merge).then(() => this.onRefresh());
+          },
+          onChanged: () => renderLists()
+        };
         listsWrap.appendChild(renderSessionSection(
           this.doc,
           "已保存快照与模板",
           this.store.state.sessions,
           "暂无已保存的快照或模板，可在上方输入名称保存。",
-          (ses) => {
-            this.close();
-            void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
-          },
-          (id) => {
-            this.store.deleteSession(id);
-            renderLists();
-          }
+          { ...handlers, isRolling: false }
         ));
         listsWrap.appendChild(renderSessionSection(
           this.doc,
           "自动滚动快照",
           this.store.state.rollingSessions,
           "暂无自动滚动快照。",
-          (ses) => {
-            this.close();
-            void this.tabs.restoreSession(this.win, ses).then(() => this.onRefresh());
-          },
-          (id) => {
-            this.store.deleteSession(id);
-            renderLists();
-          }
+          { ...handlers, isRolling: true }
         ));
       };
       renderLists();
@@ -7985,6 +8264,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     maintenanceTimer = null;
     autoGroupTimer = null;
     lastRollingAt = 0;
+    viewedDirty = false;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.store = new WorkspaceStateStore(kernel.prefs);
@@ -8084,6 +8364,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (!tab) continue;
           if (event === "select" || event === "add") {
             this.store.touchViewed(tab.key);
+            this.viewedDirty = true;
             this.store.removeVirtualMember(tab.key);
             if (tab.sleeping) this.store.setSleeping(tab.key, false);
             if (tab.groupId && this.store.state.collapsed.includes(tab.groupId)) {
@@ -8107,6 +8388,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       let changed = false;
       for (const win of this.windows.keys()) {
         if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
+      }
+      if (this.viewedDirty) {
+        this.viewedDirty = false;
+        this.store.save();
       }
       if (this.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - this.lastRollingAt > 9e5) {
         if (this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {

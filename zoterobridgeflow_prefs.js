@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.6 - Preferences controller. */
+/* Zotero BridgeFlow v0.0.7 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -328,8 +328,8 @@
       const prefs = new UnifiedPrefService();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.6" }));
-        versionEl.textContent = `v${"0.0.6"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.7" }));
+        versionEl.textContent = `v${"0.0.7"}`;
       }
       const inputs = Array.from(pane.querySelectorAll("[data-zbf-pref]"));
       const syncAll = () => {

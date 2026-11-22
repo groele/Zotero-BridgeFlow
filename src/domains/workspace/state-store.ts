@@ -1,7 +1,7 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import {
 	GROUP_PALETTE, MAX_MANUAL_SESSIONS, MAX_REMARK_LENGTH, MAX_ROLLING_SESSIONS,
-	type TabGroup, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
+	type RemarkDisplayMode, type TabGroup, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
 function createEmptyState(): WorkspaceState {
@@ -12,6 +12,7 @@ function createEmptyState(): WorkspaceState {
 		pinnedKeys: [],
 		sleepingKeys: [],
 		remarks: {},
+		remarkModes: {},
 		lastViewedAt: {},
 		virtualMembers: {},
 		sessions: [],
@@ -45,6 +46,7 @@ export class WorkspaceStateStore {
 				pinnedKeys: Array.isArray(parsed?.pinnedKeys) ? parsed.pinnedKeys : [],
 				sleepingKeys: Array.isArray(parsed?.sleepingKeys) ? parsed.sleepingKeys : [],
 				remarks: parsed?.remarks && typeof parsed.remarks === 'object' ? parsed.remarks : {},
+				remarkModes: parsed?.remarkModes && typeof parsed.remarkModes === 'object' ? parsed.remarkModes : {},
 				lastViewedAt: parsed?.lastViewedAt && typeof parsed.lastViewedAt === 'object' ? parsed.lastViewedAt : {},
 				virtualMembers: parsed?.virtualMembers && typeof parsed.virtualMembers === 'object' ? parsed.virtualMembers : {},
 				sessions: Array.isArray(parsed?.sessions) ? parsed.sessions : [],
@@ -123,11 +125,74 @@ export class WorkspaceStateStore {
 		return true;
 	}
 
-	restoreSessionLayout(session: WorkspaceSession): void {
-		this.state.groups = session.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
-		this.state.pinnedKeys = [...session.pinnedKeys];
+	restoreSessionLayout(session: WorkspaceSession, merge = false): void {
+		if (!merge) {
+			if (this.state.groups.length || this.state.pinnedKeys.length) {
+				this.saveSession(`恢复前备份 · ${new Date().toLocaleTimeString()}`, { kind: 'pre-replace', rolling: true });
+			}
+			this.state.groups = session.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
+			this.state.pinnedKeys = [...session.pinnedKeys];
+			this.state.remarks = { ...this.state.remarks, ...session.remarks };
+			this.save();
+			return;
+		}
+		for (const sg of session.groups) {
+			let existing = this.state.groups.find((g) => g.id === sg.id || g.name === sg.name);
+			if (!existing) {
+				existing = { id: sg.id, name: sg.name, color: sg.color, memberKeys: [] };
+				this.state.groups.push(existing);
+			}
+			for (const key of sg.memberKeys) {
+				if (!existing.memberKeys.includes(key)) existing.memberKeys.push(key);
+			}
+		}
+		const pins = new Set([...this.state.pinnedKeys, ...session.pinnedKeys]);
+		this.state.pinnedKeys = [...pins];
 		this.state.remarks = { ...this.state.remarks, ...session.remarks };
 		this.save();
+	}
+
+	collapseOtherGroups(activeGroupId: string): void {
+		this.state.collapsed = this.state.groups
+			.filter((g) => g.id !== activeGroupId)
+			.map((g) => g.id);
+		this.save();
+	}
+
+	setRemarkMode(key: string, mode: RemarkDisplayMode | ''): void {
+		if (mode) this.state.remarkModes[key] = mode;
+		else delete this.state.remarkModes[key];
+		this.save();
+	}
+
+	updateSession(sessionId: string): boolean {
+		const ses = this.state.sessions.find((s) => s.id === sessionId);
+		if (!ses) return false;
+		ses.createdAt = Date.now();
+		ses.groups = this.state.groups.map((g) => ({ ...g, memberKeys: ses.isTemplate ? [] : [...g.memberKeys] }));
+		ses.pinnedKeys = ses.isTemplate ? [] : [...this.state.pinnedKeys];
+		ses.remarks = ses.isTemplate ? {} : { ...this.state.remarks };
+		this.save();
+		return true;
+	}
+
+	renameSession(sessionId: string, name: string): boolean {
+		const trimmed = name.trim();
+		const ses = this.state.sessions.find((s) => s.id === sessionId);
+		if (!ses || !trimmed) return false;
+		ses.name = trimmed;
+		this.save();
+		return true;
+	}
+
+	promoteRollingSession(sessionId: string): boolean {
+		const idx = this.state.rollingSessions.findIndex((s) => s.id === sessionId);
+		if (idx < 0) return false;
+		const [item] = this.state.rollingSessions.splice(idx, 1);
+		this.state.sessions.unshift({ ...item, kind: 'manual' });
+		this.state.sessions = this.state.sessions.slice(0, MAX_MANUAL_SESSIONS);
+		this.save();
+		return true;
 	}
 
 	removeGroup(groupId: string): boolean {
@@ -216,12 +281,13 @@ export class WorkspaceStateStore {
 		this.save();
 	}
 
-	saveSession(name: string, options: { isTemplate?: boolean; rolling?: boolean } = {}): WorkspaceSession {
+	saveSession(name: string, options: { isTemplate?: boolean; rolling?: boolean; kind?: WorkspaceSession['kind'] } = {}): WorkspaceSession {
 		const session: WorkspaceSession = {
 			id: `ses-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
 			name: name.trim() || new Date().toLocaleString(),
 			createdAt: Date.now(),
 			isTemplate: Boolean(options.isTemplate),
+			kind: options.kind ?? (options.isTemplate ? 'template' : options.rolling ? 'rolling' : 'manual'),
 			groups: this.state.groups.map((g) => ({
 				...g,
 				memberKeys: options.isTemplate ? [] : [...g.memberKeys],

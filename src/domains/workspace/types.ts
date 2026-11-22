@@ -23,10 +23,13 @@ export interface WorkspaceSession {
 	name: string;
 	createdAt: number;
 	isTemplate?: boolean;
+	kind?: 'manual' | 'template' | 'rolling' | 'pre-replace';
 	groups: TabGroup[];
 	pinnedKeys: string[];
 	remarks: Record<string, string>;
 }
+
+export type RemarkDisplayMode = 'both' | 'remark' | 'title';
 
 export interface WorkspaceState {
 	version: number;
@@ -35,6 +38,7 @@ export interface WorkspaceState {
 	pinnedKeys: string[];
 	sleepingKeys: string[];
 	remarks: Record<string, string>;
+	remarkModes: Record<string, RemarkDisplayMode>;
 	lastViewedAt: Record<string, number>;
 	virtualMembers: Record<string, VirtualMemberMeta>;
 	sessions: WorkspaceSession[];

@@ -42,7 +42,8 @@ export class WorkspaceSpotlightEngine {
 	query(rawTerm: string, win: Window): SpotlightItemResult[] {
 		const trimmed = rawTerm.trim();
 		const isCommand = trimmed.startsWith('>');
-		const needle = (isCommand ? trimmed.slice(1) : trimmed).trim().toLowerCase();
+		const isLibrary = trimmed.startsWith('@');
+		const needle = (isCommand || isLibrary ? trimmed.slice(1) : trimmed).trim().toLowerCase();
 		const scored: ScoredResult[] = [];
 		const tracked = this.tabs.buildTrackedTabs(win);
 
@@ -82,12 +83,17 @@ export class WorkspaceSpotlightEngine {
 			} catch { /* isolate provider failures */ }
 		}
 
-		if (!isCommand) {
+		if (isLibrary) {
+			const openIDs = new Set<number>();
+			for (const libItem of this.libraryIndex.query(needle, win, openIDs, 20, 1)) {
+				scored.push({ score: 95, item: libItem });
+			}
+		} else if (!isCommand) {
 			for (const group of this.store.state.groups) {
 				if (!needle || group.name.toLowerCase().includes(needle)) {
 					const firstOpen = tracked.find((t) => t.groupId === group.id && !t.virtual);
 					scored.push({
-						score: needle ? 85 : 55,
+						score: needle ? 85 : 58,
 						item: {
 							id: `group:${group.id}`,
 							category: 'collection',
@@ -118,7 +124,7 @@ export class WorkspaceSpotlightEngine {
 				if (citeInfo) tags.push(`Word [${citeInfo.ordinal}]`);
 
 				scored.push({
-					score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 70,
+					score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 75,
 					item: {
 						id: `tab:${tab.key}`,
 						category: 'tab',
@@ -133,13 +139,49 @@ export class WorkspaceSpotlightEngine {
 				});
 			}
 
+			for (const closed of this.tabs.getRecentlyClosed(win)) {
+				if (needle && !closed.title.toLowerCase().includes(needle)) continue;
+				scored.push({
+					score: 62,
+					item: {
+						id: `closed:${closed.key}`,
+						category: 'tab',
+						title: closed.title,
+						subtitle: '重新打开最近关闭的文献标签页',
+						badge: '最近关闭',
+						action: () => {
+							void this.tabs.openVirtualOrItem(win, closed.itemID, closed.groupId || undefined);
+						},
+					},
+				});
+			}
+
+			if (this.prefs.get('workspace.enableSessions')) {
+				for (const ses of this.store.state.sessions.slice(0, 6)) {
+					if (needle && !ses.name.toLowerCase().includes(needle)) continue;
+					scored.push({
+						score: 52,
+						item: {
+							id: `session:${ses.id}`,
+							category: 'collection',
+							title: `工作区：${ses.name}`,
+							subtitle: `${ses.groups.length} 个分组 · 点击合并恢复此工作区`,
+							badge: ses.isTemplate ? '模板' : '会话',
+							action: () => {
+								void this.tabs.restoreSession(win, ses, true);
+							},
+						},
+					});
+				}
+			}
+
 			if (needle.length >= 2) {
 				const openIDs = new Set<number>();
 				for (const t of tracked) {
 					if (t.itemID > 0) openIDs.add(t.itemID);
 					if (t.parentItemID > 0) openIDs.add(t.parentItemID);
 				}
-				for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15)) {
+				for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15, 2)) {
 					scored.push({ score: 45, item: libItem });
 				}
 			}
@@ -159,6 +201,19 @@ export class WorkspaceSpotlightEngine {
 				action: () => { this.tabs.autoGroupByCollection(win); },
 			},
 			{
+				id: 'cmd:pub-group',
+				category: 'command',
+				title: '> 按期刊 / 会议自动归组同期刊文献',
+				subtitle: '将同源期刊/会议（>=2篇）的未分组标签自动归组',
+				badge: '命令',
+				action: () => {
+					for (const sug of this.tabs.getPublicationSuggestions(win)) {
+						const grp = this.store.state.groups.find((g) => g.name === sug.venue) ?? this.store.createGroup(sug.venue);
+						for (const k of sug.keys) this.store.assignToGroup(k, grp.id);
+					}
+				},
+			},
+			{
 				id: 'cmd:sleep-inactive',
 				category: 'command',
 				title: '> 休眠所有非活动标签页',
@@ -172,7 +227,15 @@ export class WorkspaceSpotlightEngine {
 				title: '> 切换左侧竖版工作区侧栏',
 				subtitle: '展开或收起 Zotero 左侧文献工作区面板',
 				badge: '命令',
-				action: () => { this.prefs.set('workspace.enableVerticalSidebar', !this.prefs.get('workspace.enableVerticalSidebar')); },
+				action: () => {
+					const cur = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
+					if (!this.prefs.get('workspace.enableVerticalSidebar')) {
+						this.prefs.set('workspace.enableVerticalSidebar', true);
+						this.prefs.set('workspace.verticalSidebarCollapsed', false);
+					} else {
+						this.prefs.set('workspace.verticalSidebarCollapsed', cur);
+					}
+				},
 			},
 			{
 				id: 'cmd:toggle-compact-topbar',
