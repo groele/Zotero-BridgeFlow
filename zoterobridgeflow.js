@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.8 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.9 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -8835,7 +8835,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     },
     "workspace.verticalTabSubtitleMode": {
       defaultValue: "source",
-      enumValues: ["source", "creatorYear", "collection", "none"],
+      enumValues: ["source", "creatorYear", "collection", "lastViewed", "none"],
       legacyKeys: ["extensions.zotero.tabflow.verticalTabSubtitleMode"]
     },
     "workspace.verticalTabRowHeight": { defaultValue: 42, min: 28, max: 72, legacyKeys: ["extensions.zotero.tabflow.verticalTabRowHeight"] },
@@ -8984,6 +8984,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const desc = PREF_SCHEMA[key];
         if (desc.resettable === false) continue;
         this.set(key, desc.defaultValue);
+      }
+    }
+    seedDefaults() {
+      const adapter = this.adapter;
+      if (!adapter) return;
+      for (const key of Object.keys(PREF_SCHEMA)) {
+        const full = this.fullKey(key);
+        const existing = this.readRaw(full);
+        if (existing === void 0) {
+          const desc = PREF_SCHEMA[key];
+          try {
+            adapter.set(full, desc.defaultValue, true);
+          } catch {
+          }
+        }
       }
     }
     observeKeys(keys, onChange) {
@@ -9226,6 +9241,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (this.started) return;
       this.started = true;
       this.lastMigrationReport = runLegacyPrefMigration(this.prefs);
+      this.prefs.seedDefaults();
       this.syncLoggerConfig();
       this.notifier.start();
       const watchedKeys = [

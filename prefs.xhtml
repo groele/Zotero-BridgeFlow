@@ -1,4 +1,4 @@
-<!-- Zotero BridgeFlow settings. Tabbed layout with guided banners & 2-column grid. -->
+<!-- Zotero BridgeFlow settings. Tabbed layout with 40px Golden Baseline cards. -->
 <linkset>
 	<html:link rel="localization" href="zotero-bridgeflow.ftl"/>
 </linkset>
@@ -6,8 +6,11 @@
 <vbox id="zotero-prefpane-zotero-bridgeflow" class="zbf-settings">
 	<html:header class="zbf-header">
 		<html:div class="zbf-title-row">
-			<html:h1 data-l10n-id="zbf-prefs-title"></html:h1>
-			<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.0.8"}'>v0.0.8</html:span>
+			<html:div class="zbf-title-left">
+				<html:h1 data-l10n-id="zbf-prefs-title"></html:h1>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.0.9"}'>v0.0.9</html:span>
+			</html:div>
+			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"></html:span>
 		</html:div>
 		<html:p class="zbf-subtitle" data-l10n-id="zbf-prefs-subtitle"></html:p>
 	</html:header>
@@ -34,27 +37,34 @@
 			</html:div>
 		</html:div>
 
-		<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-master-modules"></html:h2>
-		<html:div class="zbf-grid-1">
-			<checkbox preference="extensions.zotero.bridgeflow.modules.workspace.enable" native="true" data-l10n-id="zbf-pref-mod-workspace"/>
-			<checkbox preference="extensions.zotero.bridgeflow.modules.inspector.enable" native="true" data-l10n-id="zbf-pref-mod-inspector"/>
-			<checkbox preference="extensions.zotero.bridgeflow.modules.wordCite.enable" native="true" data-l10n-id="zbf-pref-mod-wordcite"/>
+		<html:div class="zbf-card">
+			<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-master-modules"></html:h2>
+			<html:div class="zbf-stack">
+				<checkbox id="zbf-chk-mod-workspace" preference="extensions.zotero.bridgeflow.modules.workspace.enable" native="true" data-l10n-id="zbf-pref-mod-workspace"/>
+				<checkbox id="zbf-chk-mod-inspector" preference="extensions.zotero.bridgeflow.modules.inspector.enable" native="true" data-l10n-id="zbf-pref-mod-inspector"/>
+				<checkbox id="zbf-chk-mod-wordcite" preference="extensions.zotero.bridgeflow.modules.wordCite.enable" native="true" data-l10n-id="zbf-pref-mod-wordcite"/>
+			</html:div>
 		</html:div>
 
-		<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-fusion"></html:h2>
-		<html:div class="zbf-grid-2">
-			<checkbox preference="extensions.zotero.bridgeflow.fusion.copyToLookupHistory" native="true" data-l10n-id="zbf-pref-fusion-copy-history"/>
-			<checkbox preference="extensions.zotero.bridgeflow.fusion.sidebarCiteBadge" native="true" data-l10n-id="zbf-pref-fusion-sidebar-badge"/>
-			<checkbox preference="extensions.zotero.bridgeflow.fusion.spotlightCrossDomain" native="true" data-l10n-id="zbf-pref-fusion-spotlight"/>
-			<checkbox preference="extensions.zotero.bridgeflow.fusion.lookupJumpExistingTab" native="true" data-l10n-id="zbf-pref-fusion-lookup-jump"/>
+		<html:div class="zbf-card">
+			<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-fusion"></html:h2>
+			<html:div class="zbf-stack">
+				<checkbox preference="extensions.zotero.bridgeflow.fusion.copyToLookupHistory" native="true" data-l10n-id="zbf-pref-fusion-copy-history"/>
+				<checkbox preference="extensions.zotero.bridgeflow.fusion.sidebarCiteBadge" native="true" data-l10n-id="zbf-pref-fusion-sidebar-badge"/>
+				<checkbox preference="extensions.zotero.bridgeflow.fusion.spotlightCrossDomain" native="true" data-l10n-id="zbf-pref-fusion-spotlight"/>
+				<checkbox preference="extensions.zotero.bridgeflow.fusion.lookupJumpExistingTab" native="true" data-l10n-id="zbf-pref-fusion-lookup-jump"/>
+			</html:div>
 		</html:div>
 
-		<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-maintenance"></html:h2>
-		<html:div class="zbf-grid-1">
-			<checkbox preference="extensions.zotero.bridgeflow.debug" native="true" data-l10n-id="zbf-pref-debug"/>
-			<html:div class="zbf-actions">
-				<button id="zbf-clear-cache" native="true" data-l10n-id="zbf-btn-clear-cache"/>
-				<button id="zbf-reset-defaults" native="true" data-l10n-id="zbf-btn-reset-defaults"/>
+		<html:div class="zbf-card">
+			<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-maintenance"></html:h2>
+			<html:div class="zbf-stack">
+				<checkbox preference="extensions.zotero.bridgeflow.debug" native="true" data-l10n-id="zbf-pref-debug"/>
+				<html:div class="zbf-actions">
+					<button id="zbf-clear-cache" native="true" data-l10n-id="zbf-btn-clear-cache"/>
+					<button id="zbf-clear-workspace-state" native="true" data-l10n-id="zbf-btn-clear-workspace"/>
+					<button id="zbf-reset-defaults" native="true" data-l10n-id="zbf-btn-reset-defaults"/>
+				</html:div>
 			</html:div>
 		</html:div>
 	</html:section>
@@ -66,10 +76,10 @@
 			<html:div class="zbf-banner-desc" data-l10n-id="zbf-banner-workspace-desc"></html:div>
 		</html:div>
 
-		<html:div id="zbf-group-workspace">
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-tab-layout"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+		<html:div id="zbf-group-workspace" class="zbf-panel-stack">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-tab-layout"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableHorizontalGroups" native="true" data-l10n-id="zbf-pref-ws-horizontal"/>
 					<html:div id="zbf-sub-hcompact" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-ws-hcompact" control="zbf-sel-hcompact"></label>
@@ -86,28 +96,28 @@
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableVerticalSidebar" native="true" data-l10n-id="zbf-pref-ws-vertical"/>
 					<html:div id="zbf-sub-batch" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableBatchSelection" native="true" data-l10n-id="zbf-pref-ws-batch"/>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enablePinnedTabs" native="true" data-l10n-id="zbf-pref-ws-pinned"/>
 					<html:div id="zbf-sub-pinnedIcon" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.pinnedIconOnly" native="true" data-l10n-id="zbf-pref-ws-pinned-icon"/>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableVirtualMembers" native="true" data-l10n-id="zbf-pref-ws-virtual"/>
 				</html:div>
 			</html:div>
 
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-grouping-sleep"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-grouping-sleep"></html:h2>
+				<html:div class="zbf-item-group">
 					<html:div class="zbf-inline-field">
 						<label data-l10n-id="zbf-pref-ws-newtab-mode" control="zbf-sel-newtab"></label>
 						<menulist id="zbf-sel-newtab" native="true" preference="extensions.zotero.bridgeflow.workspace.newTabMode">
@@ -129,32 +139,34 @@
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSessions" native="true" data-l10n-id="zbf-pref-ws-sessions"/>
 					<html:div id="zbf-sub-rolling" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableRollingSnapshots" native="true" data-l10n-id="zbf-pref-ws-rolling"/>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableTabSleep" native="true" data-l10n-id="zbf-pref-ws-sleep"/>
 					<html:div id="zbf-sub-sleep-cfg" class="zbf-sub-stack">
-						<html:div class="zbf-inline-field">
-							<label data-l10n-id="zbf-pref-ws-autosleep" control="zbf-num-autosleep"></label>
-							<html:input id="zbf-num-autosleep" class="zbf-num-input" type="number" min="0" max="1440" data-zbf-pref="workspace.autoSleepMinutes"/>
-						</html:div>
-						<html:div class="zbf-inline-field">
-							<label data-l10n-id="zbf-pref-ws-budget" control="zbf-num-budget"></label>
-							<html:input id="zbf-num-budget" class="zbf-num-input" type="number" min="0" max="100" data-zbf-pref="workspace.activeReaderBudget"/>
+						<html:div class="zbf-field-grid-2">
+							<html:div class="zbf-field-card">
+								<label data-l10n-id="zbf-pref-ws-autosleep" control="zbf-num-autosleep"></label>
+								<html:input id="zbf-num-autosleep" class="zbf-num-input" type="number" min="0" max="1440" data-zbf-pref="workspace.autoSleepMinutes" data-preference="extensions.zotero.bridgeflow.workspace.autoSleepMinutes"/>
+							</html:div>
+							<html:div class="zbf-field-card">
+								<label data-l10n-id="zbf-pref-ws-budget" control="zbf-num-budget"></label>
+								<html:input id="zbf-num-budget" class="zbf-num-input" type="number" min="0" max="100" data-zbf-pref="workspace.activeReaderBudget" data-preference="extensions.zotero.bridgeflow.workspace.activeReaderBudget"/>
+							</html:div>
 						</html:div>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableStaleSuggestions" native="true" data-l10n-id="zbf-pref-ws-stale"/>
 					<html:div id="zbf-sub-stale-days" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-ws-stale-days" control="zbf-num-staledays"></label>
-						<html:input id="zbf-num-staledays" class="zbf-num-input" type="number" min="1" max="3650" data-zbf-pref="workspace.staleSuggestDays"/>
+						<html:input id="zbf-num-staledays" class="zbf-num-input" type="number" min="1" max="3650" data-zbf-pref="workspace.staleSuggestDays" data-preference="extensions.zotero.bridgeflow.workspace.staleSuggestDays"/>
 					</html:div>
 				</html:div>
 			</html:div>
@@ -168,10 +180,10 @@
 			<html:div class="zbf-banner-desc" data-l10n-id="zbf-banner-sidebar-desc"></html:div>
 		</html:div>
 
-		<html:div id="zbf-group-sidebar">
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-remarks-typo"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+		<html:div id="zbf-group-sidebar" class="zbf-panel-stack">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-remarks-typo"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableTabRemarks" native="true" data-l10n-id="zbf-pref-ws-remarks"/>
 					<html:div id="zbf-sub-remark-mode" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-ws-remark-mode" control="zbf-sel-remark"></label>
@@ -185,12 +197,12 @@
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableHoverPreview" native="true" data-l10n-id="zbf-pref-ws-hover"/>
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSpotlight" native="true" data-l10n-id="zbf-pref-ws-spotlight"/>
 				</html:div>
 
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<html:div class="zbf-inline-field">
 						<label data-l10n-id="zbf-pref-ws-title-mode" control="zbf-sel-titlemode"></label>
 						<menulist id="zbf-sel-titlemode" native="true" preference="extensions.zotero.bridgeflow.workspace.verticalTabTitleMode">
@@ -208,27 +220,30 @@
 								<menuitem value="source" data-l10n-id="zbf-opt-sub-source"/>
 								<menuitem value="creatorYear" data-l10n-id="zbf-opt-sub-creator"/>
 								<menuitem value="collection" data-l10n-id="zbf-opt-sub-col"/>
+								<menuitem value="lastViewed" data-l10n-id="zbf-opt-sub-lastviewed"/>
 								<menuitem value="none" data-l10n-id="zbf-opt-sub-none"/>
 							</menupopup>
 						</menulist>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell">
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ws-row-height" control="zbf-num-rowh"></label>
-						<html:input id="zbf-num-rowh" class="zbf-num-input" type="number" min="28" max="72" data-zbf-pref="workspace.verticalTabRowHeight"/>
-					</html:div>
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ws-font-size" control="zbf-num-vfont"></label>
-						<html:input id="zbf-num-vfont" class="zbf-num-input" type="number" min="11" max="18" data-zbf-pref="workspace.verticalTabFontSize"/>
+				<html:div class="zbf-item-group">
+					<html:div class="zbf-field-grid-2">
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ws-row-height" control="zbf-num-rowh"></label>
+							<html:input id="zbf-num-rowh" class="zbf-num-input" type="number" min="28" max="72" data-zbf-pref="workspace.verticalTabRowHeight" data-preference="extensions.zotero.bridgeflow.workspace.verticalTabRowHeight"/>
+						</html:div>
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ws-font-size" control="zbf-num-vfont"></label>
+							<html:input id="zbf-num-vfont" class="zbf-num-input" type="number" min="11" max="18" data-zbf-pref="workspace.verticalTabFontSize" data-preference="extensions.zotero.bridgeflow.workspace.verticalTabFontSize"/>
+						</html:div>
 					</html:div>
 				</html:div>
 			</html:div>
 
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-menus"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-menus"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableTabContextMenu" native="true" data-l10n-id="zbf-pref-ws-tabmenu"/>
 					<html:div id="zbf-sub-tabmenu" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableCopyReference" native="true" data-l10n-id="zbf-pref-ws-copyref"/>
@@ -236,7 +251,7 @@
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableReloadTab" native="true" data-l10n-id="zbf-pref-ws-reload"/>
 					</html:div>
 				</html:div>
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableItemContextMenu" native="true" data-l10n-id="zbf-pref-ws-itemmenu"/>
 				</html:div>
 			</html:div>
@@ -250,12 +265,20 @@
 			<html:div class="zbf-banner-desc" data-l10n-id="zbf-banner-csl-desc"></html:div>
 		</html:div>
 
-		<html:div id="zbf-group-inspector">
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-csl-preview"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+		<html:div id="zbf-group-inspector" class="zbf-panel-stack">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-csl-preview"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.cslPreview.enable" native="true" data-l10n-id="zbf-pref-ins-csl-enable"/>
 					<html:div id="zbf-sub-csl" class="zbf-sub-stack">
+						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-csl-style" control="zbf-sel-csl-style"></label>
+							<menulist id="zbf-sel-csl-style" native="true" preference="extensions.zotero.bridgeflow.inspector.cslPreview.citationstyle">
+								<menupopup>
+									<menuitem value="" data-l10n-id="zbf-opt-style-quickcopy"/>
+								</menupopup>
+							</menulist>
+						</html:div>
 						<html:div class="zbf-inline-field">
 							<label data-l10n-id="zbf-pref-ins-what-to-show" control="zbf-menulist-whatToShow"></label>
 							<menulist id="zbf-menulist-whatToShow" native="true" preference="extensions.zotero.bridgeflow.inspector.cslPreview.whatToShow">
@@ -276,49 +299,53 @@
 								</menupopup>
 							</menulist>
 						</html:div>
-						<html:div class="zbf-inline-field">
-							<label data-l10n-id="zbf-pref-ins-csl-style" control="zbf-input-csl-style"></label>
-							<html:input id="zbf-input-csl-style" class="zbf-text-input" type="text" data-zbf-pref="inspector.cslPreview.citationstyle"/>
-						</html:div>
 					</html:div>
 				</html:div>
 
-				<html:div class="zbf-cell" id="zbf-sub-csl-layout">
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ins-fontsize" control="zbf-input-fontsize"></label>
-						<html:input id="zbf-input-fontsize" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.fontsize"/>
-					</html:div>
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ins-spacing" control="zbf-input-spacing"></label>
-						<html:input id="zbf-input-spacing" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.spacing"/>
-					</html:div>
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ins-maxitems" control="zbf-num-maxitems"></label>
-						<html:input id="zbf-num-maxitems" class="zbf-num-input" type="number" min="1" max="500" data-zbf-pref="inspector.cslPreview.maxPreviewItems"/>
+				<html:div class="zbf-item-group" id="zbf-sub-csl-layout">
+					<html:div class="zbf-field-grid-3">
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ins-fontsize" control="zbf-input-fontsize"></label>
+							<html:input id="zbf-input-fontsize" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.fontsize" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.fontsize"/>
+						</html:div>
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ins-spacing" control="zbf-input-spacing"></label>
+							<html:input id="zbf-input-spacing" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.spacing" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.spacing"/>
+						</html:div>
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ins-maxitems" control="zbf-num-maxitems"></label>
+							<html:input id="zbf-num-maxitems" class="zbf-num-input" type="number" min="1" max="500" data-zbf-pref="inspector.cslPreview.maxPreviewItems" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.maxPreviewItems"/>
+						</html:div>
 					</html:div>
 				</html:div>
 			</html:div>
 
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-lookup"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-lookup"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.enable" native="true" data-l10n-id="zbf-pref-ins-lookup-enable"/>
 					<html:div id="zbf-sub-lookup-history" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.historyEnable" native="true" data-l10n-id="zbf-pref-ins-lookup-history"/>
-						<html:div class="zbf-inline-field">
+						<html:div class="zbf-path-block">
 							<label data-l10n-id="zbf-pref-ins-cache-dir" control="zbf-input-cachedir"></label>
-							<html:input id="zbf-input-cachedir" class="zbf-text-input" type="text" data-zbf-pref="inspector.lookup.cacheDirectory"/>
+							<html:div class="zbf-path-row">
+								<html:input id="zbf-input-cachedir" class="zbf-text-input" type="text" data-zbf-pref="inspector.lookup.cacheDirectory" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheDirectory"/>
+								<button id="zbf-btn-browse-cachedir" native="true" data-l10n-id="zbf-btn-browse-dir"/>
+								<button id="zbf-btn-default-cachedir" native="true" data-l10n-id="zbf-btn-default-dir"/>
+							</html:div>
 						</html:div>
 					</html:div>
 				</html:div>
-				<html:div class="zbf-cell" id="zbf-sub-lookup-quota">
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ins-cache-max" control="zbf-num-cachemax"></label>
-						<html:input id="zbf-num-cachemax" class="zbf-num-input" type="number" min="100" max="100000" data-zbf-pref="inspector.lookup.cacheMaxEntries"/>
-					</html:div>
-					<html:div class="zbf-inline-field">
-						<label data-l10n-id="zbf-pref-ins-cache-ttl" control="zbf-num-cachettl"></label>
-						<html:input id="zbf-num-cachettl" class="zbf-num-input" type="number" min="7" max="3650" data-zbf-pref="inspector.lookup.cacheTtlDays"/>
+				<html:div class="zbf-item-group" id="zbf-sub-lookup-quota">
+					<html:div class="zbf-field-grid-2">
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ins-cache-max" control="zbf-num-cachemax"></label>
+							<html:input id="zbf-num-cachemax" class="zbf-num-input" type="number" min="100" max="100000" data-zbf-pref="inspector.lookup.cacheMaxEntries" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheMaxEntries"/>
+						</html:div>
+						<html:div class="zbf-field-card">
+							<label data-l10n-id="zbf-pref-ins-cache-ttl" control="zbf-num-cachettl"></label>
+							<html:input id="zbf-num-cachettl" class="zbf-num-input" type="number" min="7" max="3650" data-zbf-pref="inspector.lookup.cacheTtlDays" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheTtlDays"/>
+						</html:div>
 					</html:div>
 				</html:div>
 			</html:div>
@@ -332,10 +359,10 @@
 			<html:div class="zbf-banner-desc" data-l10n-id="zbf-banner-pdf-desc"></html:div>
 		</html:div>
 
-		<html:div id="zbf-group-pdf">
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
-					<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-pdf-preview"></html:h2>
+		<html:div id="zbf-group-pdf" class="zbf-panel-stack">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-pdf-preview"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.enable" native="true" data-l10n-id="zbf-pref-ins-pdf-preview"/>
 					<html:div id="zbf-sub-pdf-preview" class="zbf-sub-stack">
 						<html:div class="zbf-inline-field">
@@ -359,15 +386,17 @@
 						</html:div>
 						<html:div class="zbf-inline-field">
 							<label data-l10n-id="zbf-pref-ins-pdf-zoom" control="zbf-num-pdfzoom"></label>
-							<html:input id="zbf-num-pdfzoom" class="zbf-num-input" type="number" min="60" max="200" data-zbf-pref="inspector.pdfPreview.defaultZoom"/>
+							<html:input id="zbf-num-pdfzoom" class="zbf-num-input" type="number" min="60" max="200" data-zbf-pref="inspector.pdfPreview.defaultZoom" data-preference="extensions.zotero.bridgeflow.inspector.pdfPreview.defaultZoom"/>
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.doubleClickOpen" native="true" data-l10n-id="zbf-pref-ins-pdf-dbl"/>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.showPageBadge" native="true" data-l10n-id="zbf-pref-ins-pdf-badge"/>
 					</html:div>
 				</html:div>
+			</html:div>
 
-				<html:div class="zbf-cell">
-					<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-pdf-folder"></html:h2>
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-pdf-folder"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfFolder.enable" native="true" data-l10n-id="zbf-pref-ins-pdf-folder"/>
 					<html:div id="zbf-sub-pdf-folder" class="zbf-sub-stack">
 						<html:div class="zbf-inline-field">
@@ -402,39 +431,41 @@
 			<html:div class="zbf-banner-desc" data-l10n-id="zbf-banner-word-desc"></html:div>
 		</html:div>
 
-		<html:div id="zbf-group-wordcite">
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-word-sync"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-cell">
+		<html:div id="zbf-group-wordcite" class="zbf-panel-stack">
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-sync"></html:h2>
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.dragCite.enable" native="true" data-l10n-id="zbf-pref-wc-drag"/>
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.collections.enable" native="true" data-l10n-id="zbf-pref-wc-collections"/>
 				</html:div>
-				<html:div class="zbf-cell">
+				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.citationTags.enable" native="true" data-l10n-id="zbf-pref-wc-tags"/>
 					<html:div id="zbf-sub-wc-tag-text" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-wc-tag-text" control="zbf-input-tag-text"></label>
-						<html:input id="zbf-input-tag-text" class="zbf-text-input" type="text" data-zbf-pref="wordCite.citationTags.text"/>
+						<html:input id="zbf-input-tag-text" class="zbf-text-input" type="text" data-zbf-pref="wordCite.citationTags.text" data-preference="extensions.zotero.bridgeflow.wordCite.citationTags.text"/>
 					</html:div>
 				</html:div>
 			</html:div>
 
-			<html:h2 class="zbf-section-title" data-l10n-id="zbf-sec-word-perf"></html:h2>
-			<html:div class="zbf-grid-2">
-				<html:div class="zbf-inline-field">
-					<label data-l10n-id="zbf-pref-wc-tag-debounce" control="zbf-num-tagdeb"></label>
-					<html:input id="zbf-num-tagdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.citationTagDebounceMs"/>
-				</html:div>
-				<html:div class="zbf-inline-field">
-					<label data-l10n-id="zbf-pref-wc-view-debounce" control="zbf-num-viewdeb"></label>
-					<html:input id="zbf-num-viewdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.itemsViewRefreshDebounceMs"/>
-				</html:div>
-				<html:div class="zbf-inline-field">
-					<label data-l10n-id="zbf-pref-wc-health-win" control="zbf-num-health"></label>
-					<html:input id="zbf-num-health" class="zbf-num-input" type="number" min="10000" max="3600000" data-zbf-pref="wordCite.healthWindowMs"/>
-				</html:div>
-				<html:div class="zbf-inline-field">
-					<label data-l10n-id="zbf-pref-wc-slow-ms" control="zbf-num-slow"></label>
-					<html:input id="zbf-num-slow" class="zbf-num-input" type="number" min="5" max="5000" data-zbf-pref="wordCite.perfSlowThresholdMs"/>
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-perf"></html:h2>
+				<html:div class="zbf-field-grid-2">
+					<html:div class="zbf-field-card">
+						<label data-l10n-id="zbf-pref-wc-tag-debounce" control="zbf-num-tagdeb"></label>
+						<html:input id="zbf-num-tagdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.citationTagDebounceMs" data-preference="extensions.zotero.bridgeflow.wordCite.citationTagDebounceMs"/>
+					</html:div>
+					<html:div class="zbf-field-card">
+						<label data-l10n-id="zbf-pref-wc-view-debounce" control="zbf-num-viewdeb"></label>
+						<html:input id="zbf-num-viewdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.itemsViewRefreshDebounceMs" data-preference="extensions.zotero.bridgeflow.wordCite.itemsViewRefreshDebounceMs"/>
+					</html:div>
+					<html:div class="zbf-field-card">
+						<label data-l10n-id="zbf-pref-wc-health-win" control="zbf-num-health"></label>
+						<html:input id="zbf-num-health" class="zbf-num-input" type="number" min="10000" max="3600000" data-zbf-pref="wordCite.healthWindowMs" data-preference="extensions.zotero.bridgeflow.wordCite.healthWindowMs"/>
+					</html:div>
+					<html:div class="zbf-field-card">
+						<label data-l10n-id="zbf-pref-wc-slow-ms" control="zbf-num-slow"></label>
+						<html:input id="zbf-num-slow" class="zbf-num-input" type="number" min="5" max="5000" data-zbf-pref="wordCite.perfSlowThresholdMs" data-preference="extensions.zotero.bridgeflow.wordCite.perfSlowThresholdMs"/>
+					</html:div>
 				</html:div>
 			</html:div>
 		</html:div>

@@ -64,7 +64,7 @@ export const PREF_SCHEMA = {
 	},
 	'workspace.verticalTabSubtitleMode': {
 		defaultValue: 'source',
-		enumValues: ['source', 'creatorYear', 'collection', 'none'],
+		enumValues: ['source', 'creatorYear', 'collection', 'lastViewed', 'none'],
 		legacyKeys: ['extensions.zotero.tabflow.verticalTabSubtitleMode'],
 	},
 	'workspace.verticalTabRowHeight': { defaultValue: 42, min: 28, max: 72, legacyKeys: ['extensions.zotero.tabflow.verticalTabRowHeight'] },

@@ -1,18 +1,19 @@
-/* Zotero BridgeFlow - Tabbed Preferences UI (Style-inspired Horizontal Tabs + Info Banner + 2-Col Grid) */
+/* Zotero BridgeFlow - Tabbed Preferences UI with 40px Golden Baseline Cards */
 #zotero-prefpane-zotero-bridgeflow.zbf-settings {
   --zbf-p-text: var(--fill-primary, light-dark(#1f2328, #eeeeee));
   --zbf-p-muted: light-dark(#57606a, #b5bcc4);
   --zbf-p-accent: light-dark(#245ac7, #7aa7ff);
   --zbf-p-banner-bg: light-dark(#eff6ff, color-mix(in srgb, #2563eb 15%, transparent));
   --zbf-p-banner-border: light-dark(#bfdbfe, color-mix(in srgb, #60a5fa 32%, transparent));
-  --zbf-p-border: color-mix(in srgb, currentColor 16%, transparent);
-  --zbf-p-divider: color-mix(in srgb, currentColor 12%, transparent);
+  --zbf-p-border: color-mix(in srgb, currentColor 17%, transparent);
+  --zbf-p-divider: color-mix(in srgb, currentColor 11%, transparent);
+  --zbf-p-card-bg: color-mix(in srgb, currentColor 2.2%, transparent);
   box-sizing: border-box;
   display: block;
-  width: min(100%, 820px);
+  width: min(100%, 780px);
   min-width: 0;
   margin-inline: auto;
-  padding: 10px 14px 20px;
+  padding: 10px 14px 22px;
   color: var(--zbf-p-text);
   font-family: system-ui, 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   font-size: 14px;
@@ -30,20 +31,29 @@
 }
 
 #zotero-prefpane-zotero-bridgeflow .zbf-header { margin: 0 0 10px; }
-#zotero-prefpane-zotero-bridgeflow .zbf-title-row { display: flex; align-items: center; gap: 10px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-title-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-title-left {
+  display: inline-flex; align-items: center; gap: 8px;
+}
 #zotero-prefpane-zotero-bridgeflow .zbf-header h1 { margin: 0; font-size: 18px; font-weight: 600; }
 #zotero-prefpane-zotero-bridgeflow .zbf-version-badge {
   padding: 1px 7px; border-radius: 999px; font-size: 12px; color: var(--zbf-p-muted);
   border: 1px solid var(--zbf-p-border); background: color-mix(in srgb, currentColor 4%, transparent);
 }
-#zotero-prefpane-zotero-bridgeflow .zbf-subtitle { margin: 3px 0 0; font-size: 13px; color: var(--zbf-p-muted); }
+#zotero-prefpane-zotero-bridgeflow .zbf-status-pill {
+  padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  color: var(--zbf-p-accent); background: color-mix(in srgb, var(--zbf-p-accent) 12%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--zbf-p-muted); }
 
 /* Horizontal Tab Bar */
 #zotero-prefpane-zotero-bridgeflow .zbf-tabs {
   display: flex; flex-wrap: nowrap; gap: 1px;
   overflow-x: auto; scrollbar-width: none;
   border-bottom: 1px solid var(--zbf-p-divider);
-  margin: 0 0 14px; padding-bottom: 0;
+  margin: 0 0 12px; padding-bottom: 0;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-tabs::-webkit-scrollbar { display: none; }
 #zotero-prefpane-zotero-bridgeflow .zbf-tab-btn {
@@ -59,53 +69,98 @@
 #zotero-prefpane-zotero-bridgeflow .zbf-tab-btn.active {
   color: var(--zbf-p-accent); font-weight: 600;
   border-bottom-color: var(--zbf-p-accent);
-  background: color-mix(in srgb, var(--zbf-p-accent) 7%, transparent);
+  background: color-mix(in srgb, var(--zbf-p-accent) 8%, transparent);
 }
+
+#zotero-prefpane-zotero-bridgeflow .zbf-tabpanel[hidden] { display: none !important; }
+#zotero-prefpane-zotero-bridgeflow .zbf-panel-stack { display: flex; flex-direction: column; gap: 10px; }
 
 /* Info Banner */
 #zotero-prefpane-zotero-bridgeflow .zbf-banner {
-  padding: 12px 14px; margin-bottom: 14px; border-radius: 10px;
+  padding: 11px 14px; margin-bottom: 10px; border-radius: 9px;
   border: 1px solid var(--zbf-p-banner-border);
   background: var(--zbf-p-banner-bg);
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-banner-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
 #zotero-prefpane-zotero-bridgeflow .zbf-banner-desc { font-size: 13px; color: var(--zbf-p-muted); line-height: 1.55; }
 #zotero-prefpane-zotero-bridgeflow .zbf-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-#zbf-prefs-step,
 #zotero-prefpane-zotero-bridgeflow .zbf-step {
   padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
   background: color-mix(in srgb, var(--zbf-p-accent) 14%, transparent);
   color: var(--zbf-p-accent);
 }
 
-#zotero-prefpane-zotero-bridgeflow .zbf-section-title {
-  margin: 14px 0 8px; padding-bottom: 4px;
-  font-size: 13px; font-weight: 600; color: var(--zbf-p-muted);
+/* 40px Golden Baseline Cards (16px horizontal padding + 24px subordinate indent = 40px) */
+#zotero-prefpane-zotero-bridgeflow .zbf-card {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 16px; margin-bottom: 10px;
+  border: 1px solid var(--zbf-p-border); border-radius: 9px;
+  background: var(--zbf-p-card-bg);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-card-title {
+  margin: 0; padding-bottom: 8px;
+  font-size: 14px; font-weight: 600; color: var(--zbf-p-text);
   border-bottom: 1px solid var(--zbf-p-divider);
 }
-
-#zotero-prefpane-zotero-bridgeflow .zbf-grid-1 { display: flex; flex-direction: column; gap: 8px; }
-#zotero-prefpane-zotero-bridgeflow .zbf-grid-2 {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; align-items: start;
+#zotero-prefpane-zotero-bridgeflow .zbf-stack { display: flex; flex-direction: column; gap: 8px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-item-group {
+  display: flex; flex-direction: column; gap: 8px;
+  padding-bottom: 10px; border-bottom: 1px solid var(--zbf-p-divider);
 }
-#zotero-prefpane-zotero-bridgeflow .zbf-cell { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+#zotero-prefpane-zotero-bridgeflow .zbf-item-group:last-child { padding-bottom: 0; border-bottom: 0; }
 
+/* Level 3 Subordinate rows aligned to 40px golden baseline (16px + 24px) */
 #zotero-prefpane-zotero-bridgeflow .zbf-sub-stack {
-  display: flex; flex-direction: column; gap: 6px; margin-inline-start: 24px;
+  display: flex; flex-direction: column; gap: 8px; margin-inline-start: 24px;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-sub-row {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-inline-start: 24px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-inline-start: 24px;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-inline-field {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-inline-field > label,
+#zotero-prefpane-zotero-bridgeflow .zbf-sub-row > label {
+  flex: 1 1 auto; min-width: 140px; margin: 0;
 }
 
-#zotero-prefpane-zotero-bridgeflow .zbf-num-input { width: 84px; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--zbf-p-border); background: transparent; color: inherit; }
-#zotero-prefpane-zotero-bridgeflow .zbf-text-input { min-width: 140px; flex: 1; padding: 3px 8px; border-radius: 5px; border: 1px solid var(--zbf-p-border); background: transparent; color: inherit; }
+#zotero-prefpane-zotero-bridgeflow menulist {
+  min-width: 190px; max-width: 280px; min-height: 30px;
+}
 
-#zotero-prefpane-zotero-bridgeflow [data-disabled="true"] { opacity: 0.5; pointer-events: none; }
-#zotero-prefpane-zotero-bridgeflow .zbf-actions { display: flex; gap: 10px; margin-top: 6px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-field-grid-2 {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-field-grid-3 {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-field-card {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 6px;
+  padding: 8px 10px; border: 1px solid var(--zbf-p-border); border-radius: 7px;
+  background: color-mix(in srgb, currentColor 2%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-field-card > label {
+  margin: 0; font-size: 13px; color: var(--zbf-p-text);
+}
+
+#zotero-prefpane-zotero-bridgeflow .zbf-num-input {
+  box-sizing: border-box; width: 96px; min-height: 30px; padding: 4px 8px;
+  border-radius: 5px; border: 1px solid var(--zbf-p-border);
+  background: Field; color: var(--zbf-p-text); text-align: end;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-field-card > .zbf-num-input { width: 100%; }
+#zotero-prefpane-zotero-bridgeflow .zbf-text-input {
+  box-sizing: border-box; min-width: 160px; flex: 1 1 auto; min-height: 30px; padding: 4px 8px;
+  border-radius: 5px; border: 1px solid var(--zbf-p-border);
+  background: Field; color: var(--zbf-p-text);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-path-block { display: flex; flex-direction: column; gap: 6px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-path-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+#zotero-prefpane-zotero-bridgeflow [data-disabled="true"] { opacity: 0.52; pointer-events: none; }
+#zotero-prefpane-zotero-bridgeflow .zbf-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
 #zotero-prefpane-zotero-bridgeflow .zbf-settings-footer {
-  margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--zbf-p-divider);
+  margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--zbf-p-divider);
   color: var(--zbf-p-muted); font-size: 12px;
 }

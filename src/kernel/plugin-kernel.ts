@@ -50,6 +50,7 @@ export class PluginKernel {
 		if (this.started) return;
 		this.started = true;
 		this.lastMigrationReport = runLegacyPrefMigration(this.prefs);
+		this.prefs.seedDefaults();
 		this.syncLoggerConfig();
 		this.notifier.start();
 

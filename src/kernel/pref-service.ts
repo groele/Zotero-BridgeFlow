@@ -93,6 +93,21 @@ export class UnifiedPrefService {
 		}
 	}
 
+	seedDefaults(): void {
+		const adapter = this.adapter;
+		if (!adapter) return;
+		for (const key of Object.keys(PREF_SCHEMA) as PrefKey[]) {
+			const full = this.fullKey(key);
+			const existing = this.readRaw(full);
+			if (existing === undefined) {
+				const desc = PREF_SCHEMA[key] as PrefDescriptor;
+				try {
+					adapter.set(full, desc.defaultValue, true);
+				} catch { /* ignore */ }
+			}
+		}
+	}
+
 	observeKeys(keys: readonly PrefKey[], onChange: (key: PrefKey, value: unknown) => void): Disposable {
 		const localTokens: Array<symbol | string | number> = [];
 		const adapter = this.adapter;
