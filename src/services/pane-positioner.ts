@@ -14,6 +14,13 @@ export interface PositionOwner extends Element {
 	changePaneOrder?(id: string, index: number, options: { render: boolean }): Promise<void>;
 }
 
+interface TargetSpec {
+	key: string;
+	sectionID: string;
+	getPosition: () => PanePositionValue;
+	anchorAfterSectionID?: string;
+}
+
 export function normalizePanePosition(raw: unknown, fallback: PanePositionValue = 'zotero-item-pane-header'): PanePositionValue {
 	if (raw === 'zotero-item-pane-header' || raw === 'zotero-editpane-item-box' || raw === 'zotero-editpane-related') {
 		return raw;
@@ -23,12 +30,12 @@ export function normalizePanePosition(raw: unknown, fallback: PanePositionValue 
 
 /**
  * Coordinates ItemPane section ordering across Zotero 10-12 `item-details` containers
- * and `item-pane-sidenav` navigation buttons without fighting native pane mutations.
+ * and `item-pane-sidenav` navigation buttons with strict idempotent group placement.
  */
 export class ItemPanePositionCoordinator {
-	private readonly targets = new Map<string, { sectionID: string; getPosition: () => PanePositionValue; anchorAfterSectionID?: string }>();
+	private readonly targets = new Map<string, TargetSpec>();
 	private readonly observers = new Map<PositionOwner, MutationObserver>();
-	private readonly timers = new Map<PositionOwner, number>();
+	private readonly timers = new Map<PositionOwner, ReturnType<typeof setTimeout>>();
 	private readonly running = new Set<PositionOwner>();
 	private readonly dirty = new Set<PositionOwner>();
 
@@ -37,7 +44,7 @@ export class ItemPanePositionCoordinator {
 		spec: { sectionID: string; getPosition: () => PanePositionValue; anchorAfterSectionID?: string } | null,
 	): void {
 		if (!spec) this.targets.delete(key);
-		else this.targets.set(key, spec);
+		else this.targets.set(key, { key, ...spec });
 	}
 
 	observeAndQueue(body: HTMLElement | null): void {
@@ -47,7 +54,9 @@ export class ItemPanePositionCoordinator {
 			const parent = owner.getPanes().find((p) => p.contains?.(body!))?.parentNode;
 			const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
 			if (parent && Observer) {
-				const obs = new Observer(() => this.queue(owner));
+				const obs = new Observer(() => {
+					if (!this.running.has(owner)) this.queue(owner);
+				});
 				obs.observe(parent, { childList: true });
 				this.observers.set(owner, obs);
 			}
@@ -77,7 +86,7 @@ export class ItemPanePositionCoordinator {
 					this.queue(owner);
 				}
 			});
-		}, 0);
+		}, 20);
 		this.timers.set(owner, timer);
 	}
 
@@ -93,24 +102,55 @@ export class ItemPanePositionCoordinator {
 
 	private async applyAll(owner: PositionOwner): Promise<void> {
 		if (owner.skipRender) return;
-		// Apply independent sections first, then anchored sections (e.g. lookup directly after preview)
-		const independent: Array<{ sectionID: string; getPosition: () => PanePositionValue }> = [];
-		const anchored: Array<{ sectionID: string; anchorAfterSectionID: string }> = [];
+		const groups: Record<PanePositionValue, TargetSpec[]> = {
+			'zotero-item-pane-header': [],
+			'zotero-editpane-item-box': [],
+			'zotero-editpane-related': [],
+		};
 
-		for (const spec of this.targets.values()) {
-			if (spec.anchorAfterSectionID) {
-				anchored.push({ sectionID: spec.sectionID, anchorAfterSectionID: spec.anchorAfterSectionID });
-			} else {
-				independent.push(spec);
-			}
-		}
+		const independent = [...this.targets.values()].filter((s) => !s.anchorAfterSectionID);
+		const anchored = [...this.targets.values()].filter((s) => Boolean(s.anchorAfterSectionID));
 
 		for (const spec of independent) {
-			await this.moveSectionToPosition(owner, spec.sectionID, spec.getPosition());
+			groups[spec.getPosition()].push(spec);
 		}
 		for (const spec of anchored) {
-			await this.moveSectionAfter(owner, spec.sectionID, spec.anchorAfterSectionID);
+			const pos = spec.getPosition();
+			const list = groups[pos];
+			const anchorIdx = list.findIndex((item) => item.sectionID === spec.anchorAfterSectionID);
+			if (anchorIdx >= 0) list.splice(anchorIdx + 1, 0, spec);
+			else list.push(spec);
 		}
+
+		for (const position of ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'] as const) {
+			await this.alignGroup(owner, position, groups[position]);
+		}
+	}
+
+	private async alignGroup(owner: PositionOwner, position: PanePositionValue, group: readonly TargetSpec[]): Promise<void> {
+		const presentIDs = group
+			.map((s) => s.sectionID)
+			.filter((id) => owner.getPanes().some((p) => p.dataset.pane === id));
+		if (!presentIDs.length) return;
+
+		const panes = owner.getPanes();
+		const startIdx = this.computeGroupStartIndex(panes, position, presentIDs.length);
+		const slice = panes.slice(startIdx, startIdx + presentIDs.length).map((p) => p.dataset.pane);
+		if (slice.length === presentIDs.length && presentIDs.every((id, idx) => slice[idx] === id)) {
+			return;
+		}
+
+		await this.moveSectionToPosition(owner, presentIDs[0], position);
+		for (let i = 1; i < presentIDs.length; i++) {
+			await this.moveSectionAfter(owner, presentIDs[i], presentIDs[i - 1]);
+		}
+	}
+
+	private computeGroupStartIndex(panes: HTMLElement[], position: PanePositionValue, groupSize: number): number {
+		if (position === 'zotero-item-pane-header') return 0;
+		if (position === 'zotero-editpane-related') return Math.max(0, panes.length - groupSize);
+		const info = panes.findIndex((p) => p.dataset.pane === 'info');
+		return info < 0 ? 0 : info + 1;
 	}
 
 	private async moveSectionToPosition(owner: PositionOwner, sectionID: string, position: PanePositionValue): Promise<void> {

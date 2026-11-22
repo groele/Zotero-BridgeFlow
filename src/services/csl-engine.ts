@@ -6,11 +6,24 @@ export interface CslFormatResult {
 	readonly styleID: string;
 }
 
+export type CslPreviewErrorCode = 'no-style' | 'style-missing' | 'quickcopy-unavailable';
+
+export function createCslPreviewError(code: CslPreviewErrorCode, message: string): Error & { previewCode: CslPreviewErrorCode } {
+	return Object.assign(new Error(message), { previewCode: code });
+}
+
 interface CacheEntry {
 	value: CslFormatResult;
 	bytes: number;
 	itemIDs: number[];
 	timestamp: number;
+}
+
+interface ResolvedQuickCopyFormat {
+	id?: string;
+	mode?: string;
+	locale?: string;
+	contentType?: string;
 }
 
 export class CslFormattingEngine {
@@ -42,9 +55,48 @@ export class CslFormattingEngine {
 		return 'http://www.zotero.org/styles/apa';
 	}
 
+	resolveFormatConfig(item?: any, overrideStyle?: string): { format: ResolvedQuickCopyFormat | string; styleID: string; asHTML: boolean } {
+		const custom = (overrideStyle ?? this.prefs.get('inspector.cslPreview.citationstyle')).trim();
+		const host = (globalThis as any).Zotero;
+		const qc = host?.QuickCopy;
+		if (typeof qc?.unserializeSetting === 'function') {
+			let format: ResolvedQuickCopyFormat = {};
+			try {
+				let url = '';
+				if (item?.isField?.('url')) {
+					try { url = item.getField('url', true, true) || ''; } catch { url = ''; }
+				}
+				let rawSetting = '';
+				try {
+					rawSetting = qc.getFormatFromURL?.(url) || '';
+				} catch {
+					rawSetting = host?.Prefs?.get?.('export.quickCopy.setting') || '';
+				}
+				format = { ...qc.unserializeSetting(rawSetting) };
+			} catch (error) {
+				if (!custom) {
+					throw createCslPreviewError('no-style', error instanceof Error ? error.message : String(error));
+				}
+			}
+			if (custom) Object.assign(format, { id: custom, mode: 'bibliography' });
+			if (format.mode !== 'bibliography' || !format.id) {
+				throw createCslPreviewError('no-style', 'No bibliography style configured');
+			}
+			if (host?.Styles?.get && !host.Styles.get(format.id)) {
+				throw createCslPreviewError('style-missing', `Citation style not installed: ${format.id}`);
+			}
+			format.locale = format.locale || host?.Prefs?.get?.('export.quickCopy.locale');
+			const asHTML = format.contentType === 'html';
+			format.contentType = 'text';
+			return { format, styleID: format.id, asHTML };
+		}
+		const styleID = this.resolveStyleID(overrideStyle);
+		return { format: `bibliography=${styleID}`, styleID, asHTML: false };
+	}
+
 	buildCacheKey(items: readonly any[], styleID: string, asCitation: boolean): string {
 		const itemPart = items
-			.map((it) => `${it.id || 0}:${it.dateModified || it.version || 0}`)
+			.map((it) => `${it.id || 0}:${it.getField?.('dateModified') || it.dateModified || it.version || 0}`)
 			.join(',');
 		return `${asCitation ? 'cite' : 'bib'}|${styleID}|${itemPart}`;
 	}
@@ -53,14 +105,6 @@ export class CslFormattingEngine {
 		items: readonly any[],
 		options: { styleID?: string; asCitation?: boolean } = {},
 	): Promise<CslFormatResult> {
-		const styleID = this.resolveStyleID(options.styleID);
-		const asCitation = Boolean(options.asCitation);
-		if (!items.length) return { html: '', text: '', styleID };
-
-		const key = this.buildCacheKey(items, styleID, asCitation);
-		const cached = this.getCached(key);
-		if (cached) return cached;
-
 		const host = (globalThis as any).Zotero;
 		if (host?.Styles?.init) {
 			await Promise.race([
@@ -69,13 +113,23 @@ export class CslFormattingEngine {
 			]);
 		}
 
+		const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
+		const asCitation = Boolean(options.asCitation);
+		if (!items.length) return { html: '', text: '', styleID };
+
+		const key = this.buildCacheKey(items, styleID, asCitation);
+		const cached = this.getCached(key);
+		if (cached) return cached;
+
 		let html = '';
 		let text = '';
 		if (host?.QuickCopy?.getContentFromItems) {
-			const formatStr = `bibliography=${styleID}`;
-			const res = host.QuickCopy.getContentFromItems(items, formatStr, null, asCitation);
-			html = String(res?.html || '');
-			text = String(res?.text || '').trim();
+			const res = host.QuickCopy.getContentFromItems(items, format, null, asCitation);
+			if (res === null || res === undefined || typeof res.html !== 'string' || typeof res.text !== 'string') {
+				throw createCslPreviewError('quickcopy-unavailable', `QuickCopy returned incomplete ${asCitation ? 'citation' : 'bibliography'}`);
+			}
+			html = res.html;
+			text = res.text.trim();
 		} else {
 			text = items.map((it) => String(it.getField?.('title') || it.title || '')).filter(Boolean).join('\n');
 			html = text;

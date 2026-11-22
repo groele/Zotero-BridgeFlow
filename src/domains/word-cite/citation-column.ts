@@ -18,7 +18,9 @@ export class CitationColumnController {
 		if (!manager?.registerColumn) return;
 		this.columnID = manager.registerColumn({
 			dataKey: 'bridgeflowCitation',
-			label: 'Citation',
+			label: (globalThis as any).Zotero?.locale?.startsWith?.('zh') ? '引用' : 'Citation',
+			enabledTreeIDs: ['main'],
+			zoteroPersist: ['width', 'hidden', 'sortDirection'],
 			pluginID: this.kernel.info.id,
 			dataProvider: (item: any) => {
 				const id = Number(item?.id || 0);

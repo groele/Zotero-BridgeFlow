@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -330,6 +330,199 @@
     }));
   }
 
+  // src/domains/inspector/citation-lookup-parser.ts
+  function extractIdentifier(input) {
+    const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)\b/i);
+    const arxivMatch = input.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || input.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
+    return {
+      doi: doiMatch ? doiMatch[1].replace(/[.,;)]+$/, "") : void 0,
+      arxiv: arxivMatch ? arxivMatch[1] : void 0
+    };
+  }
+  function stripAuthorPrefix(text) {
+    const quoteMatch = text.match(/^(.+?)[,.\s]+["\u201c].+?["\u201d][,.\s]+(.+)$/);
+    if (quoteMatch) {
+      return { authors: quoteMatch[1].trim(), rest: quoteMatch[2].replace(/^in\s+/i, "").trim() };
+    }
+    const gbtMatch = text.match(/^([^.]+?)\.\s*.+?\[J\][.,\s]+(.+)$/i);
+    if (gbtMatch) {
+      return { authors: gbtMatch[1].trim(), rest: gbtMatch[2].trim() };
+    }
+    const etAlMatch = text.match(/^(.+?\bet\s+al\.?),?\s+(.+)$/i);
+    if (etAlMatch) {
+      return { authors: etAlMatch[1].trim(), rest: etAlMatch[2].trim() };
+    }
+    const semiMatch = text.match(/^([^;]+(?:;\s*[^;]+)+)[,;]\s+([A-Z].+)$/);
+    if (semiMatch) {
+      return { authors: semiMatch[1].trim(), rest: semiMatch[2].trim() };
+    }
+    return { rest: text };
+  }
+  function normalizeJournal(name) {
+    return name.toLowerCase().replace(/&/g, "and").replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
+  }
+  function parseCompactCitation(input) {
+    if (!input || typeof input !== "string") return null;
+    const clean = input.replace(/\s+/g, " ").trim().replace(/^(?:\[\d+\]\s*|\(\d+\)\s*|\d{1,3}[.)]\s+|•\s*)/, "").replace(/\.+$/, "").replace(/[\u2010-\u2015\u2212]/g, "-");
+    const ids = extractIdentifier(clean);
+    let stripped = clean;
+    if (ids.doi) {
+      stripped = stripped.replace(/(?:doi:?\s*|https?:\/\/(?:dx\.)?doi\.org\/)?10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+/i, "").trim().replace(/[.,;:]+$/, "");
+    }
+    if (ids.arxiv) {
+      stripped = stripped.replace(/(?:https?:\/\/)?(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)?\b\d{4}\.\d{4,5}(?:v\d+)?\b/i, "").trim().replace(/[.,;:]+$/, "");
+    }
+    const { authors, rest: target } = stripAuthorPrefix(stripped);
+    const m1 = target.match(/^(.+?)[,\s;:]+(\d{4})[,\s;:]+(?:vol\.?\s*)?(\d+)(?:\s*\(([\w-]+)\))?[,\s;:]+(?:pp?\.?\s*)?([A-Za-z]*\d+)(?:-([A-Za-z]*\d+))?$/i);
+    if (m1) {
+      return {
+        raw: input,
+        journalText: m1[1].trim(),
+        year: parseInt(m1[2], 10),
+        volume: m1[3].trim(),
+        issue: m1[4] || void 0,
+        firstPage: m1[5].trim(),
+        lastPage: m1[6] ? m1[6].trim() : void 0,
+        pages: m1[6] ? `${m1[5].trim()}-${m1[6].trim()}` : m1[5].trim(),
+        authorPrefix: authors,
+        ...ids
+      };
+    }
+    const m2 = target.match(/^(.+?)[,\s]+(?:vol\.?\s*)?(\d+)(?:\s*\(([\w-]+)\))?\s*\((\d{4})\)[,\s;:]+(?:pp?\.?\s*)?([A-Za-z]*\d+)(?:-([A-Za-z]*\d+))?$/i);
+    if (m2) {
+      return {
+        raw: input,
+        journalText: m2[1].trim(),
+        volume: m2[2].trim(),
+        issue: m2[3] || void 0,
+        year: parseInt(m2[4], 10),
+        firstPage: m2[5].trim(),
+        lastPage: m2[6] ? m2[6].trim() : void 0,
+        pages: m2[6] ? `${m2[5].trim()}-${m2[6].trim()}` : m2[5].trim(),
+        authorPrefix: authors,
+        ...ids
+      };
+    }
+    const m3 = target.match(/^(.+?)[,\s]+(?:vol\.?\s*)?(\d+)(?:(?:\s*\(([\w-]+)\))|[,\s]+(?:no\.?|issue)\s*([\w-]+))?[,\s;:]+(?:pp?\.?\s*)?([A-Za-z]*\d+)(?:-([A-Za-z]*\d+))?(?:\s*\((\d{4})\)|[,\s]+(?:[A-Za-z]+\.?\s+)?(\d{4}))$/i);
+    if (m3) {
+      return {
+        raw: input,
+        journalText: m3[1].trim(),
+        volume: m3[2].trim(),
+        issue: m3[3] || m3[4] || void 0,
+        year: parseInt(m3[7] || m3[8], 10),
+        firstPage: m3[5].trim(),
+        lastPage: m3[6] ? m3[6].trim() : void 0,
+        pages: m3[6] ? `${m3[5].trim()}-${m3[6].trim()}` : m3[5].trim(),
+        authorPrefix: authors,
+        ...ids
+      };
+    }
+    if (ids.doi || ids.arxiv) {
+      return { raw: input, journalText: "", year: 0, authorPrefix: authors, ...ids };
+    }
+    return null;
+  }
+  function isJournalMatch(queryJournal, pubTitle, abbr) {
+    const qNorm = normalizeJournal(queryJournal);
+    const pubNorm = normalizeJournal(pubTitle);
+    const abbrNorm = normalizeJournal(abbr);
+    if (pubNorm === qNorm || abbrNorm === qNorm) return true;
+    if (!qNorm) return false;
+    const stopwords = /* @__PURE__ */ new Set(["of", "the", "and", "for", "in", "on", "a", "an"]);
+    const pubAcronym = pubNorm.split(" ").filter((w) => !stopwords.has(w)).map((w) => w[0]).join("");
+    if (pubAcronym && pubAcronym === qNorm) return true;
+    const abbrAcronym = abbrNorm.split(" ").filter((w) => !stopwords.has(w)).map((w) => w[0]).join("");
+    if (abbrAcronym && abbrAcronym === qNorm) return true;
+    const qTokens = qNorm.split(" ").filter((t) => t.length > 0 && !stopwords.has(t));
+    if (!qTokens.length) return false;
+    const lastToken = qTokens[qTokens.length - 1];
+    if (lastToken && lastToken.length === 1 && /[a-z]/i.test(lastToken)) {
+      const pubLast = pubNorm.split(" ").pop();
+      const abbrLast = abbrNorm.split(" ").pop();
+      if (pubLast !== lastToken && abbrLast !== lastToken) return false;
+    }
+    const matchTokens = (targetNorm) => {
+      if (!targetNorm) return false;
+      const tokens = targetNorm.split(" ").filter((token) => token.length > 0 && !stopwords.has(token));
+      return tokens.length === qTokens.length && qTokens.every((token, index) => tokens[index].startsWith(token));
+    };
+    return matchTokens(pubNorm) || matchTokens(abbrNorm);
+  }
+  async function queryPhysicalCandidates(parsed, libraryID) {
+    const host2 = globalThis.Zotero;
+    if (!host2?.Search || !host2?.Items?.getAsync) return [];
+    const runSearch = async (libID) => {
+      const s = new host2.Search(libID !== void 0 ? { libraryID: libID } : void 0);
+      if (parsed.doi) {
+        s.addCondition("DOI", "is", parsed.doi);
+      } else if (parsed.arxiv && !parsed.journalText) {
+        s.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
+      } else {
+        s.addCondition("itemType", "is", "journalArticle");
+        if (parsed.year) s.addCondition("date", "contains", String(parsed.year));
+        if (parsed.volume) s.addCondition("volume", "is", parsed.volume);
+      }
+      return await s.search() || [];
+    };
+    let ids = await runSearch(libraryID);
+    if (!ids.length && libraryID !== void 0) ids = await runSearch(void 0);
+    return ids.length ? host2.Items.getAsync(ids) : [];
+  }
+  function expandEndPage(first, last) {
+    if (!first || !last) return last;
+    if (/^\d+$/.test(first) && /^\d+$/.test(last) && first.length > last.length) {
+      const expanded = first.slice(0, first.length - last.length) + last;
+      if (parseInt(expanded, 10) > parseInt(first, 10)) return expanded;
+    }
+    return last;
+  }
+  function verifyAndFilterCandidates(candidates, parsed) {
+    const matched = candidates.filter((item) => {
+      if (!item || item.deleted || !item.isRegularItem?.()) return false;
+      if (parsed.doi) {
+        const itemDoi = String(item.getField?.("DOI") || "").trim().toLowerCase();
+        return itemDoi === parsed.doi.toLowerCase();
+      }
+      if (parsed.arxiv && !parsed.journalText) {
+        const [, qBase = "", qVer] = parsed.arxiv.toLowerCase().match(/^(\d{4}\.\d{4,5})(?:v(\d+))?$/) || [
+          "",
+          parsed.arxiv.toLowerCase().replace(/v\d+$/, ""),
+          void 0
+        ];
+        const fields = ["archiveID", "extra", "DOI", "url", "callNumber"].map((f) => String(item.getField?.(f) || "").toLowerCase());
+        return fields.some((val) => {
+          for (const m of val.matchAll(/(?:^|[^0-9])(\d{4}\.\d{4,5})(?:v(\d+))?(?=$|[^0-9])/g)) {
+            if (m[1] === qBase && (!qVer || !m[2] || m[2] === qVer)) return true;
+          }
+          return false;
+        });
+      }
+      const rawPages = String(item.getField?.("pages") || "").replace(/[\u2010-\u2015\u2212]/g, "-").trim();
+      const [first, last] = rawPages.split("-");
+      const normItemLast = expandEndPage(first, last);
+      const normParsedLast = expandEndPage(parsed.firstPage, parsed.lastPage);
+      if (parsed.firstPage && first !== parsed.firstPage) return false;
+      if (normParsedLast && normItemLast !== normParsedLast) return false;
+      if (parsed.issue && String(item.getField?.("issue") || "") !== parsed.issue) return false;
+      const pubTitle = String(item.getField?.("publicationTitle") || "");
+      const abbr = String(item.getField?.("journalAbbreviation") || "");
+      return isJournalMatch(parsed.journalText, pubTitle, abbr);
+    });
+    if (matched.length > 1 && parsed.authorPrefix) {
+      const surname = parsed.authorPrefix.replace(/\bet\s+al\.?/i, "").trim().split(/[,;\s]+/)[0]?.toLowerCase();
+      if (surname && surname.length >= 2) {
+        const byAuthor = matched.filter((it) => {
+          const creators = it.getCreators?.() || [];
+          const firstCreator = String(it.getField?.("firstCreator") || "").toLowerCase();
+          return firstCreator.includes(surname) || creators.some((c) => String(c.lastName || c.name || "").toLowerCase().includes(surname));
+        });
+        if (byAuthor.length > 0) return byAuthor;
+      }
+    }
+    return matched;
+  }
+
   // src/domains/inspector/citation-lookup-engine.ts
   var DOI_REGEX = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)\b/i;
   var YEAR_REGEX = /\b(19|20)\d{2}\b/;
@@ -346,25 +539,83 @@
     constructor(history) {
       this.history = history;
     }
-    async lookup(rawQuery, libraryItems) {
+    async resolveRich(rawQuery, options = {}) {
       const query = String(rawQuery || "").trim();
-      if (!query) return [];
-      const exact = this.history.lookupExact(query);
-      if (exact) {
-        return [{ itemID: exact.itemID, title: exact.title, score: 100, source: "history-exact" }];
+      if (!query) return { parsed: null, historyMatched: false, candidates: [] };
+      if (options.useHistory !== false) {
+        const exact = this.history.lookupExact(query);
+        if (exact) {
+          const liveItem = await this.resolveLiveItem(exact.itemID);
+          if (liveItem || options.libraryItems) {
+            return {
+              parsed: null,
+              historyMatched: true,
+              candidates: [{ itemID: exact.itemID, title: liveItem ? String(liveItem.getField?.("title") || exact.title) : exact.title, score: 100, source: "history-exact", item: liveItem }]
+            };
+          }
+        }
+        const fuzzy = this.history.searchFuzzy(query, 5);
+        if (fuzzy.length) {
+          const liveHits = [];
+          for (const rec of fuzzy) {
+            const liveItem = await this.resolveLiveItem(rec.itemID);
+            if (liveItem) {
+              liveHits.push({
+                itemID: rec.itemID,
+                title: String(liveItem.getField?.("title") || rec.title),
+                score: 90,
+                source: "history-fuzzy",
+                item: liveItem
+              });
+            } else if (options.libraryItems) {
+              liveHits.push({ itemID: rec.itemID, title: rec.title, score: 85, source: "history-fuzzy" });
+            }
+          }
+          if (liveHits.length) {
+            return { parsed: null, historyMatched: true, candidates: liveHits };
+          }
+        }
       }
-      const fuzzy = this.history.searchFuzzy(query, 3);
-      const results = fuzzy.map((rec) => ({
-        itemID: rec.itemID,
-        title: rec.title,
-        score: 85,
-        source: "history-fuzzy"
-      }));
+      const parsed = parseCompactCitation(query);
+      if (parsed && !options.libraryItems) {
+        const physical = await queryPhysicalCandidates(parsed, options.libraryID);
+        const verified = verifyAndFilterCandidates(physical, parsed);
+        if (verified.length) {
+          return {
+            parsed,
+            historyMatched: false,
+            candidates: verified.map((it) => ({
+              itemID: Number(it.id || 0),
+              title: String(it.getField?.("title") || ""),
+              score: 99,
+              source: "physical-exact",
+              item: it
+            }))
+          };
+        }
+        return { parsed, historyMatched: false, candidates: [] };
+      }
+      const weighted = await this.weightedSearch(query, options.libraryItems);
+      return { parsed, historyMatched: false, candidates: weighted };
+    }
+    async lookup(rawQuery, libraryItems) {
+      const outcome = await this.resolveRich(rawQuery, { useHistory: true, libraryItems });
+      return [...outcome.candidates];
+    }
+    async resolveLiveItem(itemID) {
+      const hostItems = globalThis.Zotero?.Items;
+      if (!hostItems) return null;
+      const item = typeof hostItems.getAsync === "function" ? await hostItems.getAsync(itemID).catch(() => null) : hostItems.get?.(itemID);
+      if (!item || item.deleted || item.isTrashed?.() || !item.isRegularItem?.()) return null;
+      return item;
+    }
+    async weightedSearch(query, libraryItems) {
       const candidates = libraryItems ?? await this.fetchLocalLibraryItems();
       const targetDoi = extractDoi(query);
       const targetYear = extractYear(query);
       const lowerQuery = query.toLowerCase();
-      const seen = new Set(results.map((r) => r.itemID));
+      const results = [];
+      const seen = /* @__PURE__ */ new Set();
       for (const item of candidates) {
         if (!isRegularValidItem(item)) continue;
         const id = Number(item.id || 0);
@@ -373,7 +624,7 @@
         const doi = String(item.getField?.("DOI") || item.DOI || "").trim().toLowerCase();
         if (targetDoi && doi && doi === targetDoi) {
           seen.add(id);
-          results.push({ itemID: id, title, score: 98, source: "doi" });
+          results.push({ itemID: id, title, score: 98, source: "doi", item });
           continue;
         }
         let score = 0;
@@ -386,12 +637,10 @@
         if (firstPage && firstPage.length >= 2 && lowerQuery.includes(firstPage)) score += 25;
         const creator = String(item.firstCreator || "").toLowerCase().split(",")[0]?.trim();
         if (creator && creator.length >= 2 && lowerQuery.includes(creator)) score += 20;
-        if (title && title.length >= 8 && lowerQuery.includes(title.toLowerCase().slice(0, 24))) {
-          score += 45;
-        }
+        if (title && title.length >= 8 && lowerQuery.includes(title.toLowerCase().slice(0, 24))) score += 45;
         if (score >= 45) {
           seen.add(id);
-          results.push({ itemID: id, title, score: Math.min(95, score), source: "library-weighted" });
+          results.push({ itemID: id, title, score: Math.min(95, score), source: "library-weighted", item });
         }
       }
       results.sort((a, b) => b.score - a.score);
@@ -426,7 +675,7 @@
     dirty = /* @__PURE__ */ new Set();
     setTarget(key, spec) {
       if (!spec) this.targets.delete(key);
-      else this.targets.set(key, spec);
+      else this.targets.set(key, { key, ...spec });
     }
     observeAndQueue(body) {
       const owner = body?.closest?.("item-details");
@@ -435,7 +684,9 @@
         const parent = owner.getPanes().find((p) => p.contains?.(body))?.parentNode;
         const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
         if (parent && Observer) {
-          const obs = new Observer(() => this.queue(owner));
+          const obs = new Observer(() => {
+            if (!this.running.has(owner)) this.queue(owner);
+          });
           obs.observe(parent, { childList: true });
           this.observers.set(owner, obs);
         }
@@ -463,7 +714,7 @@
             this.queue(owner);
           }
         });
-      }, 0);
+      }, 20);
       this.timers.set(owner, timer);
     }
     dispose() {
@@ -477,21 +728,46 @@
     }
     async applyAll(owner) {
       if (owner.skipRender) return;
-      const independent = [];
-      const anchored = [];
-      for (const spec of this.targets.values()) {
-        if (spec.anchorAfterSectionID) {
-          anchored.push({ sectionID: spec.sectionID, anchorAfterSectionID: spec.anchorAfterSectionID });
-        } else {
-          independent.push(spec);
-        }
-      }
+      const groups = {
+        "zotero-item-pane-header": [],
+        "zotero-editpane-item-box": [],
+        "zotero-editpane-related": []
+      };
+      const independent = [...this.targets.values()].filter((s) => !s.anchorAfterSectionID);
+      const anchored = [...this.targets.values()].filter((s) => Boolean(s.anchorAfterSectionID));
       for (const spec of independent) {
-        await this.moveSectionToPosition(owner, spec.sectionID, spec.getPosition());
+        groups[spec.getPosition()].push(spec);
       }
       for (const spec of anchored) {
-        await this.moveSectionAfter(owner, spec.sectionID, spec.anchorAfterSectionID);
+        const pos = spec.getPosition();
+        const list = groups[pos];
+        const anchorIdx = list.findIndex((item) => item.sectionID === spec.anchorAfterSectionID);
+        if (anchorIdx >= 0) list.splice(anchorIdx + 1, 0, spec);
+        else list.push(spec);
       }
+      for (const position of ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]) {
+        await this.alignGroup(owner, position, groups[position]);
+      }
+    }
+    async alignGroup(owner, position, group) {
+      const presentIDs = group.map((s) => s.sectionID).filter((id) => owner.getPanes().some((p) => p.dataset.pane === id));
+      if (!presentIDs.length) return;
+      const panes = owner.getPanes();
+      const startIdx = this.computeGroupStartIndex(panes, position, presentIDs.length);
+      const slice = panes.slice(startIdx, startIdx + presentIDs.length).map((p) => p.dataset.pane);
+      if (slice.length === presentIDs.length && presentIDs.every((id, idx) => slice[idx] === id)) {
+        return;
+      }
+      await this.moveSectionToPosition(owner, presentIDs[0], position);
+      for (let i = 1; i < presentIDs.length; i++) {
+        await this.moveSectionAfter(owner, presentIDs[i], presentIDs[i - 1]);
+      }
+    }
+    computeGroupStartIndex(panes, position, groupSize) {
+      if (position === "zotero-item-pane-header") return 0;
+      if (position === "zotero-editpane-related") return Math.max(0, panes.length - groupSize);
+      const info = panes.findIndex((p) => p.dataset.pane === "info");
+      return info < 0 ? 0 : info + 1;
     }
     async moveSectionToPosition(owner, sectionID, position) {
       const panes = owner.getPanes();
@@ -533,22 +809,396 @@
     }
   };
 
-  // src/domains/inspector/citation-lookup-section.ts
-  var LOOKUP_CSS = `
-.zbf-lookup-root { display:flex; flex-direction:column; gap:6px; padding:4px 0; font:12px/1.45 system-ui,sans-serif; }
-.zbf-lookup-input { width:100%; box-sizing:border-box; padding:5px 8px; border-radius:5px; border:1px solid color-mix(in srgb,currentColor 20%,transparent); background:var(--material-background,transparent); color:inherit; font:inherit; }
-.zbf-lookup-actions { display:flex; gap:6px; }
-.zbf-lookup-btn { padding:4px 8px; border-radius:5px; border:1px solid color-mix(in srgb,currentColor 20%,transparent); background:transparent; color:inherit; font:inherit; cursor:pointer; }
-.zbf-lookup-btn:hover { background:color-mix(in srgb,currentColor 8%,transparent); }
-.zbf-lookup-status { font-size:11px; opacity:0.75; }
-.zbf-lookup-results { display:flex; flex-direction:column; gap:4px; }
-.zbf-lookup-hit { text-align:left; padding:5px 8px; border-radius:5px; border:1px solid color-mix(in srgb,currentColor 14%,transparent); background:color-mix(in srgb,currentColor 3%,transparent); color:inherit; font:inherit; cursor:pointer; }
-.zbf-lookup-hit:hover { border-color:var(--accent-blue,#2563EB); background:color-mix(in srgb,var(--accent-blue,#2563EB) 10%,transparent); }
+  // src/domains/inspector/inspector-styles.ts
+  var CLIPBOARD_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 3V0H1V13H4V16H15V3H12ZM2 1H11V12H2V1ZM14 15H5V13H12V4H14V15Z" fill="#cc9200"/></svg>';
+  var SUCCESS_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M14 1L5.5 9.5L2 6" stroke="#009900" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  var VIEWFLOW_CSS = `
+.zotero-preview-root {
+	box-sizing: border-box;
+	min-width: 0;
+	max-width: 100%;
+}
+
+item-pane-custom-section:has(.zotero-preview-root),
+collapsible-section:has(> .zotero-preview-root) {
+	min-inline-size: 0;
+	max-inline-size: 100%;
+	inline-size: 100%;
+	box-sizing: border-box;
+	contain: inline-size;
+}
+
+.zotero-preview-root .csl-bib-body {
+	line-height: var(--zotero-preview-line-height, 1.5) !important;
+}
+
+.zotero-preview-content {
+	box-sizing: border-box;
+	min-width: 0;
+	font-size: var(--zotero-preview-font-size, 1em);
+	line-height: var(--zotero-preview-line-height, 1.5);
+	padding-left: 5px;
+	padding-bottom: 5px;
+	overflow-wrap: anywhere;
+}
+
+.zotero-preview-block {
+	min-height: 22px;
+}
+
+.zotero-preview-block + .zotero-preview-block,
+.zotero-preview-separator + .zotero-preview-block {
+	margin-top: 6px;
+}
+
+.zotero-preview-block-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	column-gap: 8px;
+	align-items: center;
+	min-width: 0;
+}
+
+.zotero-preview-block-body {
+	min-width: 0;
+	user-select: text;
+}
+
+.zotero-preview-block-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	min-width: 24px;
+}
+
+.zotero-preview-message {
+	padding: 5px;
+	color: var(--fill-secondary, light-dark(#555, #ccc));
+	font-size: 13px;
+	line-height: 1.6;
+}
+
+.zotero-preview-message-info {
+	color: #666;
+}
+
+.zotero-preview-message-warning,
+.zotero-preview-message-error {
+	color: var(--fill-primary, light-dark(#262626, #eee));
+}
+
+.zotero-preview-message-detail {
+	padding: 0 5px 4px;
+	color: var(--fill-secondary, light-dark(#666, #aaa));
+	font-size: 12px;
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+.zotero-preview-root .zotero-preview-retry {
+	font: inherit;
+	margin: 4px 5px;
+	padding: 4px 10px;
+	border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+	border-radius: 4px;
+	color: inherit;
+	background: color-mix(in srgb, currentColor 4%, transparent);
+	cursor: pointer;
+}
+
+.zotero-preview-root .zotero-preview-retry:focus-visible {
+	outline: 2px solid var(--accent-blue, #4d90fe);
+	outline-offset: 2px;
+}
+
+.zotero-preview-separator {
+	color: #ccc;
+	width: 25%;
+	margin-left: 0;
+}
+
+.zotero-preview-copy {
+	cursor: pointer;
+	display: inline-flex;
+	appearance: none;
+	border: 0;
+	padding: 0;
+	margin: 0;
+	background: transparent;
+	color: inherit;
+	width: 20px;
+	height: 20px;
+	align-items: center;
+	justify-content: center;
+	vertical-align: text-bottom;
+	transition: transform 0.3s ease;
+}
+
+.zotero-preview-copy:hover,
+.zotero-preview-copy:focus-visible {
+	background: color-mix(in srgb, currentColor 10%, transparent);
+	border-radius: 3px;
+	outline: none;
+}
+
+.zotero-preview-copy:focus-visible {
+	box-shadow: 0 0 0 2px var(--accent-blue, #4d90fe);
+}
+
+.zotero-preview-copy-success {
+	transform: scale(1.2);
+}
+
+@media (prefers-color-scheme: dark) {
+	.zotero-preview-message-info {
+		color: var(--fill-secondary, #aaa);
+	}
+	.zotero-preview-separator {
+		color: var(--material-border, #555);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.zotero-preview-copy { transition: none; }
+	.zotero-preview-copy-success { transform: none; }
+}
+
+/* Compact native styling shared with ViewFlow's citation lookup. */
+item-pane-custom-section:has(.zotero-viewflow-lookup-body),
+collapsible-section:has(> .zotero-viewflow-lookup-body) {
+	min-inline-size: 0;
+	max-inline-size: 100%;
+	box-sizing: border-box;
+	contain: inline-size;
+}
+.zotero-viewflow-lookup-body {
+	box-sizing: border-box;
+	min-width: 0;
+	max-width: 100%;
+	color: var(--fill-primary, light-dark(#222, #eee));
+	font: inherit;
+}
+.viewflow-lookup-container {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 4px 5px 6px;
+	min-width: 0;
+	font-size: 13px;
+	line-height: 1.5;
+}
+.viewflow-lookup-input {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	min-width: 0;
+	height: 28px;
+	padding: 3px 7px;
+	border: 1px solid var(--material-border, light-dark(#d1d1d1, #555));
+	border-radius: 3px;
+	background: var(--material-background, light-dark(#fff, #242424));
+	color: inherit;
+	font: inherit;
+}
+.viewflow-lookup-input::placeholder { color: var(--fill-secondary, #888); }
+.viewflow-lookup-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.viewflow-lookup-container button {
+	appearance: none;
+	min-height: 25px;
+	margin: 0;
+	padding: 2px 8px;
+	border: 1px solid var(--material-border, light-dark(#d5d5d5, #555));
+	border-radius: 3px;
+	background: color-mix(in srgb, currentColor 3%, transparent);
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+.viewflow-lookup-container button:hover {
+	background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.viewflow-lookup-container button:active {
+	background: color-mix(in srgb, currentColor 13%, transparent);
+}
+.viewflow-lookup-container .viewflow-lookup-search { font-weight: 500; }
+.viewflow-lookup-container :is(button, input):focus-visible {
+	outline: 2px solid var(--accent-blue, #4d90fe);
+	outline-offset: 1px;
+}
+.viewflow-lookup-status {
+	overflow-wrap: anywhere;
+	color: var(--fill-secondary, light-dark(#666, #aaa));
+	font-size: 12px;
+}
+.viewflow-lookup-status:empty { display: none; }
+.viewflow-lookup-card {
+	padding: 6px 0 0;
+	margin-top: 2px;
+	border-top: 1px solid var(--material-border, light-dark(#dedede, #444));
+}
+.viewflow-lookup-result-state { margin-bottom: 3px; font-size: 12px; }
+.viewflow-lookup-card-head {
+	color: var(--fill-primary, light-dark(#222, #eee));
+	font-size: 13px;
+	font-weight: 400;
+	line-height: 1.5;
+}
+.viewflow-lookup-card-meta { margin: 4px 0 6px; font-size: 12px; }
+.viewflow-lookup-card .viewflow-lookup-actions { color: var(--fill-primary, light-dark(#222, #eee)); }
+.viewflow-lookup-status ul { display: grid; gap: 4px; padding: 0; list-style: none; }
+.viewflow-lookup-status li button { width: 100%; text-align: start; white-space: normal; }
+
+collapsible-section:has(.zotero-preview-root) > .head .title,
+collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
+	font-size: 0.95em;
+}
 `;
+  function ensureViewFlowStyles(doc) {
+    if (!doc?.getElementById) return;
+    let style = doc.getElementById("zbf-viewflow-style");
+    if (!style) {
+      style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+      style.id = "zbf-viewflow-style";
+      (doc.head || doc.documentElement)?.append(style);
+    }
+    if (style.textContent !== VIEWFLOW_CSS) style.textContent = VIEWFLOW_CSS;
+  }
+  function setLookupL10n(el, id, fallback, args) {
+    el.setAttribute("data-l10n-id", id);
+    if (args) el.setAttribute("data-l10n-args", JSON.stringify(args));
+    else el.removeAttribute("data-l10n-args");
+    el.textContent = fallback;
+  }
+  function clearLookupResult(el) {
+    el.removeAttribute("data-l10n-id");
+    el.removeAttribute("data-l10n-args");
+    el.innerHTML = "";
+  }
+  function renderLookupTitle(target, title) {
+    const doc = target.ownerDocument;
+    const Parser = doc?.defaultView?.DOMParser || globalThis.DOMParser;
+    target.textContent = "";
+    if (!doc || !Parser) {
+      target.textContent = title.replace(/<[^>]*>/g, "");
+      return;
+    }
+    const parsed = new Parser().parseFromString(title, "text/html");
+    const allowed = /* @__PURE__ */ new Set(["sub", "sup", "i", "b", "em", "strong", "span"]);
+    const append = (source, parent) => {
+      if (source.nodeType === 3) {
+        parent.appendChild(doc.createTextNode(source.textContent || ""));
+        return;
+      }
+      if (source.nodeType !== 1) return;
+      const tag = source.localName;
+      if (["script", "style", "iframe", "object"].includes(tag)) return;
+      const next = allowed.has(tag) ? doc.createElementNS("http://www.w3.org/1999/xhtml", tag) : parent;
+      if (next !== parent) parent.appendChild(next);
+      for (const child of Array.from(source.childNodes)) if (child) append(child, next);
+    };
+    for (const child of Array.from(parsed.body.childNodes)) append(child, target);
+  }
+
+  // src/domains/inspector/citation-lookup-ui.ts
+  function renderLookupItemCard(doc, statusDiv, candidate, fallbackState, l10nId, cb) {
+    const target = cb.resolveItem(candidate);
+    clearLookupResult(statusDiv);
+    const card = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    card.className = "viewflow-lookup-card";
+    const stateEl = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    stateEl.className = "viewflow-lookup-result-state";
+    setLookupL10n(stateEl, l10nId, fallbackState);
+    card.appendChild(stateEl);
+    const head = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    head.className = "viewflow-lookup-card-head";
+    renderLookupTitle(head, String(target?.getField?.("title") || candidate.title || ""));
+    card.appendChild(head);
+    const meta = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    meta.className = "viewflow-lookup-card-meta";
+    const journal = target?.getField?.("publicationTitle") || target?.getField?.("journalAbbreviation") || "";
+    const year = target?.getField?.("year") || target?.getField?.("date") || "";
+    meta.textContent = `${journal} (${year}) · Vol.${target?.getField?.("volume") || "-"} · pp.${target?.getField?.("pages") || "-"}`;
+    card.appendChild(meta);
+    const actRow = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    actRow.className = "viewflow-lookup-actions";
+    const locateBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+    locateBtn.type = "button";
+    setLookupL10n(locateBtn, "zbf-lookup-locate", "定位条目");
+    locateBtn.onclick = async () => {
+      const ok = await cb.onLocate(candidate.itemID);
+      if (cb.isActive()) {
+        setLookupL10n(
+          stateEl,
+          ok ? "zbf-lookup-status-located" : "zbf-lookup-status-locate-failed",
+          ok ? "已定位" : "定位失败，请重试"
+        );
+      }
+    };
+    const pdfBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+    pdfBtn.type = "button";
+    setLookupL10n(pdfBtn, "zbf-lookup-open-pdf", "打开 PDF");
+    pdfBtn.onclick = async () => {
+      const opened = await cb.onOpenPdf(target || candidate.itemID);
+      if (cb.isActive() && !opened) {
+        setLookupL10n(stateEl, "zbf-lookup-status-no-pdf", "未找到 PDF 附件");
+      }
+    };
+    actRow.append(locateBtn, pdfBtn);
+    card.appendChild(actRow);
+    statusDiv.appendChild(card);
+  }
+  function renderLookupCandidatesList(doc, statusDiv, items, cb) {
+    clearLookupResult(statusDiv);
+    const heading = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+    setLookupL10n(heading, "zbf-lookup-candidates-heading", `找到 ${items.length} 篇可能匹配的文献，请点击选择：`, { count: items.length });
+    statusDiv.appendChild(heading);
+    const list = doc.createElementNS("http://www.w3.org/1999/xhtml", "ul");
+    for (const c of items) {
+      const row = doc.createElementNS("http://www.w3.org/1999/xhtml", "li");
+      const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+      btn.type = "button";
+      const tObj = cb.resolveItem(c);
+      const j = tObj?.getField?.("journalAbbreviation") || tObj?.getField?.("publicationTitle") || "";
+      const y = tObj?.getField?.("year") || tObj?.getField?.("date") || "";
+      const suffix = j || y ? ` (${[j, y].filter(Boolean).join(", ")})` : "";
+      renderLookupTitle(btn, String(tObj?.getField?.("title") || c.title || ""));
+      if (suffix) btn.appendChild(doc.createTextNode(suffix));
+      btn.onclick = () => renderLookupItemCard(doc, statusDiv, c, "候选文献，请核对后定位", "zbf-lookup-state-candidate", cb);
+      row.appendChild(btn);
+      list.appendChild(row);
+    }
+    statusDiv.appendChild(list);
+  }
+  function readSystemClipboardText() {
+    try {
+      const hostServices = globalThis.Services;
+      const hostCc = globalThis.Cc;
+      const hostCi = globalThis.Ci;
+      if (hostServices?.clipboard && hostCc && hostCi) {
+        const trans = hostCc["@mozilla.org/widget/transferable;1"].createInstance(hostCi.nsITransferable);
+        trans.init?.(null);
+        trans.addDataFlavor("text/plain");
+        hostServices.clipboard.getData(trans, hostCi.nsIClipboard.kGlobalClipboard);
+        const holder = {};
+        trans.getTransferData("text/plain", holder);
+        const txt = String(holder.value?.data || "").trim();
+        if (txt) return txt;
+      }
+    } catch {
+    }
+    try {
+      return String(globalThis.Zotero?.Utilities?.Internal?.getClipboardText?.() || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  // src/domains/inspector/citation-lookup-section.ts
   var CitationLookupSectionController = class {
     unregisterFn = null;
     sectionID = false;
     anchorSectionID = false;
+    cleanups = /* @__PURE__ */ new WeakMap();
     kernel;
     services;
     engine;
@@ -573,6 +1223,10 @@
           setEnabled?.(true);
           this.mountUI(body);
           this.services.panePositions.observeAndQueue(body);
+        },
+        onDestroy: ({ body }) => {
+          this.cleanups.get(body)?.();
+          this.cleanups.delete(body);
         },
         onItemChange: ({ body, setEnabled }) => {
           setEnabled?.(true);
@@ -603,98 +1257,199 @@
       });
     }
     mountUI(body) {
+      this.cleanups.get(body)?.();
       const doc = body.ownerDocument;
       if (!doc) return;
       doc.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
-      if (!doc.getElementById("zbf-lookup-style")) {
-        const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-        style.id = "zbf-lookup-style";
-        style.textContent = LOOKUP_CSS;
-        doc.documentElement?.append(style);
-      }
+      ensureViewFlowStyles(doc);
       body.textContent = "";
-      const root = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      root.className = "zbf-lookup-root";
+      body.className = "zotero-viewflow-lookup-body";
+      const container = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      container.className = "viewflow-lookup-container";
       const input = doc.createElementNS("http://www.w3.org/1999/xhtml", "input");
       input.type = "text";
-      input.className = "zbf-lookup-input";
-      input.placeholder = "DOI / Compact citation...";
-      const actions = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      actions.className = "zbf-lookup-actions";
+      input.className = "viewflow-lookup-input";
+      input.setAttribute("data-l10n-id", "zbf-lookup-input");
+      const btnRow = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      btnRow.className = "viewflow-lookup-actions";
       const searchBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
       searchBtn.type = "button";
-      searchBtn.className = "zbf-lookup-btn";
-      searchBtn.textContent = "Lookup";
+      searchBtn.className = "viewflow-lookup-search";
+      setLookupL10n(searchBtn, "zbf-lookup-search", "查找原文献");
       const clipBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
       clipBtn.type = "button";
-      clipBtn.className = "zbf-lookup-btn";
-      clipBtn.textContent = "Clipboard";
-      actions.append(searchBtn, clipBtn);
-      const status = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      status.className = "zbf-lookup-status";
-      status.textContent = `History cache: ${this.services.history.count}`;
-      const list = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      list.className = "zbf-lookup-results";
-      const runLookup = async (query) => {
-        status.textContent = "Searching...";
-        const hits = await this.engine.lookup(query);
-        status.textContent = hits.length ? `Matched ${hits.length} item(s)` : "No matching item found";
-        this.renderHits(doc, list, hits);
+      setLookupL10n(clipBtn, "zbf-lookup-clipboard", "读取剪贴板");
+      btnRow.append(searchBtn, clipBtn);
+      const statusDiv = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      statusDiv.className = "viewflow-lookup-status";
+      statusDiv.setAttribute("role", "status");
+      statusDiv.setAttribute("aria-live", "polite");
+      container.append(input, btnRow, statusDiv);
+      body.append(container);
+      let request = 0;
+      let pasteTimer;
+      const cancelPaste = () => {
+        if (pasteTimer !== void 0) clearTimeout(pasteTimer);
+        pasteTimer = void 0;
       };
-      input.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") void runLookup(input.value);
+      this.cleanups.set(body, () => {
+        request++;
+        cancelPaste();
       });
-      searchBtn.addEventListener("click", () => {
-        void runLookup(input.value);
-      });
-      clipBtn.addEventListener("click", () => {
-        const clip = this.readClipboardText();
-        if (clip) {
-          input.value = clip;
-          void runLookup(clip);
-        } else {
-          status.textContent = "Clipboard is empty";
+      const resolveItem = (candidate) => candidate.item || globalThis.Zotero?.Items?.get?.(candidate.itemID) || null;
+      const executeLookup = async (textToSearch) => {
+        const current = ++request;
+        const isActive = () => current === request && body.isConnected && input.value.trim() === textToSearch.trim();
+        if (!textToSearch.trim()) {
+          clearLookupResult(statusDiv);
+          return;
         }
-      });
-      root.append(input, actions, status, list);
-      body.append(root);
+        const cb = {
+          resolveItem,
+          onLocate: (id) => this.locateItem(id),
+          onOpenPdf: (target) => this.openItemPdf(target),
+          isActive
+        };
+        setLookupL10n(statusDiv, "zbf-lookup-status-searching", "正在反查本地文献库...");
+        try {
+          const pane = doc.defaultView?.ZoteroPane;
+          const libraryID = pane?.getSelectedLibraryIDs?.()?.[0] ?? globalThis.Zotero?.Libraries?.userLibraryID;
+          const outcome = await this.engine.resolveRich(textToSearch, {
+            libraryID,
+            useHistory: this.kernel.prefs.get("inspector.lookup.historyEnable")
+          });
+          if (!isActive()) return;
+          if (!outcome.historyMatched && !outcome.parsed && !outcome.candidates.length) {
+            setLookupL10n(statusDiv, "zbf-lookup-status-unrecognized", "无法识别引文结构，请提供包含期刊、年份、卷号与页码（或 DOI/arXiv）的引文。");
+            return;
+          }
+          if (outcome.candidates.length === 1) {
+            const hit = outcome.candidates[0];
+            if (outcome.historyMatched) {
+              renderLookupItemCard(doc, statusDiv, hit, "已匹配文献", "zbf-lookup-state-matched", cb);
+            } else {
+              await this.locateInLibrary(hit.itemID);
+              if (!isActive()) return;
+              renderLookupItemCard(doc, statusDiv, hit, "已定位文献", "zbf-lookup-state-located", cb);
+            }
+            return;
+          }
+          if (outcome.candidates.length > 1) {
+            renderLookupCandidatesList(doc, statusDiv, outcome.candidates, cb);
+            return;
+          }
+          const journalLabel = outcome.parsed?.journalText || outcome.parsed?.doi || outcome.parsed?.arxiv || "-";
+          const yearLabel = String(outcome.parsed?.year || "-");
+          setLookupL10n(
+            statusDiv,
+            "zbf-lookup-status-not-found",
+            `未在当前文库中找到匹配项 (解析: ${journalLabel}, ${yearLabel})`,
+            { journal: journalLabel, year: yearLabel }
+          );
+        } catch {
+          if (isActive()) setLookupL10n(statusDiv, "zbf-lookup-status-error", "查询失败，请重试或重新粘贴引文。");
+        }
+      };
+      input.oninput = () => {
+        request++;
+        clearLookupResult(statusDiv);
+        if (!input.value.trim()) cancelPaste();
+      };
+      searchBtn.onclick = () => {
+        void executeLookup(input.value);
+      };
+      input.onpaste = () => {
+        cancelPaste();
+        pasteTimer = setTimeout(() => {
+          pasteTimer = void 0;
+          if (input.value.trim()) void executeLookup(input.value);
+        }, 0);
+      };
+      input.onkeydown = (e) => {
+        const key = e.key;
+        if (key === "Enter") {
+          cancelPaste();
+          void executeLookup(input.value);
+        } else if (key === "Escape") {
+          cancelPaste();
+          request++;
+          input.value = "";
+          clearLookupResult(statusDiv);
+        }
+      };
+      clipBtn.onclick = () => {
+        const clipText = readSystemClipboardText();
+        if (clipText) {
+          input.value = clipText;
+          void executeLookup(clipText);
+          return;
+        }
+        setLookupL10n(statusDiv, "zbf-lookup-status-clipboard-fallback", "无法直接读取剪贴板，请手动在输入框中粘贴 (Ctrl+V)。");
+        input.focus();
+      };
     }
-    readClipboardText() {
+    async locateInLibrary(itemID) {
+      const win = globalThis.Zotero?.getMainWindow?.();
+      if (!win?.ZoteroPane) return false;
       try {
-        const text = globalThis.Zotero?.Utilities?.Internal?.getClipboardText?.();
-        return String(text || "").trim();
+        win.Zotero_Tabs?.select?.("zotero-pane");
+        const ok = await win.ZoteroPane.selectItem(itemID);
+        if (ok === false) return false;
+        const tree = win.document?.getElementById?.("zotero-items-tree");
+        if (tree?.ensureRowIsVisible && tree?.selection) {
+          tree.ensureRowIsVisible(tree.selection.currentIndex);
+        }
+        return true;
       } catch {
-        return "";
+        return false;
       }
     }
-    renderHits(doc, container, hits) {
-      container.textContent = "";
-      for (const hit of hits) {
-        const row = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-        row.type = "button";
-        row.className = "zbf-lookup-hit";
-        row.textContent = `${hit.title} (${hit.score}% · ${hit.source})`;
-        row.addEventListener("click", () => {
+    async locateItem(itemID) {
+      if (this.kernel.prefs.get("fusion.lookupJumpExistingTab")) {
+        this.kernel.bus.emit("workspace:open-item-request", {
+          itemID,
+          preferExistingTab: true,
+          assignToActiveGroup: false
+        });
+      }
+      return this.locateInLibrary(itemID);
+    }
+    async openItemPdf(itemOrId) {
+      try {
+        const item = typeof itemOrId === "number" ? await globalThis.Zotero?.Items?.getAsync?.(itemOrId) : itemOrId;
+        if (!item) return false;
+        const pdfs = await resolvePdfAttachments(item);
+        const first = pdfs[0];
+        if (!first) return false;
+        if (this.kernel.prefs.get("fusion.lookupJumpExistingTab")) {
           this.kernel.bus.emit("workspace:open-item-request", {
-            itemID: hit.itemID,
-            preferExistingTab: this.kernel.prefs.get("fusion.lookupJumpExistingTab"),
+            itemID: Number(item.id || 0),
+            attachmentID: first.id,
+            preferExistingTab: true,
             assignToActiveGroup: true
           });
-        });
-        container.append(row);
+          return true;
+        }
+        const reader = globalThis.Zotero?.Reader;
+        if (reader?.open) {
+          await reader.open(first.id);
+          return true;
+        }
+      } catch {
       }
+      return false;
     }
   };
 
   // src/domains/inspector/csl-preview-section.ts
-  var CSL_CSS = `
-.zbf-csl-root { display:flex; flex-direction:column; gap:8px; padding:4px 0; font:12px/1.5 system-ui,sans-serif; color:var(--fill-primary,currentColor); }
-.zbf-csl-block { border:1px solid color-mix(in srgb,currentColor 14%,transparent); border-radius:6px; padding:8px; background:color-mix(in srgb,currentColor 2%,transparent); }
-.zbf-csl-head { display:flex; align-items:center; justify-content:space-between; gap:6px; margin-bottom:4px; font-size:11px; opacity:0.78; font-weight:600; }
-.zbf-csl-text { user-select:text; overflow-wrap:anywhere; }
-.zbf-csl-copy-btn { padding:2px 8px; border-radius:4px; border:1px solid color-mix(in srgb,currentColor 20%,transparent); background:transparent; color:inherit; font:inherit; cursor:pointer; }
-.zbf-csl-copy-btn:hover { background:color-mix(in srgb,currentColor 8%,transparent); }
-`;
+  var ERROR_L10N = {
+    "no-style": ["zbf-preview-no-style", "QuickCopy 未选择参考文献样式，请在 Zotero 或 BridgeFlow 设置中配置样式。"],
+    "style-missing": ["zbf-preview-style-missing", "所选引用样式尚未安装，请在 Zotero 中安装或切换其他样式。"],
+    "quickcopy-unavailable": ["zbf-preview-quickcopy-unavailable", "QuickCopy 无法格式化当前条目，请检查引用样式后重试。"]
+  };
+  function escapeHTML(value) {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
   var CslPreviewSectionController = class {
     sectionID = false;
     states = /* @__PURE__ */ new Map();
@@ -715,19 +1470,37 @@
         sidenav: { l10nID: "zbf-pane-csl-preview-sidenav", icon, orderable: true },
         onInit: ({ body, item, setEnabled }) => {
           const doc = body.ownerDocument;
-          doc?.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
-          this.ensureStyle(doc);
-          const st = { body, items: [], generation: 0, setEnabled };
+          if (!doc) return;
+          doc.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
+          ensureViewFlowStyles(doc);
+          body.classList.add("zotero-preview-root");
+          const st = {
+            body,
+            doc,
+            items: [],
+            omitted: 0,
+            generation: 0,
+            failed: false,
+            lastHTML: "",
+            payload: null,
+            copyFeedback: /* @__PURE__ */ new Map(),
+            feedbackTimers: /* @__PURE__ */ new Set(),
+            setEnabled
+          };
           this.states.set(body, st);
+          this.bindBodyEvents(st);
           this.updateItems(st, item, setEnabled);
           this.services.panePositions.observeAndQueue(body);
         },
         onDestroy: ({ body }) => {
+          const st = this.states.get(body);
+          if (st) this.clearTimers(st);
           this.states.delete(body);
         },
         onItemChange: ({ body, item, setEnabled }) => {
           const st = this.states.get(body);
           if (!st) return false;
+          st.failed = false;
           this.services.panePositions.observeAndQueue(body);
           return this.updateItems(st, item, setEnabled);
         },
@@ -758,32 +1531,38 @@
       const st = this.states.get(body);
       if (!st) return;
       const gen = ++st.generation;
-      const doc = body.ownerDocument;
-      if (!doc) return;
       if (!st.items.length) {
-        body.textContent = "";
+        st.payload = null;
+        this.renderMessage(st, "zbf-preview-select-items", "请选择一个或多个条目以预览引用。");
         return;
       }
-      const mode = this.kernel.prefs.get("inspector.cslPreview.whatToShow");
-      const wantCite = mode === "zpboth" || mode === "zpcite";
-      const wantBib = mode === "zpboth" || mode === "zpbib";
-      const [citeRes, bibRes] = await Promise.all([
-        wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null),
-        wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null)
-      ]);
-      if (gen !== st.generation) return;
-      body.textContent = "";
-      const root = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      root.className = "zbf-csl-root";
-      const fontSize = `${this.kernel.prefs.get("inspector.cslPreview.fontsize")}em`;
-      const lineHeight = String(this.kernel.prefs.get("inspector.cslPreview.spacing"));
-      if (citeRes?.text) {
-        root.append(this.buildBlock(doc, "In-Text", citeRes.text, fontSize, lineHeight, true, st.items));
+      if (!st.payload && !st.lastHTML) {
+        this.renderMessage(st, "zbf-preview-loading", "正在生成预览…");
       }
-      if (bibRes?.text) {
-        root.append(this.buildBlock(doc, "Bibliography", bibRes.text, fontSize, lineHeight, false, st.items));
+      try {
+        const mode = String(this.kernel.prefs.get("inspector.cslPreview.whatToShow") || "zpboth");
+        const wantBib = mode !== "zpcite" && mode !== "zpintext";
+        const wantCite = mode !== "zpbib";
+        const [bibRes, citeRes] = await Promise.all([
+          wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
+          wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null)
+        ]);
+        if (gen !== st.generation || st.body.isConnected === false) return;
+        const payload = {};
+        if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
+        if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
+        st.payload = payload;
+        st.failed = false;
+        this.renderPayload(st, payload);
+      } catch (error) {
+        if (gen !== st.generation || st.body.isConnected === false) return;
+        st.payload = null;
+        st.failed = true;
+        const code = error?.previewCode || "";
+        const [id, fallback] = ERROR_L10N[code] || ["zbf-preview-unavailable", "预览不可用，请检查引用样式后重试。"];
+        const detail = code ? "" : error instanceof Error ? error.message : String(error || "");
+        this.renderMessage(st, id, fallback, true, detail);
       }
-      body.append(root);
     }
     async refreshAll() {
       for (const body of this.states.keys()) {
@@ -795,6 +1574,7 @@
       this.sectionID = false;
       this.unregisterFn?.();
       this.unregisterFn = null;
+      for (const st of this.states.values()) this.clearTimers(st);
       this.states.clear();
     }
     updateItems(st, item, setEnabled) {
@@ -802,52 +1582,152 @@
       const selected = item ? [item] : globalThis.Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [];
       const { items } = deduplicateRegularItems(selected, maxItems);
       st.items = items;
+      st.omitted = Math.max(0, deduplicateRegularItems(selected, 1e4).items.length - items.length);
       const enabled = items.length > 0;
       (setEnabled || st.setEnabled)?.(enabled);
       return enabled;
     }
-    ensureStyle(doc) {
-      if (!doc || doc.getElementById("zbf-csl-preview-style")) return;
-      const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-      style.id = "zbf-csl-preview-style";
-      style.textContent = CSL_CSS;
-      doc.documentElement?.append(style);
-    }
-    buildBlock(doc, label, text, fontSize, lineHeight, asCitation, items) {
-      const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      wrap.className = "zbf-csl-block";
-      const head = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      head.className = "zbf-csl-head";
-      const title = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-      title.textContent = label;
-      const copyBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-      copyBtn.type = "button";
-      copyBtn.className = "zbf-csl-copy-btn";
-      copyBtn.textContent = `Copy`;
-      copyBtn.addEventListener("click", async () => {
-        const ok = await this.services.clipboard.copyItems(items, { asCitation, source: "preview" });
+    bindBodyEvents(st) {
+      const triggerCopy = (button) => {
+        if (!button || !st.payload) return;
+        const asCitation = button.getAttribute("data-copy-citation") === "true";
+        const content = st.payload[asCitation ? "citation" : "bibliography"];
+        if (!content) return;
+        const ok = this.services.clipboard.copyRendered(st.items, content, { asCitation, source: "preview" });
         if (ok) {
-          copyBtn.textContent = "Copied ✓";
-          setTimeout(() => {
-            copyBtn.textContent = "Copy";
-          }, 1200);
+          st.body.querySelector?.(".zotero-preview-copy-status")?.remove();
+          this.showCopyFeedback(st, button);
+        } else {
+          this.renderCopyError(st);
         }
+      };
+      st.body.addEventListener("click", (ev) => {
+        const target = ev.target;
+        const retryBtn = target?.closest?.(".zotero-preview-retry");
+        if (retryBtn) {
+          st.failed = false;
+          void this.renderState(st.body);
+          return;
+        }
+        const copyBtn = target?.closest?.(".zotero-preview-copy");
+        if (copyBtn) triggerCopy(copyBtn);
       });
-      head.append(title, copyBtn);
-      const content = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      content.className = "zbf-csl-text";
-      content.style.fontSize = fontSize;
-      content.style.lineHeight = lineHeight;
-      content.textContent = text;
-      wrap.append(head, content);
-      return wrap;
+      st.body.addEventListener("keydown", (ev) => {
+        const keyEv = ev;
+        if (keyEv.key !== "Enter" && keyEv.key !== " ") return;
+        const copyBtn = ev.target?.closest?.(".zotero-preview-copy");
+        if (!copyBtn) return;
+        keyEv.preventDefault?.();
+        triggerCopy(copyBtn);
+      });
+    }
+    renderPayload(st, payload) {
+      const blocks = Object.entries(payload).map(([kind, content]) => {
+        if (!content) return "";
+        const fallbackLabel = kind === "citation" ? "复制正文引用" : "复制参考文献";
+        return `<section class="zotero-preview-block"><div class="zotero-preview-block-row"><div class="zotero-preview-block-body">${content.html || escapeHTML(content.text)}</div><div class="zotero-preview-block-toolbar"><span class="zotero-preview-copy" role="button" tabindex="0" title="${fallbackLabel}" aria-label="${fallbackLabel}" data-l10n-id="zbf-preview-copy-${kind}" data-copy-citation="${kind === "citation"}">${CLIPBOARD_ICON_SVG}</span></div></div></section>`;
+      }).filter(Boolean);
+      let html = blocks.join('<hr class="zotero-preview-separator"/>');
+      if (st.omitted > 0) {
+        html += `<div class="zotero-preview-message" data-l10n-id="zbf-preview-truncated" data-l10n-args='${JSON.stringify({ count: st.omitted })}'>另有 ${st.omitted} 个条目未显示。</div>`;
+      }
+      if (!html) {
+        this.renderMessage(st, "zbf-preview-select-items", "请选择一个或多个条目以预览引用。");
+        return;
+      }
+      const fontSize = String(this.kernel.prefs.get("inspector.cslPreview.fontsize") || "1");
+      const spacing = String(this.kernel.prefs.get("inspector.cslPreview.spacing") || "1.5");
+      st.body.style.setProperty("--zotero-preview-font-size", `${fontSize}em`);
+      st.body.style.setProperty("--zotero-preview-line-height", spacing);
+      const wrapped = `<div class="zotero-preview-content">${html}</div>`;
+      if (st.lastHTML !== wrapped) {
+        this.setHTML(st, wrapped);
+        st.lastHTML = wrapped;
+      }
+    }
+    renderMessage(st, id, fallback, error = false, detail = "") {
+      const cleanDetail = error ? detail.trim().slice(0, 240) : "";
+      const detailHtml = cleanDetail ? `<div class="zotero-preview-message-detail">${escapeHTML(cleanDetail)}</div>` : "";
+      const html = `<div class="zotero-preview-message${error ? " zotero-preview-message-error" : ""}" role="status" data-l10n-id="${id}">${escapeHTML(fallback)}</div>` + detailHtml + (error ? '<button type="button" class="zotero-preview-retry" data-preview-retry="" data-l10n-id="zbf-preview-retry">重新生成预览</button>' : "");
+      if (st.lastHTML === html) return;
+      this.setHTML(st, html);
+      st.lastHTML = html;
+    }
+    renderCopyError(st) {
+      let status = st.body.querySelector?.(".zotero-preview-copy-status");
+      if (!status) {
+        status = st.doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+        status.className = "zotero-preview-copy-status zotero-preview-message";
+        status.setAttribute("role", "status");
+        st.body.appendChild(status);
+      }
+      status.setAttribute("data-l10n-id", "zbf-preview-copy-unavailable");
+      status.textContent = "复制不可用，请尝试 Zotero 快捷键或重新选择条目。";
+    }
+    showCopyFeedback(st, button) {
+      for (const timer of st.copyFeedback.get(button) || []) {
+        clearTimeout(timer);
+        st.feedbackTimers.delete(timer);
+      }
+      button.classList.add("zotero-preview-copy-success");
+      this.replaceButtonSvg(st.doc, button, SUCCESS_ICON_SVG);
+      const scaleTimer = setTimeout(() => {
+        st.feedbackTimers.delete(scaleTimer);
+        button.classList.remove("zotero-preview-copy-success");
+      }, 300);
+      const iconTimer = setTimeout(() => {
+        st.feedbackTimers.delete(iconTimer);
+        st.copyFeedback.delete(button);
+        this.replaceButtonSvg(st.doc, button, CLIPBOARD_ICON_SVG);
+      }, 1e3);
+      st.feedbackTimers.add(scaleTimer);
+      st.feedbackTimers.add(iconTimer);
+      st.copyFeedback.set(button, [scaleTimer, iconTimer]);
+    }
+    replaceButtonSvg(doc, button, svgMarkup) {
+      const Parser = doc.defaultView?.DOMParser || globalThis.DOMParser;
+      if (!Parser) return;
+      const parsed = new Parser().parseFromString(svgMarkup, "text/html");
+      if (parsed?.body?.firstChild) {
+        button.replaceChildren(doc.importNode(parsed.body.firstChild, true));
+      }
+    }
+    setHTML(st, html) {
+      if (st.body.isConnected === false) return;
+      this.clearTimers(st);
+      const Parser = st.doc.defaultView?.DOMParser || globalThis.DOMParser;
+      if (!Parser) {
+        st.body.textContent = html.replace(/<[^>]*>/g, "");
+        return;
+      }
+      const parsed = new Parser().parseFromString(html, "text/html");
+      if (!parsed?.body) return;
+      st.body.replaceChildren(
+        ...Array.from(parsed.body.childNodes).map((node) => st.doc.importNode(node, true))
+      );
+    }
+    clearTimers(st) {
+      for (const timer of st.feedbackTimers) clearTimeout(timer);
+      st.feedbackTimers.clear();
+      st.copyFeedback.clear();
     }
   };
 
   // src/domains/inspector/pdf-folder-section.ts
+  var FOLDER_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-pdf-folder-sidenav"]';
+  var FOLDER_ACTION = `${FOLDER_ICON}, button.ztf-pdf-folder-action`;
+  var RECENT_LAUNCH_INTERVAL_MS = 500;
+  function folderActionTarget(event) {
+    return event.composedPath?.().find(
+      (node) => node.matches?.(FOLDER_ACTION) === true
+    );
+  }
   var PdfFolderSectionController = class {
     unregisterFn = null;
     states = /* @__PURE__ */ new Map();
+    listeners = /* @__PURE__ */ new Map();
+    openingFolders = /* @__PURE__ */ new WeakSet();
+    lastLaunched = /* @__PURE__ */ new Map();
     kernel;
     services;
     constructor(kernel, services) {
@@ -862,25 +1742,21 @@
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-pdf-folder-header", icon },
         sidenav: { l10nID: "zbf-pane-pdf-folder-sidenav", icon, orderable: true },
-        onInit: ({ body, item, setEnabled }) => {
-          this.initBody(body, item, setEnabled);
+        onInit: ({ doc, body, item, setEnabled }) => {
+          this.initBody(doc || body.ownerDocument, body, item, setEnabled);
           this.services.panePositions.observeAndQueue(body);
         },
-        onDestroy: ({ body }) => {
-          this.states.delete(body);
+        onDestroy: ({ doc, body }) => {
+          this.onDestroy(doc || body.ownerDocument, body);
         },
         onItemChange: ({ body, item, setEnabled }) => {
           this.updateState(body, item, setEnabled);
           this.services.panePositions.observeAndQueue(body);
-          return Boolean(item);
+          return this.kernel.prefs.get("inspector.pdfFolder.enable") && Boolean(item);
         },
         onRender: ({ body, item, setEnabled }) => {
           this.updateState(body, item, setEnabled);
           this.services.panePositions.observeAndQueue(body);
-        },
-        onToggle: ({ body, item }) => {
-          const target = item ?? this.states.get(body)?.item;
-          if (target) void this.revealAttachmentFolder(target);
         }
       });
       this.unregisterFn = reg.dispose;
@@ -891,79 +1767,981 @@
         });
       }
     }
-    async revealAttachmentFolder(item) {
+    async revealAttachmentFolder(item, fallbackWin) {
       if (!item) return false;
-      const owner = await normalizeToRegularItemAsync(item);
-      const pdfs = await resolvePdfAttachments(owner || item);
-      const first = pdfs[0]?.item;
-      if (!first) return false;
+      const att = await this.resolveFileAttachment(item);
+      if (!att) return false;
+      const zotero = globalThis.Zotero;
       try {
-        const filePath = typeof first.getFilePathAsync === "function" ? await first.getFilePathAsync() : first.getFilePath?.();
-        if (!filePath) return false;
-        const zFile = globalThis.Zotero?.File;
-        const mode = this.kernel.prefs.get("inspector.pdfFolder.openMode");
-        if (mode === "folder" && typeof zFile?.pathToFile === "function") {
-          const f = zFile.pathToFile(filePath);
-          f?.parent?.launch?.();
-          return true;
+        const filePath = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
+        const nsFile = filePath ? zotero?.File?.pathToFile?.(filePath) : null;
+        const folder = nsFile?.parent?.path;
+        const cacheKey = filePath || folder || String(att.id || "");
+        if (cacheKey) {
+          const now = Date.now();
+          if (now - (this.lastLaunched.get(cacheKey) ?? 0) < RECENT_LAUNCH_INTERVAL_MS) return true;
+          this.lastLaunched.set(cacheKey, now);
         }
-        const win = globalThis.Zotero?.getMainWindow?.();
-        win?.ZoteroPane?.showAttachmentInFilesystem?.(first.id);
-        return true;
-      } catch {
-        return false;
+        try {
+          const openMode = this.kernel.prefs.get("inspector.pdfFolder.openMode");
+          if (openMode === "folder" && folder && zotero?.launchFile) {
+            await zotero.launchFile(folder);
+            return true;
+          }
+          if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === "function") {
+            await Promise.resolve(nsFile.reveal());
+            return true;
+          }
+          const targetWin = fallbackWin?.ZoteroPane ? fallbackWin : zotero?.getMainWindow?.();
+          if (targetWin?.ZoteroPane?.showAttachmentInFilesystem) {
+            await targetWin.ZoteroPane.showAttachmentInFilesystem(att.id);
+            return true;
+          }
+          if (folder && zotero?.launchFile) {
+            await zotero.launchFile(folder);
+            return true;
+          }
+        } catch (err) {
+          if (cacheKey) this.lastLaunched.delete(cacheKey);
+          throw err;
+        }
+      } catch (error) {
+        this.kernel.logger.error("inspector:pdf-folder", error);
       }
+      return false;
     }
     unregister() {
       this.services.panePositions.setTarget("pdf-folder", null);
+      this.lastLaunched.clear();
+      for (const controller of this.listeners.values()) controller.abort();
+      this.listeners.clear();
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
     }
-    initBody(body, item, setEnabled) {
-      const doc = body.ownerDocument;
-      if (!doc) return;
-      doc.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
+    initBody(doc, body, item, setEnabled) {
+      const win = doc?.defaultView;
+      if (!doc || !win) return;
+      win.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
+      let controller = this.listeners.get(doc);
+      if (!controller) {
+        controller = new win.AbortController();
+        this.listeners.set(doc, controller);
+        this.bindFolderActions(doc, win, controller.signal);
+      }
       body.textContent = "";
       const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      wrap.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:6px;padding:4px 0;font:12px/1.4 system-ui,sans-serif;";
+      wrap.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-inline-size:0;contain:inline-size;padding:4px 0;font:12px/1.4 system-ui,sans-serif;";
       const meta = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
       meta.style.cssText = "opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
       const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
       btn.type = "button";
-      btn.setAttribute("data-l10n-id", "zbf-pane-pdf-folder-header");
-      btn.textContent = "Open PDF Folder";
-      btn.style.cssText = "justify-self:start;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;cursor:pointer;";
-      btn.addEventListener("click", () => {
-        const st = this.states.get(body);
-        if (st?.item) void this.revealAttachmentFolder(st.item);
-      });
+      btn.className = "ztf-pdf-folder-action";
+      btn.setAttribute("data-l10n-id", "zbf-pdf-folder-open");
+      btn.textContent = "打开文件夹并选中 PDF";
+      btn.style.cssText = "justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;";
+      btn.disabled = true;
       wrap.append(meta, btn);
       body.append(wrap);
-      this.states.set(body, { body, item: item ?? null, btn, meta });
+      this.states.set(body, { body, item: null, btn, meta });
       this.updateState(body, item, setEnabled);
     }
+    bindFolderActions(doc, win, signal) {
+      const options = { capture: true, signal };
+      let pressed;
+      let keyed;
+      doc.addEventListener("pointerdown", (event) => {
+        keyed = void 0;
+        pressed = event.isTrusted && event.button === 0 ? folderActionTarget(event) : void 0;
+      }, options);
+      doc.addEventListener("pointercancel", () => {
+        pressed = void 0;
+      }, options);
+      doc.addEventListener("keydown", (event) => {
+        pressed = void 0;
+        keyed = event.isTrusted && !event.repeat && (event.key === "Enter" || event.key === " ") ? folderActionTarget(event) : void 0;
+      }, options);
+      doc.addEventListener("click", (event) => {
+        const target = folderActionTarget(event);
+        const activated = target && (event.detail === 0 ? keyed : pressed) === target;
+        keyed = pressed = void 0;
+        if (!activated || !event.isTrusted || event.button !== 0 || event.detail > 1) return;
+        if (!this.kernel.prefs.get("inspector.pdfFolder.enable")) return;
+        const sidenav = target.closest("item-pane-sidenav");
+        const item = sidenav ? sidenav.container?.item ?? [...this.states.values()].find((s) => s.body.ownerDocument === doc && s.item)?.item ?? win.ZoteroPane?.getSelectedItems?.()?.[0] : [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled)?.item;
+        if (item && !signal.aborted && !this.openingFolders.has(win)) {
+          this.openingFolders.add(win);
+          void this.revealAttachmentFolder(item, win).finally(() => this.openingFolders.delete(win));
+        }
+      }, options);
+    }
+    onDestroy(doc, body) {
+      this.states.delete(body);
+      if (!doc || [...this.states.keys()].some((other) => other.ownerDocument === doc)) return;
+      this.listeners.get(doc)?.abort();
+      this.listeners.delete(doc);
+    }
     updateState(body, item, setEnabled) {
+      const enabled = this.kernel.prefs.get("inspector.pdfFolder.enable") && Boolean(item);
+      setEnabled?.(enabled);
       const st = this.states.get(body);
       if (!st) return;
-      st.item = item ?? null;
-      const enabled = Boolean(item);
-      st.btn.disabled = !enabled;
-      st.meta.textContent = item ? String(item.getField?.("title") || item.attachmentFilename || "") : "";
-      setEnabled?.(enabled);
+      st.item = enabled ? item : null;
+      void this.refreshMeta(st);
+    }
+    async refreshMeta(st) {
+      const item = st.item;
+      st.btn.disabled = true;
+      st.btn.style.opacity = "0.5";
+      st.meta.textContent = "";
+      st.meta.removeAttribute("title");
+      st.meta.removeAttribute("data-l10n-id");
+      if (!item) return;
+      const att = await this.resolveFileAttachment(item).catch(() => null);
+      if (this.states.get(st.body) !== st || st.item !== item) return;
+      if (!att) {
+        st.meta.setAttribute("data-l10n-id", "zbf-pdf-folder-unavailable");
+        st.meta.textContent = "当前条目没有文件附件";
+        return;
+      }
+      st.meta.textContent = String(att.attachmentFilename || att.getField?.("title") || "附件文件");
+      st.meta.title = st.meta.textContent;
+      st.btn.disabled = false;
+      st.btn.style.opacity = "1";
+    }
+    async resolveFileAttachment(item) {
+      if (!item) return null;
+      if (item.isFileAttachment?.()) return item;
+      const best = await item.getBestAttachment?.().catch(() => null);
+      if (best?.isFileAttachment?.()) return best;
+      const owner = await normalizeToRegularItemAsync(item);
+      const pdfs = await resolvePdfAttachments(owner || item);
+      return pdfs[0]?.item ?? null;
     }
   };
 
-  // src/domains/inspector/pdf-preview-section.ts
-  var PDF_CSS = `
-.zbf-pdf-root { display:flex; flex-direction:column; gap:6px; padding:4px 0; font:12px/1.4 system-ui,sans-serif; }
-.zbf-pdf-entry { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; text-align:left; padding:6px 8px; border-radius:6px; border:1px solid color-mix(in srgb,currentColor 16%,transparent); background:color-mix(in srgb,currentColor 3%,transparent); color:inherit; font:inherit; cursor:pointer; }
-.zbf-pdf-entry:hover { border-color:var(--accent-blue,#2563EB); background:color-mix(in srgb,var(--accent-blue,#2563EB) 10%,transparent); }
-.zbf-pdf-badge { font-size:11px; opacity:0.75; flex-shrink:0; }
+  // src/domains/inspector/pdf-preview-styles.ts
+  var STYLE_ID = "zbf-pdf-preview-styles";
+  var PREVIEW_CSS = `
+.ztf-pdf-root {
+	display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px;
+	min-inline-size: 0; inline-size: 100%; contain: inline-size;
+	font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+	padding: 2px 0 4px 0; color: var(--fill-primary, currentColor);
+}
+.ztf-pdf-toolbar {
+	display: flex; align-items: center; justify-content: space-between;
+	gap: 4px; flex-wrap: wrap; min-block-size: 24px; padding: 0 1px 4px;
+	background: transparent;
+	border-bottom: 1px solid var(--fill-quinary, color-mix(in srgb, currentColor 7%, transparent));
+}
+.ztf-pdf-att-select {
+	flex: 1 1 100%; min-inline-size: 0; inline-size: 100%; block-size: 22px;
+	padding: 0 6px; margin-top: 2px; border-radius: 4px;
+	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
+	background: var(--material-background, transparent);
+	color: var(--fill-primary, inherit); font: 500 11px/1.3 system-ui, sans-serif; cursor: pointer;
+}
+.ztf-pdf-btn-group { display: flex; align-items: center; gap: 2px; }
+.ztf-pdf-btn {
+	appearance: none !important; -moz-appearance: none !important; box-sizing: border-box;
+	display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+	min-inline-size: 20px !important; min-block-size: 20px !important; block-size: 20px !important;
+	margin: 0 !important; padding: 0 5px !important;
+	border: 1px solid transparent !important; border-radius: 4px !important;
+	background: transparent !important; box-shadow: none !important;
+	color: var(--fill-secondary, inherit); font: 500 11.5px/1 system-ui, sans-serif;
+	cursor: pointer; user-select: none;
+	transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+.ztf-pdf-btn-svg { inline-size: 12px; block-size: 12px; flex-shrink: 0; pointer-events: none; }
+.ztf-pdf-btn:hover:not(:disabled) {
+	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent)) !important;
+	color: var(--fill-primary, inherit);
+}
+.ztf-pdf-btn:active:not(:disabled) {
+	background: var(--fill-quarternary, color-mix(in srgb, currentColor 14%, transparent)) !important;
+}
+.ztf-pdf-btn:disabled { opacity: 0.32; cursor: default; }
+.ztf-pdf-compare-bar {
+	display: flex; align-items: center; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
+	padding-top: 3px; margin-top: 2px;
+	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
+}
+.ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; }
+.ztf-pdf-compare-btn[data-active="true"] {
+	color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
+	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
+}
+.ztf-pdf-compare-select {
+	flex: 1 1 auto; min-inline-size: 0; block-size: 20px; padding: 0 5px; border-radius: 4px;
+	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
+	background: var(--material-background, transparent); color: var(--fill-primary, inherit);
+	font: 500 11px/1.2 system-ui, sans-serif; cursor: pointer;
+}
+.ztf-pdf-open-btn {
+	padding: 0 7px !important; color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.1)) !important;
+	font-weight: 500; font-size: 11px;
+}
+.ztf-pdf-open-btn:hover:not(:disabled) {
+	background: var(--accent-blue30, rgba(64, 114, 229, 0.2)) !important;
+	color: var(--accent-blue, #4072e5) !important;
+}
+.ztf-pdf-page-label {
+	min-inline-size: 38px; padding: 2px 4px; border-radius: 4px;
+	text-align: center; font-variant-numeric: tabular-nums;
+	color: var(--fill-secondary, inherit); font-size: 11px; cursor: pointer; user-select: none;
+}
+.ztf-pdf-page-label:hover {
+	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
+	color: var(--fill-primary, inherit);
+}
+.ztf-pdf-page-input {
+	inline-size: 38px; block-size: 19px; padding: 0 3px; border-radius: 4px;
+	border: 1px solid var(--accent-blue, #4072e5);
+	background: var(--material-background, #fff); color: var(--fill-primary, inherit);
+	font: 500 11px/1 system-ui, sans-serif; text-align: center; outline: none;
+}
+.ztf-pdf-status {
+	padding: 12px 8px; color: var(--fill-secondary, inherit);
+	font-size: 12px; text-align: center; display: none; overflow-wrap: anywhere;
+}
+.ztf-pdf-viewport {
+	position: relative; display: flex; flex-direction: column; align-items: stretch;
+	gap: 8px; max-block-size: calc(100vh - 170px);
+	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
+	scrollbar-width: thin; outline: none;
+	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
+}
+.ztf-pdf-page-card {
+	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
+	inline-size: 100%; box-sizing: border-box; background: #fff;
+	border-radius: 5px; border: 1px solid var(--fill-quarternary, rgba(0, 0, 0, 0.12));
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); overflow: hidden; cursor: pointer;
+	transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.ztf-pdf-page-card:hover {
+	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
+}
+.ztf-pdf-page-card[data-unrendered="true"] {
+	aspect-ratio: 1 / 1.4142; min-block-size: 320px;
+	background: var(--fill-senary, rgba(0, 0, 0, 0.02));
+}
+.ztf-pdf-canvas { display: block; inline-size: 100%; block-size: auto; background: #fff; }
+.ztf-pdf-page-badge {
+	position: absolute; inset-inline-end: 6px; inset-block-end: 6px;
+	padding: 1px 6px; border-radius: 999px; font: 500 10px/1.35 system-ui, sans-serif;
+	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.56);
+	color: #fff; pointer-events: none; opacity: 0.72; transition: opacity 0.14s ease;
+}
+.ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
+.ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
+[data-ztf-pdf-full-hidden="true"], [data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"] {
+	display: flex !important; flex-direction: column !important;
+	block-size: 100% !important; max-block-size: 100% !important; overflow: hidden !important;
+}
+[data-ztf-pdf-full-section="true"],
+[data-ztf-pdf-full-section="true"] > collapsible-section,
+[data-ztf-pdf-full-section="true"] > collapsible-section > [data-type="body"] {
+	display: flex !important; flex-direction: column !important;
+	flex: 1 1 auto !important; block-size: 100% !important; min-block-size: 0 !important;
+}
+[data-ztf-pdf-full-section="true"] > collapsible-section > .head { display: none !important; }
+.ztf-pdf-root[data-layout-mode="full"] {
+	display: flex; flex-direction: column; flex: 1 1 auto; block-size: 100%; min-block-size: 0;
+}
+.ztf-pdf-root[data-layout-mode="full"] .ztf-pdf-viewport {
+	flex: 1 1 auto; max-block-size: calc(100vh - 96px); block-size: 100%;
+}
 `;
+  function ensurePdfPreviewStyles(doc) {
+    if (!doc?.getElementById) return;
+    let style = doc.getElementById(STYLE_ID);
+    if (!style) {
+      style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+      style.id = STYLE_ID;
+      (doc.head || doc.documentElement)?.append(style);
+    }
+    if (style.textContent !== PREVIEW_CSS) style.textContent = PREVIEW_CSS;
+  }
+  function removePdfPreviewStyles(doc) {
+    doc?.getElementById?.(STYLE_ID)?.remove?.();
+  }
+
+  // src/domains/inspector/pdf-preview-ui.ts
+  var XHTML_NS = "http://www.w3.org/1999/xhtml";
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  var TOOL_SVG_PATHS = {
+    prev: "M10 3.5L5.5 8L10 12.5",
+    next: "M6 3.5L10.5 8L6 12.5",
+    zoomOut: "M3.8 8H12.2",
+    zoomIn: "M8 3.8V12.2M3.8 8H12.2",
+    toggleMode: "M2.5 5.5V2.5H5.5M10.5 2.5H13.5V5.5M13.5 10.5V13.5H10.5M5.5 13.5H2.5V10.5",
+    openReader: "M9.5 2.8H13.2V6.5M13 3L7.5 8.5M11.5 9.2V12.4C11.5 12.84 11.14 13.2 10.7 13.2H3.6C3.16 13.2 2.8 12.84 2.8 12.4V5.3C2.8 4.86 3.16 4.5 3.6 4.5H6.8"
+  };
+  var STATUS_FALLBACKS = {
+    "zbf-pdf-preview-loading": "正在加载 PDF 预览…",
+    "zbf-pdf-preview-unavailable": "当前条目无可用的 PDF 附件",
+    "zbf-pdf-preview-missing-file": "找不到本地 PDF 文件，请先检查附件存储路径",
+    "zbf-pdf-preview-error": "无法渲染此 PDF，请尝试在阅读器中打开"
+  };
+  function createXhtmlEl(doc, tag, css = "") {
+    const node = doc.createElementNS(XHTML_NS, tag);
+    if (css) node.style.cssText = css;
+    return node;
+  }
+  function createToolBtn(doc, text, l10nId, extraClass = "", iconKey) {
+    const btn = createXhtmlEl(doc, "button");
+    btn.type = "button";
+    btn.className = extraClass ? `ztf-pdf-btn ${extraClass}` : "ztf-pdf-btn";
+    if (l10nId) btn.setAttribute("data-l10n-id", l10nId);
+    const d = iconKey ? TOOL_SVG_PATHS[iconKey] : "";
+    if (d && typeof doc.createElementNS === "function") {
+      const svg = doc.createElementNS(SVG_NS, "svg");
+      for (const [k, v] of [["viewBox", "0 0 16 16"], ["width", "12"], ["height", "12"], ["fill", "none"], ["stroke", "currentColor"], ["stroke-width", "1.6"], ["stroke-linecap", "round"], ["stroke-linejoin", "round"], ["class", "ztf-pdf-btn-svg"]]) {
+        svg.setAttribute(k, v);
+      }
+      const path = doc.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", d);
+      svg.append(path);
+      btn.append(svg);
+      if (text && iconKey === "openReader") {
+        const span = createXhtmlEl(doc, "span");
+        span.textContent = text;
+        btn.append(span);
+      }
+    } else if (text) btn.textContent = text;
+    return btn;
+  }
+  function applyStatusMessage(statusEl, l10nId) {
+    if (!l10nId) {
+      statusEl.style.display = "none";
+      statusEl.removeAttribute("data-l10n-id");
+      statusEl.textContent = "";
+      return;
+    }
+    statusEl.style.display = "block";
+    statusEl.setAttribute("data-l10n-id", l10nId);
+    statusEl.textContent = STATUS_FALLBACKS[l10nId] || l10nId;
+  }
+  function ensureSectionConnected(body, root, savedSection, savedCollapsible) {
+    if (!body.contains(root)) body.replaceChildren(root);
+    let owner = body.closest?.("collapsible-section") || (body.parentElement?.localName === "collapsible-section" ? body.parentElement : null);
+    if (!owner) {
+      const doc = body.ownerDocument;
+      let hostSection = body.closest?.("item-pane-custom-section") || savedSection || null;
+      if ((!hostSection || hostSection.isConnected === false) && doc?.querySelectorAll) {
+        const candidates = Array.from(doc.querySelectorAll('item-pane-custom-section[data-pane*="bridgeflow-pdf-preview"]'));
+        hostSection = candidates.find((c) => c._body === body) || candidates.find((c) => !c.querySelector('[data-type="body"]')) || hostSection;
+      }
+      const liveCollapsible = hostSection?.querySelector?.("collapsible-section") || (savedCollapsible?.isConnected ? savedCollapsible : null);
+      if (liveCollapsible) {
+        const existingBody = liveCollapsible.querySelector?.('[data-type="body"]');
+        if (!existingBody) liveCollapsible.append(body);
+        else if (existingBody !== body) {
+          existingBody.replaceWith(body);
+          if (hostSection) hostSection._body = body;
+        }
+        owner = liveCollapsible;
+      }
+    }
+    if (!owner) return null;
+    owner.removeAttribute?.("empty");
+    if ("empty" in owner) owner.empty = false;
+    if (!owner.hasAttribute?.("data-zbf-pdf-ready")) {
+      owner.setAttribute?.("data-zbf-pdf-ready", "true");
+      owner.open = true;
+    }
+    owner.style?.setProperty?.("--open-height", "auto");
+    return owner;
+  }
+  function applyPreviewLayoutMode(body, root, savedSection, fullActive) {
+    root.setAttribute("data-layout-mode", fullActive ? "full" : "section");
+    const hostSection = body.closest?.("item-pane-custom-section") || savedSection;
+    const stack = hostSection?.parentElement;
+    if (!hostSection) return;
+    if (fullActive) {
+      hostSection.setAttribute("data-ztf-pdf-full-section", "true");
+      stack?.setAttribute("data-ztf-pdf-full-stack", "true");
+      for (const child of Array.from(stack?.parentElement?.children || [])) {
+        const tag = (child.localName || child.tagName || "").toLowerCase();
+        if (child !== stack && tag !== "item-pane-sidenav" && !child.querySelector?.("item-pane-sidenav")) {
+          child.setAttribute("data-ztf-pdf-full-hidden", "true");
+        }
+      }
+    } else {
+      hostSection.removeAttribute("data-ztf-pdf-full-section");
+      stack?.removeAttribute("data-ztf-pdf-full-stack");
+      body.ownerDocument?.querySelectorAll?.("[data-ztf-pdf-full-hidden]").forEach((el) => el.removeAttribute("data-ztf-pdf-full-hidden"));
+    }
+  }
+  function bindPreviewSidenavClick(doc, signal, isFullMode, onFullModeChange) {
+    if (typeof doc.addEventListener !== "function") return;
+    doc.addEventListener("click", (event) => {
+      if (event.button !== 0) return;
+      const btn = event.target?.closest?.("item-pane-sidenav .btn[data-pane]");
+      const paneID = btn?.getAttribute?.("data-pane") || "";
+      if (!btn || btn.hasAttribute?.("disabled")) return;
+      if (!paneID.includes("bridgeflow-pdf-preview")) {
+        onFullModeChange(false);
+        return;
+      }
+      if (isFullMode()) onFullModeChange(true);
+      const sidenav = btn.closest?.("item-pane-sidenav");
+      const container = sidenav?.container;
+      const section = container?.getEnabledPane?.(paneID) || doc.querySelector?.(`item-pane-custom-section[data-pane="${paneID}"]`);
+      const collapsible = section?.querySelector?.("collapsible-section");
+      if (collapsible) {
+        collapsible.removeAttribute?.("empty");
+        collapsible.open = true;
+        collapsible.style?.setProperty?.("--open-height", "auto");
+      }
+      if (container?.scrollToPane) void container.scrollToPane(paneID, "smooth");
+    }, { capture: true, signal });
+  }
+  function createCompareBar(doc, signal, getState, onChange) {
+    const bar = createXhtmlEl(doc, "div");
+    bar.className = "ztf-pdf-compare-bar";
+    bar.style.display = "none";
+    const selfBtn = createXhtmlEl(doc, "button");
+    selfBtn.type = "button";
+    selfBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn";
+    selfBtn.textContent = "自身";
+    selfBtn.setAttribute("data-l10n-id", "zbf-pdf-compare-self");
+    const selectEl = createXhtmlEl(doc, "select");
+    selectEl.className = "ztf-pdf-compare-select";
+    selectEl.setAttribute("data-l10n-id", "zbf-pdf-compare-select");
+    selfBtn.addEventListener("click", () => {
+      const cur = getState();
+      onChange(cur.mode === "self" ? "sibling" : "self", null);
+    }, { signal });
+    selectEl.addEventListener("change", () => {
+      const val = Number(selectEl.value || 0);
+      if (!val) return;
+      const cur = getState();
+      onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
+    }, { signal });
+    bar.append(selfBtn, selectEl);
+    return { bar, selfBtn, selectEl };
+  }
+  function syncCompareBar(ui, st, entries, activeAttachmentID) {
+    const visible = st.tabType === "reader" && entries.length > 1;
+    ui.bar.style.display = visible ? "flex" : "none";
+    if (!visible) return;
+    const isSelf = st.mode === "self" || st.currentAttachmentID > 0 && activeAttachmentID === st.currentAttachmentID;
+    if (isSelf) ui.selfBtn.setAttribute("data-active", "true");
+    else ui.selfBtn.removeAttribute("data-active");
+    const doc = ui.bar.ownerDocument;
+    if (!doc) return;
+    ui.selectEl.textContent = "";
+    entries.forEach((entry, idx) => {
+      const opt = createXhtmlEl(doc, "option");
+      opt.value = String(entry.id);
+      const isCurrent = st.currentAttachmentID > 0 && entry.id === st.currentAttachmentID;
+      opt.textContent = isCurrent ? `● ${idx + 1}. ${entry.title}` : `${idx + 1}. ${entry.title}`;
+      ui.selectEl.append(opt);
+    });
+    if (activeAttachmentID) ui.selectEl.value = String(activeAttachmentID);
+  }
+  function openPageJumpInput(doc, pageLabel, currentPage, numPages, onCommit) {
+    if (numPages <= 1) return;
+    const input = createXhtmlEl(doc, "input");
+    input.type = "number";
+    input.className = "ztf-pdf-page-input";
+    input.min = "1";
+    input.max = String(numPages);
+    input.value = String(currentPage || 1);
+    let closed = false;
+    const finish = (commit) => {
+      if (closed) return;
+      closed = true;
+      const target = Number(input.value);
+      input.replaceWith?.(pageLabel);
+      if (commit && Number.isFinite(target) && target >= 1) onCommit(Math.round(target));
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault?.();
+        finish(true);
+      } else if (e.key === "Escape") {
+        e.preventDefault?.();
+        finish(false);
+      }
+    });
+    input.addEventListener("blur", () => finish(true));
+    pageLabel.replaceWith?.(input);
+    input.focus?.();
+    input.select?.();
+  }
+  function evictDistantPageCanvases(slots, currentPage, radius = 8) {
+    if (slots.length <= 14) return;
+    for (const slot of slots) {
+      if (slot.renderedZoom !== null && !slot.rendering && Math.abs(slot.pageNumber - currentPage) > radius) {
+        slot.canvas.width = 0;
+        slot.canvas.height = 0;
+        slot.renderedZoom = null;
+        slot.card.setAttribute("data-unrendered", "true");
+        if (slot.lastHeight > 0) slot.card.style.minBlockSize = `${slot.lastHeight}px`;
+      }
+    }
+  }
+
+  // src/domains/inspector/pdf-renderer.ts
+  var PDFJS_MODULE_URL = "resource://zotero/reader/pdf/build/pdf.mjs";
+  var PDFJS_WORKER_URL = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
+  var PDFJS_CMAP_URL = "resource://zotero/reader/pdf/web/cmaps/";
+  var PDFJS_FONT_URL = "resource://zotero/reader/pdf/web/standard_fonts/";
+  var cachedPdfJsLib = null;
+  function isPdfAttachment(att) {
+    if (!att || att.deleted || att.isTrashed?.()) return false;
+    if (typeof att.isPDFAttachment === "function") return Boolean(att.isPDFAttachment());
+    if (att.isFileAttachment?.() === false) return false;
+    const mime = String(att.attachmentContentType || "").toLowerCase();
+    if (mime === "application/pdf") return true;
+    const name = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
+    return name.endsWith(".pdf");
+  }
+  function getAttachmentTitle(att, index) {
+    const raw = String(att?.getField?.("title") || att?.attachmentFilename || "").trim();
+    return raw || `PDF ${index + 1}`;
+  }
+  async function resolveAllPdfAttachments(item) {
+    if (!item || item.deleted || item.isTrashed?.()) return [];
+    if (isPdfAttachment(item)) {
+      return [{ id: Number(item.id) || 0, title: getAttachmentTitle(item, 0), attachment: item }];
+    }
+    const target = !item.isRegularItem?.() && item.parentItem ? item.parentItem : item;
+    if (isPdfAttachment(target)) {
+      return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
+    }
+    const results = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushIfPdf = (att) => {
+      if (!isPdfAttachment(att)) return;
+      const id = Number(att.id) || results.length + 1;
+      if (seen.has(id)) return;
+      seen.add(id);
+      results.push({ id, title: getAttachmentTitle(att, results.length), attachment: att });
+    };
+    const best = await target.getBestAttachment?.().catch(() => null);
+    pushIfPdf(best);
+    const ids = target.getAttachments?.() || [];
+    const hostItems = globalThis.Zotero?.Items;
+    if (ids.length && hostItems?.getAsync) {
+      const attachments = await hostItems.getAsync(ids).catch(() => []);
+      for (const att of attachments) pushIfPdf(att);
+    }
+    return results;
+  }
+  async function resolveSameItemPdfContext(item) {
+    if (!item || item.deleted || item.isTrashed?.()) {
+      return { currentAttachmentID: 0, entries: [] };
+    }
+    const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment");
+    const currentAttachmentID = isAtt ? Number(item.id) || 0 : 0;
+    let container = item;
+    if (isAtt) {
+      if (item.parentItem) {
+        container = item.parentItem;
+      } else {
+        const parentID = Number(item.parentID || item.parentItemID || 0);
+        const hostItems = globalThis.Zotero?.Items;
+        if (parentID && hostItems) {
+          container = await (hostItems.getAsync ? hostItems.getAsync(parentID) : hostItems.get?.(parentID)).catch(() => null) || item;
+        }
+      }
+    }
+    const entries = await resolveAllPdfAttachments(container);
+    if (!entries.length && isAtt) {
+      return { currentAttachmentID, entries: await resolveAllPdfAttachments(item) };
+    }
+    return { currentAttachmentID, entries };
+  }
+  function pickCompareAttachment(ctx, mode, explicitAttachmentID) {
+    if (!ctx.entries.length) return null;
+    if (ctx.entries.length === 1) return ctx.entries[0];
+    if (explicitAttachmentID) {
+      const exact = ctx.entries.find((e) => e.id === explicitAttachmentID);
+      if (exact) return exact;
+    }
+    if (mode === "self" && ctx.currentAttachmentID) {
+      return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];
+    }
+    if (ctx.currentAttachmentID) {
+      return ctx.entries.find((e) => e.id !== ctx.currentAttachmentID) ?? ctx.entries[0];
+    }
+    return ctx.entries[0];
+  }
+  async function resolveAttachmentPath(att) {
+    if (!att) return null;
+    const p = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
+    return typeof p === "string" && p.trim() ? p : null;
+  }
+  function binaryStringToUint8Array(raw) {
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 255;
+    return bytes;
+  }
+  async function readPdfBytes(filePath) {
+    const zotero = globalThis.Zotero;
+    const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
+    if (ioUtils?.read) {
+      const data = await ioUtils.read(filePath);
+      return data instanceof Uint8Array ? data : new Uint8Array(data);
+    }
+    if (zotero?.File?.getBinaryContentsAsync) {
+      const raw = await zotero.File.getBinaryContentsAsync(filePath);
+      return raw instanceof Uint8Array ? raw : binaryStringToUint8Array(String(raw || ""));
+    }
+    throw new Error("No file reader available for PDF preview");
+  }
+  function tryImportModule(cu, url) {
+    if (!cu?.importESModule) return null;
+    for (const opts of [{ global: "current" }, null]) {
+      try {
+        const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
+        if (mod) return mod;
+      } catch {
+      }
+    }
+    return null;
+  }
+  async function loadPdfJsLib(win) {
+    if (cachedPdfJsLib) return cachedPdfJsLib;
+    const zotero = globalThis.Zotero;
+    const hostWin = win || zotero?.getMainWindow?.();
+    if (hostWin && !globalThis.window) {
+      try {
+        globalThis.window = hostWin;
+        globalThis.document = hostWin.document;
+      } catch {
+      }
+    }
+    const winCu = hostWin?.ChromeUtils;
+    const globalCu = globalThis.ChromeUtils;
+    const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
+    if (workerMod) {
+      try {
+        globalThis.pdfjsWorker = workerMod;
+        if (hostWin) hostWin.pdfjsWorker = workerMod;
+      } catch {
+      }
+    }
+    let mod = tryImportModule(winCu, PDFJS_MODULE_URL) || tryImportModule(globalCu, PDFJS_MODULE_URL);
+    if (typeof mod?.getDocument !== "function") {
+      try {
+        mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL);
+      } catch {
+        mod = null;
+      }
+    }
+    if (typeof mod?.getDocument !== "function") throw new Error("Failed to load Zotero PDF.js module");
+    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
+      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+    }
+    cachedPdfJsLib = mod;
+    return mod;
+  }
+  async function openPdfDocumentFromFile(filePath, doc) {
+    const win = doc?.defaultView || globalThis.Zotero?.getMainWindow?.();
+    const ownerDocument = doc || win?.document;
+    const [pdfjsLib, data] = await Promise.all([loadPdfJsLib(win), readPdfBytes(filePath)]);
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      ownerDocument,
+      isEvalSupported: false,
+      useWorkerFetch: false,
+      cMapUrl: PDFJS_CMAP_URL,
+      cMapPacked: true,
+      standardFontDataUrl: PDFJS_FONT_URL
+    });
+    return await loadingTask.promise;
+  }
+  async function renderPageToCanvas(pdfDoc, pageNumber, canvas, targetWidth, zoomRatio, dpr, isAborted, onTask) {
+    const page = await pdfDoc.getPage(pageNumber);
+    if (isAborted()) {
+      page.cleanup?.();
+      return { width: 0, height: 0 };
+    }
+    const baseViewport = page.getViewport({ scale: 1 });
+    const safeWidth = Math.max(120, targetWidth);
+    const cssScale = safeWidth / Math.max(1, baseViewport.width) * zoomRatio;
+    const cssViewport = page.getViewport({ scale: cssScale });
+    const pixelRatio = Math.max(1.25, Math.min(3, (dpr || 1) * 1.15));
+    canvas.width = Math.max(1, Math.floor(cssViewport.width * pixelRatio));
+    canvas.height = Math.max(1, Math.floor(cssViewport.height * pixelRatio));
+    if (Math.abs(zoomRatio - 1) < 0.01) {
+      canvas.style.width = "100%";
+      canvas.style.height = "auto";
+    } else {
+      canvas.style.width = `${Math.floor(cssViewport.width)}px`;
+      canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D context unavailable");
+    const transform = pixelRatio === 1 ? void 0 : [pixelRatio, 0, 0, pixelRatio, 0, 0];
+    const task = page.render({ canvasContext: ctx, viewport: cssViewport, transform });
+    onTask?.(() => {
+      try {
+        task.cancel?.();
+      } catch {
+      }
+    });
+    try {
+      await task.promise;
+    } catch (err) {
+      if (err?.name === "RenderingCancelledException" || isAborted()) return { width: 0, height: 0 };
+      throw err;
+    } finally {
+      page.cleanup?.();
+    }
+    return { width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) };
+  }
+  async function openPdfInReader(att, win, pageNumber) {
+    if (!att?.id) return false;
+    const zotero = globalThis.Zotero;
+    const location = typeof pageNumber === "number" && pageNumber > 1 ? { pageIndex: pageNumber - 1 } : void 0;
+    try {
+      if (zotero?.Reader?.open) {
+        try {
+          await zotero.Reader.open(att.id, location, { openInWindow: false });
+        } catch {
+          await zotero.Reader.open(att.id, void 0, { openInWindow: false });
+        }
+        return true;
+      }
+      const targetWin = win?.ZoteroPane ? win : zotero?.getMainWindow?.();
+      if (targetWin?.ZoteroPane?.viewAttachment) {
+        await targetWin.ZoteroPane.viewAttachment([att.id]);
+        return true;
+      }
+    } catch (error) {
+      zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+    return false;
+  }
+
+  // src/domains/inspector/pdf-viewport-manager.ts
+  function disposePreviewDocument(state, clearAttachments = false) {
+    state.generation += 1;
+    state.loading = false;
+    state.observer?.disconnect();
+    state.observer = null;
+    for (const slot of state.slots) {
+      slot.cancelTask?.();
+      slot.canvas.width = 0;
+      slot.canvas.height = 0;
+    }
+    state.slots = [];
+    state.viewportEl.textContent = "";
+    state.currentPage = 0;
+    state.numPages = 0;
+    state.attachment = null;
+    if (clearAttachments) {
+      state.attachments = [];
+      state.attSelect.textContent = "";
+      state.attSelect.style.display = "none";
+    }
+    const oldDoc = state.pdfDoc;
+    state.pdfDoc = null;
+    if (oldDoc?.destroy) void Promise.resolve(oldDoc.destroy()).catch(() => {
+    });
+    syncPreviewControls(state);
+  }
+  function syncPreviewControls(state) {
+    const hasDoc = state.numPages > 0;
+    const pageText = hasDoc ? `${state.currentPage} / ${state.numPages}` : "0 / 0";
+    state.pageLabel.textContent = pageText;
+    state.zoomLabel.textContent = `${Math.round(state.zoom * 100)}%`;
+    state.setSectionSummary?.(hasDoc ? pageText : "");
+    state.prevBtn.disabled = !hasDoc || state.currentPage <= 1;
+    state.nextBtn.disabled = !hasDoc || state.currentPage >= state.numPages;
+    state.openBtn.disabled = !state.attachment;
+  }
+  async function renderPageSlot(state, slot, gen, onError) {
+    if (!state.pdfDoc || state.generation !== gen || slot.rendering || slot.renderedZoom === state.zoom) return;
+    slot.rendering = true;
+    try {
+      const w = Math.max(180, (state.viewportEl.clientWidth || state.body.clientWidth || 260) - 2);
+      state.lastWidth = state.viewportEl.clientWidth || state.body.clientWidth || state.lastWidth;
+      const m = await renderPageToCanvas(
+        state.pdfDoc,
+        slot.pageNumber,
+        slot.canvas,
+        w,
+        state.zoom,
+        state.win.devicePixelRatio || 1,
+        () => state.generation !== gen,
+        (c) => {
+          slot.cancelTask = c;
+        }
+      );
+      if (state.generation === gen && m.height > 0) {
+        slot.lastHeight = m.height;
+        slot.card.removeAttribute("data-unrendered");
+        slot.card.style.minBlockSize = "0";
+        slot.renderedZoom = state.zoom;
+      }
+    } catch (error) {
+      if (state.generation === gen) onError(error);
+    } finally {
+      slot.rendering = false;
+      slot.cancelTask = void 0;
+    }
+  }
+  function invalidateVisibleSlots(state, onError) {
+    for (const slot of state.slots) {
+      slot.cancelTask?.();
+      slot.renderedZoom = null;
+    }
+    const startIdx = Math.max(0, state.currentPage - 1);
+    for (let i = startIdx; i < Math.min(state.slots.length, startIdx + 2); i++) {
+      void renderPageSlot(state, state.slots[i], state.generation, onError);
+    }
+  }
+  function jumpToPreviewPage(state, pageNumber, onError) {
+    if (!state.numPages) return;
+    const target = Math.max(1, Math.min(state.numPages, pageNumber));
+    state.currentPage = target;
+    syncPreviewControls(state);
+    const slot = state.slots[target - 1];
+    if (!slot) return;
+    state.viewportEl.scrollTop = Math.max(0, slot.card.offsetTop - (state.slots[0]?.card.offsetTop || 0));
+    void renderPageSlot(state, slot, state.generation, onError);
+    evictDistantPageCanvases(state.slots, state.currentPage);
+  }
+  async function loadAttachmentPreviewDoc(state, att, isDblClickOpenEnabled, onError) {
+    disposePreviewDocument(state, false);
+    const gen = state.generation;
+    state.loading = true;
+    state.attachment = att;
+    syncPreviewControls(state);
+    applyStatusMessage(state.statusEl, "zbf-pdf-preview-loading");
+    try {
+      const filePath = await resolveAttachmentPath(att);
+      if (state.generation !== gen) return;
+      if (!filePath) {
+        state.loading = false;
+        applyStatusMessage(state.statusEl, "zbf-pdf-preview-missing-file");
+        return;
+      }
+      const pdfDoc = await openPdfDocumentFromFile(filePath, state.doc);
+      if (state.generation !== gen) {
+        void Promise.resolve(pdfDoc.destroy?.()).catch(() => {
+        });
+        return;
+      }
+      state.loading = false;
+      state.pdfDoc = pdfDoc;
+      state.numPages = Math.max(0, pdfDoc.numPages || 0);
+      state.currentPage = state.numPages > 0 ? 1 : 0;
+      ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
+      if (!state.numPages) {
+        applyStatusMessage(state.statusEl, "zbf-pdf-preview-unavailable");
+        return;
+      }
+      applyStatusMessage(state.statusEl, "");
+      buildSlots(state, gen, isDblClickOpenEnabled, onError);
+      syncPreviewControls(state);
+    } catch (error) {
+      if (state.generation === gen) {
+        state.loading = false;
+        onError(error);
+        applyStatusMessage(state.statusEl, "zbf-pdf-preview-error");
+      }
+    }
+  }
+  async function loadItemPreviewAttachments(state, item, isDblClickOpenEnabled, onError) {
+    disposePreviewDocument(state, true);
+    const gen = state.generation;
+    if (!item) {
+      applyStatusMessage(state.statusEl, "zbf-pdf-preview-unavailable");
+      return;
+    }
+    state.loading = true;
+    applyStatusMessage(state.statusEl, "zbf-pdf-preview-loading");
+    const isReader = state.compare.tabType === "reader";
+    const ctx = isReader ? await resolveSameItemPdfContext(item) : { currentAttachmentID: 0, entries: await resolveAllPdfAttachments(item) };
+    if (state.generation !== gen) return;
+    const entries = ctx.entries;
+    state.attachments = entries;
+    state.compare.currentAttachmentID = ctx.currentAttachmentID;
+    const chosen = isReader && entries.length > 1 ? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID) : entries[0] ?? null;
+    syncCompareBar(state.compareUI, state.compare, entries, chosen?.id || 0);
+    if (!isReader && entries.length > 1) {
+      state.attSelect.textContent = "";
+      entries.forEach((entry, idx) => {
+        const opt = createXhtmlEl(state.doc, "option");
+        opt.value = String(entry.id);
+        opt.textContent = `${idx + 1}. ${entry.title}`;
+        state.attSelect.append(opt);
+      });
+      state.attSelect.style.display = "block";
+    } else state.attSelect.style.display = "none";
+    if (!chosen) {
+      state.loading = false;
+      ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
+      applyStatusMessage(state.statusEl, "zbf-pdf-preview-unavailable");
+      return;
+    }
+    await loadAttachmentPreviewDoc(state, chosen.attachment, isDblClickOpenEnabled, onError);
+  }
+  function buildSlots(state, gen, isDblClickOpenEnabled, onError) {
+    state.viewportEl.textContent = "";
+    state.slots = [];
+    const frag = state.doc.createDocumentFragment();
+    for (let p = 1; p <= state.numPages; p++) {
+      const card = createXhtmlEl(state.doc, "div");
+      card.className = "ztf-pdf-page-card";
+      card.setAttribute("data-unrendered", "true");
+      card.setAttribute("data-page-number", String(p));
+      const canvas = createXhtmlEl(state.doc, "canvas");
+      canvas.className = "ztf-pdf-canvas";
+      const badge = createXhtmlEl(state.doc, "span");
+      badge.className = "ztf-pdf-page-badge";
+      badge.textContent = String(p);
+      card.addEventListener("dblclick", (e) => {
+        if (state.attachment && isDblClickOpenEnabled()) {
+          e.preventDefault?.();
+          e.stopPropagation?.();
+          void openPdfInReader(state.attachment, state.win, p);
+        }
+      });
+      card.append(canvas, badge);
+      frag.append(card);
+      state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, lastHeight: 0 });
+    }
+    state.viewportEl.append(frag);
+    const Observer = state.win.IntersectionObserver;
+    if (Observer) {
+      state.observer = new Observer((entries) => {
+        if (state.generation !== gen) return;
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const slot = state.slots.find((s) => s.card === entry.target);
+            if (slot) void renderPageSlot(state, slot, gen, onError);
+          }
+        }
+      }, { root: state.viewportEl, rootMargin: "320px 0px", threshold: 0.01 });
+      for (const slot of state.slots) state.observer.observe(slot.card);
+    }
+    if (state.slots[0]) void renderPageSlot(state, state.slots[0], gen, onError);
+    if (state.slots[1]) void renderPageSlot(state, state.slots[1], gen, onError);
+  }
+
+  // src/domains/inspector/pdf-preview-section.ts
+  var MIN_ZOOM = 0.6;
+  var MAX_ZOOM = 2;
+  var ZOOM_STEP = 0.2;
   var PdfPreviewSectionController = class {
     unregisterFn = null;
+    prefSub = null;
     states = /* @__PURE__ */ new Map();
+    listeners = /* @__PURE__ */ new Map();
     kernel;
     services;
     constructor(kernel, services) {
@@ -979,39 +2757,20 @@
         pluginID: this.kernel.info.id,
         header: { l10nID: "zbf-pane-pdf-preview-header", icon },
         sidenav: { l10nID: "zbf-pane-pdf-preview-sidenav", icon: sidenavIcon, orderable: true },
-        onInit: ({ body, item, setEnabled }) => {
-          const doc = body.ownerDocument;
-          doc?.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
-          if (doc && !doc.getElementById("zbf-pdf-preview-style")) {
-            const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-            style.id = "zbf-pdf-preview-style";
-            style.textContent = PDF_CSS;
-            doc.documentElement?.append(style);
-          }
-          this.states.set(body, { body, item: item ?? null, setEnabled });
-          setEnabled?.(Boolean(item));
-          this.services.panePositions.observeAndQueue(body);
+        onInit: (props) => {
+          this.onInit(props);
+          this.services.panePositions.observeAndQueue(props.body);
         },
-        onDestroy: ({ body }) => {
-          this.states.delete(body);
+        onDestroy: ({ body }) => this.onDestroy(body),
+        onItemChange: (props) => {
+          this.services.panePositions.observeAndQueue(props.body);
+          return this.renderSection(props);
         },
-        onItemChange: ({ body, item, setEnabled }) => {
-          const st = this.states.get(body);
-          if (st) st.item = item ?? null;
-          const active = Boolean(item);
-          setEnabled?.(active);
-          this.services.panePositions.observeAndQueue(body);
-          return active;
+        onRender: (props) => {
+          this.services.panePositions.observeAndQueue(props.body);
+          this.renderSection(props);
         },
-        onRender: ({ body, item, setEnabled }) => {
-          const st = this.states.get(body);
-          if (st && item !== void 0) st.item = item;
-          setEnabled?.(Boolean(item ?? st?.item));
-          this.services.panePositions.observeAndQueue(body);
-        },
-        onAsyncRender: async ({ body, item, setEnabled }) => {
-          await this.renderCompareList(body, item ?? this.states.get(body)?.item, setEnabled);
-        }
+        onToggle: (props) => this.renderSection(props)
       });
       this.unregisterFn = reg.dispose;
       if (reg.sectionID) {
@@ -1020,48 +2779,298 @@
           getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.pdfPreview.position"), "zotero-editpane-related")
         });
       }
+      if (!this.prefSub) {
+        this.prefSub = this.kernel.prefs.observeKeys(
+          ["inspector.pdfPreview.mode", "inspector.pdfPreview.defaultZoom", "inspector.pdfPreview.showPageBadge", "inspector.pdfPreview.enable"],
+          (changedKey) => {
+            const isFull = this.kernel.prefs.get("inspector.pdfPreview.mode") === "full" && this.kernel.prefs.get("inspector.pdfPreview.enable");
+            const showBadge = this.kernel.prefs.get("inspector.pdfPreview.showPageBadge");
+            const defaultZoom = Math.round(this.kernel.prefs.get("inspector.pdfPreview.defaultZoom")) / 100;
+            for (const st of this.states.values()) {
+              st.fullActive = isFull;
+              st.root.setAttribute("data-show-badge", showBadge ? "true" : "false");
+              if (changedKey === "inspector.pdfPreview.defaultZoom") st.zoom = defaultZoom;
+              applyPreviewLayoutMode(st.body, st.root, st.customSection, isFull);
+              syncPreviewControls(st);
+              invalidateVisibleSlots(st, this.onRenderError);
+            }
+          }
+        );
+      }
     }
     async resolveSameItemPdfs(item) {
       if (!item) return [];
       const owner = await normalizeToRegularItemAsync(item);
       return resolvePdfAttachments(owner || item);
     }
-    async renderCompareList(body, item, setEnabled) {
-      const doc = body.ownerDocument;
-      if (!doc) return;
-      body.textContent = "";
-      const pdfs = await this.resolveSameItemPdfs(item);
-      setEnabled?.(pdfs.length > 0);
-      if (!pdfs.length) return;
-      const root = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      root.className = "zbf-pdf-root";
-      for (const pdf of pdfs) {
-        const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
-        btn.type = "button";
-        btn.className = "zbf-pdf-entry";
-        const name = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        name.textContent = pdf.filename || pdf.title;
-        const badge = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
-        badge.className = "zbf-pdf-badge";
-        badge.textContent = "Open / Focus";
-        btn.append(name, badge);
-        btn.addEventListener("click", () => {
-          this.kernel.bus.emit("workspace:open-item-request", {
-            itemID: pdf.id,
-            attachmentID: pdf.id,
-            preferExistingTab: true,
-            assignToActiveGroup: true
-          });
-        });
-        root.append(btn);
-      }
-      body.append(root);
-    }
     unregister() {
       this.services.panePositions.setTarget("pdf-preview", null);
+      this.prefSub?.();
+      this.prefSub = null;
+      for (const state of this.states.values()) {
+        if (state.resizeTimer !== null) state.win.clearTimeout?.(state.resizeTimer);
+        state.resizeObserver?.disconnect();
+        applyPreviewLayoutMode(state.body, state.root, state.customSection, false);
+        disposePreviewDocument(state, true);
+        removePdfPreviewStyles(state.doc);
+      }
+      for (const controller of this.listeners.values()) controller.abort();
+      this.listeners.clear();
+      this.states.clear();
       this.unregisterFn?.();
       this.unregisterFn = null;
-      this.states.clear();
+    }
+    onRenderError = (err) => {
+      this.kernel.logger.error("inspector:pdf-preview", err);
+    };
+    isDblClickOpen = () => this.kernel.prefs.get("inspector.pdfPreview.doubleClickOpen");
+    onInit(props) {
+      const { body, item, tabType, setEnabled, setSectionSummary } = props;
+      const doc = props.doc || body?.ownerDocument;
+      const win = doc?.defaultView || globalThis.Zotero?.getMainWindow?.();
+      if (!win || !doc || !body) return;
+      const customSection = body.closest?.("item-pane-custom-section") || null;
+      const collapsible = body.closest?.("collapsible-section") || null;
+      setEnabled?.(this.isSectionEnabled(tabType));
+      win.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
+      ensurePdfPreviewStyles(doc);
+      this.listeners.get(body)?.abort();
+      const controller = new win.AbortController();
+      this.listeners.set(body, controller);
+      body.textContent = "";
+      const root = createXhtmlEl(doc, "div");
+      root.className = "ztf-pdf-root";
+      const toolbar = createXhtmlEl(doc, "div");
+      toolbar.className = "ztf-pdf-toolbar";
+      const navGroup = createXhtmlEl(doc, "div");
+      navGroup.className = "ztf-pdf-btn-group";
+      const prevBtn = createToolBtn(doc, "‹", "zbf-pdf-preview-prev", "", "prev");
+      const pageLabel = createXhtmlEl(doc, "span");
+      pageLabel.className = "ztf-pdf-page-label";
+      pageLabel.textContent = "0 / 0";
+      const nextBtn = createToolBtn(doc, "›", "zbf-pdf-preview-next", "", "next");
+      navGroup.append(prevBtn, pageLabel, nextBtn);
+      const zoomGroup = createXhtmlEl(doc, "div");
+      zoomGroup.className = "ztf-pdf-btn-group";
+      const zoomOutBtn = createToolBtn(doc, "−", "zbf-pdf-preview-zoom-out", "", "zoomOut");
+      const zoomLabel = createToolBtn(doc, "100%");
+      const zoomInBtn = createToolBtn(doc, "+", "zbf-pdf-preview-zoom-in", "", "zoomIn");
+      const modeBtn = createToolBtn(doc, "", "zbf-pdf-preview-toggle-mode", "", "toggleMode");
+      const openBtn = createToolBtn(doc, "在阅读器中打开", "zbf-pdf-preview-open-reader", "ztf-pdf-open-btn", "openReader");
+      zoomGroup.append(zoomOutBtn, zoomLabel, zoomInBtn, modeBtn, openBtn);
+      const attSelect = createXhtmlEl(doc, "select", "display:none");
+      attSelect.className = "ztf-pdf-att-select";
+      const compare = { mode: "sibling", pickedAttachmentID: null, currentAttachmentID: 0, tabType: tabType || "library" };
+      const compareUI = createCompareBar(doc, controller.signal, () => state.compare, (nextMode, nextPickedID) => {
+        state.compare.mode = nextMode;
+        state.compare.pickedAttachmentID = nextPickedID;
+        const chosen = pickCompareAttachment({ currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments }, nextMode, nextPickedID);
+        syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
+        if (chosen && chosen.attachment !== state.attachment) {
+          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+        }
+      });
+      toolbar.append(navGroup, zoomGroup, attSelect, compareUI.bar);
+      const statusEl = createXhtmlEl(doc, "div");
+      statusEl.className = "ztf-pdf-status";
+      const viewportEl = createXhtmlEl(doc, "div");
+      viewportEl.className = "ztf-pdf-viewport";
+      viewportEl.setAttribute("tabindex", "0");
+      root.append(toolbar, statusEl, viewportEl);
+      body.append(root);
+      const state = {
+        doc,
+        win,
+        body,
+        root,
+        customSection,
+        collapsible,
+        setSectionSummary,
+        item: null,
+        attachment: null,
+        attachments: [],
+        pdfDoc: null,
+        loading: false,
+        generation: 0,
+        fullActive: this.kernel.prefs.get("inspector.pdfPreview.mode") === "full",
+        zoom: Math.round(this.kernel.prefs.get("inspector.pdfPreview.defaultZoom")) / 100,
+        currentPage: 0,
+        numPages: 0,
+        lastWidth: 0,
+        resizeTimer: null,
+        resizeObserver: null,
+        slots: [],
+        observer: null,
+        statusEl,
+        pageLabel,
+        zoomLabel,
+        prevBtn,
+        nextBtn,
+        openBtn,
+        attSelect,
+        viewportEl,
+        compare,
+        compareUI
+      };
+      root.setAttribute("data-show-badge", this.kernel.prefs.get("inspector.pdfPreview.showPageBadge") ? "true" : "false");
+      this.states.set(body, state);
+      ensureSectionConnected(body, root, customSection, collapsible);
+      applyPreviewLayoutMode(body, root, customSection, state.fullActive);
+      bindPreviewSidenavClick(
+        doc,
+        controller.signal,
+        () => this.kernel.prefs.get("inspector.pdfPreview.mode") === "full",
+        (active) => {
+          state.fullActive = active;
+          applyPreviewLayoutMode(state.body, state.root, state.customSection, active);
+        }
+      );
+      this.bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal);
+      this.setupResizeObserver(state);
+      syncPreviewControls(state);
+      this.renderSection(props);
+    }
+    isSectionEnabled(tabType) {
+      return Boolean(this.kernel.prefs.get("inspector.pdfPreview.enable") && (!tabType || tabType === "library" || tabType === "reader"));
+    }
+    bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, signal) {
+      const opts = { signal };
+      state.prevBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError), opts);
+      state.nextBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError), opts);
+      zoomOutBtn.addEventListener("click", () => this.setZoom(state, state.zoom - ZOOM_STEP), opts);
+      zoomInBtn.addEventListener("click", () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
+      state.zoomLabel.addEventListener("click", () => this.setZoom(state, 1), opts);
+      modeBtn.addEventListener("click", () => {
+        const next = this.kernel.prefs.get("inspector.pdfPreview.mode") === "full" ? "section" : "full";
+        this.kernel.prefs.set("inspector.pdfPreview.mode", next);
+        state.fullActive = next === "full";
+        applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
+        invalidateVisibleSlots(state, this.onRenderError);
+      }, opts);
+      state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
+      state.attSelect.addEventListener("change", () => {
+        const chosen = state.attachments.find((entry) => String(entry.id) === state.attSelect.value);
+        if (chosen && chosen.attachment !== state.attachment) {
+          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+        }
+      }, opts);
+      state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
+      state.viewportEl.addEventListener("scroll", () => this.updateCurrentPageFromScroll(state), opts);
+      state.viewportEl.addEventListener("dblclick", (event) => {
+        if (!state.attachment || !this.isDblClickOpen()) return;
+        event.preventDefault?.();
+        event.stopPropagation?.();
+        const card = event.target?.closest?.("[data-page-number]");
+        void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.("data-page-number")) || state.currentPage || 1);
+      }, opts);
+      state.viewportEl.addEventListener("keydown", (event) => {
+        if (!state.numPages) return;
+        const k = event.key;
+        if (k === "PageDown" || k === "ArrowRight") {
+          event.preventDefault?.();
+          jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError);
+        } else if (k === "PageUp" || k === "ArrowLeft") {
+          event.preventDefault?.();
+          jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError);
+        } else if (k === "Home" || k === "End") {
+          event.preventDefault?.();
+          jumpToPreviewPage(state, k === "Home" ? 1 : state.numPages, this.onRenderError);
+        } else if ((event.ctrlKey || event.metaKey) && k === "0") {
+          event.preventDefault?.();
+          this.setZoom(state, 1);
+        }
+      }, opts);
+      state.viewportEl.addEventListener("wheel", (e) => {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          this.setZoom(state, state.zoom + (e.deltaY < 0 ? 0.1 : -0.1));
+        }
+      }, opts);
+    }
+    setupResizeObserver(state) {
+      const RO = state.win.ResizeObserver;
+      if (!RO) return;
+      state.resizeObserver = new RO(() => {
+        const width = state.viewportEl.clientWidth || state.body.clientWidth || 0;
+        if (!width || !state.pdfDoc || Math.abs(width - state.lastWidth) < 8) return;
+        state.lastWidth = width;
+        if (state.resizeTimer !== null) state.win.clearTimeout(state.resizeTimer);
+        state.resizeTimer = state.win.setTimeout(() => {
+          state.resizeTimer = null;
+          invalidateVisibleSlots(state, this.onRenderError);
+        }, 120);
+      });
+      state.resizeObserver.observe(state.viewportEl);
+    }
+    onDestroy(body) {
+      const state = this.states.get(body);
+      if (state) {
+        if (state.resizeTimer !== null) state.win.clearTimeout?.(state.resizeTimer);
+        state.resizeObserver?.disconnect();
+        applyPreviewLayoutMode(state.body, state.root, state.customSection, false);
+        disposePreviewDocument(state, true);
+      }
+      this.states.delete(body);
+      this.listeners.get(body)?.abort();
+      this.listeners.delete(body);
+    }
+    renderSection({ body, item, tabType, setEnabled, setSectionSummary }) {
+      const enabled = this.isSectionEnabled(tabType);
+      setEnabled?.(enabled);
+      let state = this.states.get(body);
+      if (!state) {
+        const doc = body?.ownerDocument;
+        if (!doc) return enabled;
+        this.onInit({ doc, body, item, tabType, setEnabled, setSectionSummary });
+        state = this.states.get(body);
+        if (!state) return enabled;
+      }
+      if (setSectionSummary) state.setSectionSummary = setSectionSummary;
+      ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
+      if (!enabled) {
+        state.item = null;
+        applyPreviewLayoutMode(state.body, state.root, state.customSection, false);
+        disposePreviewDocument(state, true);
+        applyStatusMessage(state.statusEl, "");
+        return false;
+      }
+      applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get("inspector.pdfPreview.mode") === "full");
+      const nextTabType = tabType || "library";
+      const itemChanged = item !== state.item || nextTabType !== state.compare.tabType;
+      state.compare.tabType = nextTabType;
+      if (!itemChanged && item && (state.pdfDoc || state.loading)) return true;
+      state.compare.mode = "sibling";
+      state.compare.pickedAttachmentID = null;
+      state.compare.currentAttachmentID = 0;
+      syncCompareBar(state.compareUI, state.compare, [], 0);
+      state.item = item ?? null;
+      void loadItemPreviewAttachments(state, state.item, this.isDblClickOpen, this.onRenderError);
+      return enabled;
+    }
+    setZoom(state, nextZoom) {
+      const clamped = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom)) * 100) / 100;
+      if (clamped === state.zoom) return;
+      state.zoom = clamped;
+      syncPreviewControls(state);
+      invalidateVisibleSlots(state, this.onRenderError);
+    }
+    updateCurrentPageFromScroll(state) {
+      if (!state.slots.length) return;
+      const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
+      let best = 1;
+      let bestDist = Infinity;
+      for (const slot of state.slots) {
+        const dist = Math.abs(slot.card.offsetTop - top);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = slot.pageNumber;
+        }
+      }
+      if (best !== state.currentPage) {
+        state.currentPage = best;
+        syncPreviewControls(state);
+        evictDistantPageCanvases(state.slots, state.currentPage);
+      }
     }
   };
 
@@ -1173,7 +3182,9 @@
       if (!manager?.registerColumn) return;
       this.columnID = manager.registerColumn({
         dataKey: "bridgeflowCitation",
-        label: "Citation",
+        label: globalThis.Zotero?.locale?.startsWith?.("zh") ? "引用" : "Citation",
+        enabledTreeIDs: ["main"],
+        zoteroPersist: ["width", "hidden", "sortDirection"],
         pluginID: this.kernel.info.id,
         dataProvider: (item) => {
           const id = Number(item?.id || 0);
@@ -2190,7 +4201,7 @@
   };
 
   // src/domains/workspace/workspace-icons.ts
-  var SVG_NS = "http://www.w3.org/2000/svg";
+  var SVG_NS2 = "http://www.w3.org/2000/svg";
   var ICON_PATHS = {
     bridge: "M2 11 C4 4, 12 4, 14 11 M1.5 11 H14.5 M5.5 7.5 V11 M8 5.5 V11 M10.5 7.5 V11",
     plus: "M8 3 V13 M3 8 H13",
@@ -2203,13 +4214,13 @@
     archive: "M2.5 3.5 H13.5 V6 H2.5 Z M3.5 6 V12.5 H12.5 V6 M6.5 8.5 H9.5"
   };
   function createWorkspaceIcon(doc, name, size = 14) {
-    const svg = doc.createElementNS(SVG_NS, "svg");
+    const svg = doc.createElementNS(SVG_NS2, "svg");
     svg.setAttribute("viewBox", "0 0 16 16");
     svg.setAttribute("width", String(size));
     svg.setAttribute("height", String(size));
     svg.setAttribute("fill", "none");
     svg.setAttribute("class", "zbf-tb-icon");
-    const path = doc.createElementNS(SVG_NS, "path");
+    const path = doc.createElementNS(SVG_NS2, "path");
     path.setAttribute("d", ICON_PATHS[name]);
     path.setAttribute("stroke", "currentColor");
     path.setAttribute("stroke-width", "1.5");
@@ -4696,13 +6707,13 @@
             const htmlStr = hostCc["@mozilla.org/supports-string;1"].createInstance(hostCi.nsISupportsString);
             htmlStr.data = cleanHtml;
             transferable.addDataFlavor("text/html");
-            transferable.setTransferData("text/html", htmlStr);
+            transferable.setTransferData("text/html", htmlStr, cleanHtml.length * 2);
           }
           if (cleanText) {
             const textStr = hostCc["@mozilla.org/supports-string;1"].createInstance(hostCi.nsISupportsString);
             textStr.data = cleanText;
             transferable.addDataFlavor("text/plain");
-            transferable.setTransferData("text/plain", textStr);
+            transferable.setTransferData("text/plain", textStr, cleanText.length * 2);
           }
           const clipboard = hostCc["@mozilla.org/widget/clipboard;1"].getService(hostCi.nsIClipboard);
           clipboard.setData(transferable, null, hostCi.nsIClipboard.kGlobalClipboard);
@@ -4728,19 +6739,37 @@
       if (!formatted.text && !formatted.html) return false;
       const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
       if (ok) {
-        this.bus.emit("citation:copied", {
-          itemIDs: items.map((it) => Number(it.id || 0)).filter((n) => n > 0),
-          styleID: formatted.styleID,
-          html: formatted.html,
-          text: formatted.text,
-          source: options.source
-        });
+        this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
       }
       return ok;
+    }
+    copyRendered(rawItems, payload, options) {
+      const { items } = deduplicateRegularItems(rawItems);
+      if (!items.length || !payload.text && !payload.html) return false;
+      const ok = this.writePayload(payload.html, payload.text, Boolean(options.plainOnly));
+      if (ok) {
+        this.emitCopied(items, payload.styleID, payload.html, payload.text, options.source, Boolean(options.asCitation));
+      }
+      return ok;
+    }
+    emitCopied(items, styleID, html, text, source, asCitation) {
+      const rawText = text.trim();
+      const canRecord = !asCitation || rawText.length >= 8 && !/^\[?\d+(?:[,\s\u2010-\u2015-]+\d+)*\]?$/.test(rawText);
+      if (!canRecord) return;
+      this.bus.emit("citation:copied", {
+        itemIDs: items.map((it) => Number(it.id || 0)).filter((n) => n > 0),
+        styleID,
+        html,
+        text,
+        source
+      });
     }
   };
 
   // src/services/csl-engine.ts
+  function createCslPreviewError(code, message) {
+    return Object.assign(new Error(message), { previewCode: code });
+  }
   var CslFormattingEngine = class {
     cache = /* @__PURE__ */ new Map();
     bytes = 0;
@@ -4765,17 +6794,53 @@
       }
       return "http://www.zotero.org/styles/apa";
     }
+    resolveFormatConfig(item, overrideStyle) {
+      const custom = (overrideStyle ?? this.prefs.get("inspector.cslPreview.citationstyle")).trim();
+      const host2 = globalThis.Zotero;
+      const qc = host2?.QuickCopy;
+      if (typeof qc?.unserializeSetting === "function") {
+        let format = {};
+        try {
+          let url = "";
+          if (item?.isField?.("url")) {
+            try {
+              url = item.getField("url", true, true) || "";
+            } catch {
+              url = "";
+            }
+          }
+          let rawSetting = "";
+          try {
+            rawSetting = qc.getFormatFromURL?.(url) || "";
+          } catch {
+            rawSetting = host2?.Prefs?.get?.("export.quickCopy.setting") || "";
+          }
+          format = { ...qc.unserializeSetting(rawSetting) };
+        } catch (error) {
+          if (!custom) {
+            throw createCslPreviewError("no-style", error instanceof Error ? error.message : String(error));
+          }
+        }
+        if (custom) Object.assign(format, { id: custom, mode: "bibliography" });
+        if (format.mode !== "bibliography" || !format.id) {
+          throw createCslPreviewError("no-style", "No bibliography style configured");
+        }
+        if (host2?.Styles?.get && !host2.Styles.get(format.id)) {
+          throw createCslPreviewError("style-missing", `Citation style not installed: ${format.id}`);
+        }
+        format.locale = format.locale || host2?.Prefs?.get?.("export.quickCopy.locale");
+        const asHTML = format.contentType === "html";
+        format.contentType = "text";
+        return { format, styleID: format.id, asHTML };
+      }
+      const styleID = this.resolveStyleID(overrideStyle);
+      return { format: `bibliography=${styleID}`, styleID, asHTML: false };
+    }
     buildCacheKey(items, styleID, asCitation) {
-      const itemPart = items.map((it) => `${it.id || 0}:${it.dateModified || it.version || 0}`).join(",");
+      const itemPart = items.map((it) => `${it.id || 0}:${it.getField?.("dateModified") || it.dateModified || it.version || 0}`).join(",");
       return `${asCitation ? "cite" : "bib"}|${styleID}|${itemPart}`;
     }
     async formatItems(items, options = {}) {
-      const styleID = this.resolveStyleID(options.styleID);
-      const asCitation = Boolean(options.asCitation);
-      if (!items.length) return { html: "", text: "", styleID };
-      const key = this.buildCacheKey(items, styleID, asCitation);
-      const cached = this.getCached(key);
-      if (cached) return cached;
       const host2 = globalThis.Zotero;
       if (host2?.Styles?.init) {
         await Promise.race([
@@ -4783,13 +6848,21 @@
           new Promise((resolve) => setTimeout(resolve, 1e4))
         ]);
       }
+      const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
+      const asCitation = Boolean(options.asCitation);
+      if (!items.length) return { html: "", text: "", styleID };
+      const key = this.buildCacheKey(items, styleID, asCitation);
+      const cached = this.getCached(key);
+      if (cached) return cached;
       let html = "";
       let text = "";
       if (host2?.QuickCopy?.getContentFromItems) {
-        const formatStr = `bibliography=${styleID}`;
-        const res = host2.QuickCopy.getContentFromItems(items, formatStr, null, asCitation);
-        html = String(res?.html || "");
-        text = String(res?.text || "").trim();
+        const res = host2.QuickCopy.getContentFromItems(items, format, null, asCitation);
+        if (res === null || res === void 0 || typeof res.html !== "string" || typeof res.text !== "string") {
+          throw createCslPreviewError("quickcopy-unavailable", `QuickCopy returned incomplete ${asCitation ? "citation" : "bibliography"}`);
+        }
+        html = res.html;
+        text = res.text.trim();
       } else {
         text = items.map((it) => String(it.getField?.("title") || it.title || "")).filter(Boolean).join("\n");
         html = text;

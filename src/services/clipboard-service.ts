@@ -38,13 +38,13 @@ export class UnifiedClipboardService {
 					const htmlStr = hostCc['@mozilla.org/supports-string;1'].createInstance(hostCi.nsISupportsString);
 					htmlStr.data = cleanHtml;
 					transferable.addDataFlavor('text/html');
-					transferable.setTransferData('text/html', htmlStr);
+					transferable.setTransferData('text/html', htmlStr, cleanHtml.length * 2);
 				}
 				if (cleanText) {
 					const textStr = hostCc['@mozilla.org/supports-string;1'].createInstance(hostCi.nsISupportsString);
 					textStr.data = cleanText;
 					transferable.addDataFlavor('text/plain');
-					transferable.setTransferData('text/plain', textStr);
+					transferable.setTransferData('text/plain', textStr, cleanText.length * 2);
 				}
 				const clipboard = hostCc['@mozilla.org/widget/clipboard;1'].getService(hostCi.nsIClipboard);
 				clipboard.setData(transferable, null, hostCi.nsIClipboard.kGlobalClipboard);
@@ -73,14 +73,42 @@ export class UnifiedClipboardService {
 		if (!formatted.text && !formatted.html) return false;
 		const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
 		if (ok) {
-			this.bus.emit('citation:copied', {
-				itemIDs: items.map((it) => Number(it.id || 0)).filter((n) => n > 0),
-				styleID: formatted.styleID,
-				html: formatted.html,
-				text: formatted.text,
-				source: options.source,
-			});
+			this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
 		}
 		return ok;
+	}
+
+	copyRendered(
+		rawItems: readonly any[],
+		payload: { html: string; text: string; styleID: string },
+		options: { asCitation?: boolean; plainOnly?: boolean; source: CitationCopiedPayload['source'] },
+	): boolean {
+		const { items } = deduplicateRegularItems(rawItems);
+		if (!items.length || (!payload.text && !payload.html)) return false;
+		const ok = this.writePayload(payload.html, payload.text, Boolean(options.plainOnly));
+		if (ok) {
+			this.emitCopied(items, payload.styleID, payload.html, payload.text, options.source, Boolean(options.asCitation));
+		}
+		return ok;
+	}
+
+	private emitCopied(
+		items: readonly any[],
+		styleID: string,
+		html: string,
+		text: string,
+		source: CitationCopiedPayload['source'],
+		asCitation: boolean,
+	): void {
+		const rawText = text.trim();
+		const canRecord = !asCitation || (rawText.length >= 8 && !/^\[?\d+(?:[,\s\u2010-\u2015-]+\d+)*\]?$/.test(rawText));
+		if (!canRecord) return;
+		this.bus.emit('citation:copied', {
+			itemIDs: items.map((it) => Number(it.id || 0)).filter((n) => n > 0),
+			styleID,
+			html,
+			text,
+			source,
+		});
 	}
 }
