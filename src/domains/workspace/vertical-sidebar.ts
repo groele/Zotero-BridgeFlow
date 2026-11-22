@@ -148,6 +148,7 @@ export class WorkspaceVerticalSidebar {
 			const vBtn = this.doc.createElement('button');
 			vBtn.type = 'button';
 			vBtn.className = 'zbf-sb-view-btn';
+			vBtn.setAttribute('data-view-mode', mode);
 			vBtn.textContent = label;
 			vBtn.addEventListener('click', () => {
 				this.viewMode = mode;

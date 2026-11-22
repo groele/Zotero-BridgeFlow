@@ -27,8 +27,11 @@ export interface PreviewState {
 	collapsible: Element | null;
 	setSectionSummary?: (summary: string) => void;
 	item: any | null;
+	ownerID: number;
+	attIdsKey: string;
 	attachment: any | null;
 	attachments: PdfAttachmentEntry[];
+	pageByAttachment: Map<number, number>;
 	pdfDoc: PdfDocumentProxy | null;
 	loading: boolean;
 	generation: number;
@@ -54,6 +57,10 @@ export interface PreviewState {
 }
 
 export function disposePreviewDocument(state: PreviewState, clearAttachments = false): void {
+	const prevAttID = Number(state.attachment?.id) || 0;
+	if (prevAttID > 0 && state.currentPage >= 1) {
+		state.pageByAttachment.set(prevAttID, state.currentPage);
+	}
 	state.generation += 1;
 	state.loading = false;
 	state.observer?.disconnect();
@@ -140,6 +147,8 @@ export function jumpToPreviewPage(state: PreviewState, pageNumber: number, onErr
 	if (!state.numPages) return;
 	const target = Math.max(1, Math.min(state.numPages, pageNumber));
 	state.currentPage = target;
+	const attID = Number(state.attachment?.id) || 0;
+	if (attID > 0) state.pageByAttachment.set(attID, target);
 	syncPreviewControls(state);
 	const slot = state.slots[target - 1];
 	if (!slot) return;
@@ -169,12 +178,18 @@ export async function loadAttachmentPreviewDoc(
 		state.loading = false;
 		state.pdfDoc = pdfDoc;
 		state.numPages = Math.max(0, pdfDoc.numPages || 0);
-		state.currentPage = state.numPages > 0 ? 1 : 0;
+		const attID = Number(att?.id) || 0;
+		const rememberedPage = attID > 0 ? (state.pageByAttachment.get(attID) || 1) : 1;
+		state.currentPage = state.numPages > 0 ? Math.max(1, Math.min(state.numPages, rememberedPage)) : 0;
 		ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
 		if (!state.numPages) { applyStatusMessage(state.statusEl, 'zbf-pdf-preview-unavailable'); return; }
 		applyStatusMessage(state.statusEl, '');
 		buildSlots(state, gen, isDblClickOpenEnabled, onError);
-		syncPreviewControls(state);
+		if (state.currentPage > 1) {
+			jumpToPreviewPage(state, state.currentPage, onError);
+		} else {
+			syncPreviewControls(state);
+		}
 	} catch (error) {
 		if (state.generation === gen) {
 			state.loading = false;
@@ -196,25 +211,28 @@ export async function loadItemPreviewAttachments(
 	state.loading = true;
 	applyStatusMessage(state.statusEl, 'zbf-pdf-preview-loading');
 	const isReader = state.compare.tabType === 'reader';
-	const ctx = isReader ? await resolveSameItemPdfContext(item) : { currentAttachmentID: 0, entries: await resolveAllPdfAttachments(item) };
+	const ctx = await resolveSameItemPdfContext(item, state.win);
 	if (state.generation !== gen) return;
 	const entries = ctx.entries;
+	state.ownerID = ctx.ownerID;
 	state.attachments = entries;
 	state.compare.currentAttachmentID = ctx.currentAttachmentID;
-	const chosen = isReader && entries.length > 1
-		? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID)
-		: entries[0] ?? null;
+	const chosen = entries.length > 0
+		? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID, isReader ? 'reader' : 'library')
+		: null;
+	if (chosen) state.compare.pickedAttachmentID = chosen.id;
 	syncCompareBar(state.compareUI, state.compare, entries, chosen?.id || 0);
-	if (!isReader && entries.length > 1) {
-		state.attSelect.textContent = '';
+	state.attSelect.textContent = '';
+	if (entries.length > 1) {
 		entries.forEach((entry, idx) => {
 			const opt = el(state.doc, 'option');
 			opt.value = String(entry.id);
 			opt.textContent = `${idx + 1}. ${entry.title}`;
 			state.attSelect.append(opt);
 		});
-		state.attSelect.style.display = 'block';
-	} else state.attSelect.style.display = 'none';
+		if (chosen) state.attSelect.value = String(chosen.id);
+	}
+	state.attSelect.style.display = 'none';
 	if (!chosen) {
 		state.loading = false;
 		ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);

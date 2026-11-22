@@ -1,4 +1,5 @@
 import type { SpotlightItemResult } from '../../kernel/types.ts';
+import { safeGetItemField } from '../../services/item-resolution.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 
 interface LibraryEntry {
@@ -76,12 +77,12 @@ export class SpotlightLibraryIndex {
 					}
 					const item = items[i];
 					if (!item?.isRegularItem?.() || item.deleted) continue;
-					const rawTitle = String(item.getField?.('title') || item.key || '');
+					const rawTitle = safeGetItemField(item, 'title') || String(item.key || '');
 					const title = rawTitle.replace(/<[^>]+>/g, '').trim();
 					if (!title) continue;
 					const author = String(item.firstCreator || '');
-					const year = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
-					const pub = String(item.getField?.('publicationTitle') || item.getField?.('proceedingsTitle') || '');
+					const year = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).slice(0, 4);
+					const pub = safeGetItemField(item, 'publicationTitle') || safeGetItemField(item, 'proceedingsTitle');
 					next.push({
 						id: Number(item.id),
 						key: `${libraryID}:${item.key}`,

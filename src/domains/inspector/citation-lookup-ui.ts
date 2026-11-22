@@ -1,3 +1,4 @@
+import { safeGetItemField } from '../../services/item-resolution.ts';
 import type { LookupCandidate } from './citation-lookup-engine.ts';
 import { clearLookupResult, renderLookupTitle, setLookupL10n } from './inspector-styles.ts';
 
@@ -28,14 +29,14 @@ export function renderLookupItemCard(
 
 	const head = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
 	head.className = 'viewflow-lookup-card-head';
-	renderLookupTitle(head, String(target?.getField?.('title') || candidate.title || ''));
+	renderLookupTitle(head, safeGetItemField(target, 'title') || candidate.title || '');
 	card.appendChild(head);
 
 	const meta = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
 	meta.className = 'viewflow-lookup-card-meta';
-	const journal = target?.getField?.('publicationTitle') || target?.getField?.('journalAbbreviation') || '';
-	const year = target?.getField?.('year') || target?.getField?.('date') || '';
-	meta.textContent = `${journal} (${year}) · Vol.${target?.getField?.('volume') || '-'} · pp.${target?.getField?.('pages') || '-'}`;
+	const journal = safeGetItemField(target, 'publicationTitle') || safeGetItemField(target, 'journalAbbreviation') || '';
+	const year = (safeGetItemField(target, 'year') || safeGetItemField(target, 'date')).slice(0, 4);
+	meta.textContent = `${journal} (${year}) · Vol.${safeGetItemField(target, 'volume') || '-'} · pp.${safeGetItemField(target, 'pages') || '-'}`;
 	card.appendChild(meta);
 
 	const actRow = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
@@ -87,10 +88,10 @@ export function renderLookupCandidatesList(
 		const btn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
 		btn.type = 'button';
 		const tObj = cb.resolveItem(c);
-		const j = tObj?.getField?.('journalAbbreviation') || tObj?.getField?.('publicationTitle') || '';
-		const y = tObj?.getField?.('year') || tObj?.getField?.('date') || '';
+		const j = safeGetItemField(tObj, 'journalAbbreviation') || safeGetItemField(tObj, 'publicationTitle') || '';
+		const y = (safeGetItemField(tObj, 'year') || safeGetItemField(tObj, 'date')).slice(0, 4);
 		const suffix = j || y ? ` (${[j, y].filter(Boolean).join(', ')})` : '';
-		renderLookupTitle(btn, String(tObj?.getField?.('title') || c.title || ''));
+		renderLookupTitle(btn, safeGetItemField(tObj, 'title') || c.title || '');
 		if (suffix) btn.appendChild(doc.createTextNode(suffix));
 		btn.onclick = () => renderLookupItemCard(doc, statusDiv, c, '候选文献，请核对后定位', 'zbf-lookup-state-candidate', cb);
 		row.appendChild(btn);

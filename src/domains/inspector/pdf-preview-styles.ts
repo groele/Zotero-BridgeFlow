@@ -46,6 +46,13 @@ export const PREVIEW_CSS = `
 	padding-top: 3px; margin-top: 2px;
 	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
 }
+.ztf-pdf-compare-count {
+	flex-shrink: 0; padding: 1px 5px; border-radius: 999px;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.12));
+	color: var(--accent-blue, #4072e5); font: 600 10.5px/1.3 system-ui, sans-serif;
+	font-variant-numeric: tabular-nums;
+}
+.ztf-pdf-compare-nav { flex-shrink: 0; padding: 0 3px !important; }
 .ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; }
 .ztf-pdf-compare-btn[data-active="true"] {
 	color: var(--accent-blue, #4072e5) !important;

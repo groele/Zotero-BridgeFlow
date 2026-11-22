@@ -158,7 +158,16 @@ export class PdfPreviewSectionController {
 		const compareUI = createCompareBar(doc, controller.signal, () => state.compare, (nextMode, nextPickedID) => {
 			state.compare.mode = nextMode;
 			state.compare.pickedAttachmentID = nextPickedID;
-			const chosen = pickCompareAttachment({ currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments }, nextMode, nextPickedID);
+			const chosen = pickCompareAttachment(
+				{ ownerID: state.ownerID, currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments },
+				nextMode,
+				nextPickedID,
+				state.compare.tabType === 'reader' ? 'reader' : 'library',
+			);
+			if (chosen) {
+				state.compare.pickedAttachmentID = chosen.id;
+				state.attSelect.value = String(chosen.id);
+			}
 			syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
 			if (chosen && chosen.attachment !== state.attachment) {
 				void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
@@ -175,7 +184,8 @@ export class PdfPreviewSectionController {
 
 		const state: PreviewState = {
 			doc, win, body, root, customSection, collapsible, setSectionSummary,
-			item: null, attachment: null, attachments: [], pdfDoc: null, loading: false, generation: 0,
+			item: null, ownerID: 0, attIdsKey: '', attachment: null, attachments: [], pageByAttachment: new Map<number, number>(),
+			pdfDoc: null, loading: false, generation: 0,
 			fullActive: this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full',
 			zoom: Math.round(this.kernel.prefs.get('inspector.pdfPreview.defaultZoom')) / 100,
 			currentPage: 0, numPages: 0, lastWidth: 0, resizeTimer: null, resizeObserver: null,
@@ -218,8 +228,12 @@ export class PdfPreviewSectionController {
 		state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
 		state.attSelect.addEventListener('change', () => {
 			const chosen = state.attachments.find((entry) => String(entry.id) === state.attSelect.value);
-			if (chosen && chosen.attachment !== state.attachment) {
-				void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+			if (chosen) {
+				state.compare.pickedAttachmentID = chosen.id;
+				syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
+				if (chosen.attachment !== state.attachment) {
+					void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+				}
 			}
 		}, opts);
 		state.pageLabel.addEventListener('click', () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
@@ -292,11 +306,17 @@ export class PdfPreviewSectionController {
 		}
 		applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full');
 		const nextTabType = tabType || 'library';
-		const itemChanged = item !== state.item || nextTabType !== state.compare.tabType;
+		const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === 'attachment');
+		const ownerRef = (isAtt && item?.parentItem) ? item.parentItem : item;
+		const nextAttIdsKey = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments().join(',') : String(item?.id || '');
+		const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
 		state.compare.tabType = nextTabType;
+		state.attIdsKey = nextAttIdsKey;
 		if (!itemChanged && item && (state.pdfDoc || state.loading)) return true;
+		const nextOwnerID = isAtt ? Number(item?.parentID || item?.parentItemID || item?.parentItem?.id || 0) : Number(item?.id || 0);
+		const sameOwner = nextOwnerID > 0 && nextOwnerID === state.ownerID;
 		state.compare.mode = 'sibling';
-		state.compare.pickedAttachmentID = null;
+		state.compare.pickedAttachmentID = isAtt ? (Number(item?.id) || null) : (sameOwner ? state.compare.pickedAttachmentID : null);
 		state.compare.currentAttachmentID = 0;
 		syncCompareBar(state.compareUI, state.compare, [], 0);
 		state.item = item ?? null;
@@ -323,6 +343,8 @@ export class PdfPreviewSectionController {
 		}
 		if (best !== state.currentPage) {
 			state.currentPage = best;
+			const attID = Number(state.attachment?.id) || 0;
+			if (attID > 0) state.pageByAttachment.set(attID, best);
 			syncPreviewControls(state);
 			evictDistantPageCanvases(state.slots, state.currentPage);
 		}

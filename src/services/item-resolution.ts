@@ -220,10 +220,23 @@ export async function locateItemInZoteroLibrary(
 	}
 }
 
+export function safeGetItemField(item: any, field: string): string {
+	if (!item || typeof item.getField !== 'function') return '';
+	try {
+		return String(item.getField(field, false, true) || '');
+	} catch {
+		try {
+			return String(item.getField(field) || '');
+		} catch {
+			return '';
+		}
+	}
+}
+
 export function formatCreatorYear(item: any): string {
 	if (!item) return '';
-	const first = String(item.firstCreator || '');
-	const date = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
+	const first = String(item.firstCreator || safeGetItemField(item, 'firstCreator') || '');
+	const date = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).slice(0, 4);
 	return [first, date].filter(Boolean).join(', ');
 }
 

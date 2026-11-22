@@ -17,6 +17,11 @@ import { CitationTagGovernance } from '../src/domains/word-cite/tag-governance.t
 import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
 import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
 import { formatReadingProgress } from '../src/domains/workspace/tab-actions-helpers.ts';
+import {
+	pickCompareAttachment,
+	resolveAllPdfAttachments,
+	resolveSameItemPdfContext,
+} from '../src/domains/inspector/pdf-renderer.ts';
 
 function createMemoryPrefs(initial = {}) {
 	const store = new Map(Object.entries(initial));
@@ -231,5 +236,80 @@ test('CiteFlow & ViewFlow Parity: URL/SharePoint doc naming, selected Word colle
 	history.dispose();
 
 	delete globalThis.IOUtils;
+	delete globalThis.Zotero;
+});
+
+test('Multi-PDF discovery, selection, and comparison under a single parent item work for parent, child attachment, and reader views', async () => {
+	const pdf1 = {
+		id: 501,
+		parentID: 500,
+		isRegularItem: () => false,
+		isAttachment: () => true,
+		isPDFAttachment: () => true,
+		attachmentFilename: 'Paper-Main.pdf',
+		getField: (f) => (f === 'title' ? 'Full Text PDF' : ''),
+	};
+	const pdf2 = {
+		id: 502,
+		parentID: 500,
+		isRegularItem: () => false,
+		isAttachment: () => true,
+		isPDFAttachment: () => true,
+		attachmentFilename: 'Paper-Supplementary.pdf',
+		getField: (f) => (f === 'title' ? 'Supporting Information' : ''),
+	};
+	const parentItem = {
+		id: 500,
+		isRegularItem: () => true,
+		isAttachment: () => false,
+		getBestAttachment: async () => pdf1,
+		getAttachments: () => [501, 502],
+	};
+	pdf1.parentItem = parentItem;
+
+	const itemMap = new Map([
+		[500, parentItem],
+		[501, pdf1],
+		[502, pdf2],
+	]);
+	globalThis.Zotero = {
+		Items: {
+			get: (id) => itemMap.get(id),
+			getAsync: async (ids) => (Array.isArray(ids) ? ids.map((i) => itemMap.get(i)) : itemMap.get(ids)),
+		},
+		Reader: {
+			getByTabID: (tabID) => (tabID === 'reader-tab-1' ? { itemID: 501 } : null),
+		},
+	};
+
+	// 1. Selecting parent item returns all 2 PDFs with disambiguated title + filename
+	const fromParent = await resolveAllPdfAttachments(parentItem);
+	assert.equal(fromParent.length, 2);
+	assert.equal(fromParent[0].id, 501);
+	assert.equal(fromParent[0].title, 'Full Text PDF (Paper-Main.pdf)');
+	assert.equal(fromParent[1].id, 502);
+	assert.equal(fromParent[1].title, 'Supporting Information (Paper-Supplementary.pdf)');
+
+	// 2. Selecting child attachment #2 still ascends to parent item and returns all 2 sibling PDFs
+	const fromChild = await resolveAllPdfAttachments(pdf2);
+	assert.equal(fromChild.length, 2);
+	assert.equal(fromChild[0].id, 501);
+	assert.equal(fromChild[1].id, 502);
+
+	// 3. In Library view, clicking child attachment #2 picks attachment #2 by default while listing both
+	const ctxChild = await resolveSameItemPdfContext(pdf2);
+	assert.equal(ctxChild.ownerID, 500);
+	assert.equal(ctxChild.currentAttachmentID, 502);
+	assert.equal(pickCompareAttachment(ctxChild, 'sibling', null, 'library')?.id, 502);
+	assert.equal(pickCompareAttachment(ctxChild, 'sibling', 501, 'library')?.id, 501);
+
+	// 4. In Reader view (reading pdf1 in reader-tab-1), Item Pane receives parentItem, detects active reader PDF 501, and defaults sidebar preview to sibling PDF 502 for comparison
+	const mockWin = { Zotero_Tabs: { selectedID: 'reader-tab-1' } };
+	const ctxReader = await resolveSameItemPdfContext(parentItem, mockWin);
+	assert.equal(ctxReader.ownerID, 500);
+	assert.equal(ctxReader.currentAttachmentID, 501);
+	assert.equal(pickCompareAttachment(ctxReader, 'sibling', null, 'reader')?.id, 502);
+	assert.equal(pickCompareAttachment(ctxReader, 'self', null, 'reader')?.id, 501);
+
 	delete globalThis.Zotero;
 });

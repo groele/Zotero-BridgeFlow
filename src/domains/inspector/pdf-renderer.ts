@@ -41,6 +41,7 @@ export interface PdfAttachmentEntry {
 export type CompareMode = 'sibling' | 'self';
 
 export interface SameItemPdfContext {
+	ownerID: number;
 	currentAttachmentID: number;
 	entries: PdfAttachmentEntry[];
 }
@@ -63,17 +64,36 @@ function isPdfAttachment(att: any): boolean {
 }
 
 function getAttachmentTitle(att: any, index: number): string {
-	const raw = String(att?.getField?.('title') || att?.attachmentFilename || '').trim();
-	return raw || `PDF ${index + 1}`;
+	const title = String(att?.getField?.('title') || '').trim();
+	const filename = String(att?.attachmentFilename || '').trim();
+	if (title && filename && title.toLowerCase() !== filename.toLowerCase() && !title.toLowerCase().endsWith('.pdf')) {
+		return `${title} (${filename})`;
+	}
+	return title || filename || `PDF ${index + 1}`;
+}
+
+async function resolveOwnerRegularItem(item: any): Promise<any> {
+	if (!item || item.deleted || item.isTrashed?.()) return null;
+	if (item.isRegularItem?.()) return item;
+	if (item.parentItem) return item.parentItem;
+	const parentID = Number(item.parentID || item.parentItemID || 0);
+	const hostItems = (globalThis as any).Zotero?.Items;
+	if (parentID > 0 && hostItems) {
+		const syncParent = hostItems.get?.(parentID);
+		if (syncParent) return syncParent;
+		if (hostItems.getAsync) {
+			const asyncParent = await hostItems.getAsync(parentID).catch(() => null);
+			if (asyncParent) return asyncParent;
+		}
+	}
+	return item;
 }
 
 export async function resolveAllPdfAttachments(item: any): Promise<PdfAttachmentEntry[]> {
 	if (!item || item.deleted || item.isTrashed?.()) return [];
-	if (isPdfAttachment(item)) {
-		return [{ id: Number(item.id) || 0, title: getAttachmentTitle(item, 0), attachment: item }];
-	}
-	const target = (!item.isRegularItem?.() && item.parentItem) ? item.parentItem : item;
-	if (isPdfAttachment(target)) {
+	const target = await resolveOwnerRegularItem(item);
+	if (!target || target.deleted || target.isTrashed?.()) return [];
+	if (isPdfAttachment(target) && !target.isRegularItem?.()) {
 		return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
 	}
 	const results: PdfAttachmentEntry[] = [];
@@ -90,47 +110,66 @@ export async function resolveAllPdfAttachments(item: any): Promise<PdfAttachment
 	const ids: number[] = target.getAttachments?.() || [];
 	const hostItems = (globalThis as any).Zotero?.Items;
 	if (ids.length && hostItems?.getAsync) {
-		const attachments = await hostItems.getAsync(ids).catch(() => []);
-		for (const att of attachments) pushIfPdf(att);
+		const batch = await hostItems.getAsync(ids).catch(() => null);
+		if (Array.isArray(batch)) {
+			for (const att of batch) pushIfPdf(att);
+		}
 	}
+	for (const rawId of ids) {
+		const id = Number(rawId) || 0;
+		if (!id || seen.has(id)) continue;
+		let att = hostItems?.get?.(id) || null;
+		if (!att && hostItems?.getAsync) {
+			att = await hostItems.getAsync(id).catch(() => null);
+		}
+		pushIfPdf(att);
+	}
+	if (isPdfAttachment(item)) pushIfPdf(item);
 	return results;
 }
 
-export async function resolveSameItemPdfContext(item: any): Promise<SameItemPdfContext> {
+export async function resolveSameItemPdfContext(item: any, win?: Window | null): Promise<SameItemPdfContext> {
 	if (!item || item.deleted || item.isTrashed?.()) {
-		return { currentAttachmentID: 0, entries: [] };
+		return { ownerID: 0, currentAttachmentID: 0, entries: [] };
 	}
-	const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === 'attachment');
-	const currentAttachmentID = isAtt ? (Number(item.id) || 0) : 0;
-	let container = item;
-	if (isAtt) {
-		if (item.parentItem) {
-			container = item.parentItem;
-		} else {
-			const parentID = Number(item.parentID || item.parentItemID || 0);
-			const hostItems = (globalThis as any).Zotero?.Items;
-			if (parentID && hostItems) {
-				container = (await (hostItems.getAsync ? hostItems.getAsync(parentID) : hostItems.get?.(parentID)).catch(() => null)) || item;
-			}
+	const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === 'attachment' || isPdfAttachment(item));
+	const container = await resolveOwnerRegularItem(item);
+	const ownerID = Number(container?.id || item.id) || 0;
+	const entries = await resolveAllPdfAttachments(container || item);
+	let currentAttachmentID = isAtt ? (Number(item.id) || 0) : 0;
+	if (!currentAttachmentID) {
+		const hostZotero = (globalThis as any).Zotero;
+		const targetWin: any = win || hostZotero?.getMainWindow?.() || null;
+		const selectedTabID = String(targetWin?.Zotero_Tabs?.selectedID || '');
+		const readerAttID = Number(
+			hostZotero?.Reader?.getByTabID?.(selectedTabID)?.itemID
+			|| targetWin?.Zotero_Tabs?._tabs?.find?.((t: any) => t?.id === selectedTabID)?.data?.itemID
+			|| 0,
+		);
+		if (readerAttID > 0 && entries.some((entry) => entry.id === readerAttID)) {
+			currentAttachmentID = readerAttID;
 		}
 	}
-	const entries = await resolveAllPdfAttachments(container);
-	if (!entries.length && isAtt) {
-		return { currentAttachmentID, entries: await resolveAllPdfAttachments(item) };
-	}
-	return { currentAttachmentID, entries };
+	return { ownerID, currentAttachmentID, entries };
 }
 
 export function pickCompareAttachment(
 	ctx: SameItemPdfContext,
 	mode: CompareMode,
 	explicitAttachmentID: number | null,
+	tabType: 'library' | 'reader' = 'library',
 ): PdfAttachmentEntry | null {
 	if (!ctx.entries.length) return null;
 	if (ctx.entries.length === 1) return ctx.entries[0];
 	if (explicitAttachmentID) {
 		const exact = ctx.entries.find((e) => e.id === explicitAttachmentID);
 		if (exact) return exact;
+	}
+	if (tabType === 'library') {
+		if (ctx.currentAttachmentID) {
+			return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];
+		}
+		return ctx.entries[0];
 	}
 	if (mode === 'self' && ctx.currentAttachmentID) {
 		return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];

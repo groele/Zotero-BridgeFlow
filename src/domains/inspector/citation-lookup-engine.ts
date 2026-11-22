@@ -1,5 +1,5 @@
 import type { CitationHistoryStore } from '../../services/citation-history-store.ts';
-import { isRegularValidItem } from '../../services/item-resolution.ts';
+import { isRegularValidItem, safeGetItemField } from '../../services/item-resolution.ts';
 import {
 	parseCompactCitation, queryPhysicalCandidates, verifyAndFilterCandidates, type ParsedCitation,
 } from './citation-lookup-parser.ts';
@@ -133,8 +133,8 @@ export class CitationLookupEngine {
 			const id = Number(item.id || 0);
 			if (!id || seen.has(id)) continue;
 
-			const title = String(item.getField?.('title') || item.title || '');
-			const doi = String(item.getField?.('DOI') || item.DOI || '').trim().toLowerCase();
+			const title = safeGetItemField(item, 'title') || String(item.title || '');
+			const doi = (safeGetItemField(item, 'DOI') || String(item.DOI || '')).trim().toLowerCase();
 			if (targetDoi && doi && doi === targetDoi) {
 				seen.add(id);
 				results.push({ itemID: id, title, score: 98, source: 'doi', item });
@@ -142,11 +142,11 @@ export class CitationLookupEngine {
 			}
 
 			let score = 0;
-			const year = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
+			const year = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).slice(0, 4);
 			if (targetYear && year === targetYear) score += 25;
-			const journal = String(item.getField?.('publicationTitle') || item.getField?.('journalAbbreviation') || '').toLowerCase();
+			const journal = (safeGetItemField(item, 'publicationTitle') || safeGetItemField(item, 'journalAbbreviation')).toLowerCase();
 			if (journal && journal.length >= 3 && lowerQuery.includes(journal)) score += 30;
-			const pages = String(item.getField?.('pages') || '').replace(/[\u2013\u2014]/g, '-');
+			const pages = safeGetItemField(item, 'pages').replace(/[\u2013\u2014]/g, '-');
 			const firstPage = pages.split('-')[0]?.trim();
 			if (firstPage && firstPage.length >= 2 && lowerQuery.includes(firstPage)) score += 25;
 			const creator = String(item.firstCreator || '').toLowerCase().split(',')[0]?.trim();

@@ -1,7 +1,7 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { OpenItemRequestPayload } from '../../kernel/types.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
-import { normalizeToRegularItem } from '../../services/item-resolution.ts';
+import { normalizeToRegularItem, safeGetItemField } from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import {
 	autoGroupTrackedByCollection,
@@ -61,10 +61,10 @@ export class WorkspaceTabController {
 			const rawItem = itemID > 0 ? hostItems?.get?.(itemID) : null;
 			const parentItem = rawItem ? normalizeToRegularItem(rawItem) : null;
 			const displayItem = parentItem || rawItem;
-			const title = String(displayItem?.getField?.('title') || tab.title || key);
-			const shortTitle = String(displayItem?.getField?.('shortTitle') || title);
+			const title = safeGetItemField(displayItem, 'title') || String(tab.title || key);
+			const shortTitle = safeGetItemField(displayItem, 'shortTitle') || title;
 			const filename = String(rawItem?.attachmentFilename || '');
-			const source = String(displayItem?.getField?.('publicationTitle') || displayItem?.getField?.('proceedingsTitle') || '');
+			const source = safeGetItemField(displayItem, 'publicationTitle') || safeGetItemField(displayItem, 'proceedingsTitle');
 			const creatorYear = formatCreatorYear(displayItem);
 			const collection = resolvePrimaryCollectionName(displayItem);
 

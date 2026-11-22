@@ -1,3 +1,5 @@
+import { safeGetItemField } from '../../services/item-resolution.ts';
+
 export interface ParsedCitation {
 	raw: string;
 	journalText: string;
@@ -157,23 +159,38 @@ export function isJournalMatch(queryJournal: string, pubTitle: string, abbr: str
 
 export async function queryPhysicalCandidates(parsed: ParsedCitation, libraryID?: number): Promise<any[]> {
 	const host = (globalThis as any).Zotero;
-	if (!host?.Search || !host?.Items?.getAsync) return [];
+	if (!host?.Items) return [];
 	const runSearch = async (libID?: number): Promise<number[]> => {
-		const s = new host.Search(libID !== undefined ? { libraryID: libID } : undefined);
-		if (parsed.doi) {
-			s.addCondition('DOI', 'is', parsed.doi);
-		} else if (parsed.arxiv && !parsed.journalText) {
-			s.addCondition('quicksearch-everything', 'contains', parsed.arxiv.replace(/v\d+$/, ''));
-		} else {
-			s.addCondition('itemType', 'is', 'journalArticle');
-			if (parsed.year) s.addCondition('date', 'contains', String(parsed.year));
-			if (parsed.volume) s.addCondition('volume', 'is', parsed.volume);
+		if (!host.Search) return [];
+		try {
+			const s = new host.Search();
+			if (libID !== undefined && libID !== null) s.libraryID = libID;
+			if (parsed.doi) {
+				s.addCondition('DOI', 'is', parsed.doi);
+			} else if (parsed.arxiv && !parsed.journalText) {
+				s.addCondition('quicksearch-everything', 'contains', parsed.arxiv.replace(/v\d+$/, ''));
+			} else {
+				s.addCondition('itemType', 'is', 'journalArticle');
+				if (parsed.year) {
+					try { s.addCondition('date', 'contains', String(parsed.year)); } catch { /* ignore */ }
+				}
+			}
+			return (await s.search()) || [];
+		} catch {
+			return [];
 		}
-		return (await s.search()) || [];
 	};
 	let ids = await runSearch(libraryID);
 	if (!ids.length && libraryID !== undefined) ids = await runSearch(undefined);
-	return ids.length ? host.Items.getAsync(ids) : [];
+	if (ids.length && host.Items.getAsync) {
+		const items = await host.Items.getAsync(ids).catch(() => []);
+		return Array.isArray(items) ? items : (items ? [items] : []);
+	}
+	if (typeof host.Items.getAll === 'function') {
+		const targetLib = libraryID ?? host.Libraries?.userLibraryID ?? 1;
+		return (await host.Items.getAll(targetLib, true, false).catch(() => [])) || [];
+	}
+	return [];
 }
 
 function expandEndPage(first?: string, last?: string): string | undefined {
@@ -189,7 +206,7 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 	const matched = candidates.filter((item) => {
 		if (!item || item.deleted || !item.isRegularItem?.()) return false;
 		if (parsed.doi) {
-			const itemDoi = String(item.getField?.('DOI') || '').trim().toLowerCase();
+			const itemDoi = safeGetItemField(item, 'DOI').trim().toLowerCase();
 			return itemDoi === parsed.doi.toLowerCase();
 		}
 		if (parsed.arxiv && !parsed.journalText) {
@@ -198,7 +215,7 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 				parsed.arxiv.toLowerCase().replace(/v\d+$/, ''),
 				undefined,
 			];
-			const fields = ['archiveID', 'extra', 'DOI', 'url', 'callNumber'].map((f) => String(item.getField?.(f) || '').toLowerCase());
+			const fields = ['archiveID', 'extra', 'DOI', 'url', 'callNumber'].map((f) => safeGetItemField(item, f).toLowerCase());
 			return fields.some((val) => {
 				for (const m of val.matchAll(/(?:^|[^0-9])(\d{4}\.\d{4,5})(?:v(\d+))?(?=$|[^0-9])/g)) {
 					if (m[1] === qBase && (!qVer || !m[2] || m[2] === qVer)) return true;
@@ -206,15 +223,20 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 				return false;
 			});
 		}
-		const rawPages = String(item.getField?.('pages') || '').replace(/[\u2010-\u2015\u2212]/g, '-').trim();
+		if (parsed.year) {
+			const itemYear = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).match(/\b(19|20)\d{2}\b/)?.[0];
+			if (!itemYear || Number(itemYear) !== parsed.year) return false;
+		}
+		const rawPages = safeGetItemField(item, 'pages').replace(/[\u2010-\u2015\u2212]/g, '-').trim();
 		const [first, last] = rawPages.split('-');
 		const normItemLast = expandEndPage(first, last);
 		const normParsedLast = expandEndPage(parsed.firstPage, parsed.lastPage);
 		if (parsed.firstPage && first !== parsed.firstPage) return false;
 		if (normParsedLast && normItemLast !== normParsedLast) return false;
-		if (parsed.issue && String(item.getField?.('issue') || '') !== parsed.issue) return false;
-		const pubTitle = String(item.getField?.('publicationTitle') || '');
-		const abbr = String(item.getField?.('journalAbbreviation') || '');
+		if (parsed.volume && safeGetItemField(item, 'volume').trim() !== parsed.volume) return false;
+		if (parsed.issue && safeGetItemField(item, 'issue') !== parsed.issue) return false;
+		const pubTitle = safeGetItemField(item, 'publicationTitle');
+		const abbr = safeGetItemField(item, 'journalAbbreviation');
 		return isJournalMatch(parsed.journalText, pubTitle, abbr);
 	});
 
@@ -223,7 +245,7 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 		if (surname && surname.length >= 2) {
 			const byAuthor = matched.filter((it) => {
 				const creators = it.getCreators?.() || [];
-				const firstCreator = String(it.getField?.('firstCreator') || '').toLowerCase();
+				const firstCreator = String(it.firstCreator || safeGetItemField(it, 'firstCreator')).toLowerCase();
 				return firstCreator.includes(surname) || creators.some((c: any) => String(c.lastName || c.name || '').toLowerCase().includes(surname));
 			});
 			if (byAuthor.length > 0) return byAuthor;

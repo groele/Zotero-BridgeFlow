@@ -96,7 +96,7 @@ export class CslFormattingEngine {
 
 	buildCacheKey(items: readonly any[], styleID: string, asCitation: boolean): string {
 		const itemPart = items
-			.map((it) => `${it.id || 0}:${it.getField?.('dateModified') || it.dateModified || it.version || 0}`)
+			.map((it) => `${it.id || 0}:${it.dateModified || it.version || 0}`)
 			.join(',');
 		return `${asCitation ? 'cite' : 'bib'}|${styleID}|${itemPart}`;
 	}

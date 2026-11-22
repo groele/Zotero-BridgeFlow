@@ -50,7 +50,7 @@ export class UnifiedClipboardService {
 				clipboard.setData(transferable, null, hostCi.nsIClipboard.kGlobalClipboard);
 				return true;
 			} catch {
-				return false;
+				// Fall through to Zotero clipboard helper below
 			}
 		}
 

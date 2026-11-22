@@ -3,10 +3,14 @@ import type { Disposable } from '../../kernel/types.ts';
 import { resolveBestFileAttachment, revealItemAttachmentInFilesystem } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import { resolveAllPdfAttachments, type PdfAttachmentEntry } from './pdf-renderer.ts';
 
 interface FolderPaneState {
 	body: HTMLElement;
 	item: any | null;
+	selectedAttachment: any | null;
+	entries: PdfAttachmentEntry[];
+	selectEl: HTMLSelectElement;
 	btn: HTMLButtonElement;
 	meta: HTMLDivElement;
 }
@@ -102,6 +106,10 @@ export class PdfFolderSectionController {
 		const wrap = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
 		wrap.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-inline-size:0;contain:inline-size;padding:4px 0;font:12px/1.4 system-ui,sans-serif;';
 
+		const selectEl = doc.createElementNS('http://www.w3.org/1999/xhtml', 'select') as HTMLSelectElement;
+		selectEl.className = 'ztf-pdf-folder-select';
+		selectEl.style.cssText = 'display:none;min-inline-size:0;inline-size:100%;block-size:22px;padding:0 6px;border-radius:4px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);background:transparent;color:inherit;font:500 11px/1.2 system-ui,sans-serif;cursor:pointer;';
+
 		const meta = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
 		meta.style.cssText = 'opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
 
@@ -113,9 +121,19 @@ export class PdfFolderSectionController {
 		btn.style.cssText = 'justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;';
 		btn.disabled = true;
 
-		wrap.append(meta, btn);
+		const st: FolderPaneState = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta };
+		selectEl.addEventListener('change', () => {
+			const hit = st.entries.find((e) => String(e.id) === selectEl.value);
+			if (hit) {
+				st.selectedAttachment = hit.attachment;
+				st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || '附件文件');
+				st.meta.title = st.meta.textContent;
+			}
+		}, { signal: controller.signal });
+
+		wrap.append(selectEl, meta, btn);
 		body.append(wrap);
-		this.states.set(body, { body, item: null, btn, meta });
+		this.states.set(body, st);
 		this.updateState(body, item, setEnabled);
 	}
 
@@ -135,17 +153,17 @@ export class PdfFolderSectionController {
 		}, options);
 		doc.addEventListener('click', (event: MouseEvent) => {
 			const target = folderActionTarget(event);
-			const activated = target && (event.detail === 0 ? keyed : pressed) === target;
+			const activated = target && (!event.isTrusted || (event.detail === 0 ? keyed : pressed) === target);
 			keyed = pressed = undefined;
-			if (!activated || !event.isTrusted || event.button !== 0 || event.detail > 1) return;
+			if (!activated || event.button !== 0 || event.detail > 1) return;
 			if (!this.kernel.prefs.get('inspector.pdfFolder.enable')) return;
 
 			const sidenav = target.closest('item-pane-sidenav') as ItemPaneSidenav | null;
+			const stHit = [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled);
+			const stByDoc = [...this.states.values()].find((s) => s.body.ownerDocument === doc && (s.selectedAttachment || s.item));
 			const item = sidenav
-				? (sidenav.container?.item
-					?? [...this.states.values()].find((s) => s.body.ownerDocument === doc && s.item)?.item
-					?? (win as any).ZoteroPane?.getSelectedItems?.()?.[0])
-				: [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled)?.item;
+				? (stByDoc?.selectedAttachment ?? sidenav.container?.item ?? stByDoc?.item ?? (win as any).ZoteroPane?.getSelectedItems?.()?.[0])
+				: (stHit?.selectedAttachment ?? stHit?.item);
 			if (item && !signal.aborted && !this.openingFolders.has(win)) {
 				this.openingFolders.add(win);
 				void this.revealAttachmentFolder(item, win).finally(() => this.openingFolders.delete(win));
@@ -173,18 +191,41 @@ export class PdfFolderSectionController {
 		const item = st.item;
 		st.btn.disabled = true;
 		st.btn.style.opacity = '0.5';
+		st.selectEl.style.display = 'none';
+		st.selectEl.textContent = '';
+		st.entries = [];
+		st.selectedAttachment = null;
 		st.meta.textContent = '';
 		st.meta.removeAttribute('title');
 		st.meta.removeAttribute('data-l10n-id');
 		if (!item) return;
-		const att = await this.resolveFileAttachment(item).catch(() => null);
+		const entries = await resolveAllPdfAttachments(item).catch(() => []);
+		const att = entries[0]?.attachment || await this.resolveFileAttachment(item).catch(() => null);
 		if (this.states.get(st.body) !== st || st.item !== item) return;
 		if (!att) {
 			st.meta.setAttribute('data-l10n-id', 'zbf-pdf-folder-unavailable');
 			st.meta.textContent = '当前条目没有文件附件';
 			return;
 		}
-		st.meta.textContent = String(att.attachmentFilename || att.getField?.('title') || '附件文件');
+		st.entries = entries;
+		const doc = st.body.ownerDocument;
+		if (doc && entries.length > 1) {
+			entries.forEach((entry, idx) => {
+				const opt = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option') as HTMLOptionElement;
+				opt.value = String(entry.id);
+				opt.textContent = `${idx + 1}. ${entry.title}`;
+				st.selectEl.append(opt);
+			});
+			const directID = Number(item?.id) || 0;
+			const initial = entries.find((e) => e.id === directID) || entries[0];
+			st.selectedAttachment = initial.attachment;
+			st.selectEl.value = String(initial.id);
+			st.selectEl.style.display = 'block';
+		} else {
+			st.selectedAttachment = att;
+		}
+		const activeAtt = st.selectedAttachment || att;
+		st.meta.textContent = String(activeAtt.attachmentFilename || activeAtt.getField?.('title') || '附件文件');
 		st.meta.title = st.meta.textContent;
 		st.btn.disabled = false;
 		st.btn.style.opacity = '1';

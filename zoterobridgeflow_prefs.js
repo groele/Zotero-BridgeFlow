@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.9 - Preferences controller. */
+/* Zotero BridgeFlow v0.0.10 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -434,8 +434,8 @@
       bindTabs(pane);
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.9" }));
-        versionEl.textContent = `v${"0.0.9"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.10" }));
+        versionEl.textContent = `v${"0.0.10"}`;
       }
       const checkboxes = Array.from(pane.querySelectorAll("checkbox[preference]"));
       const menulists = Array.from(pane.querySelectorAll("menulist[preference]"));

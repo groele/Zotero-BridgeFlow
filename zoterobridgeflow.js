@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.9 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.10 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -429,10 +429,22 @@
       return false;
     }
   }
+  function safeGetItemField(item, field) {
+    if (!item || typeof item.getField !== "function") return "";
+    try {
+      return String(item.getField(field, false, true) || "");
+    } catch {
+      try {
+        return String(item.getField(field) || "");
+      } catch {
+        return "";
+      }
+    }
+  }
   function formatCreatorYear(item) {
     if (!item) return "";
-    const first = String(item.firstCreator || "");
-    const date = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+    const first = String(item.firstCreator || safeGetItemField(item, "firstCreator") || "");
+    const date = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
     return [first, date].filter(Boolean).join(", ");
   }
   function resolvePrimaryCollectionName(item) {
@@ -564,23 +576,41 @@
   }
   async function queryPhysicalCandidates(parsed, libraryID) {
     const host2 = globalThis.Zotero;
-    if (!host2?.Search || !host2?.Items?.getAsync) return [];
+    if (!host2?.Items) return [];
     const runSearch = async (libID) => {
-      const s = new host2.Search(libID !== void 0 ? { libraryID: libID } : void 0);
-      if (parsed.doi) {
-        s.addCondition("DOI", "is", parsed.doi);
-      } else if (parsed.arxiv && !parsed.journalText) {
-        s.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
-      } else {
-        s.addCondition("itemType", "is", "journalArticle");
-        if (parsed.year) s.addCondition("date", "contains", String(parsed.year));
-        if (parsed.volume) s.addCondition("volume", "is", parsed.volume);
+      if (!host2.Search) return [];
+      try {
+        const s = new host2.Search();
+        if (libID !== void 0 && libID !== null) s.libraryID = libID;
+        if (parsed.doi) {
+          s.addCondition("DOI", "is", parsed.doi);
+        } else if (parsed.arxiv && !parsed.journalText) {
+          s.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
+        } else {
+          s.addCondition("itemType", "is", "journalArticle");
+          if (parsed.year) {
+            try {
+              s.addCondition("date", "contains", String(parsed.year));
+            } catch {
+            }
+          }
+        }
+        return await s.search() || [];
+      } catch {
+        return [];
       }
-      return await s.search() || [];
     };
     let ids = await runSearch(libraryID);
     if (!ids.length && libraryID !== void 0) ids = await runSearch(void 0);
-    return ids.length ? host2.Items.getAsync(ids) : [];
+    if (ids.length && host2.Items.getAsync) {
+      const items = await host2.Items.getAsync(ids).catch(() => []);
+      return Array.isArray(items) ? items : items ? [items] : [];
+    }
+    if (typeof host2.Items.getAll === "function") {
+      const targetLib = libraryID ?? host2.Libraries?.userLibraryID ?? 1;
+      return await host2.Items.getAll(targetLib, true, false).catch(() => []) || [];
+    }
+    return [];
   }
   function expandEndPage(first, last) {
     if (!first || !last) return last;
@@ -594,7 +624,7 @@
     const matched = candidates.filter((item) => {
       if (!item || item.deleted || !item.isRegularItem?.()) return false;
       if (parsed.doi) {
-        const itemDoi = String(item.getField?.("DOI") || "").trim().toLowerCase();
+        const itemDoi = safeGetItemField(item, "DOI").trim().toLowerCase();
         return itemDoi === parsed.doi.toLowerCase();
       }
       if (parsed.arxiv && !parsed.journalText) {
@@ -603,7 +633,7 @@
           parsed.arxiv.toLowerCase().replace(/v\d+$/, ""),
           void 0
         ];
-        const fields = ["archiveID", "extra", "DOI", "url", "callNumber"].map((f) => String(item.getField?.(f) || "").toLowerCase());
+        const fields = ["archiveID", "extra", "DOI", "url", "callNumber"].map((f) => safeGetItemField(item, f).toLowerCase());
         return fields.some((val) => {
           for (const m of val.matchAll(/(?:^|[^0-9])(\d{4}\.\d{4,5})(?:v(\d+))?(?=$|[^0-9])/g)) {
             if (m[1] === qBase && (!qVer || !m[2] || m[2] === qVer)) return true;
@@ -611,15 +641,20 @@
           return false;
         });
       }
-      const rawPages = String(item.getField?.("pages") || "").replace(/[\u2010-\u2015\u2212]/g, "-").trim();
+      if (parsed.year) {
+        const itemYear = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(19|20)\d{2}\b/)?.[0];
+        if (!itemYear || Number(itemYear) !== parsed.year) return false;
+      }
+      const rawPages = safeGetItemField(item, "pages").replace(/[\u2010-\u2015\u2212]/g, "-").trim();
       const [first, last] = rawPages.split("-");
       const normItemLast = expandEndPage(first, last);
       const normParsedLast = expandEndPage(parsed.firstPage, parsed.lastPage);
       if (parsed.firstPage && first !== parsed.firstPage) return false;
       if (normParsedLast && normItemLast !== normParsedLast) return false;
-      if (parsed.issue && String(item.getField?.("issue") || "") !== parsed.issue) return false;
-      const pubTitle = String(item.getField?.("publicationTitle") || "");
-      const abbr = String(item.getField?.("journalAbbreviation") || "");
+      if (parsed.volume && safeGetItemField(item, "volume").trim() !== parsed.volume) return false;
+      if (parsed.issue && safeGetItemField(item, "issue") !== parsed.issue) return false;
+      const pubTitle = safeGetItemField(item, "publicationTitle");
+      const abbr = safeGetItemField(item, "journalAbbreviation");
       return isJournalMatch(parsed.journalText, pubTitle, abbr);
     });
     if (matched.length > 1 && parsed.authorPrefix) {
@@ -627,7 +662,7 @@
       if (surname && surname.length >= 2) {
         const byAuthor = matched.filter((it) => {
           const creators = it.getCreators?.() || [];
-          const firstCreator = String(it.getField?.("firstCreator") || "").toLowerCase();
+          const firstCreator = String(it.firstCreator || safeGetItemField(it, "firstCreator")).toLowerCase();
           return firstCreator.includes(surname) || creators.some((c) => String(c.lastName || c.name || "").toLowerCase().includes(surname));
         });
         if (byAuthor.length > 0) return byAuthor;
@@ -733,19 +768,19 @@
         if (!isRegularValidItem(item)) continue;
         const id = Number(item.id || 0);
         if (!id || seen.has(id)) continue;
-        const title = String(item.getField?.("title") || item.title || "");
-        const doi = String(item.getField?.("DOI") || item.DOI || "").trim().toLowerCase();
+        const title = safeGetItemField(item, "title") || String(item.title || "");
+        const doi = (safeGetItemField(item, "DOI") || String(item.DOI || "")).trim().toLowerCase();
         if (targetDoi && doi && doi === targetDoi) {
           seen.add(id);
           results.push({ itemID: id, title, score: 98, source: "doi", item });
           continue;
         }
         let score = 0;
-        const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+        const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
         if (targetYear && year === targetYear) score += 25;
-        const journal = String(item.getField?.("publicationTitle") || item.getField?.("journalAbbreviation") || "").toLowerCase();
+        const journal = (safeGetItemField(item, "publicationTitle") || safeGetItemField(item, "journalAbbreviation")).toLowerCase();
         if (journal && journal.length >= 3 && lowerQuery.includes(journal)) score += 30;
-        const pages = String(item.getField?.("pages") || "").replace(/[\u2013\u2014]/g, "-");
+        const pages = safeGetItemField(item, "pages").replace(/[\u2013\u2014]/g, "-");
         const firstPage = pages.split("-")[0]?.trim();
         if (firstPage && firstPage.length >= 2 && lowerQuery.includes(firstPage)) score += 25;
         const creator = String(item.firstCreator || "").toLowerCase().split(",")[0]?.trim();
@@ -1224,13 +1259,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     card.appendChild(stateEl);
     const head = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
     head.className = "viewflow-lookup-card-head";
-    renderLookupTitle(head, String(target?.getField?.("title") || candidate.title || ""));
+    renderLookupTitle(head, safeGetItemField(target, "title") || candidate.title || "");
     card.appendChild(head);
     const meta = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
     meta.className = "viewflow-lookup-card-meta";
-    const journal = target?.getField?.("publicationTitle") || target?.getField?.("journalAbbreviation") || "";
-    const year = target?.getField?.("year") || target?.getField?.("date") || "";
-    meta.textContent = `${journal} (${year}) · Vol.${target?.getField?.("volume") || "-"} · pp.${target?.getField?.("pages") || "-"}`;
+    const journal = safeGetItemField(target, "publicationTitle") || safeGetItemField(target, "journalAbbreviation") || "";
+    const year = (safeGetItemField(target, "year") || safeGetItemField(target, "date")).slice(0, 4);
+    meta.textContent = `${journal} (${year}) · Vol.${safeGetItemField(target, "volume") || "-"} · pp.${safeGetItemField(target, "pages") || "-"}`;
     card.appendChild(meta);
     const actRow = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
     actRow.className = "viewflow-lookup-actions";
@@ -1271,10 +1306,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
       btn.type = "button";
       const tObj = cb.resolveItem(c);
-      const j = tObj?.getField?.("journalAbbreviation") || tObj?.getField?.("publicationTitle") || "";
-      const y = tObj?.getField?.("year") || tObj?.getField?.("date") || "";
+      const j = safeGetItemField(tObj, "journalAbbreviation") || safeGetItemField(tObj, "publicationTitle") || "";
+      const y = (safeGetItemField(tObj, "year") || safeGetItemField(tObj, "date")).slice(0, 4);
       const suffix = j || y ? ` (${[j, y].filter(Boolean).join(", ")})` : "";
-      renderLookupTitle(btn, String(tObj?.getField?.("title") || c.title || ""));
+      renderLookupTitle(btn, safeGetItemField(tObj, "title") || c.title || "");
       if (suffix) btn.appendChild(doc.createTextNode(suffix));
       btn.onclick = () => renderLookupItemCard(doc, statusDiv, c, "候选文献，请核对后定位", "zbf-lookup-state-candidate", cb);
       row.appendChild(btn);
@@ -1839,6 +1874,275 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/domains/inspector/pdf-renderer.ts
+  var PDFJS_MODULE_URL = "resource://zotero/reader/pdf/build/pdf.mjs";
+  var PDFJS_WORKER_URL = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
+  var PDFJS_CMAP_URL = "resource://zotero/reader/pdf/web/cmaps/";
+  var PDFJS_FONT_URL = "resource://zotero/reader/pdf/web/standard_fonts/";
+  var cachedPdfJsLib = null;
+  function isPdfAttachment(att) {
+    if (!att || att.deleted || att.isTrashed?.()) return false;
+    if (typeof att.isPDFAttachment === "function") return Boolean(att.isPDFAttachment());
+    if (att.isFileAttachment?.() === false) return false;
+    const mime = String(att.attachmentContentType || "").toLowerCase();
+    if (mime === "application/pdf") return true;
+    const name = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
+    return name.endsWith(".pdf");
+  }
+  function getAttachmentTitle(att, index) {
+    const title = String(att?.getField?.("title") || "").trim();
+    const filename = String(att?.attachmentFilename || "").trim();
+    if (title && filename && title.toLowerCase() !== filename.toLowerCase() && !title.toLowerCase().endsWith(".pdf")) {
+      return `${title} (${filename})`;
+    }
+    return title || filename || `PDF ${index + 1}`;
+  }
+  async function resolveOwnerRegularItem(item) {
+    if (!item || item.deleted || item.isTrashed?.()) return null;
+    if (item.isRegularItem?.()) return item;
+    if (item.parentItem) return item.parentItem;
+    const parentID = Number(item.parentID || item.parentItemID || 0);
+    const hostItems = globalThis.Zotero?.Items;
+    if (parentID > 0 && hostItems) {
+      const syncParent = hostItems.get?.(parentID);
+      if (syncParent) return syncParent;
+      if (hostItems.getAsync) {
+        const asyncParent = await hostItems.getAsync(parentID).catch(() => null);
+        if (asyncParent) return asyncParent;
+      }
+    }
+    return item;
+  }
+  async function resolveAllPdfAttachments(item) {
+    if (!item || item.deleted || item.isTrashed?.()) return [];
+    const target = await resolveOwnerRegularItem(item);
+    if (!target || target.deleted || target.isTrashed?.()) return [];
+    if (isPdfAttachment(target) && !target.isRegularItem?.()) {
+      return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
+    }
+    const results = [];
+    const seen = /* @__PURE__ */ new Set();
+    const pushIfPdf = (att) => {
+      if (!isPdfAttachment(att)) return;
+      const id = Number(att.id) || results.length + 1;
+      if (seen.has(id)) return;
+      seen.add(id);
+      results.push({ id, title: getAttachmentTitle(att, results.length), attachment: att });
+    };
+    const best = await target.getBestAttachment?.().catch(() => null);
+    pushIfPdf(best);
+    const ids = target.getAttachments?.() || [];
+    const hostItems = globalThis.Zotero?.Items;
+    if (ids.length && hostItems?.getAsync) {
+      const batch = await hostItems.getAsync(ids).catch(() => null);
+      if (Array.isArray(batch)) {
+        for (const att of batch) pushIfPdf(att);
+      }
+    }
+    for (const rawId of ids) {
+      const id = Number(rawId) || 0;
+      if (!id || seen.has(id)) continue;
+      let att = hostItems?.get?.(id) || null;
+      if (!att && hostItems?.getAsync) {
+        att = await hostItems.getAsync(id).catch(() => null);
+      }
+      pushIfPdf(att);
+    }
+    if (isPdfAttachment(item)) pushIfPdf(item);
+    return results;
+  }
+  async function resolveSameItemPdfContext(item, win) {
+    if (!item || item.deleted || item.isTrashed?.()) {
+      return { ownerID: 0, currentAttachmentID: 0, entries: [] };
+    }
+    const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment" || isPdfAttachment(item));
+    const container = await resolveOwnerRegularItem(item);
+    const ownerID = Number(container?.id || item.id) || 0;
+    const entries = await resolveAllPdfAttachments(container || item);
+    let currentAttachmentID = isAtt ? Number(item.id) || 0 : 0;
+    if (!currentAttachmentID) {
+      const hostZotero = globalThis.Zotero;
+      const targetWin = win || hostZotero?.getMainWindow?.() || null;
+      const selectedTabID = String(targetWin?.Zotero_Tabs?.selectedID || "");
+      const readerAttID = Number(
+        hostZotero?.Reader?.getByTabID?.(selectedTabID)?.itemID || targetWin?.Zotero_Tabs?._tabs?.find?.((t) => t?.id === selectedTabID)?.data?.itemID || 0
+      );
+      if (readerAttID > 0 && entries.some((entry) => entry.id === readerAttID)) {
+        currentAttachmentID = readerAttID;
+      }
+    }
+    return { ownerID, currentAttachmentID, entries };
+  }
+  function pickCompareAttachment(ctx, mode, explicitAttachmentID, tabType = "library") {
+    if (!ctx.entries.length) return null;
+    if (ctx.entries.length === 1) return ctx.entries[0];
+    if (explicitAttachmentID) {
+      const exact = ctx.entries.find((e) => e.id === explicitAttachmentID);
+      if (exact) return exact;
+    }
+    if (tabType === "library") {
+      if (ctx.currentAttachmentID) {
+        return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];
+      }
+      return ctx.entries[0];
+    }
+    if (mode === "self" && ctx.currentAttachmentID) {
+      return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];
+    }
+    if (ctx.currentAttachmentID) {
+      return ctx.entries.find((e) => e.id !== ctx.currentAttachmentID) ?? ctx.entries[0];
+    }
+    return ctx.entries[0];
+  }
+  async function resolveAttachmentPath(att) {
+    if (!att) return null;
+    const p = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
+    return typeof p === "string" && p.trim() ? p : null;
+  }
+  function binaryStringToUint8Array(raw) {
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 255;
+    return bytes;
+  }
+  async function readPdfBytes(filePath) {
+    const zotero = globalThis.Zotero;
+    const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
+    if (ioUtils?.read) {
+      const data = await ioUtils.read(filePath);
+      return data instanceof Uint8Array ? data : new Uint8Array(data);
+    }
+    if (zotero?.File?.getBinaryContentsAsync) {
+      const raw = await zotero.File.getBinaryContentsAsync(filePath);
+      return raw instanceof Uint8Array ? raw : binaryStringToUint8Array(String(raw || ""));
+    }
+    throw new Error("No file reader available for PDF preview");
+  }
+  function tryImportModule(cu, url) {
+    if (!cu?.importESModule) return null;
+    for (const opts of [{ global: "current" }, null]) {
+      try {
+        const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
+        if (mod) return mod;
+      } catch {
+      }
+    }
+    return null;
+  }
+  async function loadPdfJsLib(win) {
+    if (cachedPdfJsLib) return cachedPdfJsLib;
+    const zotero = globalThis.Zotero;
+    const hostWin = win || zotero?.getMainWindow?.();
+    if (hostWin && !globalThis.window) {
+      try {
+        globalThis.window = hostWin;
+        globalThis.document = hostWin.document;
+      } catch {
+      }
+    }
+    const winCu = hostWin?.ChromeUtils;
+    const globalCu = globalThis.ChromeUtils;
+    const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
+    if (workerMod) {
+      try {
+        globalThis.pdfjsWorker = workerMod;
+        if (hostWin) hostWin.pdfjsWorker = workerMod;
+      } catch {
+      }
+    }
+    let mod = tryImportModule(winCu, PDFJS_MODULE_URL) || tryImportModule(globalCu, PDFJS_MODULE_URL);
+    if (typeof mod?.getDocument !== "function") {
+      try {
+        mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL);
+      } catch {
+        mod = null;
+      }
+    }
+    if (typeof mod?.getDocument !== "function") throw new Error("Failed to load Zotero PDF.js module");
+    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
+      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+    }
+    cachedPdfJsLib = mod;
+    return mod;
+  }
+  async function openPdfDocumentFromFile(filePath, doc) {
+    const win = doc?.defaultView || globalThis.Zotero?.getMainWindow?.();
+    const ownerDocument = doc || win?.document;
+    const [pdfjsLib, data] = await Promise.all([loadPdfJsLib(win), readPdfBytes(filePath)]);
+    const loadingTask = pdfjsLib.getDocument({
+      data,
+      ownerDocument,
+      isEvalSupported: false,
+      useWorkerFetch: false,
+      cMapUrl: PDFJS_CMAP_URL,
+      cMapPacked: true,
+      standardFontDataUrl: PDFJS_FONT_URL
+    });
+    return await loadingTask.promise;
+  }
+  async function renderPageToCanvas(pdfDoc, pageNumber, canvas, targetWidth, zoomRatio, dpr, isAborted, onTask) {
+    const page = await pdfDoc.getPage(pageNumber);
+    if (isAborted()) {
+      page.cleanup?.();
+      return { width: 0, height: 0 };
+    }
+    const baseViewport = page.getViewport({ scale: 1 });
+    const safeWidth = Math.max(120, targetWidth);
+    const cssScale = safeWidth / Math.max(1, baseViewport.width) * zoomRatio;
+    const cssViewport = page.getViewport({ scale: cssScale });
+    const pixelRatio = Math.max(1.25, Math.min(3, (dpr || 1) * 1.15));
+    canvas.width = Math.max(1, Math.floor(cssViewport.width * pixelRatio));
+    canvas.height = Math.max(1, Math.floor(cssViewport.height * pixelRatio));
+    if (Math.abs(zoomRatio - 1) < 0.01) {
+      canvas.style.width = "100%";
+      canvas.style.height = "auto";
+    } else {
+      canvas.style.width = `${Math.floor(cssViewport.width)}px`;
+      canvas.style.height = `${Math.floor(cssViewport.height)}px`;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D context unavailable");
+    const transform = pixelRatio === 1 ? void 0 : [pixelRatio, 0, 0, pixelRatio, 0, 0];
+    const task = page.render({ canvasContext: ctx, viewport: cssViewport, transform });
+    onTask?.(() => {
+      try {
+        task.cancel?.();
+      } catch {
+      }
+    });
+    try {
+      await task.promise;
+    } catch (err) {
+      if (err?.name === "RenderingCancelledException" || isAborted()) return { width: 0, height: 0 };
+      throw err;
+    } finally {
+      page.cleanup?.();
+    }
+    return { width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) };
+  }
+  async function openPdfInReader(att, win, pageNumber) {
+    if (!att?.id) return false;
+    const zotero = globalThis.Zotero;
+    const location = typeof pageNumber === "number" && pageNumber > 1 ? { pageIndex: pageNumber - 1 } : void 0;
+    try {
+      if (zotero?.Reader?.open) {
+        try {
+          await zotero.Reader.open(att.id, location, { openInWindow: false });
+        } catch {
+          await zotero.Reader.open(att.id, void 0, { openInWindow: false });
+        }
+        return true;
+      }
+      const targetWin = win?.ZoteroPane ? win : zotero?.getMainWindow?.();
+      if (targetWin?.ZoteroPane?.viewAttachment) {
+        await targetWin.ZoteroPane.viewAttachment([att.id]);
+        return true;
+      }
+    } catch (error) {
+      zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+    return false;
+  }
+
   // src/domains/inspector/pdf-folder-section.ts
   var FOLDER_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-pdf-folder-sidenav"]';
   var FOLDER_ACTION = `${FOLDER_ICON}, button.ztf-pdf-folder-action`;
@@ -1920,6 +2224,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       body.textContent = "";
       const wrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
       wrap.style.cssText = "display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-inline-size:0;contain:inline-size;padding:4px 0;font:12px/1.4 system-ui,sans-serif;";
+      const selectEl = doc.createElementNS("http://www.w3.org/1999/xhtml", "select");
+      selectEl.className = "ztf-pdf-folder-select";
+      selectEl.style.cssText = "display:none;min-inline-size:0;inline-size:100%;block-size:22px;padding:0 6px;border-radius:4px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);background:transparent;color:inherit;font:500 11px/1.2 system-ui,sans-serif;cursor:pointer;";
       const meta = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
       meta.style.cssText = "opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
       const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
@@ -1929,9 +2236,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       btn.textContent = "打开文件夹并选中 PDF";
       btn.style.cssText = "justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;";
       btn.disabled = true;
-      wrap.append(meta, btn);
+      const st = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta };
+      selectEl.addEventListener("change", () => {
+        const hit = st.entries.find((e) => String(e.id) === selectEl.value);
+        if (hit) {
+          st.selectedAttachment = hit.attachment;
+          st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || "附件文件");
+          st.meta.title = st.meta.textContent;
+        }
+      }, { signal: controller.signal });
+      wrap.append(selectEl, meta, btn);
       body.append(wrap);
-      this.states.set(body, { body, item: null, btn, meta });
+      this.states.set(body, st);
       this.updateState(body, item, setEnabled);
     }
     bindFolderActions(doc, win, signal) {
@@ -1951,12 +2267,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }, options);
       doc.addEventListener("click", (event) => {
         const target = folderActionTarget(event);
-        const activated = target && (event.detail === 0 ? keyed : pressed) === target;
+        const activated = target && (!event.isTrusted || (event.detail === 0 ? keyed : pressed) === target);
         keyed = pressed = void 0;
-        if (!activated || !event.isTrusted || event.button !== 0 || event.detail > 1) return;
+        if (!activated || event.button !== 0 || event.detail > 1) return;
         if (!this.kernel.prefs.get("inspector.pdfFolder.enable")) return;
         const sidenav = target.closest("item-pane-sidenav");
-        const item = sidenav ? sidenav.container?.item ?? [...this.states.values()].find((s) => s.body.ownerDocument === doc && s.item)?.item ?? win.ZoteroPane?.getSelectedItems?.()?.[0] : [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled)?.item;
+        const stHit = [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled);
+        const stByDoc = [...this.states.values()].find((s) => s.body.ownerDocument === doc && (s.selectedAttachment || s.item));
+        const item = sidenav ? stByDoc?.selectedAttachment ?? sidenav.container?.item ?? stByDoc?.item ?? win.ZoteroPane?.getSelectedItems?.()?.[0] : stHit?.selectedAttachment ?? stHit?.item;
         if (item && !signal.aborted && !this.openingFolders.has(win)) {
           this.openingFolders.add(win);
           void this.revealAttachmentFolder(item, win).finally(() => this.openingFolders.delete(win));
@@ -1981,18 +2299,41 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const item = st.item;
       st.btn.disabled = true;
       st.btn.style.opacity = "0.5";
+      st.selectEl.style.display = "none";
+      st.selectEl.textContent = "";
+      st.entries = [];
+      st.selectedAttachment = null;
       st.meta.textContent = "";
       st.meta.removeAttribute("title");
       st.meta.removeAttribute("data-l10n-id");
       if (!item) return;
-      const att = await this.resolveFileAttachment(item).catch(() => null);
+      const entries = await resolveAllPdfAttachments(item).catch(() => []);
+      const att = entries[0]?.attachment || await this.resolveFileAttachment(item).catch(() => null);
       if (this.states.get(st.body) !== st || st.item !== item) return;
       if (!att) {
         st.meta.setAttribute("data-l10n-id", "zbf-pdf-folder-unavailable");
         st.meta.textContent = "当前条目没有文件附件";
         return;
       }
-      st.meta.textContent = String(att.attachmentFilename || att.getField?.("title") || "附件文件");
+      st.entries = entries;
+      const doc = st.body.ownerDocument;
+      if (doc && entries.length > 1) {
+        entries.forEach((entry, idx) => {
+          const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
+          opt.value = String(entry.id);
+          opt.textContent = `${idx + 1}. ${entry.title}`;
+          st.selectEl.append(opt);
+        });
+        const directID = Number(item?.id) || 0;
+        const initial = entries.find((e) => e.id === directID) || entries[0];
+        st.selectedAttachment = initial.attachment;
+        st.selectEl.value = String(initial.id);
+        st.selectEl.style.display = "block";
+      } else {
+        st.selectedAttachment = att;
+      }
+      const activeAtt = st.selectedAttachment || att;
+      st.meta.textContent = String(activeAtt.attachmentFilename || activeAtt.getField?.("title") || "附件文件");
       st.meta.title = st.meta.textContent;
       st.btn.disabled = false;
       st.btn.style.opacity = "1";
@@ -2050,6 +2391,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 	padding-top: 3px; margin-top: 2px;
 	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
 }
+.ztf-pdf-compare-count {
+	flex-shrink: 0; padding: 1px 5px; border-radius: 999px;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.12));
+	color: var(--accent-blue, #4072e5); font: 600 10.5px/1.3 system-ui, sans-serif;
+	font-variant-numeric: tabular-nums;
+}
+.ztf-pdf-compare-nav { flex-shrink: 0; padding: 0 3px !important; }
 .ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; }
 .ztf-pdf-compare-btn[data-active="true"] {
 	color: var(--accent-blue, #4072e5) !important;
@@ -2289,6 +2637,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const bar = createXhtmlEl(doc, "div");
     bar.className = "ztf-pdf-compare-bar";
     bar.style.display = "none";
+    const countLabel = createXhtmlEl(doc, "span");
+    countLabel.className = "ztf-pdf-compare-count";
+    countLabel.textContent = "PDF 1/1";
+    const prevAttBtn = createToolBtn(doc, "‹", void 0, "ztf-pdf-compare-nav ztf-pdf-prev-att", "prev");
+    prevAttBtn.title = "切换上一个 PDF 附件";
+    const nextAttBtn = createToolBtn(doc, "›", void 0, "ztf-pdf-compare-nav ztf-pdf-next-att", "next");
+    nextAttBtn.title = "切换下一个 PDF 附件";
     const selfBtn = createXhtmlEl(doc, "button");
     selfBtn.type = "button";
     selfBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn";
@@ -2297,6 +2652,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const selectEl = createXhtmlEl(doc, "select");
     selectEl.className = "ztf-pdf-compare-select";
     selectEl.setAttribute("data-l10n-id", "zbf-pdf-compare-select");
+    const cycleAttachment = (delta) => {
+      const opts = Array.from(selectEl.options || []);
+      if (opts.length <= 1) return;
+      const curIdx = Math.max(0, selectEl.selectedIndex);
+      const nextIdx = (curIdx + delta + opts.length) % opts.length;
+      const val = Number(opts[nextIdx]?.value || 0);
+      if (!val) return;
+      selectEl.value = String(val);
+      const cur = getState();
+      onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
+    };
+    prevAttBtn.addEventListener("click", () => cycleAttachment(-1), { signal });
+    nextAttBtn.addEventListener("click", () => cycleAttachment(1), { signal });
     selfBtn.addEventListener("click", () => {
       const cur = getState();
       onChange(cur.mode === "self" ? "sibling" : "self", null);
@@ -2307,20 +2675,24 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const cur = getState();
       onChange(val === cur.currentAttachmentID ? "self" : "sibling", val);
     }, { signal });
-    bar.append(selfBtn, selectEl);
-    return { bar, selfBtn, selectEl };
+    bar.append(countLabel, prevAttBtn, selectEl, nextAttBtn, selfBtn);
+    return { bar, countLabel, prevAttBtn, selfBtn, selectEl, nextAttBtn };
   }
   function syncCompareBar(ui, st, entries, activeAttachmentID) {
-    const visible = st.tabType === "reader" && entries.length > 1;
+    const visible = entries.length > 1;
     ui.bar.style.display = visible ? "flex" : "none";
     if (!visible) return;
+    const showSelf = st.tabType === "reader" && st.currentAttachmentID > 0;
+    ui.selfBtn.style.display = showSelf ? "inline-flex" : "none";
     const isSelf = st.mode === "self" || st.currentAttachmentID > 0 && activeAttachmentID === st.currentAttachmentID;
     if (isSelf) ui.selfBtn.setAttribute("data-active", "true");
     else ui.selfBtn.removeAttribute("data-active");
     const doc = ui.bar.ownerDocument;
     if (!doc) return;
     ui.selectEl.textContent = "";
+    let activeIdx = 0;
     entries.forEach((entry, idx) => {
+      if (entry.id === activeAttachmentID) activeIdx = idx;
       const opt = createXhtmlEl(doc, "option");
       opt.value = String(entry.id);
       const isCurrent = st.currentAttachmentID > 0 && entry.id === st.currentAttachmentID;
@@ -2328,6 +2700,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       ui.selectEl.append(opt);
     });
     if (activeAttachmentID) ui.selectEl.value = String(activeAttachmentID);
+    ui.countLabel.textContent = `PDF ${activeIdx + 1}/${entries.length}`;
   }
   function openPageJumpInput(doc, pageLabel, currentPage, numPages, onCommit) {
     if (numPages <= 1) return;
@@ -2372,243 +2745,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   }
 
-  // src/domains/inspector/pdf-renderer.ts
-  var PDFJS_MODULE_URL = "resource://zotero/reader/pdf/build/pdf.mjs";
-  var PDFJS_WORKER_URL = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
-  var PDFJS_CMAP_URL = "resource://zotero/reader/pdf/web/cmaps/";
-  var PDFJS_FONT_URL = "resource://zotero/reader/pdf/web/standard_fonts/";
-  var cachedPdfJsLib = null;
-  function isPdfAttachment(att) {
-    if (!att || att.deleted || att.isTrashed?.()) return false;
-    if (typeof att.isPDFAttachment === "function") return Boolean(att.isPDFAttachment());
-    if (att.isFileAttachment?.() === false) return false;
-    const mime = String(att.attachmentContentType || "").toLowerCase();
-    if (mime === "application/pdf") return true;
-    const name = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
-    return name.endsWith(".pdf");
-  }
-  function getAttachmentTitle(att, index) {
-    const raw = String(att?.getField?.("title") || att?.attachmentFilename || "").trim();
-    return raw || `PDF ${index + 1}`;
-  }
-  async function resolveAllPdfAttachments(item) {
-    if (!item || item.deleted || item.isTrashed?.()) return [];
-    if (isPdfAttachment(item)) {
-      return [{ id: Number(item.id) || 0, title: getAttachmentTitle(item, 0), attachment: item }];
-    }
-    const target = !item.isRegularItem?.() && item.parentItem ? item.parentItem : item;
-    if (isPdfAttachment(target)) {
-      return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
-    }
-    const results = [];
-    const seen = /* @__PURE__ */ new Set();
-    const pushIfPdf = (att) => {
-      if (!isPdfAttachment(att)) return;
-      const id = Number(att.id) || results.length + 1;
-      if (seen.has(id)) return;
-      seen.add(id);
-      results.push({ id, title: getAttachmentTitle(att, results.length), attachment: att });
-    };
-    const best = await target.getBestAttachment?.().catch(() => null);
-    pushIfPdf(best);
-    const ids = target.getAttachments?.() || [];
-    const hostItems = globalThis.Zotero?.Items;
-    if (ids.length && hostItems?.getAsync) {
-      const attachments = await hostItems.getAsync(ids).catch(() => []);
-      for (const att of attachments) pushIfPdf(att);
-    }
-    return results;
-  }
-  async function resolveSameItemPdfContext(item) {
-    if (!item || item.deleted || item.isTrashed?.()) {
-      return { currentAttachmentID: 0, entries: [] };
-    }
-    const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment");
-    const currentAttachmentID = isAtt ? Number(item.id) || 0 : 0;
-    let container = item;
-    if (isAtt) {
-      if (item.parentItem) {
-        container = item.parentItem;
-      } else {
-        const parentID = Number(item.parentID || item.parentItemID || 0);
-        const hostItems = globalThis.Zotero?.Items;
-        if (parentID && hostItems) {
-          container = await (hostItems.getAsync ? hostItems.getAsync(parentID) : hostItems.get?.(parentID)).catch(() => null) || item;
-        }
-      }
-    }
-    const entries = await resolveAllPdfAttachments(container);
-    if (!entries.length && isAtt) {
-      return { currentAttachmentID, entries: await resolveAllPdfAttachments(item) };
-    }
-    return { currentAttachmentID, entries };
-  }
-  function pickCompareAttachment(ctx, mode, explicitAttachmentID) {
-    if (!ctx.entries.length) return null;
-    if (ctx.entries.length === 1) return ctx.entries[0];
-    if (explicitAttachmentID) {
-      const exact = ctx.entries.find((e) => e.id === explicitAttachmentID);
-      if (exact) return exact;
-    }
-    if (mode === "self" && ctx.currentAttachmentID) {
-      return ctx.entries.find((e) => e.id === ctx.currentAttachmentID) ?? ctx.entries[0];
-    }
-    if (ctx.currentAttachmentID) {
-      return ctx.entries.find((e) => e.id !== ctx.currentAttachmentID) ?? ctx.entries[0];
-    }
-    return ctx.entries[0];
-  }
-  async function resolveAttachmentPath(att) {
-    if (!att) return null;
-    const p = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
-    return typeof p === "string" && p.trim() ? p : null;
-  }
-  function binaryStringToUint8Array(raw) {
-    const bytes = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i) & 255;
-    return bytes;
-  }
-  async function readPdfBytes(filePath) {
-    const zotero = globalThis.Zotero;
-    const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
-    if (ioUtils?.read) {
-      const data = await ioUtils.read(filePath);
-      return data instanceof Uint8Array ? data : new Uint8Array(data);
-    }
-    if (zotero?.File?.getBinaryContentsAsync) {
-      const raw = await zotero.File.getBinaryContentsAsync(filePath);
-      return raw instanceof Uint8Array ? raw : binaryStringToUint8Array(String(raw || ""));
-    }
-    throw new Error("No file reader available for PDF preview");
-  }
-  function tryImportModule(cu, url) {
-    if (!cu?.importESModule) return null;
-    for (const opts of [{ global: "current" }, null]) {
-      try {
-        const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
-        if (mod) return mod;
-      } catch {
-      }
-    }
-    return null;
-  }
-  async function loadPdfJsLib(win) {
-    if (cachedPdfJsLib) return cachedPdfJsLib;
-    const zotero = globalThis.Zotero;
-    const hostWin = win || zotero?.getMainWindow?.();
-    if (hostWin && !globalThis.window) {
-      try {
-        globalThis.window = hostWin;
-        globalThis.document = hostWin.document;
-      } catch {
-      }
-    }
-    const winCu = hostWin?.ChromeUtils;
-    const globalCu = globalThis.ChromeUtils;
-    const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
-    if (workerMod) {
-      try {
-        globalThis.pdfjsWorker = workerMod;
-        if (hostWin) hostWin.pdfjsWorker = workerMod;
-      } catch {
-      }
-    }
-    let mod = tryImportModule(winCu, PDFJS_MODULE_URL) || tryImportModule(globalCu, PDFJS_MODULE_URL);
-    if (typeof mod?.getDocument !== "function") {
-      try {
-        mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL);
-      } catch {
-        mod = null;
-      }
-    }
-    if (typeof mod?.getDocument !== "function") throw new Error("Failed to load Zotero PDF.js module");
-    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
-      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-    }
-    cachedPdfJsLib = mod;
-    return mod;
-  }
-  async function openPdfDocumentFromFile(filePath, doc) {
-    const win = doc?.defaultView || globalThis.Zotero?.getMainWindow?.();
-    const ownerDocument = doc || win?.document;
-    const [pdfjsLib, data] = await Promise.all([loadPdfJsLib(win), readPdfBytes(filePath)]);
-    const loadingTask = pdfjsLib.getDocument({
-      data,
-      ownerDocument,
-      isEvalSupported: false,
-      useWorkerFetch: false,
-      cMapUrl: PDFJS_CMAP_URL,
-      cMapPacked: true,
-      standardFontDataUrl: PDFJS_FONT_URL
-    });
-    return await loadingTask.promise;
-  }
-  async function renderPageToCanvas(pdfDoc, pageNumber, canvas, targetWidth, zoomRatio, dpr, isAborted, onTask) {
-    const page = await pdfDoc.getPage(pageNumber);
-    if (isAborted()) {
-      page.cleanup?.();
-      return { width: 0, height: 0 };
-    }
-    const baseViewport = page.getViewport({ scale: 1 });
-    const safeWidth = Math.max(120, targetWidth);
-    const cssScale = safeWidth / Math.max(1, baseViewport.width) * zoomRatio;
-    const cssViewport = page.getViewport({ scale: cssScale });
-    const pixelRatio = Math.max(1.25, Math.min(3, (dpr || 1) * 1.15));
-    canvas.width = Math.max(1, Math.floor(cssViewport.width * pixelRatio));
-    canvas.height = Math.max(1, Math.floor(cssViewport.height * pixelRatio));
-    if (Math.abs(zoomRatio - 1) < 0.01) {
-      canvas.style.width = "100%";
-      canvas.style.height = "auto";
-    } else {
-      canvas.style.width = `${Math.floor(cssViewport.width)}px`;
-      canvas.style.height = `${Math.floor(cssViewport.height)}px`;
-    }
-    const ctx = canvas.getContext("2d");
-    if (!ctx) throw new Error("Canvas 2D context unavailable");
-    const transform = pixelRatio === 1 ? void 0 : [pixelRatio, 0, 0, pixelRatio, 0, 0];
-    const task = page.render({ canvasContext: ctx, viewport: cssViewport, transform });
-    onTask?.(() => {
-      try {
-        task.cancel?.();
-      } catch {
-      }
-    });
-    try {
-      await task.promise;
-    } catch (err) {
-      if (err?.name === "RenderingCancelledException" || isAborted()) return { width: 0, height: 0 };
-      throw err;
-    } finally {
-      page.cleanup?.();
-    }
-    return { width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) };
-  }
-  async function openPdfInReader(att, win, pageNumber) {
-    if (!att?.id) return false;
-    const zotero = globalThis.Zotero;
-    const location = typeof pageNumber === "number" && pageNumber > 1 ? { pageIndex: pageNumber - 1 } : void 0;
-    try {
-      if (zotero?.Reader?.open) {
-        try {
-          await zotero.Reader.open(att.id, location, { openInWindow: false });
-        } catch {
-          await zotero.Reader.open(att.id, void 0, { openInWindow: false });
-        }
-        return true;
-      }
-      const targetWin = win?.ZoteroPane ? win : zotero?.getMainWindow?.();
-      if (targetWin?.ZoteroPane?.viewAttachment) {
-        await targetWin.ZoteroPane.viewAttachment([att.id]);
-        return true;
-      }
-    } catch (error) {
-      zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
-    }
-    return false;
-  }
-
   // src/domains/inspector/pdf-viewport-manager.ts
   function disposePreviewDocument(state, clearAttachments = false) {
+    const prevAttID = Number(state.attachment?.id) || 0;
+    if (prevAttID > 0 && state.currentPage >= 1) {
+      state.pageByAttachment.set(prevAttID, state.currentPage);
+    }
     state.generation += 1;
     state.loading = false;
     state.observer?.disconnect();
@@ -2689,6 +2831,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!state.numPages) return;
     const target = Math.max(1, Math.min(state.numPages, pageNumber));
     state.currentPage = target;
+    const attID = Number(state.attachment?.id) || 0;
+    if (attID > 0) state.pageByAttachment.set(attID, target);
     syncPreviewControls(state);
     const slot = state.slots[target - 1];
     if (!slot) return;
@@ -2720,7 +2864,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       state.loading = false;
       state.pdfDoc = pdfDoc;
       state.numPages = Math.max(0, pdfDoc.numPages || 0);
-      state.currentPage = state.numPages > 0 ? 1 : 0;
+      const attID = Number(att?.id) || 0;
+      const rememberedPage = attID > 0 ? state.pageByAttachment.get(attID) || 1 : 1;
+      state.currentPage = state.numPages > 0 ? Math.max(1, Math.min(state.numPages, rememberedPage)) : 0;
       ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
       if (!state.numPages) {
         applyStatusMessage(state.statusEl, "zbf-pdf-preview-unavailable");
@@ -2728,7 +2874,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       applyStatusMessage(state.statusEl, "");
       buildSlots(state, gen, isDblClickOpenEnabled, onError);
-      syncPreviewControls(state);
+      if (state.currentPage > 1) {
+        jumpToPreviewPage(state, state.currentPage, onError);
+      } else {
+        syncPreviewControls(state);
+      }
     } catch (error) {
       if (state.generation === gen) {
         state.loading = false;
@@ -2747,23 +2897,26 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     state.loading = true;
     applyStatusMessage(state.statusEl, "zbf-pdf-preview-loading");
     const isReader = state.compare.tabType === "reader";
-    const ctx = isReader ? await resolveSameItemPdfContext(item) : { currentAttachmentID: 0, entries: await resolveAllPdfAttachments(item) };
+    const ctx = await resolveSameItemPdfContext(item, state.win);
     if (state.generation !== gen) return;
     const entries = ctx.entries;
+    state.ownerID = ctx.ownerID;
     state.attachments = entries;
     state.compare.currentAttachmentID = ctx.currentAttachmentID;
-    const chosen = isReader && entries.length > 1 ? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID) : entries[0] ?? null;
+    const chosen = entries.length > 0 ? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID, isReader ? "reader" : "library") : null;
+    if (chosen) state.compare.pickedAttachmentID = chosen.id;
     syncCompareBar(state.compareUI, state.compare, entries, chosen?.id || 0);
-    if (!isReader && entries.length > 1) {
-      state.attSelect.textContent = "";
+    state.attSelect.textContent = "";
+    if (entries.length > 1) {
       entries.forEach((entry, idx) => {
         const opt = createXhtmlEl(state.doc, "option");
         opt.value = String(entry.id);
         opt.textContent = `${idx + 1}. ${entry.title}`;
         state.attSelect.append(opt);
       });
-      state.attSelect.style.display = "block";
-    } else state.attSelect.style.display = "none";
+      if (chosen) state.attSelect.value = String(chosen.id);
+    }
+    state.attSelect.style.display = "none";
     if (!chosen) {
       state.loading = false;
       ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
@@ -2946,7 +3099,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const compareUI = createCompareBar(doc, controller.signal, () => state.compare, (nextMode, nextPickedID) => {
         state.compare.mode = nextMode;
         state.compare.pickedAttachmentID = nextPickedID;
-        const chosen = pickCompareAttachment({ currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments }, nextMode, nextPickedID);
+        const chosen = pickCompareAttachment(
+          { ownerID: state.ownerID, currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments },
+          nextMode,
+          nextPickedID,
+          state.compare.tabType === "reader" ? "reader" : "library"
+        );
+        if (chosen) {
+          state.compare.pickedAttachmentID = chosen.id;
+          state.attSelect.value = String(chosen.id);
+        }
         syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
         if (chosen && chosen.attachment !== state.attachment) {
           void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
@@ -2969,8 +3131,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         collapsible,
         setSectionSummary,
         item: null,
+        ownerID: 0,
+        attIdsKey: "",
         attachment: null,
         attachments: [],
+        pageByAttachment: /* @__PURE__ */ new Map(),
         pdfDoc: null,
         loading: false,
         generation: 0,
@@ -3032,8 +3197,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
       state.attSelect.addEventListener("change", () => {
         const chosen = state.attachments.find((entry) => String(entry.id) === state.attSelect.value);
-        if (chosen && chosen.attachment !== state.attachment) {
-          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+        if (chosen) {
+          state.compare.pickedAttachmentID = chosen.id;
+          syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
+          if (chosen.attachment !== state.attachment) {
+            void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+          }
         }
       }, opts);
       state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
@@ -3118,11 +3287,17 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get("inspector.pdfPreview.mode") === "full");
       const nextTabType = tabType || "library";
-      const itemChanged = item !== state.item || nextTabType !== state.compare.tabType;
+      const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === "attachment");
+      const ownerRef = isAtt && item?.parentItem ? item.parentItem : item;
+      const nextAttIdsKey = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments().join(",") : String(item?.id || "");
+      const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
       state.compare.tabType = nextTabType;
+      state.attIdsKey = nextAttIdsKey;
       if (!itemChanged && item && (state.pdfDoc || state.loading)) return true;
+      const nextOwnerID = isAtt ? Number(item?.parentID || item?.parentItemID || item?.parentItem?.id || 0) : Number(item?.id || 0);
+      const sameOwner = nextOwnerID > 0 && nextOwnerID === state.ownerID;
       state.compare.mode = "sibling";
-      state.compare.pickedAttachmentID = null;
+      state.compare.pickedAttachmentID = isAtt ? Number(item?.id) || null : sameOwner ? state.compare.pickedAttachmentID : null;
       state.compare.currentAttachmentID = 0;
       syncCompareBar(state.compareUI, state.compare, [], 0);
       state.item = item ?? null;
@@ -3150,6 +3325,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       if (best !== state.currentPage) {
         state.currentPage = best;
+        const attID = Number(state.attachment?.id) || 0;
+        if (attID > 0) state.pageByAttachment.set(attID, best);
         syncPreviewControls(state);
         evictDistantPageCanvases(state.slots, state.currentPage);
       }
@@ -4450,12 +4627,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             }
             const item = items[i];
             if (!item?.isRegularItem?.() || item.deleted) continue;
-            const rawTitle = String(item.getField?.("title") || item.key || "");
+            const rawTitle = safeGetItemField(item, "title") || String(item.key || "");
             const title = rawTitle.replace(/<[^>]+>/g, "").trim();
             if (!title) continue;
             const author = String(item.firstCreator || "");
-            const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
-            const pub = String(item.getField?.("publicationTitle") || item.getField?.("proceedingsTitle") || "");
+            const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
+            const pub = safeGetItemField(item, "publicationTitle") || safeGetItemField(item, "proceedingsTitle");
             next.push({
               id: Number(item.id),
               key: `${libraryID}:${item.key}`,
@@ -5293,10 +5470,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const rawItem = itemID > 0 ? hostItems?.get?.(itemID) : null;
         const parentItem = rawItem ? normalizeToRegularItem(rawItem) : null;
         const displayItem = parentItem || rawItem;
-        const title = String(displayItem?.getField?.("title") || tab.title || key);
-        const shortTitle = String(displayItem?.getField?.("shortTitle") || title);
+        const title = safeGetItemField(displayItem, "title") || String(tab.title || key);
+        const shortTitle = safeGetItemField(displayItem, "shortTitle") || title;
         const filename = String(rawItem?.attachmentFilename || "");
-        const source = String(displayItem?.getField?.("publicationTitle") || displayItem?.getField?.("proceedingsTitle") || "");
+        const source = safeGetItemField(displayItem, "publicationTitle") || safeGetItemField(displayItem, "proceedingsTitle");
         const creatorYear = formatCreatorYear2(displayItem);
         const collection = resolvePrimaryCollectionName2(displayItem);
         tracked.push({
@@ -7446,6 +7623,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const vBtn = this.doc.createElement("button");
         vBtn.type = "button";
         vBtn.className = "zbf-sb-view-btn";
+        vBtn.setAttribute("data-view-mode", mode);
         vBtn.textContent = label;
         vBtn.addEventListener("click", () => {
           this.viewMode = mode;
@@ -9587,7 +9765,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           clipboard.setData(transferable, null, hostCi.nsIClipboard.kGlobalClipboard);
           return true;
         } catch {
-          return false;
         }
       }
       const clipHelper = globalThis.Zotero?.Utilities?.Internal?.copyTextToClipboard;
@@ -9705,7 +9882,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return { format: `bibliography=${styleID}`, styleID, asHTML: false };
     }
     buildCacheKey(items, styleID, asCitation) {
-      const itemPart = items.map((it) => `${it.id || 0}:${it.getField?.("dateModified") || it.dateModified || it.version || 0}`).join(",");
+      const itemPart = items.map((it) => `${it.id || 0}:${it.dateModified || it.version || 0}`).join(",");
       return `${asCitation ? "cite" : "bib"}|${styleID}|${itemPart}`;
     }
     async formatItems(items, options = {}) {
