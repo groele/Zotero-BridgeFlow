@@ -1,0 +1,20 @@
+{
+  "manifest_version": 2,
+  "name": "Zotero BridgeFlow",
+  "version": "0.0.1",
+  "description": "Unified reading tab workspace, live citation preview & reverse lookup, and Word citation tracking for Zotero.",
+  "homepage_url": "https://github.com/groele/Zotero-BridgeFlow",
+  "author": "Zotero BridgeFlow",
+  "applications": {
+    "zotero": {
+      "id": "bridgeflow@groele",
+      "strict_min_version": "10.0",
+      "strict_max_version": "12.*",
+      "update_url": "https://raw.githubusercontent.com/groele/Zotero-BridgeFlow/main/update.json"
+    }
+  },
+  "icons": {
+    "32": "assets/bridgeflow.svg",
+    "64": "assets/bridgeflow.svg"
+  }
+}

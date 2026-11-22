@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<vbox id="zbf-prefs-root" xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+	xmlns:html="http://www.w3.org/1999/xhtml">
+	<html:div class="zbf-page-header">
+		<html:h1 class="zbf-page-title" data-l10n-id="zbf-prefs-title"></html:h1>
+		<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.0.1"}'></html:span>
+	</html:div>
+
+	<!-- Card 1 (Default Open): Master Modules & Deep Fusion -->
+	<html:details class="zbf-card" open="open">
+		<html:summary class="zbf-card-heading" data-l10n-id="zbf-card-overview-title"></html:summary>
+		<html:div class="zbf-card-body">
+			<html:p class="zbf-description" data-l10n-id="zbf-card-overview-desc"></html:p>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="modules.workspace.enable"/>
+				<html:span data-l10n-id="zbf-pref-mod-workspace"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="modules.inspector.enable"/>
+				<html:span data-l10n-id="zbf-pref-mod-inspector"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="modules.wordCite.enable"/>
+				<html:span data-l10n-id="zbf-pref-mod-wordcite"></html:span>
+			</html:label>
+			<html:p class="zbf-subordinate-desc" data-l10n-id="zbf-fusion-section-title"></html:p>
+			<html:label class="zbf-check-option zbf-subordinate">
+				<html:input type="checkbox" data-zbf-pref="fusion.copyToLookupHistory"/>
+				<html:span data-l10n-id="zbf-pref-fusion-copy-history"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option zbf-subordinate">
+				<html:input type="checkbox" data-zbf-pref="fusion.sidebarCiteBadge"/>
+				<html:span data-l10n-id="zbf-pref-fusion-sidebar-badge"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option zbf-subordinate">
+				<html:input type="checkbox" data-zbf-pref="fusion.spotlightCrossDomain"/>
+				<html:span data-l10n-id="zbf-pref-fusion-spotlight"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option zbf-subordinate">
+				<html:input type="checkbox" data-zbf-pref="fusion.lookupJumpExistingTab"/>
+				<html:span data-l10n-id="zbf-pref-fusion-lookup-jump"></html:span>
+			</html:label>
+		</html:div>
+	</html:details>
+
+	<!-- Card 2: Reading Workspace & Tabs -->
+	<html:details class="zbf-card">
+		<html:summary class="zbf-card-heading" data-l10n-id="zbf-card-workspace-title"></html:summary>
+		<html:div class="zbf-card-body" data-zbf-depends-on="modules.workspace.enable">
+			<html:p class="zbf-description" data-l10n-id="zbf-card-workspace-desc"></html:p>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableHorizontalGroups"/>
+				<html:span data-l10n-id="zbf-pref-ws-horizontal"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableVerticalSidebar"/>
+				<html:span data-l10n-id="zbf-pref-ws-vertical"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enablePinnedTabs"/>
+				<html:span data-l10n-id="zbf-pref-ws-pinned"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableTabSleep"/>
+				<html:span data-l10n-id="zbf-pref-ws-sleep"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableVirtualMembers"/>
+				<html:span data-l10n-id="zbf-pref-ws-virtual"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableSpotlight"/>
+				<html:span data-l10n-id="zbf-pref-ws-spotlight"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="workspace.enableSessions"/>
+				<html:span data-l10n-id="zbf-pref-ws-sessions"></html:span>
+			</html:label>
+		</html:div>
+	</html:details>
+
+	<!-- Card 3: Inspector (CSL Preview, Reverse Lookup, PDF Preview & Folder) -->
+	<html:details class="zbf-card">
+		<html:summary class="zbf-card-heading" data-l10n-id="zbf-card-inspector-title"></html:summary>
+		<html:div class="zbf-card-body" data-zbf-depends-on="modules.inspector.enable">
+			<html:p class="zbf-description" data-l10n-id="zbf-card-inspector-desc"></html:p>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="inspector.cslPreview.enable"/>
+				<html:span data-l10n-id="zbf-pref-ins-csl-enable"></html:span>
+			</html:label>
+			<html:div class="zbf-field-row zbf-subordinate" data-zbf-depends-on="inspector.cslPreview.enable">
+				<html:span data-l10n-id="zbf-pref-ins-what-to-show"></html:span>
+				<html:select data-zbf-pref="inspector.cslPreview.whatToShow">
+					<html:option value="zpboth" data-l10n-id="zbf-opt-show-both"></html:option>
+					<html:option value="zpcite" data-l10n-id="zbf-opt-show-cite"></html:option>
+					<html:option value="zpbib" data-l10n-id="zbf-opt-show-bib"></html:option>
+				</html:select>
+			</html:div>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="inspector.lookup.enable"/>
+				<html:span data-l10n-id="zbf-pref-ins-lookup-enable"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option zbf-subordinate" data-zbf-depends-on="inspector.lookup.enable">
+				<html:input type="checkbox" data-zbf-pref="inspector.lookup.historyEnable"/>
+				<html:span data-l10n-id="zbf-pref-ins-lookup-history"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="inspector.pdfPreview.enable"/>
+				<html:span data-l10n-id="zbf-pref-ins-pdf-preview"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="inspector.pdfFolder.enable"/>
+				<html:span data-l10n-id="zbf-pref-ins-pdf-folder"></html:span>
+			</html:label>
+		</html:div>
+	</html:details>
+
+	<!-- Card 4: Word Citation Tracking & Governance -->
+	<html:details class="zbf-card">
+		<html:summary class="zbf-card-heading" data-l10n-id="zbf-card-wordcite-title"></html:summary>
+		<html:div class="zbf-card-body" data-zbf-depends-on="modules.wordCite.enable">
+			<html:p class="zbf-description" data-l10n-id="zbf-card-wordcite-desc"></html:p>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="wordCite.dragCite.enable"/>
+				<html:span data-l10n-id="zbf-pref-wc-drag"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="wordCite.collections.enable"/>
+				<html:span data-l10n-id="zbf-pref-wc-collections"></html:span>
+			</html:label>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="wordCite.citationTags.enable"/>
+				<html:span data-l10n-id="zbf-pref-wc-tags"></html:span>
+			</html:label>
+			<html:div class="zbf-field-row zbf-subordinate" data-zbf-depends-on="wordCite.citationTags.enable">
+				<html:span data-l10n-id="zbf-pref-wc-tag-text"></html:span>
+				<html:input type="text" data-zbf-pref="wordCite.citationTags.text"/>
+			</html:div>
+		</html:div>
+	</html:details>
+
+	<!-- Card 5: Diagnostics & Maintenance -->
+	<html:details class="zbf-card">
+		<html:summary class="zbf-card-heading" data-l10n-id="zbf-card-diagnostics-title"></html:summary>
+		<html:div class="zbf-card-body">
+			<html:p class="zbf-description" data-l10n-id="zbf-card-diagnostics-desc"></html:p>
+			<html:label class="zbf-check-option">
+				<html:input type="checkbox" data-zbf-pref="debug"/>
+				<html:span data-l10n-id="zbf-pref-debug"></html:span>
+			</html:label>
+			<html:div class="zbf-actions">
+				<html:button type="button" id="zbf-clear-cache" data-l10n-id="zbf-btn-clear-cache"></html:button>
+				<html:button type="button" id="zbf-reset-defaults" data-l10n-id="zbf-btn-reset-defaults"></html:button>
+			</html:div>
+		</html:div>
+	</html:details>
+
+	<html:div class="zbf-footer" data-l10n-id="zbf-prefs-footer"></html:div>
+</vbox>

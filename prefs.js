@@ -1,0 +1,76 @@
+// Zotero BridgeFlow — Default Preferences
+pref("extensions.zotero.bridgeflow.modules.workspace.enable", true);
+pref("extensions.zotero.bridgeflow.modules.inspector.enable", true);
+pref("extensions.zotero.bridgeflow.modules.wordCite.enable", true);
+pref("extensions.zotero.bridgeflow.fusion.copyToLookupHistory", true);
+pref("extensions.zotero.bridgeflow.fusion.sidebarCiteBadge", true);
+pref("extensions.zotero.bridgeflow.fusion.spotlightCrossDomain", true);
+pref("extensions.zotero.bridgeflow.fusion.lookupJumpExistingTab", true);
+pref("extensions.zotero.bridgeflow.debug", false);
+pref("extensions.zotero.bridgeflow.migrationVersion", 0);
+
+// Domain A: Workspace (Tabs, Groups, Sessions, Sleep, Spotlight)
+pref("extensions.zotero.bridgeflow.workspace.enableHorizontalGroups", true);
+pref("extensions.zotero.bridgeflow.workspace.horizontalTabCompactMode", "auto");
+pref("extensions.zotero.bridgeflow.workspace.compactTopBar", false);
+pref("extensions.zotero.bridgeflow.workspace.enableVerticalSidebar", true);
+pref("extensions.zotero.bridgeflow.workspace.enableBatchSelection", true);
+pref("extensions.zotero.bridgeflow.workspace.enablePinnedTabs", true);
+pref("extensions.zotero.bridgeflow.workspace.pinnedIconOnly", false);
+pref("extensions.zotero.bridgeflow.workspace.enableVirtualMembers", true);
+pref("extensions.zotero.bridgeflow.workspace.newTabMode", "independent");
+pref("extensions.zotero.bridgeflow.workspace.multiCollectionStrategy", "active");
+pref("extensions.zotero.bridgeflow.workspace.enableTabRemarks", true);
+pref("extensions.zotero.bridgeflow.workspace.remarkDisplayMode", "both");
+pref("extensions.zotero.bridgeflow.workspace.verticalTabTitleMode", "title");
+pref("extensions.zotero.bridgeflow.workspace.verticalTabSubtitleMode", "source");
+pref("extensions.zotero.bridgeflow.workspace.verticalTabRowHeight", 42);
+pref("extensions.zotero.bridgeflow.workspace.verticalTabFontSize", 13);
+pref("extensions.zotero.bridgeflow.workspace.verticalSidebarWidth", 276);
+pref("extensions.zotero.bridgeflow.workspace.verticalSidebarCollapsed", false);
+pref("extensions.zotero.bridgeflow.workspace.enableHoverPreview", true);
+pref("extensions.zotero.bridgeflow.workspace.enableSpotlight", true);
+pref("extensions.zotero.bridgeflow.workspace.enableSessions", true);
+pref("extensions.zotero.bridgeflow.workspace.enableRollingSnapshots", true);
+pref("extensions.zotero.bridgeflow.workspace.enableTabSleep", true);
+pref("extensions.zotero.bridgeflow.workspace.autoSleepMinutes", 0);
+pref("extensions.zotero.bridgeflow.workspace.activeReaderBudget", 0);
+pref("extensions.zotero.bridgeflow.workspace.enableStaleSuggestions", true);
+pref("extensions.zotero.bridgeflow.workspace.staleSuggestDays", 7);
+pref("extensions.zotero.bridgeflow.workspace.enableTabContextMenu", true);
+pref("extensions.zotero.bridgeflow.workspace.enableItemContextMenu", true);
+pref("extensions.zotero.bridgeflow.workspace.enableCopyReference", true);
+pref("extensions.zotero.bridgeflow.workspace.enableShowInFilesystem", true);
+pref("extensions.zotero.bridgeflow.workspace.enableReloadTab", true);
+pref("extensions.zotero.bridgeflow.workspace.state", "");
+
+// Domain B: Inspector (CSL Preview, Citation Lookup, PDF Preview & Folder)
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.citationstyle", "");
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.position", "zotero-item-pane-header");
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.whatToShow", "zpboth");
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.fontsize", "1");
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.spacing", "1.5");
+pref("extensions.zotero.bridgeflow.inspector.cslPreview.maxPreviewItems", 100);
+pref("extensions.zotero.bridgeflow.inspector.lookup.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.lookup.historyEnable", true);
+pref("extensions.zotero.bridgeflow.inspector.lookup.cacheDirectory", "");
+pref("extensions.zotero.bridgeflow.inspector.lookup.cacheMaxEntries", 2000);
+pref("extensions.zotero.bridgeflow.inspector.lookup.cacheTtlDays", 90);
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.mode", "section");
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.defaultZoom", 100);
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.doubleClickOpen", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfPreview.showPageBadge", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfFolder.enable", true);
+pref("extensions.zotero.bridgeflow.inspector.pdfFolder.openMode", "reveal");
+
+// Domain C: Word Citation Tracking & Governance
+pref("extensions.zotero.bridgeflow.wordCite.dragCite.enable", true);
+pref("extensions.zotero.bridgeflow.wordCite.collections.enable", true);
+pref("extensions.zotero.bridgeflow.wordCite.citationTags.enable", true);
+pref("extensions.zotero.bridgeflow.wordCite.citationTags.text", "/Citations");
+pref("extensions.zotero.bridgeflow.wordCite.citationTagDebounceMs", 150);
+pref("extensions.zotero.bridgeflow.wordCite.itemsViewRefreshDebounceMs", 120);
+pref("extensions.zotero.bridgeflow.wordCite.healthWindowMs", 300000);
+pref("extensions.zotero.bridgeflow.wordCite.perfSlowThresholdMs", 50);

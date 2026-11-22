@@ -1,0 +1,19 @@
+{
+  "addons": {
+    "bridgeflow@groele": {
+      "updates": [
+        {
+          "version": "0.0.1",
+          "update_link": "https://github.com/groele/Zotero-BridgeFlow/releases/download/v0.0.1/Zotero-BridgeFlow-0.0.1.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "10.0",
+              "strict_max_version": "12.*"
+            }
+          },
+          "update_hash": "sha512:593ebda4704bf776c56f853ee0c730d521b8a1b95e483fcf7ad4ceee4aa2c286faf86155e4f1bb65f6b85c5dc2198280ee7fea1944b31f565274917c9d58229f"
+        }
+      ]
+    }
+  }
+}

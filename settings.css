@@ -1,0 +1,125 @@
+/* Zotero BridgeFlow — Settings Stylesheet (40px Golden Alignment Baseline) */
+#zbf-prefs-root {
+	font-family: system-ui, "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+	font-size: 14px;
+	line-height: 1.5;
+	color: var(--fill-primary, inherit);
+}
+
+.zbf-page-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 12px;
+}
+
+.zbf-page-title {
+	margin: 0;
+	font-size: 18px;
+	font-weight: 600;
+}
+
+.zbf-version-badge {
+	font-size: 12px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.zbf-card {
+	border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+	border-radius: 9px;
+	padding: 16px;
+	margin-bottom: 10px;
+	background: var(--material-background, transparent);
+}
+
+.zbf-card > summary.zbf-card-heading {
+	list-style: none;
+	cursor: pointer;
+	margin: -16px;
+	padding: 12px 16px;
+	font-size: 14px;
+	font-weight: 600;
+	line-height: 1.5;
+	border-radius: 8px;
+	background: color-mix(in srgb, currentColor 4%, transparent);
+}
+
+.zbf-card[open] > summary.zbf-card-heading {
+	margin-bottom: 12px;
+	border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.zbf-card-body > .zbf-description:first-child {
+	margin: 0 0 10px 0;
+	margin-inline-start: 0;
+	font-size: 13px;
+	line-height: 1.6;
+	opacity: 0.78;
+}
+
+.zbf-check-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 8px 0;
+	margin-inline-start: 0;
+	font-size: 14px;
+	cursor: pointer;
+}
+
+.zbf-check-option > input[type="checkbox"] {
+	width: 16px;
+	height: 16px;
+	margin: 0;
+	flex: 0 0 16px;
+}
+
+.zbf-field-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin: 8px 0;
+	margin-inline-start: 0;
+	font-size: 14px;
+}
+
+.zbf-subordinate {
+	margin-inline-start: 24px;
+}
+
+.zbf-subordinate-desc {
+	margin: 4px 0 8px 0;
+	margin-inline-start: 24px;
+	font-size: 13px;
+	line-height: 1.6;
+	opacity: 0.75;
+}
+
+.zbf-disabled {
+	opacity: 0.55;
+}
+
+.zbf-field-row input,
+.zbf-field-row select,
+.zbf-actions button {
+	font-family: inherit;
+	font-size: 14px;
+}
+
+.zbf-actions {
+	display: flex;
+	gap: 10px;
+	margin-top: 12px;
+}
+
+.zbf-footer {
+	margin-top: 14px;
+	padding-top: 10px;
+	border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+	font-size: 12px;
+	opacity: 0.78;
+}

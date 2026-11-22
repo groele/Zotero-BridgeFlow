@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="zbf-bg" x1="8" y1="6" x2="56" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#0D9488"/>
+    </linearGradient>
+    <linearGradient id="zbf-arch" x1="12" y1="38" x2="52" y2="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.96"/>
+      <stop offset="100%" stop-color="#CCFBF1" stop-opacity="0.98"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#zbf-bg)"/>
+  <!-- Bridge arch connecting reading (left) and writing (right) -->
+  <path d="M12 42 C18 22, 46 22, 52 42" stroke="url(#zbf-arch)" stroke-width="4.5" stroke-linecap="round"/>
+  <path d="M11 42 H53" stroke="#FFFFFF" stroke-width="3.2" stroke-linecap="round" stroke-opacity="0.92"/>
+  <!-- Support pillars -->
+  <path d="M22 33 V42 M32 28 V42 M42 33 V42" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-opacity="0.85"/>
+  <!-- Reading node (left) & Writing node (right) -->
+  <circle cx="16" cy="21" r="4" fill="#FFFFFF"/>
+  <circle cx="48" cy="21" r="4" fill="#CCFBF1"/>
+  <path d="M21 21 H43" stroke="#FFFFFF" stroke-width="2" stroke-dasharray="3 3" stroke-linecap="round" stroke-opacity="0.75"/>
+</svg>
