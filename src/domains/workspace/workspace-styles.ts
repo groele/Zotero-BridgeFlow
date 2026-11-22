@@ -186,6 +186,8 @@ export const WORKSPACE_CSS = `
 .zbf-vtab-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
 .zbf-vtab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-vtab-sub { font-size: 11px; color: var(--zbf-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-vtab-progress { height: 2px; border-radius: 1px; background: var(--zbf-border); overflow: hidden; margin-top: 2px; }
+.zbf-vtab-progress-fill { display: block; height: 100%; background: var(--zbf-accent); border-radius: 1px; }
 .zbf-vtab-right { display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .zbf-cite-badge { font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: #0D9488; color: #fff; }
 .zbf-row-btn {

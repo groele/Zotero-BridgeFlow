@@ -8,6 +8,8 @@ import { isItemWritable } from '../../services/item-resolution.ts';
  * 2. Only removes tags that were added by BridgeFlow; manual user tags are untouched.
  * 3. Uses multi-document union semantics so closing 1 Word doc keeps tags cited in another.
  */
+const MANAGED_TAG_IDS_PREF = 'extensions.zotero.bridgeflow.wordCite.managedTagItemIDs';
+
 export class CitationTagGovernance {
 	private readonly managedItemIDs = new Set<number>();
 	private activeTagText: string;
@@ -17,6 +19,27 @@ export class CitationTagGovernance {
 	constructor(prefs: UnifiedPrefService) {
 		this.prefs = prefs;
 		this.activeTagText = this.sanitizeTagText(prefs.get('wordCite.citationTags.text'));
+		this.loadPersistedIDs();
+	}
+
+	private loadPersistedIDs(): void {
+		try {
+			const raw = String((globalThis as any).Zotero?.Prefs?.get?.(MANAGED_TAG_IDS_PREF, true) || '');
+			if (!raw) return;
+			const parsed = JSON.parse(raw);
+			if (Array.isArray(parsed)) {
+				for (const id of parsed) {
+					const n = Number(id);
+					if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
+				}
+			}
+		} catch { /* ignore */ }
+	}
+
+	private savePersistedIDs(): void {
+		try {
+			(globalThis as any).Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, JSON.stringify([...this.managedItemIDs]), true);
+		} catch { /* ignore */ }
 	}
 
 	get managedCount(): number {
@@ -63,6 +86,7 @@ export class CitationTagGovernance {
 				}
 				this.managedItemIDs.delete(id);
 			}
+			this.savePersistedIDs();
 			return { added, removed };
 		}
 
@@ -90,6 +114,7 @@ export class CitationTagGovernance {
 			this.managedItemIDs.delete(id);
 		}
 
+		this.savePersistedIDs();
 		return { added, removed };
 	}
 }

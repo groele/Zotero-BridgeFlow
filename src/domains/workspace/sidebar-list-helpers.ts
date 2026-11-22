@@ -1,8 +1,9 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
-import type { WorkspaceHoverCard } from './hover-card.ts';
+import { formatRelativeTimeZh, type WorkspaceHoverCard } from './hover-card.ts';
 import type { SidebarSelection } from './sidebar-selection.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
+import { formatReadingProgress } from './tab-actions-helpers.ts';
 import type { WorkspaceTabContextMenu } from './tab-context-menu.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 import type { TrackedTab } from './types.ts';
@@ -53,19 +54,31 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	main.appendChild(titleEl);
 
 	const subMode = prefs.get('workspace.verticalTabSubtitleMode');
-	let subText = '';
+	let subBase = '';
 	if (tab.remark && prefs.get('workspace.enableTabRemarks')) {
-		subText = `备注：${tab.remark}`;
+		subBase = `备注：${tab.remark}`;
 	} else if (subMode !== 'none') {
-		if (subMode === 'source') subText = tab.source || tab.creatorYear || tab.collection;
-		else if (subMode === 'creatorYear') subText = tab.creatorYear || tab.source || tab.collection;
-		else if (subMode === 'collection') subText = tab.collection || tab.creatorYear || tab.source;
+		if (subMode === 'source') subBase = tab.source || tab.creatorYear || tab.collection;
+		else if (subMode === 'creatorYear') subBase = tab.creatorYear || tab.source || tab.collection;
+		else if (subMode === 'collection') subBase = tab.collection || tab.creatorYear || tab.source;
+		else if (subMode === 'lastViewed') subBase = formatRelativeTimeZh(tab.lastViewedAt) || tab.creatorYear || tab.source;
 	}
+	const prog = formatReadingProgress(store.state.readingProgress[tab.key]);
+	const subText = [subBase, prog.text].filter(Boolean).join(' · ');
 	if (subText) {
 		const subEl = doc.createElement('div');
 		subEl.className = 'zbf-vtab-sub';
 		subEl.textContent = subText;
 		main.appendChild(subEl);
+	}
+	if (prog.ratio !== null && prog.ratio > 0) {
+		const bar = doc.createElement('div');
+		bar.className = 'zbf-vtab-progress';
+		const fill = doc.createElement('span');
+		fill.className = 'zbf-vtab-progress-fill';
+		fill.style.width = `${Math.round(prog.ratio * 100)}%`;
+		bar.appendChild(fill);
+		main.appendChild(bar);
 	}
 	row.appendChild(main);
 

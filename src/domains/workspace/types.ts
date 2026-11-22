@@ -31,6 +31,12 @@ export interface WorkspaceSession {
 
 export type RemarkDisplayMode = 'both' | 'remark' | 'title';
 
+export interface TabReadingProgress {
+	readSeconds: number;
+	lastPage?: number;
+	totalPages?: number;
+}
+
 export interface WorkspaceState {
 	version: number;
 	groups: TabGroup[];
@@ -40,6 +46,7 @@ export interface WorkspaceState {
 	remarks: Record<string, string>;
 	remarkModes: Record<string, RemarkDisplayMode>;
 	lastViewedAt: Record<string, number>;
+	readingProgress: Record<string, TabReadingProgress>;
 	virtualMembers: Record<string, VirtualMemberMeta>;
 	sessions: WorkspaceSession[];
 	rollingSessions: WorkspaceSession[];

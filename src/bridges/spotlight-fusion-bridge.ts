@@ -36,13 +36,13 @@ export class SpotlightFusionBridge implements BridgeModule {
 
 					if (active) {
 						// 1. One-click command to group open tabs cited in the active Word document
-						const groupCmdTitle = `Group open tabs cited in ${active.displayName}`;
-						if (!term || groupCmdTitle.toLowerCase().includes(term) || 'word'.includes(term)) {
+						const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;
+						if (!term || groupCmdTitle.toLowerCase().includes(term) || 'word'.includes(term) || 'group'.includes(term)) {
 							out.push({
 								id: `cmd:group-word:${active.sessionID}`,
 								category: 'command',
 								title: groupCmdTitle,
-								subtitle: `${active.itemCitations.size} cited items`,
+								subtitle: `共 ${active.itemCitations.size} 篇已引用文献`,
 								badge: 'WORD',
 								action: () => {
 									this.workspace.groupOpenTabsByItemIDs(

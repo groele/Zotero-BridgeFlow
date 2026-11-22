@@ -1,6 +1,6 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
-import { normalizeToRegularItemAsync, resolvePdfAttachments } from '../../services/item-resolution.ts';
+import { resolveBestFileAttachment, revealItemAttachmentInFilesystem } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 
@@ -71,47 +71,10 @@ export class PdfFolderSectionController {
 	}
 
 	async revealAttachmentFolder(item: any, fallbackWin?: Window | null): Promise<boolean> {
-		if (!item) return false;
-		const att = await this.resolveFileAttachment(item);
-		if (!att) return false;
-		const zotero = (globalThis as any).Zotero;
-		try {
-			const filePath = (await att.getFilePathAsync?.().catch(() => null)) || att.getFilePath?.();
-			const nsFile = filePath ? zotero?.File?.pathToFile?.(filePath) : null;
-			const folder = nsFile?.parent?.path;
-			const cacheKey = filePath || folder || String(att.id || '');
-			if (cacheKey) {
-				const now = Date.now();
-				if (now - (this.lastLaunched.get(cacheKey) ?? 0) < RECENT_LAUNCH_INTERVAL_MS) return true;
-				this.lastLaunched.set(cacheKey, now);
-			}
-			try {
-				const openMode = this.kernel.prefs.get('inspector.pdfFolder.openMode');
-				if (openMode === 'folder' && folder && zotero?.launchFile) {
-					await zotero.launchFile(folder);
-					return true;
-				}
-				if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === 'function') {
-					await Promise.resolve(nsFile.reveal());
-					return true;
-				}
-				const targetWin = (fallbackWin as any)?.ZoteroPane ? fallbackWin : zotero?.getMainWindow?.();
-				if ((targetWin as any)?.ZoteroPane?.showAttachmentInFilesystem) {
-					await (targetWin as any).ZoteroPane.showAttachmentInFilesystem(att.id);
-					return true;
-				}
-				if (folder && zotero?.launchFile) {
-					await zotero.launchFile(folder);
-					return true;
-				}
-			} catch (err) {
-				if (cacheKey) this.lastLaunched.delete(cacheKey);
-				throw err;
-			}
-		} catch (error) {
-			this.kernel.logger.error('inspector:pdf-folder', error);
-		}
-		return false;
+		return revealItemAttachmentInFilesystem(item, {
+			openMode: this.kernel.prefs.get('inspector.pdfFolder.openMode'),
+			win: fallbackWin,
+		});
 	}
 
 	unregister(): void {
@@ -228,12 +191,6 @@ export class PdfFolderSectionController {
 	}
 
 	private async resolveFileAttachment(item: any): Promise<any | null> {
-		if (!item) return null;
-		if (item.isFileAttachment?.()) return item;
-		const best = await item.getBestAttachment?.().catch(() => null);
-		if (best?.isFileAttachment?.()) return best;
-		const owner = await normalizeToRegularItemAsync(item);
-		const pdfs = await resolvePdfAttachments(owner || item);
-		return pdfs[0]?.item ?? null;
+		return resolveBestFileAttachment(item);
 	}
 }

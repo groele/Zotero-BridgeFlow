@@ -10,10 +10,55 @@ export interface WordSessionRecord {
 }
 
 export function extractDocumentBaseName(rawPath: string): string {
-	const cleaned = String(rawPath || '').trim();
-	if (!cleaned) return 'Untitled Word Document';
-	const parts = cleaned.split(/[\\/]/).filter(Boolean);
-	return parts[parts.length - 1] || cleaned;
+	let cleaned = String(rawPath || '').replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
+	if (!cleaned || cleaned === '__doc__') return 'Untitled Word Document';
+	cleaned = cleaned.replace(/^(["'])(.*)\1$/, '$2').trim();
+	if (cleaned.startsWith('window-title:')) {
+		cleaned = cleaned.slice('window-title:'.length).trim();
+	}
+	const wordSuffixRe = /\s+[-–—]\s+(?:Microsoft\s+)?Word(?:\s*\([^)]*\))?$/i;
+	if (wordSuffixRe.test(cleaned)) {
+		cleaned = cleaned.replace(wordSuffixRe, '').trim();
+	}
+	const isURL = /^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned);
+	if (isURL && /(?:\/|^)(?:Doc|WopiFrame2?|redir)\.aspx(?:\?|$)/i.test(cleaned)) {
+		const fileParam = cleaned.match(/[?&](?:file|filename|name)=([^&#]+)/i);
+		if (fileParam?.[1]) {
+			try {
+				const decoded = decodeURIComponent(fileParam[1].replace(/\+/g, '%20')).trim();
+				if (decoded && !/[\\/]/.test(decoded)) cleaned = decoded;
+			} catch { /* fall through */ }
+		}
+	}
+	const withoutQuery = isURL ? cleaned.replace(/[?#].*$/, '') : cleaned;
+	const parts = withoutQuery.split(/[\\/]/).filter(Boolean);
+	let candidate = parts[parts.length - 1] || cleaned;
+	if (isURL || /%[0-9A-Fa-f]{2}/.test(candidate)) {
+		try {
+			candidate = decodeURIComponent(candidate);
+		} catch { /* keep raw */ }
+	}
+	const extMatch = candidate.match(/^(.+?\.(?:docx|docm|doc|dotx|dotm|rtf|odt))(?:\s*\[[^\]]*\]|\s+[-–—]\s+.*)*$/i);
+	if (extMatch) {
+		candidate = extMatch[1].trim();
+	} else {
+		const statusRe = /(?:\s*\[(?:兼容模式|Compatibility Mode|只读|Read-Only|受保护的视图|Protected View|自动保存|AutoSave)[^\]]*\]|\s+[-–—]\s+(?:已保存.*|正在保存.*|上次保存.*|只读|兼容模式|受保护的视图|未保存|Saved.*|Saving.*|Last saved.*|Read-Only|Compatibility Mode|Protected View|Unsaved))\s*$/i;
+		let prev = '';
+		while (candidate && candidate !== prev) {
+			prev = candidate;
+			candidate = candidate.replace(statusRe, '').trim();
+		}
+	}
+	return (candidate || 'Untitled Word Document').slice(0, 200);
+}
+
+function extractParentQualifier(rawPath: string, depth = 1): string {
+	const trimmed = String(rawPath || '').trim();
+	if (!trimmed || trimmed.startsWith('window-title:')) return '';
+	const clean = trimmed.replace(/[?#].*$/, '');
+	const parts = clean.split(/[\\/]+/).filter(Boolean);
+	const parents = parts.slice(0, -1).filter((p) => !/^[A-Za-z]:$/.test(p) && !/^[a-z]+:$/i.test(p));
+	return parents.length ? parents.slice(-depth).join('/') : '';
 }
 
 export function disambiguateDocumentNames(sessions: readonly { sessionID: string; path: string }[]): Map<string, string> {
@@ -29,9 +74,18 @@ export function disambiguateDocumentNames(sessions: readonly { sessionID: string
 			result.set(s.sessionID, base);
 			continue;
 		}
-		const segments = s.path.split(/[\\/]/).filter(Boolean);
-		const parent = segments.length >= 2 ? segments[segments.length - 2] : '';
-		result.set(s.sessionID, parent ? `${base} (${parent})` : base);
+		const peers = sessions.filter((p) => p.sessionID !== s.sessionID && extractDocumentBaseName(p.path) === base);
+		let qualified = base;
+		for (const depth of [1, 2, 3]) {
+			const own = extractParentQualifier(s.path, depth);
+			if (!own) break;
+			if (peers.every((p) => extractParentQualifier(p.path, depth) !== own)) {
+				qualified = `${base} (${own})`;
+				break;
+			}
+			qualified = `${base} (${own})`;
+		}
+		result.set(s.sessionID, qualified);
 	}
 	return result;
 }
@@ -72,7 +126,12 @@ export class WordSessionTracker {
 		return union;
 	}
 
-	getCitationDisplayForItem(itemID: number): string {
+	getCitationDisplayForItem(itemID: number, preferredSessionID?: string | null): string {
+		if (preferredSessionID && this.sessions.has(preferredSessionID)) {
+			const prefSes = this.sessions.get(preferredSessionID)!;
+			const hit = prefSes.itemCitations.get(itemID);
+			return hit ? `[${hit.ordinal}] ${hit.shortText}`.trim() : '';
+		}
 		const active = this.getActiveSession();
 		if (active) {
 			const hit = active.itemCitations.get(itemID);

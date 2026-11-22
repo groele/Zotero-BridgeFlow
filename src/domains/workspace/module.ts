@@ -47,6 +47,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	private active = false;
 	private latestBadges: ReadonlyMap<number, CitationBadgeInfo> = new Map();
 	private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
+	private readingTimer: ReturnType<typeof setInterval> | null = null;
 	private autoGroupTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastRollingAt = 0;
 	private viewedDirty = false;
@@ -86,6 +87,16 @@ export class WorkspaceDomainModule implements DomainModule {
 		}
 
 		this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 60_000);
+		this.readingTimer = setInterval(() => {
+			let updated = false;
+			for (const win of this.windows.keys()) {
+				if (this.tabs.trackReadingProgress(win, 15)) {
+					this.viewedDirty = true;
+					updated = true;
+				}
+			}
+			if (updated) this.refreshAllWindows();
+		}, 15_000);
 	}
 
 	stop(): void {
@@ -94,6 +105,10 @@ export class WorkspaceDomainModule implements DomainModule {
 		if (this.maintenanceTimer !== null) {
 			clearInterval(this.maintenanceTimer);
 			this.maintenanceTimer = null;
+		}
+		if (this.readingTimer !== null) {
+			clearInterval(this.readingTimer);
+			this.readingTimer = null;
 		}
 		if (this.autoGroupTimer !== null) {
 			clearTimeout(this.autoGroupTimer);

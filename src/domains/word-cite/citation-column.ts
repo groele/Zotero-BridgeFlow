@@ -1,4 +1,5 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
+import type { WordCitationCollectionManager } from './citation-collections.ts';
 import type { WordSessionTracker } from './session-tracker.ts';
 
 export class CitationColumnController {
@@ -6,10 +7,12 @@ export class CitationColumnController {
 
 	private readonly kernel: PluginKernel;
 	private readonly tracker: WordSessionTracker;
+	private readonly collections?: WordCitationCollectionManager;
 
-	constructor(kernel: PluginKernel, tracker: WordSessionTracker) {
+	constructor(kernel: PluginKernel, tracker: WordSessionTracker, collections?: WordCitationCollectionManager) {
 		this.kernel = kernel;
 		this.tracker = tracker;
+		this.collections = collections;
 	}
 
 	register(): void {
@@ -25,7 +28,8 @@ export class CitationColumnController {
 			dataProvider: (item: any) => {
 				const id = Number(item?.id || 0);
 				if (!id) return '';
-				return this.tracker.getCitationDisplayForItem(id);
+				const selectedSessionID = this.collections?.resolveSelectedCollectionSessionID();
+				return this.tracker.getCitationDisplayForItem(id, selectedSessionID);
 			},
 		});
 	}

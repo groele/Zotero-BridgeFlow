@@ -1,7 +1,7 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import {
 	GROUP_PALETTE, MAX_MANUAL_SESSIONS, MAX_REMARK_LENGTH, MAX_ROLLING_SESSIONS,
-	type RemarkDisplayMode, type TabGroup, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
+	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
 function createEmptyState(): WorkspaceState {
@@ -14,6 +14,7 @@ function createEmptyState(): WorkspaceState {
 		remarks: {},
 		remarkModes: {},
 		lastViewedAt: {},
+		readingProgress: {},
 		virtualMembers: {},
 		sessions: [],
 		rollingSessions: [],
@@ -48,6 +49,7 @@ export class WorkspaceStateStore {
 				remarks: parsed?.remarks && typeof parsed.remarks === 'object' ? parsed.remarks : {},
 				remarkModes: parsed?.remarkModes && typeof parsed.remarkModes === 'object' ? parsed.remarkModes : {},
 				lastViewedAt: parsed?.lastViewedAt && typeof parsed.lastViewedAt === 'object' ? parsed.lastViewedAt : {},
+				readingProgress: parsed?.readingProgress && typeof parsed.readingProgress === 'object' ? parsed.readingProgress : {},
 				virtualMembers: parsed?.virtualMembers && typeof parsed.virtualMembers === 'object' ? parsed.virtualMembers : {},
 				sessions: Array.isArray(parsed?.sessions) ? parsed.sessions : [],
 				rollingSessions: Array.isArray(parsed?.rollingSessions) ? parsed.rollingSessions : [],
@@ -268,6 +270,17 @@ export class WorkspaceStateStore {
 
 	touchViewed(key: string, now = Date.now()): void {
 		this.state.lastViewedAt[key] = now;
+	}
+
+	updateReadingProgress(key: string, deltaSeconds: number, lastPage?: number, totalPages?: number): TabReadingProgress {
+		const prev = this.state.readingProgress[key] ?? { readSeconds: 0 };
+		const next: TabReadingProgress = {
+			readSeconds: Math.max(0, (prev.readSeconds || 0) + Math.max(0, deltaSeconds)),
+			...(lastPage && lastPage > 0 ? { lastPage } : prev.lastPage ? { lastPage: prev.lastPage } : {}),
+			...(totalPages && totalPages > 0 ? { totalPages } : prev.totalPages ? { totalPages: prev.totalPages } : {}),
+		};
+		this.state.readingProgress[key] = next;
+		return next;
 	}
 
 	saveVirtualMember(meta: VirtualMemberMeta): void {

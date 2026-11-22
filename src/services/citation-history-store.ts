@@ -34,6 +34,17 @@ export class CitationHistoryStore {
 	private initialized = false;
 	private dirty = false;
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+	public saveFailed = false;
+	private readonly statusListeners = new Set<() => void>();
+
+	onStatusChange(listener: () => void): () => void {
+		this.statusListeners.add(listener);
+		return () => this.statusListeners.delete(listener);
+	}
+
+	async retrySave(): Promise<boolean> {
+		return this.flushToDisk();
+	}
 
 	configure(partial: Partial<CitationHistoryConfig>): void {
 		if (typeof partial.maxEntries === 'number' && Number.isFinite(partial.maxEntries)) {
@@ -209,14 +220,23 @@ export class CitationHistoryStore {
 		}, 400);
 	}
 
-	private async flushToDisk(): Promise<void> {
+	private async flushToDisk(): Promise<boolean> {
 		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.writeUTF8) return;
+		if (!ioUtils?.writeUTF8) return true;
 		try {
 			await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
 			const payload = JSON.stringify({ version: 1, records: [...this.records.values()] });
 			await ioUtils.writeUTF8(this.getFilePath(), payload);
 			this.dirty = false;
-		} catch { /* ignore disk error */ }
+			if (this.saveFailed) {
+				this.saveFailed = false;
+				for (const fn of this.statusListeners) fn();
+			}
+			return true;
+		} catch {
+			this.saveFailed = true;
+			for (const fn of this.statusListeners) fn();
+			return false;
+		}
 	}
 }

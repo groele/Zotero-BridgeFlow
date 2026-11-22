@@ -1,6 +1,6 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
-import { resolvePdfAttachments } from '../../services/item-resolution.ts';
+import { locateItemInZoteroLibrary, resolvePdfAttachments } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import type { CitationLookupEngine, LookupCandidate } from './citation-lookup-engine.ts';
@@ -113,8 +113,35 @@ export class CitationLookupSectionController {
 		statusDiv.setAttribute('role', 'status');
 		statusDiv.setAttribute('aria-live', 'polite');
 
-		container.append(input, btnRow, statusDiv);
+		const cacheNotice = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
+		cacheNotice.className = 'viewflow-lookup-cache-error';
+		cacheNotice.hidden = true;
+		const cacheMsg = doc.createElementNS('http://www.w3.org/1999/xhtml', 'span');
+		const retryBtn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
+		retryBtn.type = 'button';
+		retryBtn.className = 'viewflow-lookup-cache-retry';
+		retryBtn.textContent = '重试保存缓存';
+		cacheNotice.append(cacheMsg, retryBtn);
+
+		container.append(input, btnRow, cacheNotice, statusDiv);
 		body.append(container);
+
+		const syncCacheStatus = () => {
+			if (!body.isConnected) return;
+			if (this.services.history.saveFailed) {
+				cacheNotice.hidden = false;
+				cacheMsg.textContent = '历史缓存写入失败，记录暂存于内存，请点击重试保存。';
+			} else {
+				cacheNotice.hidden = true;
+				cacheMsg.textContent = '';
+			}
+		};
+		const offCacheStatus = this.services.history.onStatusChange(syncCacheStatus);
+		retryBtn.onclick = async () => {
+			await this.services.history.retrySave();
+			syncCacheStatus();
+		};
+		syncCacheStatus();
 
 		let request = 0;
 		let pasteTimer: ReturnType<typeof setTimeout> | undefined;
@@ -122,7 +149,7 @@ export class CitationLookupSectionController {
 			if (pasteTimer !== undefined) clearTimeout(pasteTimer);
 			pasteTimer = undefined;
 		};
-		this.cleanups.set(body, () => { request++; cancelPaste(); });
+		this.cleanups.set(body, () => { request++; cancelPaste(); offCacheStatus(); });
 
 		const resolveItem = (candidate: LookupCandidate): any =>
 			candidate.item || (globalThis as any).Zotero?.Items?.get?.(candidate.itemID) || null;
@@ -220,20 +247,7 @@ export class CitationLookupSectionController {
 	}
 
 	private async locateInLibrary(itemID: number): Promise<boolean> {
-		const win = (globalThis as any).Zotero?.getMainWindow?.();
-		if (!win?.ZoteroPane) return false;
-		try {
-			win.Zotero_Tabs?.select?.('zotero-pane');
-			const ok = await win.ZoteroPane.selectItem(itemID);
-			if (ok === false) return false;
-			const tree = win.document?.getElementById?.('zotero-items-tree');
-			if (tree?.ensureRowIsVisible && tree?.selection) {
-				tree.ensureRowIsVisible(tree.selection.currentIndex);
-			}
-			return true;
-		} catch {
-			return false;
-		}
+		return locateItemInZoteroLibrary(itemID);
 	}
 
 	private async locateItem(itemID: number): Promise<boolean> {

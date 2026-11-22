@@ -311,7 +311,14 @@ export class WorkspaceVerticalSidebar {
 				if (inp) inp.value = '';
 				this.renderList();
 			},
-			() => this.popover.openHub(),
+			() => {
+				const latest = this.store.state.sessions[0] || this.store.state.rollingSessions[0];
+				if (latest && this.prefs.get('workspace.enableSessions')) {
+					void this.tabs.restoreSession(this.win, latest, true).then(() => this.onRefresh());
+				} else {
+					this.popover.openHub();
+				}
+			},
 		));
 	}
 

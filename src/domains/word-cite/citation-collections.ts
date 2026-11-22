@@ -17,6 +17,27 @@ export class WordCitationCollectionManager {
 		this.kernel = kernel;
 	}
 
+	getSessionIdByCollectionKey(collectionKey: string): string | null {
+		if (!collectionKey) return null;
+		for (const [sid, col] of this.sessionCollections.entries()) {
+			if (col?.key === collectionKey) return sid;
+		}
+		return null;
+	}
+
+	resolveSelectedCollectionSessionID(win?: Window | null): string | null {
+		const targetWin = (win as any)?.ZoteroPane ? win : (globalThis as any).Zotero?.getMainWindow?.();
+		const pane = (targetWin as any)?.ZoteroPane;
+		const selected: any[] = pane?.getSelectedCollections?.()
+			|| pane?.collectionsView?.getSelectedCollections?.()
+			|| (pane?.getSelectedCollection?.() ? [pane.getSelectedCollection()] : []);
+		for (const col of selected) {
+			const sid = this.getSessionIdByCollectionKey(String(col?.key || ''));
+			if (sid) return sid;
+		}
+		return null;
+	}
+
 	async purgeStaleCollections(): Promise<void> {
 		const ZoteroObj = (globalThis as any).Zotero;
 		const colsApi = ZoteroObj?.Collections;
@@ -123,10 +144,42 @@ export class WordCitationCollectionManager {
 
 	private refreshCollectionsView(zoteroObj: any): void {
 		const wins: any[] = zoteroObj?.getMainWindows?.() || [];
+		const activeKeys = new Set([...this.sessionCollections.values()].map((c) => c?.key).filter(Boolean));
 		for (const win of wins) {
 			try {
-				win?.ZoteroPane?.collectionsView?.refresh?.();
+				const cv = win?.ZoteroPane?.collectionsView;
+				cv?.refresh?.();
+				this.repositionInCollectionsView(cv, activeKeys);
 			} catch { /* ignore */ }
+		}
+	}
+
+	private repositionInCollectionsView(cv: any, activeKeys: ReadonlySet<string>): void {
+		const rows: any[] = cv?._rows;
+		if (!Array.isArray(rows) || rows.length < 3 || !activeKeys.size) return;
+		const isCitationRow = (r: any) => Boolean(r?.ref?.key && activeKeys.has(r.ref.key));
+		const isBottomVirtual = (r: any) => {
+			const t = r?.type;
+			return t === 'publications' || t === 'duplicates' || t === 'unfiled' || t === 'retracted' || t === 'trash'
+				|| Boolean(r?.isPublications?.() || r?.isDuplicates?.() || r?.isUnfiled?.() || r?.isTrash?.());
+		};
+		const regular: any[] = [];
+		const citation: any[] = [];
+		const bottom: any[] = [];
+		let hitBottom = false;
+		for (const row of rows) {
+			if (isCitationRow(row)) citation.push(row);
+			else if (hitBottom || isBottomVirtual(row)) {
+				hitBottom = true;
+				bottom.push(row);
+			} else regular.push(row);
+		}
+		if (!citation.length) return;
+		const reordered = [...regular, ...citation, ...bottom];
+		if (reordered.length === rows.length && reordered.some((r, idx) => r !== rows[idx])) {
+			rows.splice(0, rows.length, ...reordered);
+			cv._refreshRowMap?.();
+			cv.tree?.invalidate?.();
 		}
 	}
 }

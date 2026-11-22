@@ -16,6 +16,7 @@ import {
 	restoreSessionTabsAndLayout,
 	revealAttachmentFile,
 	selectItemInLibrary,
+	trackActiveReaderProgress,
 	type ClosedTabRecord,
 	type PublicationGroupSuggestion,
 } from './tab-actions-helpers.ts';
@@ -346,5 +347,9 @@ export class WorkspaceTabController {
 		return this.buildTrackedTabs(win).filter(
 			(t) => !t.virtual && !t.pinned && t.lastViewedAt > 0 && t.lastViewedAt < cutoff,
 		);
+	}
+
+	trackReadingProgress(win: Window, elapsedSeconds: number): boolean {
+		return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds);
 	}
 }

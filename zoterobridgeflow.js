@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.7 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.8 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -171,13 +171,13 @@
             const out = [];
             const active = this.wordCite.tracker.getActiveSession();
             if (active) {
-              const groupCmdTitle = `Group open tabs cited in ${active.displayName}`;
-              if (!term || groupCmdTitle.toLowerCase().includes(term) || "word".includes(term)) {
+              const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;
+              if (!term || groupCmdTitle.toLowerCase().includes(term) || "word".includes(term) || "group".includes(term)) {
                 out.push({
                   id: `cmd:group-word:${active.sessionID}`,
                   category: "command",
                   title: groupCmdTitle,
-                  subtitle: `${active.itemCitations.size} cited items`,
+                  subtitle: `共 ${active.itemCitations.size} 篇已引用文献`,
                   badge: "WORD",
                   action: () => {
                     this.workspace.groupOpenTabsByItemIDs(
@@ -343,6 +343,104 @@
       title: String(att.getField?.("title") || att.attachmentFilename || "PDF"),
       filename: String(att.attachmentFilename || "")
     }));
+  }
+  async function resolveBestFileAttachment(itemOrID) {
+    const hostItems = globalThis.Zotero?.Items;
+    const item = typeof itemOrID === "number" ? hostItems?.get?.(itemOrID) || await hostItems?.getAsync?.(itemOrID) : itemOrID;
+    if (!item || isItemTrashedOrDeleted(item)) return null;
+    if (item.isFileAttachment?.()) return item;
+    const best = await item.getBestAttachment?.().catch(() => null);
+    if (best && !isItemTrashedOrDeleted(best) && (best.isFileAttachment?.() ?? true)) return best;
+    const owner = await normalizeToRegularItemAsync(item);
+    const pdfs = await resolvePdfAttachments(owner || item);
+    return pdfs[0]?.item ?? null;
+  }
+  var recentRevealTimestamps = /* @__PURE__ */ new Map();
+  async function revealItemAttachmentInFilesystem(itemOrID, options = {}) {
+    try {
+      const att = await resolveBestFileAttachment(itemOrID);
+      if (!att) return false;
+      const zotero = globalThis.Zotero;
+      const filePath = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
+      const nsFile = filePath ? zotero?.File?.pathToFile?.(filePath) : null;
+      const folder = nsFile?.parent?.path;
+      const cacheKey = filePath || folder || String(att.id || "");
+      const dedupMs = options.dedupMs ?? 350;
+      if (cacheKey && dedupMs > 0) {
+        const now = Date.now();
+        if (now - (recentRevealTimestamps.get(cacheKey) ?? 0) < dedupMs) return true;
+        recentRevealTimestamps.set(cacheKey, now);
+      }
+      try {
+        if (options.openMode === "folder" && folder && zotero?.launchFile) {
+          await zotero.launchFile(folder);
+          return true;
+        }
+        if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === "function") {
+          await Promise.resolve(nsFile.reveal());
+          return true;
+        }
+        const targetWin = options.win?.ZoteroPane ? options.win : zotero?.getMainWindow?.();
+        if (targetWin?.ZoteroPane?.showAttachmentInFilesystem) {
+          await targetWin.ZoteroPane.showAttachmentInFilesystem(att.id);
+          return true;
+        }
+        if (folder && zotero?.launchFile) {
+          await zotero.launchFile(folder);
+          return true;
+        }
+      } catch (err) {
+        if (cacheKey) recentRevealTimestamps.delete(cacheKey);
+        throw err;
+      }
+    } catch (error) {
+      globalThis.Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+    }
+    return false;
+  }
+  async function locateItemInZoteroLibrary(itemOrID, options = {}) {
+    try {
+      const zotero = globalThis.Zotero;
+      const win = options.win?.ZoteroPane ? options.win : zotero?.getMainWindow?.();
+      const pane = win?.ZoteroPane;
+      if (!pane) return false;
+      const rawItem = typeof itemOrID === "number" ? zotero?.Items?.get?.(itemOrID) || await zotero?.Items?.getAsync?.(itemOrID) : itemOrID;
+      if (rawItem && isItemTrashedOrDeleted(rawItem)) return false;
+      const primary = rawItem ? normalizeToRegularItem(rawItem) || rawItem : null;
+      const targetID = Number(primary?.id ?? (typeof itemOrID === "number" ? itemOrID : 0));
+      if (!targetID) return false;
+      if (win.Zotero_Tabs && win.Zotero_Tabs.selectedID !== "zotero-pane") {
+        win.Zotero_Tabs.select?.("zotero-pane");
+      }
+      if (options.switchCollection && primary) {
+        const cols = primary.getCollections?.() || [];
+        if (cols.length && pane.collectionsView?.selectCollection) {
+          await pane.collectionsView.selectCollection(cols[0]);
+        }
+      }
+      const ok = await pane.selectItem?.(targetID, true);
+      if (ok === false) return false;
+      const tree = win.document?.getElementById?.("zotero-items-tree");
+      if (tree?.ensureRowIsVisible && tree?.selection) {
+        tree.ensureRowIsVisible(tree.selection.currentIndex);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function formatCreatorYear(item) {
+    if (!item) return "";
+    const first = String(item.firstCreator || "");
+    const date = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+    return [first, date].filter(Boolean).join(", ");
+  }
+  function resolvePrimaryCollectionName(item) {
+    if (!item || typeof item.getCollections !== "function") return "";
+    const ids = item.getCollections() || [];
+    if (!ids.length) return "";
+    const col = globalThis.Zotero?.Collections?.get?.(ids[0]);
+    return String(col?.name || "");
   }
 
   // src/domains/inspector/citation-lookup-parser.ts
@@ -1299,8 +1397,33 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       statusDiv.className = "viewflow-lookup-status";
       statusDiv.setAttribute("role", "status");
       statusDiv.setAttribute("aria-live", "polite");
-      container.append(input, btnRow, statusDiv);
+      const cacheNotice = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      cacheNotice.className = "viewflow-lookup-cache-error";
+      cacheNotice.hidden = true;
+      const cacheMsg = doc.createElementNS("http://www.w3.org/1999/xhtml", "span");
+      const retryBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+      retryBtn.type = "button";
+      retryBtn.className = "viewflow-lookup-cache-retry";
+      retryBtn.textContent = "重试保存缓存";
+      cacheNotice.append(cacheMsg, retryBtn);
+      container.append(input, btnRow, cacheNotice, statusDiv);
       body.append(container);
+      const syncCacheStatus = () => {
+        if (!body.isConnected) return;
+        if (this.services.history.saveFailed) {
+          cacheNotice.hidden = false;
+          cacheMsg.textContent = "历史缓存写入失败，记录暂存于内存，请点击重试保存。";
+        } else {
+          cacheNotice.hidden = true;
+          cacheMsg.textContent = "";
+        }
+      };
+      const offCacheStatus = this.services.history.onStatusChange(syncCacheStatus);
+      retryBtn.onclick = async () => {
+        await this.services.history.retrySave();
+        syncCacheStatus();
+      };
+      syncCacheStatus();
       let request = 0;
       let pasteTimer;
       const cancelPaste = () => {
@@ -1310,6 +1433,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.cleanups.set(body, () => {
         request++;
         cancelPaste();
+        offCacheStatus();
       });
       const resolveItem = (candidate) => candidate.item || globalThis.Zotero?.Items?.get?.(candidate.itemID) || null;
       const executeLookup = async (textToSearch) => {
@@ -1404,20 +1528,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       };
     }
     async locateInLibrary(itemID) {
-      const win = globalThis.Zotero?.getMainWindow?.();
-      if (!win?.ZoteroPane) return false;
-      try {
-        win.Zotero_Tabs?.select?.("zotero-pane");
-        const ok = await win.ZoteroPane.selectItem(itemID);
-        if (ok === false) return false;
-        const tree = win.document?.getElementById?.("zotero-items-tree");
-        if (tree?.ensureRowIsVisible && tree?.selection) {
-          tree.ensureRowIsVisible(tree.selection.currentIndex);
-        }
-        return true;
-      } catch {
-        return false;
-      }
+      return locateItemInZoteroLibrary(itemID);
     }
     async locateItem(itemID) {
       if (this.kernel.prefs.get("fusion.lookupJumpExistingTab")) {
@@ -1731,7 +1842,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   // src/domains/inspector/pdf-folder-section.ts
   var FOLDER_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-pdf-folder-sidenav"]';
   var FOLDER_ACTION = `${FOLDER_ICON}, button.ztf-pdf-folder-action`;
-  var RECENT_LAUNCH_INTERVAL_MS = 500;
   function folderActionTarget(event) {
     return event.composedPath?.().find(
       (node) => node.matches?.(FOLDER_ACTION) === true
@@ -1783,47 +1893,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
     }
     async revealAttachmentFolder(item, fallbackWin) {
-      if (!item) return false;
-      const att = await this.resolveFileAttachment(item);
-      if (!att) return false;
-      const zotero = globalThis.Zotero;
-      try {
-        const filePath = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
-        const nsFile = filePath ? zotero?.File?.pathToFile?.(filePath) : null;
-        const folder = nsFile?.parent?.path;
-        const cacheKey = filePath || folder || String(att.id || "");
-        if (cacheKey) {
-          const now = Date.now();
-          if (now - (this.lastLaunched.get(cacheKey) ?? 0) < RECENT_LAUNCH_INTERVAL_MS) return true;
-          this.lastLaunched.set(cacheKey, now);
-        }
-        try {
-          const openMode = this.kernel.prefs.get("inspector.pdfFolder.openMode");
-          if (openMode === "folder" && folder && zotero?.launchFile) {
-            await zotero.launchFile(folder);
-            return true;
-          }
-          if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === "function") {
-            await Promise.resolve(nsFile.reveal());
-            return true;
-          }
-          const targetWin = fallbackWin?.ZoteroPane ? fallbackWin : zotero?.getMainWindow?.();
-          if (targetWin?.ZoteroPane?.showAttachmentInFilesystem) {
-            await targetWin.ZoteroPane.showAttachmentInFilesystem(att.id);
-            return true;
-          }
-          if (folder && zotero?.launchFile) {
-            await zotero.launchFile(folder);
-            return true;
-          }
-        } catch (err) {
-          if (cacheKey) this.lastLaunched.delete(cacheKey);
-          throw err;
-        }
-      } catch (error) {
-        this.kernel.logger.error("inspector:pdf-folder", error);
-      }
-      return false;
+      return revealItemAttachmentInFilesystem(item, {
+        openMode: this.kernel.prefs.get("inspector.pdfFolder.openMode"),
+        win: fallbackWin
+      });
     }
     unregister() {
       this.services.panePositions.setTarget("pdf-folder", null);
@@ -1925,13 +1998,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       st.btn.style.opacity = "1";
     }
     async resolveFileAttachment(item) {
-      if (!item) return null;
-      if (item.isFileAttachment?.()) return item;
-      const best = await item.getBestAttachment?.().catch(() => null);
-      if (best?.isFileAttachment?.()) return best;
-      const owner = await normalizeToRegularItemAsync(item);
-      const pdfs = await resolvePdfAttachments(owner || item);
-      return pdfs[0]?.item ?? null;
+      return resolveBestFileAttachment(item);
     }
   };
 
@@ -3192,6 +3259,23 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     constructor(kernel) {
       this.kernel = kernel;
     }
+    getSessionIdByCollectionKey(collectionKey) {
+      if (!collectionKey) return null;
+      for (const [sid, col] of this.sessionCollections.entries()) {
+        if (col?.key === collectionKey) return sid;
+      }
+      return null;
+    }
+    resolveSelectedCollectionSessionID(win) {
+      const targetWin = win?.ZoteroPane ? win : globalThis.Zotero?.getMainWindow?.();
+      const pane = targetWin?.ZoteroPane;
+      const selected = pane?.getSelectedCollections?.() || pane?.collectionsView?.getSelectedCollections?.() || (pane?.getSelectedCollection?.() ? [pane.getSelectedCollection()] : []);
+      for (const col of selected) {
+        const sid = this.getSessionIdByCollectionKey(String(col?.key || ""));
+        if (sid) return sid;
+      }
+      return null;
+    }
     async purgeStaleCollections() {
       const ZoteroObj = globalThis.Zotero;
       const colsApi = ZoteroObj?.Collections;
@@ -3290,11 +3374,41 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     refreshCollectionsView(zoteroObj) {
       const wins = zoteroObj?.getMainWindows?.() || [];
+      const activeKeys = new Set([...this.sessionCollections.values()].map((c) => c?.key).filter(Boolean));
       for (const win of wins) {
         try {
-          win?.ZoteroPane?.collectionsView?.refresh?.();
+          const cv = win?.ZoteroPane?.collectionsView;
+          cv?.refresh?.();
+          this.repositionInCollectionsView(cv, activeKeys);
         } catch {
         }
+      }
+    }
+    repositionInCollectionsView(cv, activeKeys) {
+      const rows = cv?._rows;
+      if (!Array.isArray(rows) || rows.length < 3 || !activeKeys.size) return;
+      const isCitationRow = (r) => Boolean(r?.ref?.key && activeKeys.has(r.ref.key));
+      const isBottomVirtual = (r) => {
+        const t = r?.type;
+        return t === "publications" || t === "duplicates" || t === "unfiled" || t === "retracted" || t === "trash" || Boolean(r?.isPublications?.() || r?.isDuplicates?.() || r?.isUnfiled?.() || r?.isTrash?.());
+      };
+      const regular = [];
+      const citation = [];
+      const bottom = [];
+      let hitBottom = false;
+      for (const row of rows) {
+        if (isCitationRow(row)) citation.push(row);
+        else if (hitBottom || isBottomVirtual(row)) {
+          hitBottom = true;
+          bottom.push(row);
+        } else regular.push(row);
+      }
+      if (!citation.length) return;
+      const reordered = [...regular, ...citation, ...bottom];
+      if (reordered.length === rows.length && reordered.some((r, idx) => r !== rows[idx])) {
+        rows.splice(0, rows.length, ...reordered);
+        cv._refreshRowMap?.();
+        cv.tree?.invalidate?.();
       }
     }
   };
@@ -3304,9 +3418,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     columnID = false;
     kernel;
     tracker;
-    constructor(kernel, tracker) {
+    collections;
+    constructor(kernel, tracker, collections) {
       this.kernel = kernel;
       this.tracker = tracker;
+      this.collections = collections;
     }
     register() {
       if (this.columnID) return;
@@ -3321,7 +3437,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         dataProvider: (item) => {
           const id = Number(item?.id || 0);
           if (!id) return "";
-          return this.tracker.getCitationDisplayForItem(id);
+          const selectedSessionID = this.collections?.resolveSelectedCollectionSessionID();
+          return this.tracker.getCitationDisplayForItem(id, selectedSessionID);
         }
       });
     }
@@ -3670,10 +3787,56 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 
   // src/domains/word-cite/session-tracker.ts
   function extractDocumentBaseName(rawPath) {
-    const cleaned = String(rawPath || "").trim();
-    if (!cleaned) return "Untitled Word Document";
-    const parts = cleaned.split(/[\\/]/).filter(Boolean);
-    return parts[parts.length - 1] || cleaned;
+    let cleaned = String(rawPath || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned || cleaned === "__doc__") return "Untitled Word Document";
+    cleaned = cleaned.replace(/^(["'])(.*)\1$/, "$2").trim();
+    if (cleaned.startsWith("window-title:")) {
+      cleaned = cleaned.slice("window-title:".length).trim();
+    }
+    const wordSuffixRe = /\s+[-–—]\s+(?:Microsoft\s+)?Word(?:\s*\([^)]*\))?$/i;
+    if (wordSuffixRe.test(cleaned)) {
+      cleaned = cleaned.replace(wordSuffixRe, "").trim();
+    }
+    const isURL = /^[a-z][a-z0-9+.-]*:\/\//i.test(cleaned);
+    if (isURL && /(?:\/|^)(?:Doc|WopiFrame2?|redir)\.aspx(?:\?|$)/i.test(cleaned)) {
+      const fileParam = cleaned.match(/[?&](?:file|filename|name)=([^&#]+)/i);
+      if (fileParam?.[1]) {
+        try {
+          const decoded = decodeURIComponent(fileParam[1].replace(/\+/g, "%20")).trim();
+          if (decoded && !/[\\/]/.test(decoded)) cleaned = decoded;
+        } catch {
+        }
+      }
+    }
+    const withoutQuery = isURL ? cleaned.replace(/[?#].*$/, "") : cleaned;
+    const parts = withoutQuery.split(/[\\/]/).filter(Boolean);
+    let candidate = parts[parts.length - 1] || cleaned;
+    if (isURL || /%[0-9A-Fa-f]{2}/.test(candidate)) {
+      try {
+        candidate = decodeURIComponent(candidate);
+      } catch {
+      }
+    }
+    const extMatch = candidate.match(/^(.+?\.(?:docx|docm|doc|dotx|dotm|rtf|odt))(?:\s*\[[^\]]*\]|\s+[-–—]\s+.*)*$/i);
+    if (extMatch) {
+      candidate = extMatch[1].trim();
+    } else {
+      const statusRe = /(?:\s*\[(?:兼容模式|Compatibility Mode|只读|Read-Only|受保护的视图|Protected View|自动保存|AutoSave)[^\]]*\]|\s+[-–—]\s+(?:已保存.*|正在保存.*|上次保存.*|只读|兼容模式|受保护的视图|未保存|Saved.*|Saving.*|Last saved.*|Read-Only|Compatibility Mode|Protected View|Unsaved))\s*$/i;
+      let prev = "";
+      while (candidate && candidate !== prev) {
+        prev = candidate;
+        candidate = candidate.replace(statusRe, "").trim();
+      }
+    }
+    return (candidate || "Untitled Word Document").slice(0, 200);
+  }
+  function extractParentQualifier(rawPath, depth = 1) {
+    const trimmed = String(rawPath || "").trim();
+    if (!trimmed || trimmed.startsWith("window-title:")) return "";
+    const clean = trimmed.replace(/[?#].*$/, "");
+    const parts = clean.split(/[\\/]+/).filter(Boolean);
+    const parents = parts.slice(0, -1).filter((p) => !/^[A-Za-z]:$/.test(p) && !/^[a-z]+:$/i.test(p));
+    return parents.length ? parents.slice(-depth).join("/") : "";
   }
   function disambiguateDocumentNames(sessions) {
     const baseCounts = /* @__PURE__ */ new Map();
@@ -3688,9 +3851,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         result.set(s.sessionID, base);
         continue;
       }
-      const segments = s.path.split(/[\\/]/).filter(Boolean);
-      const parent = segments.length >= 2 ? segments[segments.length - 2] : "";
-      result.set(s.sessionID, parent ? `${base} (${parent})` : base);
+      const peers = sessions.filter((p) => p.sessionID !== s.sessionID && extractDocumentBaseName(p.path) === base);
+      let qualified = base;
+      for (const depth of [1, 2, 3]) {
+        const own = extractParentQualifier(s.path, depth);
+        if (!own) break;
+        if (peers.every((p) => extractParentQualifier(p.path, depth) !== own)) {
+          qualified = `${base} (${own})`;
+          break;
+        }
+        qualified = `${base} (${own})`;
+      }
+      result.set(s.sessionID, qualified);
     }
     return result;
   }
@@ -3720,7 +3892,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       return union;
     }
-    getCitationDisplayForItem(itemID) {
+    getCitationDisplayForItem(itemID, preferredSessionID) {
+      if (preferredSessionID && this.sessions.has(preferredSessionID)) {
+        const prefSes = this.sessions.get(preferredSessionID);
+        const hit = prefSes.itemCitations.get(itemID);
+        return hit ? `[${hit.ordinal}] ${hit.shortText}`.trim() : "";
+      }
       const active = this.getActiveSession();
       if (active) {
         const hit = active.itemCitations.get(itemID);
@@ -3830,6 +4007,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   };
 
   // src/domains/word-cite/tag-governance.ts
+  var MANAGED_TAG_IDS_PREF = "extensions.zotero.bridgeflow.wordCite.managedTagItemIDs";
   var CitationTagGovernance = class {
     managedItemIDs = /* @__PURE__ */ new Set();
     activeTagText;
@@ -3837,6 +4015,27 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     constructor(prefs) {
       this.prefs = prefs;
       this.activeTagText = this.sanitizeTagText(prefs.get("wordCite.citationTags.text"));
+      this.loadPersistedIDs();
+    }
+    loadPersistedIDs() {
+      try {
+        const raw = String(globalThis.Zotero?.Prefs?.get?.(MANAGED_TAG_IDS_PREF, true) || "");
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          for (const id of parsed) {
+            const n = Number(id);
+            if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
+          }
+        }
+      } catch {
+      }
+    }
+    savePersistedIDs() {
+      try {
+        globalThis.Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, JSON.stringify([...this.managedItemIDs]), true);
+      } catch {
+      }
     }
     get managedCount() {
       return this.managedItemIDs.size;
@@ -3873,6 +4072,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           }
           this.managedItemIDs.delete(id);
         }
+        this.savePersistedIDs();
         return { added, removed };
       }
       for (const id of citedUnion) {
@@ -3895,6 +4095,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         }
         this.managedItemIDs.delete(id);
       }
+      this.savePersistedIDs();
       return { added, removed };
     }
   };
@@ -4124,7 +4325,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.dragCite = new DragCiteController(kernel, services.win32, () => {
         this.poller.pollOnce();
       });
-      this.column = new CitationColumnController(kernel, this.tracker);
+      this.column = new CitationColumnController(kernel, this.tracker, this.collections);
     }
     isActive() {
       return this.active;
@@ -4549,6 +4750,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       remarks: {},
       remarkModes: {},
       lastViewedAt: {},
+      readingProgress: {},
       virtualMembers: {},
       sessions: [],
       rollingSessions: []
@@ -4580,6 +4782,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           remarks: parsed?.remarks && typeof parsed.remarks === "object" ? parsed.remarks : {},
           remarkModes: parsed?.remarkModes && typeof parsed.remarkModes === "object" ? parsed.remarkModes : {},
           lastViewedAt: parsed?.lastViewedAt && typeof parsed.lastViewedAt === "object" ? parsed.lastViewedAt : {},
+          readingProgress: parsed?.readingProgress && typeof parsed.readingProgress === "object" ? parsed.readingProgress : {},
           virtualMembers: parsed?.virtualMembers && typeof parsed.virtualMembers === "object" ? parsed.virtualMembers : {},
           sessions: Array.isArray(parsed?.sessions) ? parsed.sessions : [],
           rollingSessions: Array.isArray(parsed?.rollingSessions) ? parsed.rollingSessions : []
@@ -4780,6 +4983,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     touchViewed(key, now = Date.now()) {
       this.state.lastViewedAt[key] = now;
     }
+    updateReadingProgress(key, deltaSeconds, lastPage, totalPages) {
+      const prev = this.state.readingProgress[key] ?? { readSeconds: 0 };
+      const next = {
+        readSeconds: Math.max(0, (prev.readSeconds || 0) + Math.max(0, deltaSeconds)),
+        ...lastPage && lastPage > 0 ? { lastPage } : prev.lastPage ? { lastPage: prev.lastPage } : {},
+        ...totalPages && totalPages > 0 ? { totalPages } : prev.totalPages ? { totalPages: prev.totalPages } : {}
+      };
+      this.state.readingProgress[key] = next;
+      return next;
+    }
     saveVirtualMember(meta) {
       this.state.virtualMembers[meta.key] = meta;
       this.save();
@@ -4873,49 +5086,45 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   }
   async function revealAttachmentFile(win, itemID) {
-    try {
-      const item = itemID > 0 ? globalThis.Zotero?.Items?.get?.(itemID) : null;
-      if (!item) return false;
-      const att = item.isFileAttachment?.() ? item : await item.getBestAttachment?.();
-      if (!att) return false;
-      const filePath = await att.getFilePathAsync?.() || att.getFilePath?.();
-      const nsFile = filePath ? globalThis.Zotero?.File?.pathToFile?.(filePath) : null;
-      if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === "function") {
-        await Promise.resolve(nsFile.reveal());
-        return true;
-      }
-      const pane = win.ZoteroPane || globalThis.Zotero?.getMainWindow?.()?.ZoteroPane;
-      if (pane?.showAttachmentInFilesystem) {
-        await pane.showAttachmentInFilesystem(att.id);
-        return true;
-      }
-      const folder = nsFile?.parent?.path;
-      if (folder && globalThis.Zotero?.launchFile) {
-        await globalThis.Zotero.launchFile(folder);
-        return true;
-      }
-    } catch (error) {
-      globalThis.Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
-    }
-    return false;
+    return revealItemAttachmentInFilesystem(itemID, { win });
   }
   async function selectItemInLibrary(win, itemID, switchCollection) {
-    const item = itemID > 0 ? globalThis.Zotero?.Items?.get?.(itemID) : null;
-    if (!item) return false;
-    const primary = normalizeToRegularItem(item) || item;
-    const pane = win.ZoteroPane;
-    const tabsApi = win.Zotero_Tabs;
-    if (!pane) return false;
-    if (tabsApi && tabsApi.selectedID !== "zotero-pane") {
-      tabsApi.select?.("zotero-pane");
-    }
-    if (switchCollection) {
-      const cols = primary.getCollections?.() || [];
-      if (cols.length && pane.collectionsView?.selectCollection) {
-        await pane.collectionsView.selectCollection(cols[0]);
-      }
-    }
-    return Boolean(await pane.selectItem?.(primary.id, true));
+    return locateItemInZoteroLibrary(itemID, { win, switchCollection });
+  }
+  function formatReadingDuration(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (total < 60) return "";
+    const mins = Math.floor(total / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem ? `${hrs}h${rem}m` : `${hrs}h`;
+  }
+  function formatReadingProgress(prog) {
+    if (!prog) return { text: "", ratio: null };
+    const dur = formatReadingDuration(prog.readSeconds);
+    const page = Number(prog.lastPage) || 0;
+    const total = Number(prog.totalPages) || 0;
+    const pageText = page > 0 ? total > 0 ? `p.${page}/${total}` : `p.${page}` : "";
+    const text = [dur, pageText].filter(Boolean).join(" · ");
+    const ratio = page > 0 && total > 0 ? Math.max(0, Math.min(1, page / total)) : null;
+    return { text, ratio };
+  }
+  function trackActiveReaderProgress(win, store, tracked, elapsedSeconds) {
+    const doc = win.document;
+    if (typeof doc?.hasFocus === "function" && !doc.hasFocus()) return false;
+    const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+    if (!selectedID || selectedID === "zotero-pane") return false;
+    const current = tracked.find((t) => !t.virtual && t.tabID === selectedID);
+    if (!current || current.key.startsWith("tab:") || !current.type.startsWith("reader")) return false;
+    const prevText = formatReadingProgress(store.state.readingProgress[current.key]).text;
+    const reader = globalThis.Zotero?.Reader?.getByTabID?.(selectedID);
+    const pdfApp = reader?._iframeWindow?.PDFViewerApplication;
+    const page = Number(pdfApp?.page || (reader?.state?.pageIndex != null ? Number(reader.state.pageIndex) + 1 : 0)) || 0;
+    const total = Number(pdfApp?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount || 0) || 0;
+    store.touchViewed(current.key);
+    const next = store.updateReadingProgress(current.key, elapsedSeconds, page, total);
+    return formatReadingProgress(next).text !== prevText;
   }
   function buildVirtualMetaFromTracked(tab) {
     return {
@@ -4931,18 +5140,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       type: tab.type
     };
   }
-  function formatCreatorYear(item) {
-    if (!item) return "";
-    const first = String(item.firstCreator || "");
-    const date = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
-    return [first, date].filter(Boolean).join(", ");
+  function formatCreatorYear2(item) {
+    return formatCreatorYear(item);
   }
-  function resolvePrimaryCollectionName(item) {
-    if (!item || typeof item.getCollections !== "function") return "";
-    const ids = item.getCollections() || [];
-    if (!ids.length) return "";
-    const col = globalThis.Zotero?.Collections?.get?.(ids[0]);
-    return String(col?.name || "");
+  function resolvePrimaryCollectionName2(item) {
+    return resolvePrimaryCollectionName(item);
   }
   function autoGroupTrackedByCollection(win, store, strategy, tracked) {
     const pane = win.ZoteroPane;
@@ -5095,8 +5297,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const shortTitle = String(displayItem?.getField?.("shortTitle") || title);
         const filename = String(rawItem?.attachmentFilename || "");
         const source = String(displayItem?.getField?.("publicationTitle") || displayItem?.getField?.("proceedingsTitle") || "");
-        const creatorYear = formatCreatorYear(displayItem);
-        const collection = resolvePrimaryCollectionName(displayItem);
+        const creatorYear = formatCreatorYear2(displayItem);
+        const collection = resolvePrimaryCollectionName2(displayItem);
         tracked.push({
           tabID: String(tab.id || ""),
           key,
@@ -5347,6 +5549,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return this.buildTrackedTabs(win).filter(
         (t) => !t.virtual && !t.pinned && t.lastViewedAt > 0 && t.lastViewedAt < cutoff
       );
+    }
+    trackReadingProgress(win, elapsedSeconds) {
+      return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds);
     }
   };
 
@@ -5646,6 +5851,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     onRefresh;
     inlineEl = null;
     headingClickTimer = 0;
+    lastSelectedID = "";
     constructor(win, prefs, store, tabs, menus, hover, toolbar, onRefresh) {
       this.win = win;
       this.doc = win.document;
@@ -5663,9 +5869,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const tabBar = this.doc.getElementById("tab-bar-container");
       const inner = tabBar?.querySelector(".tab-bar-inner-container");
       if (!tabBar || !inner) return;
-      const enabled = this.prefs.get("workspace.enableHorizontalGroups") && !this.prefs.get("workspace.compactTopBar");
+      const sidebarHealthy = this.prefs.get("workspace.enableVerticalSidebar") && !this.prefs.get("workspace.verticalSidebarCollapsed");
+      const compactTop = this.prefs.get("workspace.compactTopBar") && sidebarHealthy;
+      const enabled = this.prefs.get("workspace.enableHorizontalGroups") && !compactTop;
       if (!enabled) {
-        tabBar.removeAttribute("data-zbf-inline");
+        tabBar.toggleAttribute("data-zbf-inline", compactTop);
         this.inlineEl?.setAttribute("hidden", "true");
         return;
       }
@@ -5674,6 +5882,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         this.doc.getElementById("zbf-inline")?.remove();
         const inline = this.doc.createElement("div");
         inline.id = "zbf-inline";
+        inline.addEventListener("wheel", (e) => {
+          const we = e;
+          if (we.ctrlKey || inline.scrollWidth <= inline.clientWidth) return;
+          we.preventDefault();
+          inline.scrollLeft += we.deltaX || we.deltaY;
+        }, { passive: false });
         inner.appendChild(inline);
         this.inlineEl = inline;
       }
@@ -5714,6 +5928,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       });
       this.bindDropToNewGroup(addBtn);
       this.inlineEl.appendChild(addBtn);
+      if (selectedID && selectedID !== this.lastSelectedID) {
+        this.lastSelectedID = selectedID;
+        this.inlineEl.querySelector(".zbf-htab.selected")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+      }
     }
     destroy() {
       if (this.headingClickTimer) this.win.clearTimeout(this.headingClickTimer);
@@ -6100,6 +6318,20 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (tab.virtual) statusParts.push("虚拟成员");
       const rel = formatRelativeTimeZh(tab.lastViewedAt);
       if (rel) statusParts.push(`上次阅读：${rel}`);
+      const reader = !tab.virtual && tab.tabID ? globalThis.Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
+      const pageIdx = reader?.state?.pageIndex;
+      const numPages = reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+      const prog = formatReadingProgress(this.store.state.readingProgress[tab.key]);
+      if (typeof pageIdx === "number" && pageIdx >= 0) {
+        statusParts.push(typeof numPages === "number" && numPages > 0 ? `第 ${pageIdx + 1} / ${numPages} 页` : `第 ${pageIdx + 1} 页`);
+      } else if (prog.text) {
+        statusParts.push(prog.text);
+      }
+      const itemObj = tab.itemID > 0 ? globalThis.Zotero?.Items?.get?.(tab.itemID) : null;
+      const annots = itemObj?.isAttachment?.() && typeof itemObj?.getAnnotations === "function" ? itemObj.getAnnotations()?.length : void 0;
+      if (typeof annots === "number" && annots > 0) {
+        statusParts.push(`批注 ${annots} 条`);
+      }
       if (statusParts.length) {
         const footEl = this.doc.createElement("div");
         footEl.className = "zbf-hc-meta";
@@ -6673,19 +6905,31 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     titleEl.textContent = tabs.getDisplayTitle(tab);
     main.appendChild(titleEl);
     const subMode = prefs.get("workspace.verticalTabSubtitleMode");
-    let subText = "";
+    let subBase = "";
     if (tab.remark && prefs.get("workspace.enableTabRemarks")) {
-      subText = `备注：${tab.remark}`;
+      subBase = `备注：${tab.remark}`;
     } else if (subMode !== "none") {
-      if (subMode === "source") subText = tab.source || tab.creatorYear || tab.collection;
-      else if (subMode === "creatorYear") subText = tab.creatorYear || tab.source || tab.collection;
-      else if (subMode === "collection") subText = tab.collection || tab.creatorYear || tab.source;
+      if (subMode === "source") subBase = tab.source || tab.creatorYear || tab.collection;
+      else if (subMode === "creatorYear") subBase = tab.creatorYear || tab.source || tab.collection;
+      else if (subMode === "collection") subBase = tab.collection || tab.creatorYear || tab.source;
+      else if (subMode === "lastViewed") subBase = formatRelativeTimeZh(tab.lastViewedAt) || tab.creatorYear || tab.source;
     }
+    const prog = formatReadingProgress(store.state.readingProgress[tab.key]);
+    const subText = [subBase, prog.text].filter(Boolean).join(" · ");
     if (subText) {
       const subEl = doc.createElement("div");
       subEl.className = "zbf-vtab-sub";
       subEl.textContent = subText;
       main.appendChild(subEl);
+    }
+    if (prog.ratio !== null && prog.ratio > 0) {
+      const bar = doc.createElement("div");
+      bar.className = "zbf-vtab-progress";
+      const fill = doc.createElement("span");
+      fill.className = "zbf-vtab-progress-fill";
+      fill.style.width = `${Math.round(prog.ratio * 100)}%`;
+      bar.appendChild(fill);
+      main.appendChild(bar);
     }
     row.appendChild(main);
     const right = doc.createElement("div");
@@ -7361,7 +7605,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (inp) inp.value = "";
           this.renderList();
         },
-        () => this.popover.openHub()
+        () => {
+          const latest = this.store.state.sessions[0] || this.store.state.rollingSessions[0];
+          if (latest && this.prefs.get("workspace.enableSessions")) {
+            void this.tabs.restoreSession(this.win, latest, true).then(() => this.onRefresh());
+          } else {
+            this.popover.openHub();
+          }
+        }
       ));
     }
     renderFooter(allTracked) {
@@ -7971,6 +8222,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .zbf-vtab-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; }
 .zbf-vtab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-vtab-sub { font-size: 11px; color: var(--zbf-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-vtab-progress { height: 2px; border-radius: 1px; background: var(--zbf-border); overflow: hidden; margin-top: 2px; }
+.zbf-vtab-progress-fill { display: block; height: 100%; background: var(--zbf-accent); border-radius: 1px; }
 .zbf-vtab-right { display: inline-flex; align-items: center; gap: 3px; flex: none; }
 .zbf-cite-badge { font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; background: #0D9488; color: #fff; }
 .zbf-row-btn {
@@ -8262,6 +8515,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     active = false;
     latestBadges = /* @__PURE__ */ new Map();
     maintenanceTimer = null;
+    readingTimer = null;
     autoGroupTimer = null;
     lastRollingAt = 0;
     viewedDirty = false;
@@ -8294,6 +8548,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         this.onMainWindowLoad(win);
       }
       this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 6e4);
+      this.readingTimer = setInterval(() => {
+        let updated = false;
+        for (const win of this.windows.keys()) {
+          if (this.tabs.trackReadingProgress(win, 15)) {
+            this.viewedDirty = true;
+            updated = true;
+          }
+        }
+        if (updated) this.refreshAllWindows();
+      }, 15e3);
     }
     stop() {
       if (!this.active) return;
@@ -8301,6 +8565,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (this.maintenanceTimer !== null) {
         clearInterval(this.maintenanceTimer);
         this.maintenanceTimer = null;
+      }
+      if (this.readingTimer !== null) {
+        clearInterval(this.readingTimer);
+        this.readingTimer = null;
       }
       if (this.autoGroupTimer !== null) {
         clearTimeout(this.autoGroupTimer);
@@ -9079,6 +9347,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     initialized = false;
     dirty = false;
     saveTimer = null;
+    saveFailed = false;
+    statusListeners = /* @__PURE__ */ new Set();
+    onStatusChange(listener) {
+      this.statusListeners.add(listener);
+      return () => this.statusListeners.delete(listener);
+    }
+    async retrySave() {
+      return this.flushToDisk();
+    }
     configure(partial) {
       if (typeof partial.maxEntries === "number" && Number.isFinite(partial.maxEntries)) {
         this.config.maxEntries = Math.max(100, Math.min(1e5, Math.floor(partial.maxEntries)));
@@ -9241,13 +9518,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     async flushToDisk() {
       const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return;
+      if (!ioUtils?.writeUTF8) return true;
       try {
         await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
         const payload = JSON.stringify({ version: 1, records: [...this.records.values()] });
         await ioUtils.writeUTF8(this.getFilePath(), payload);
         this.dirty = false;
+        if (this.saveFailed) {
+          this.saveFailed = false;
+          for (const fn of this.statusListeners) fn();
+        }
+        return true;
       } catch {
+        this.saveFailed = true;
+        for (const fn of this.statusListeners) fn();
+        return false;
       }
     }
   };

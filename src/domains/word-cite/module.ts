@@ -35,7 +35,7 @@ export class WordCiteDomainModule implements DomainModule {
 		this.dragCite = new DragCiteController(kernel, services.win32, () => {
 			this.poller.pollOnce();
 		});
-		this.column = new CitationColumnController(kernel, this.tracker);
+		this.column = new CitationColumnController(kernel, this.tracker, this.collections);
 	}
 
 	isActive(): boolean {

@@ -29,6 +29,7 @@ export class WorkspaceHorizontalBar {
 	private readonly onRefresh: () => void;
 	private inlineEl: HTMLElement | null = null;
 	private headingClickTimer = 0;
+	private lastSelectedID = '';
 
 	constructor(
 		win: Window,
@@ -58,9 +59,11 @@ export class WorkspaceHorizontalBar {
 		const inner = tabBar?.querySelector('.tab-bar-inner-container') as HTMLElement | null;
 		if (!tabBar || !inner) return;
 
-		const enabled = this.prefs.get('workspace.enableHorizontalGroups') && !this.prefs.get('workspace.compactTopBar');
+		const sidebarHealthy = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
+		const compactTop = this.prefs.get('workspace.compactTopBar') && sidebarHealthy;
+		const enabled = this.prefs.get('workspace.enableHorizontalGroups') && !compactTop;
 		if (!enabled) {
-			tabBar.removeAttribute('data-zbf-inline');
+			tabBar.toggleAttribute('data-zbf-inline', compactTop);
 			this.inlineEl?.setAttribute('hidden', 'true');
 			return;
 		}
@@ -70,6 +73,12 @@ export class WorkspaceHorizontalBar {
 			this.doc.getElementById('zbf-inline')?.remove();
 			const inline = this.doc.createElement('div');
 			inline.id = 'zbf-inline';
+			inline.addEventListener('wheel', (e) => {
+				const we = e as WheelEvent;
+				if (we.ctrlKey || inline.scrollWidth <= inline.clientWidth) return;
+				we.preventDefault();
+				inline.scrollLeft += we.deltaX || we.deltaY;
+			}, { passive: false });
 			inner.appendChild(inline);
 			this.inlineEl = inline;
 		}
@@ -116,6 +125,10 @@ export class WorkspaceHorizontalBar {
 		});
 		this.bindDropToNewGroup(addBtn);
 		this.inlineEl.appendChild(addBtn);
+		if (selectedID && selectedID !== this.lastSelectedID) {
+			this.lastSelectedID = selectedID;
+			this.inlineEl.querySelector('.zbf-htab.selected')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+		}
 	}
 
 	destroy(): void {

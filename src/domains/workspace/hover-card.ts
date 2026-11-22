@@ -1,9 +1,10 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
+import { formatReadingProgress } from './tab-actions-helpers.ts';
 import type { TrackedTab } from './types.ts';
 
-function formatRelativeTimeZh(ts: number): string {
+export function formatRelativeTimeZh(ts: number): string {
 	if (!ts) return '';
 	const diffMin = Math.max(0, Math.floor((Date.now() - ts) / 60_000));
 	if (diffMin < 1) return '刚刚';
@@ -88,6 +89,21 @@ export class WorkspaceHoverCard {
 		if (tab.virtual) statusParts.push('虚拟成员');
 		const rel = formatRelativeTimeZh(tab.lastViewedAt);
 		if (rel) statusParts.push(`上次阅读：${rel}`);
+
+		const reader = !tab.virtual && tab.tabID ? (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
+		const pageIdx = reader?.state?.pageIndex;
+		const numPages = reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+		const prog = formatReadingProgress(this.store.state.readingProgress[tab.key]);
+		if (typeof pageIdx === 'number' && pageIdx >= 0) {
+			statusParts.push(typeof numPages === 'number' && numPages > 0 ? `第 ${pageIdx + 1} / ${numPages} 页` : `第 ${pageIdx + 1} 页`);
+		} else if (prog.text) {
+			statusParts.push(prog.text);
+		}
+		const itemObj = tab.itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(tab.itemID) : null;
+		const annots = itemObj?.isAttachment?.() && typeof itemObj?.getAnnotations === 'function' ? itemObj.getAnnotations()?.length : undefined;
+		if (typeof annots === 'number' && annots > 0) {
+			statusParts.push(`批注 ${annots} 条`);
+		}
 
 		if (statusParts.length) {
 			const footEl = this.doc.createElement('div');

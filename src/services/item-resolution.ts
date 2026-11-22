@@ -113,3 +113,124 @@ export async function resolvePdfAttachments(item: any): Promise<ResolvedPdfAttac
 		filename: String(att.attachmentFilename || ''),
 	}));
 }
+
+export async function resolveBestFileAttachment(itemOrID: any): Promise<any | null> {
+	const hostItems = (globalThis as any).Zotero?.Items;
+	const item = typeof itemOrID === 'number'
+		? (hostItems?.get?.(itemOrID) || await hostItems?.getAsync?.(itemOrID))
+		: itemOrID;
+	if (!item || isItemTrashedOrDeleted(item)) return null;
+	if (item.isFileAttachment?.()) return item;
+	const best = await item.getBestAttachment?.().catch(() => null);
+	if (best && !isItemTrashedOrDeleted(best) && (best.isFileAttachment?.() ?? true)) return best;
+	const owner = await normalizeToRegularItemAsync(item);
+	const pdfs = await resolvePdfAttachments(owner || item);
+	return pdfs[0]?.item ?? null;
+}
+
+const recentRevealTimestamps = new Map<string, number>();
+
+/**
+ * Shared cross-domain attachment reveal service reused by Workspace (TabFlow) and Inspector (PDF Folder).
+ */
+export async function revealItemAttachmentInFilesystem(
+	itemOrID: any,
+	options: { openMode?: string; win?: Window | null; dedupMs?: number } = {},
+): Promise<boolean> {
+	try {
+		const att = await resolveBestFileAttachment(itemOrID);
+		if (!att) return false;
+		const zotero = (globalThis as any).Zotero;
+		const filePath = (await att.getFilePathAsync?.().catch(() => null)) || att.getFilePath?.();
+		const nsFile = filePath ? zotero?.File?.pathToFile?.(filePath) : null;
+		const folder = nsFile?.parent?.path;
+		const cacheKey = filePath || folder || String(att.id || '');
+		const dedupMs = options.dedupMs ?? 350;
+		if (cacheKey && dedupMs > 0) {
+			const now = Date.now();
+			if (now - (recentRevealTimestamps.get(cacheKey) ?? 0) < dedupMs) return true;
+			recentRevealTimestamps.set(cacheKey, now);
+		}
+		try {
+			if (options.openMode === 'folder' && folder && zotero?.launchFile) {
+				await zotero.launchFile(folder);
+				return true;
+			}
+			if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === 'function') {
+				await Promise.resolve(nsFile.reveal());
+				return true;
+			}
+			const targetWin = (options.win as any)?.ZoteroPane ? options.win : zotero?.getMainWindow?.();
+			if ((targetWin as any)?.ZoteroPane?.showAttachmentInFilesystem) {
+				await (targetWin as any).ZoteroPane.showAttachmentInFilesystem(att.id);
+				return true;
+			}
+			if (folder && zotero?.launchFile) {
+				await zotero.launchFile(folder);
+				return true;
+			}
+		} catch (err) {
+			if (cacheKey) recentRevealTimestamps.delete(cacheKey);
+			throw err;
+		}
+	} catch (error) {
+		(globalThis as any).Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
+	}
+	return false;
+}
+
+/**
+ * Shared cross-domain library & collection tree navigation service reused by Workspace and Inspector Lookup.
+ */
+export async function locateItemInZoteroLibrary(
+	itemOrID: any,
+	options: { win?: Window | null; switchCollection?: boolean } = {},
+): Promise<boolean> {
+	try {
+		const zotero = (globalThis as any).Zotero;
+		const win = ((options.win as any)?.ZoteroPane ? options.win : zotero?.getMainWindow?.()) as any;
+		const pane = win?.ZoteroPane;
+		if (!pane) return false;
+		const rawItem = typeof itemOrID === 'number'
+			? (zotero?.Items?.get?.(itemOrID) || await zotero?.Items?.getAsync?.(itemOrID))
+			: itemOrID;
+		if (rawItem && isItemTrashedOrDeleted(rawItem)) return false;
+		const primary = rawItem ? (normalizeToRegularItem(rawItem) || rawItem) : null;
+		const targetID = Number(primary?.id ?? (typeof itemOrID === 'number' ? itemOrID : 0));
+		if (!targetID) return false;
+
+		if (win.Zotero_Tabs && win.Zotero_Tabs.selectedID !== 'zotero-pane') {
+			win.Zotero_Tabs.select?.('zotero-pane');
+		}
+		if (options.switchCollection && primary) {
+			const cols: number[] = primary.getCollections?.() || [];
+			if (cols.length && pane.collectionsView?.selectCollection) {
+				await pane.collectionsView.selectCollection(cols[0]);
+			}
+		}
+		const ok = await pane.selectItem?.(targetID, true);
+		if (ok === false) return false;
+		const tree = win.document?.getElementById?.('zotero-items-tree');
+		if (tree?.ensureRowIsVisible && tree?.selection) {
+			tree.ensureRowIsVisible(tree.selection.currentIndex);
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function formatCreatorYear(item: any): string {
+	if (!item) return '';
+	const first = String(item.firstCreator || '');
+	const date = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
+	return [first, date].filter(Boolean).join(', ');
+}
+
+export function resolvePrimaryCollectionName(item: any): string {
+	if (!item || typeof item.getCollections !== 'function') return '';
+	const ids: number[] = item.getCollections() || [];
+	if (!ids.length) return '';
+	const col = (globalThis as any).Zotero?.Collections?.get?.(ids[0]);
+	return String(col?.name || '');
+}

@@ -1,6 +1,11 @@
-import { normalizeToRegularItem } from '../../services/item-resolution.ts';
+import {
+	formatCreatorYear as sharedFormatCreatorYear,
+	locateItemInZoteroLibrary,
+	resolvePrimaryCollectionName as sharedResolvePrimaryCollectionName,
+	revealItemAttachmentInFilesystem,
+} from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
-import type { VirtualMemberMeta } from './types.ts';
+import type { TabReadingProgress, VirtualMemberMeta } from './types.ts';
 
 export interface ClosedTabRecord {
 	key: string;
@@ -75,52 +80,56 @@ export async function openItemAttachmentOrNote(
 }
 
 export async function revealAttachmentFile(win: Window, itemID: number): Promise<boolean> {
-	try {
-		const item = itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(itemID) : null;
-		if (!item) return false;
-		const att = item.isFileAttachment?.() ? item : await item.getBestAttachment?.();
-		if (!att) return false;
-
-		const filePath = (await att.getFilePathAsync?.()) || att.getFilePath?.();
-		const nsFile = filePath ? (globalThis as any).Zotero?.File?.pathToFile?.(filePath) : null;
-		if (nsFile && nsFile.exists?.() !== false && typeof nsFile.reveal === 'function') {
-			await Promise.resolve(nsFile.reveal());
-			return true;
-		}
-		const pane = (win as any).ZoteroPane || (globalThis as any).Zotero?.getMainWindow?.()?.ZoteroPane;
-		if (pane?.showAttachmentInFilesystem) {
-			await pane.showAttachmentInFilesystem(att.id);
-			return true;
-		}
-		const folder = nsFile?.parent?.path;
-		if (folder && (globalThis as any).Zotero?.launchFile) {
-			await (globalThis as any).Zotero.launchFile(folder);
-			return true;
-		}
-	} catch (error) {
-		(globalThis as any).Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
-	}
-	return false;
+	return revealItemAttachmentInFilesystem(itemID, { win });
 }
 
 export async function selectItemInLibrary(win: Window, itemID: number, switchCollection: boolean): Promise<boolean> {
-	const item = itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(itemID) : null;
-	if (!item) return false;
-	const primary = normalizeToRegularItem(item) || item;
-	const pane = (win as any).ZoteroPane;
-	const tabsApi = (win as any).Zotero_Tabs;
-	if (!pane) return false;
+	return locateItemInZoteroLibrary(itemID, { win, switchCollection });
+}
 
-	if (tabsApi && tabsApi.selectedID !== 'zotero-pane') {
-		tabsApi.select?.('zotero-pane');
-	}
-	if (switchCollection) {
-		const cols: number[] = primary.getCollections?.() || [];
-		if (cols.length && pane.collectionsView?.selectCollection) {
-			await pane.collectionsView.selectCollection(cols[0]);
-		}
-	}
-	return Boolean(await pane.selectItem?.(primary.id, true));
+export function formatReadingDuration(seconds?: number): string {
+	const total = Math.max(0, Math.floor(Number(seconds) || 0));
+	if (total < 60) return '';
+	const mins = Math.floor(total / 60);
+	if (mins < 60) return `${mins}m`;
+	const hrs = Math.floor(mins / 60);
+	const rem = mins % 60;
+	return rem ? `${hrs}h${rem}m` : `${hrs}h`;
+}
+
+export function formatReadingProgress(prog?: TabReadingProgress): { text: string; ratio: number | null } {
+	if (!prog) return { text: '', ratio: null };
+	const dur = formatReadingDuration(prog.readSeconds);
+	const page = Number(prog.lastPage) || 0;
+	const total = Number(prog.totalPages) || 0;
+	const pageText = page > 0 ? (total > 0 ? `p.${page}/${total}` : `p.${page}`) : '';
+	const text = [dur, pageText].filter(Boolean).join(' · ');
+	const ratio = page > 0 && total > 0 ? Math.max(0, Math.min(1, page / total)) : null;
+	return { text, ratio };
+}
+
+export function trackActiveReaderProgress(
+	win: Window,
+	store: WorkspaceStateStore,
+	tracked: readonly { tabID: string; key: string; type: string; virtual: boolean }[],
+	elapsedSeconds: number,
+): boolean {
+	const doc = win.document as Document | undefined;
+	if (typeof doc?.hasFocus === 'function' && !doc.hasFocus()) return false;
+	const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+	if (!selectedID || selectedID === 'zotero-pane') return false;
+	const current = tracked.find((t) => !t.virtual && t.tabID === selectedID);
+	if (!current || current.key.startsWith('tab:') || !current.type.startsWith('reader')) return false;
+
+	const prevText = formatReadingProgress(store.state.readingProgress[current.key]).text;
+	const reader: any = (globalThis as any).Zotero?.Reader?.getByTabID?.(selectedID);
+	const pdfApp = reader?._iframeWindow?.PDFViewerApplication;
+	const page = Number(pdfApp?.page || (reader?.state?.pageIndex != null ? Number(reader.state.pageIndex) + 1 : 0)) || 0;
+	const total = Number(pdfApp?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount || 0) || 0;
+
+	store.touchViewed(current.key);
+	const next = store.updateReadingProgress(current.key, elapsedSeconds, page, total);
+	return formatReadingProgress(next).text !== prevText;
 }
 
 export function buildVirtualMetaFromTracked(tab: {
@@ -150,18 +159,11 @@ export function buildVirtualMetaFromTracked(tab: {
 }
 
 export function formatCreatorYear(item: any): string {
-	if (!item) return '';
-	const first = String(item.firstCreator || '');
-	const date = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
-	return [first, date].filter(Boolean).join(', ');
+	return sharedFormatCreatorYear(item);
 }
 
 export function resolvePrimaryCollectionName(item: any): string {
-	if (!item || typeof item.getCollections !== 'function') return '';
-	const ids: number[] = item.getCollections() || [];
-	if (!ids.length) return '';
-	const col = (globalThis as any).Zotero?.Collections?.get?.(ids[0]);
-	return String(col?.name || '');
+	return sharedResolvePrimaryCollectionName(item);
 }
 
 export function autoGroupTrackedByCollection(
