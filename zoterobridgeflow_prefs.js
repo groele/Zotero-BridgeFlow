@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.1 - Preferences controller. */
+/* Zotero BridgeFlow v0.0.2 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -243,82 +243,145 @@
   };
 
   // src/preferences.ts
-  function initPreferencesPane() {
-    const doc = globalThis.document;
-    if (!doc) return;
-    const prefs = new UnifiedPrefService();
-    const versionEl = doc.getElementById("zbf-version-badge");
-    if (versionEl) {
-      versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.1" }));
-    }
-    const controls = Array.from(doc.querySelectorAll("[data-zbf-pref]"));
-    const syncAllFromPrefs = () => {
-      for (const el of controls) {
-        const key = el.getAttribute("data-zbf-pref");
-        if (!key || !(key in PREF_SCHEMA)) continue;
-        const val = prefs.get(key);
-        if (el instanceof HTMLInputElement && el.type === "checkbox") {
-          el.checked = Boolean(val);
-        } else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
-          el.value = String(val);
-        }
+  function setSubtreeDisabled(el, disabled) {
+    if (!el) return;
+    el.setAttribute("data-disabled", disabled ? "true" : "false");
+    el.querySelectorAll("checkbox, menulist, input, button").forEach((ctrl) => {
+      if (disabled) ctrl.setAttribute("disabled", "true");
+      else ctrl.removeAttribute("disabled");
+    });
+  }
+  function syncMenulistLabels(doc) {
+    doc.querySelectorAll("#zotero-prefpane-zotero-bridgeflow menulist").forEach((ml) => {
+      const selected = ml.selectedItem;
+      const lbl = selected?.getAttribute?.("label");
+      if (lbl) ml.setAttribute("label", lbl);
+    });
+  }
+  function updateDependencies(doc, prefs) {
+    prefs.invalidate();
+    const wsOn = Boolean(prefs.get("modules.workspace.enable"));
+    const insOn = Boolean(prefs.get("modules.inspector.enable"));
+    const wcOn = Boolean(prefs.get("modules.wordCite.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-group-workspace"), !wsOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-sidebar"), !wsOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-hcompact"), !wsOn || !prefs.get("workspace.enableHorizontalGroups"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-compactTop"), !wsOn || !prefs.get("workspace.enableHorizontalGroups") || !prefs.get("workspace.enableVerticalSidebar"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-batch"), !wsOn || !prefs.get("workspace.enableVerticalSidebar"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pinnedIcon"), !wsOn || !prefs.get("workspace.enablePinnedTabs"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-multicol"), !wsOn || prefs.get("workspace.newTabMode") !== "collection");
+    setSubtreeDisabled(doc.getElementById("zbf-sub-rolling"), !wsOn || !prefs.get("workspace.enableSessions"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-sleep-cfg"), !wsOn || !prefs.get("workspace.enableTabSleep"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-stale-days"), !wsOn || !prefs.get("workspace.enableStaleSuggestions"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-remark-mode"), !wsOn || !prefs.get("workspace.enableTabRemarks"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-tabmenu"), !wsOn || !prefs.get("workspace.enableTabContextMenu"));
+    const cslOn = insOn && Boolean(prefs.get("inspector.cslPreview.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-csl"), !cslOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-csl-layout"), !cslOn);
+    const lookupOn = insOn && Boolean(prefs.get("inspector.lookup.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-history"), !lookupOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-quota"), !lookupOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-preview"), !insOn || !prefs.get("inspector.pdfPreview.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-folder"), !insOn || !prefs.get("inspector.pdfFolder.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-wc-tag-text"), !wcOn || !prefs.get("wordCite.citationTags.enable"));
+    syncMenulistLabels(doc);
+  }
+  function bindTabs(doc) {
+    const tabBtns = Array.from(doc.querySelectorAll(".zbf-tab-btn"));
+    const panels = Array.from(doc.querySelectorAll(".zbf-tabpanel"));
+    const activate = (tabID) => {
+      for (const btn of tabBtns) {
+        const match = btn.getAttribute("data-zbf-tab") === tabID;
+        btn.classList.toggle("active", match);
+        btn.setAttribute("aria-selected", String(match));
       }
-      updateDependencies(doc);
+      for (const panel of panels) {
+        panel.hidden = panel.getAttribute("data-zbf-panel") !== tabID;
+      }
     };
-    for (const el of controls) {
-      const key = el.getAttribute("data-zbf-pref");
-      if (!key || !(key in PREF_SCHEMA)) continue;
-      el.addEventListener("change", () => {
-        if (el instanceof HTMLInputElement && el.type === "checkbox") {
-          prefs.set(key, el.checked);
-        } else if (el instanceof HTMLInputElement && el.type === "number") {
-          const next = prefs.set(key, Number(el.value));
-          el.value = String(next);
-        } else if (el instanceof HTMLInputElement || el instanceof HTMLSelectElement) {
-          const next = prefs.set(key, el.value);
-          el.value = String(next);
-        }
-        updateDependencies(doc);
+    for (const btn of tabBtns) {
+      btn.addEventListener("click", () => {
+        const id = btn.getAttribute("data-zbf-tab");
+        if (id) activate(id);
       });
     }
-    const resetBtn = doc.getElementById("zbf-reset-defaults");
-    resetBtn?.addEventListener("click", () => {
-      prefs.resetAllDefaults();
-      syncAllFromPrefs();
-    });
-    const clearCacheBtn = doc.getElementById("zbf-clear-cache");
-    clearCacheBtn?.addEventListener("click", () => {
-      const app = globalThis.Zotero?.zoterobridgeflow;
-      app?.kernel?.bus?.emit("inspector:clear-cache", { target: "all" });
-    });
-    const prefKeys = Object.keys(PREF_SCHEMA);
-    const stopObserving = prefs.observeKeys(prefKeys, () => syncAllFromPrefs());
-    globalThis.addEventListener?.("unload", () => {
-      stopObserving();
-      prefs.dispose();
-    });
-    syncAllFromPrefs();
   }
-  function updateDependencies(doc) {
-    const groups = Array.from(doc.querySelectorAll("[data-zbf-depends-on]"));
-    for (const group of groups) {
-      const masterKey = group.getAttribute("data-zbf-depends-on");
-      if (!masterKey) continue;
-      const master = doc.querySelector(`[data-zbf-pref="${masterKey}"]`);
-      const enabled = master ? master.checked && !master.disabled : true;
-      group.classList.toggle("zbf-disabled", !enabled);
-      const inputs = Array.from(group.querySelectorAll("input, select, button"));
-      for (const input of inputs) {
-        input.disabled = !enabled;
+  var BridgeFlowPreferences = {
+    observerIDs: [],
+    init(win) {
+      const doc = win?.document || globalThis.document;
+      if (!doc) return;
+      const pane = doc.getElementById("zotero-prefpane-zotero-bridgeflow");
+      if (!pane) return;
+      bindTabs(doc);
+      const prefs = new UnifiedPrefService();
+      const versionEl = doc.getElementById("zbf-version-badge");
+      if (versionEl) {
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.2" }));
+        versionEl.textContent = `v${"0.0.2"}`;
       }
+      const inputs = Array.from(pane.querySelectorAll("[data-zbf-pref]"));
+      const syncAll = () => {
+        prefs.invalidate();
+        for (const input of inputs) {
+          const key = input.getAttribute("data-zbf-pref");
+          if (key && key in PREF_SCHEMA) {
+            input.value = String(prefs.get(key));
+          }
+        }
+        updateDependencies(doc, prefs);
+      };
+      for (const input of inputs) {
+        const key = input.getAttribute("data-zbf-pref");
+        if (!key || !(key in PREF_SCHEMA)) continue;
+        input.addEventListener("change", () => {
+          const raw = input.type === "number" ? Number(input.value) : input.value;
+          const next = prefs.set(key, raw);
+          input.value = String(next);
+          updateDependencies(doc, prefs);
+        });
+      }
+      pane.addEventListener("command", () => updateDependencies(doc, prefs));
+      pane.addEventListener("change", () => updateDependencies(doc, prefs));
+      doc.getElementById("zbf-reset-defaults")?.addEventListener("command", () => {
+        prefs.resetAllDefaults();
+        syncAll();
+        (win || globalThis.window)?.setTimeout?.(() => syncMenulistLabels(doc), 0);
+      });
+      doc.getElementById("zbf-clear-cache")?.addEventListener("command", () => {
+        const app = globalThis.Zotero?.zoterobridgeflow;
+        app?.kernel?.bus?.emit("inspector:clear-cache", { target: "all" });
+      });
+      doc.l10n?.ready?.then?.(() => syncMenulistLabels(doc));
+      if (!this.observerIDs.length && globalThis.Zotero?.Prefs?.registerObserver) {
+        const keys = Object.keys(PREF_SCHEMA);
+        this.observerIDs = keys.map(
+          (k) => globalThis.Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => syncAll(), true)
+        );
+        (win || globalThis.window)?.addEventListener?.("unload", () => {
+          for (const id of this.observerIDs) {
+            try {
+              globalThis.Zotero.Prefs.unregisterObserver(id);
+            } catch {
+            }
+          }
+          this.observerIDs = [];
+          prefs.dispose();
+        }, { once: true });
+      }
+      syncAll();
     }
-    void PREF_PREFIX;
-  }
+  };
+  globalThis.BridgeFlowPreferences = BridgeFlowPreferences;
   if (typeof globalThis.document !== "undefined") {
-    if (globalThis.document.readyState === "loading") {
-      globalThis.document.addEventListener("DOMContentLoaded", initPreferencesPane, { once: true });
+    const d = globalThis.document;
+    if (d.readyState === "loading") {
+      d.addEventListener("DOMContentLoaded", () => BridgeFlowPreferences.init(), { once: true });
     } else {
-      initPreferencesPane();
+      BridgeFlowPreferences.init();
     }
   }
 })();

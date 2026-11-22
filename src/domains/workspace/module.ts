@@ -49,11 +49,22 @@ export class WorkspaceDomainModule implements DomainModule {
 			this.kernel.prefs.observeKeys(
 				[
 					'workspace.enableHorizontalGroups',
+					'workspace.compactTopBar',
 					'workspace.enableVerticalSidebar',
+					'workspace.enablePinnedTabs',
+					'workspace.pinnedIconOnly',
+					'workspace.enableTabRemarks',
+					'workspace.remarkDisplayMode',
+					'workspace.verticalTabTitleMode',
+					'workspace.verticalTabSubtitleMode',
 					'workspace.verticalSidebarWidth',
 					'workspace.verticalSidebarCollapsed',
 					'workspace.verticalTabRowHeight',
 					'workspace.verticalTabFontSize',
+					'workspace.enableHoverPreview',
+					'workspace.enableSpotlight',
+					'workspace.enableSessions',
+					'workspace.enableTabSleep',
 					'fusion.sidebarCiteBadge',
 				],
 				() => {

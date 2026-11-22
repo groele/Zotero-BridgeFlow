@@ -6,6 +6,7 @@ import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
 import { WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
+import { WordIntegrationPoller } from './word-poller.ts';
 
 export class WordCiteDomainModule implements DomainModule {
 	public readonly id = 'word-cite' as const;
@@ -15,6 +16,7 @@ export class WordCiteDomainModule implements DomainModule {
 	public readonly dragCite: DragCiteController;
 
 	private readonly column: CitationColumnController;
+	private readonly poller: WordIntegrationPoller;
 	private readonly disposables = new DisposableStack();
 	private active = false;
 
@@ -26,6 +28,7 @@ export class WordCiteDomainModule implements DomainModule {
 		this.tagGovernance = new CitationTagGovernance(kernel.prefs);
 		this.dragCite = new DragCiteController(kernel, services.win32);
 		this.column = new CitationColumnController(kernel, this.tracker);
+		this.poller = new WordIntegrationPoller(kernel, this.tracker);
 	}
 
 	isActive(): boolean {
@@ -37,6 +40,7 @@ export class WordCiteDomainModule implements DomainModule {
 		this.active = true;
 		this.disposables.reset();
 		this.column.register();
+		this.poller.start();
 
 		this.disposables.add(
 			this.kernel.bus.on('citation:snapshot-updated', () => {
@@ -66,6 +70,7 @@ export class WordCiteDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		this.poller.stop();
 		this.column.unregister();
 		this.dragCite.disposeAll();
 		this.tracker.clear();

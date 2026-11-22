@@ -79,6 +79,9 @@ function shutdown(_data, reason) {
 			const appShutdown = typeof APP_SHUTDOWN !== 'undefined' && reason === APP_SHUTDOWN;
 			if (!appShutdown) {
 				try {
+					if (activeRootURI && typeof Cu !== 'undefined') Cu.unload(activeRootURI + 'zoteropreview.js');
+				} catch { /* ignore */ }
+				try {
 					if (activeRootURI && typeof Cu !== 'undefined') Cu.unload(activeRootURI + 'zoterobridgeflow.js');
 				} catch (error) {
 					Zotero?.logError?.(error);

@@ -161,6 +161,72 @@ export class WorkspaceTabController {
 		return true;
 	}
 
+	async reloadTab(win: Window, tabID: string): Promise<boolean> {
+		const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
+		if (!tracked) return false;
+		this.store.setSleeping(tracked.key, false);
+		this.selectTab(win, tabID);
+		const reader = (globalThis as any).Zotero?.Reader?.getByTabID?.(tabID);
+		if (typeof reader?.reload === 'function') {
+			await reader.reload();
+		}
+		return true;
+	}
+
+	async archiveAndCloseGroup(win: Window, groupId: string): Promise<number> {
+		const group = this.store.state.groups.find((g) => g.id === groupId);
+		if (!group) return 0;
+		const ids = this.buildTrackedTabs(win).filter((t) => t.groupId === groupId && t.tabID).map((t) => t.tabID);
+		this.store.saveSession(group.name);
+		return this.closeTabs(win, ids, { preserveVirtual: true, protectPinned: true });
+	}
+
+	autoGroupByCollection(win: Window): number {
+		const strategy = this.prefs.get('workspace.multiCollectionStrategy');
+		const activeColName = String((win as any).ZoteroPane?.getSelectedCollection?.()?.name || '');
+		const tracked = this.buildTrackedTabs(win).filter((t) => !t.virtual && !t.groupId);
+		const hostItems = (globalThis as any).Zotero?.Items;
+		const hostCols = (globalThis as any).Zotero?.Collections;
+		let grouped = 0;
+
+		for (const tab of tracked) {
+			const item = hostItems?.get?.(tab.parentItemID || tab.itemID);
+			const colIDs: number[] = item?.getCollections?.() || [];
+			const colNames = colIDs.map((id) => String(hostCols?.get?.(id)?.name || '')).filter(Boolean);
+			if (!colNames.length) continue;
+
+			let chosen = '';
+			if (strategy === 'active' && activeColName && colNames.includes(activeColName)) {
+				chosen = activeColName;
+			} else if (strategy === 'existing') {
+				chosen = colNames.find((n) => this.store.state.groups.some((g) => g.name === n)) || colNames[0];
+			} else {
+				chosen = colNames[0];
+			}
+			if (!chosen) continue;
+
+			let group = this.store.state.groups.find((g) => g.name === chosen);
+			if (!group) group = this.store.createGroup(chosen);
+			this.store.assignToGroup(tab.key, group.id);
+			grouped++;
+		}
+		return grouped;
+	}
+
+	getDisplayTitle(tab: { title: string; shortTitle?: string; filename?: string; remark?: string }): string {
+		const titleMode = this.prefs.get('workspace.verticalTabTitleMode');
+		const base = titleMode === 'shortTitle' && tab.shortTitle
+			? tab.shortTitle
+			: titleMode === 'filename' && tab.filename
+				? tab.filename
+				: tab.title;
+		if (!this.prefs.get('workspace.enableTabRemarks') || !tab.remark) return base;
+		const mode = this.prefs.get('workspace.remarkDisplayMode');
+		if (mode === 'remark') return tab.remark;
+		if (mode === 'title') return base;
+		return `${tab.remark} · ${base}`;
+	}
+
 	/**
 	 * Unified copy citation action — delegates to shared UnifiedClipboardService
 	 * so tab-menu copies automatically populate reverse-lookup history.

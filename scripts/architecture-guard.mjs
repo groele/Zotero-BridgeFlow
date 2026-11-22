@@ -160,8 +160,8 @@ check('Fluent FTL symmetry (en-US <-> zh-CN) & zero duplicates', () => {
 	}
 });
 
-// 8. Preferences XHTML zero hardcoded CJK text & single default open card
-check('Preferences XHTML zero hardcoded CJK & single default open card', () => {
+// 8. Preferences XHTML zero hardcoded CJK text & tabbed layout structure
+check('Preferences XHTML zero hardcoded CJK & valid tabbed structure', () => {
 	const xhtmlPath = path.join(root, 'prefs.xhtml');
 	if (!fs.existsSync(xhtmlPath)) throw new Error('Missing prefs.xhtml');
 	const text = fs.readFileSync(xhtmlPath, 'utf8');
@@ -169,9 +169,10 @@ check('Preferences XHTML zero hardcoded CJK & single default open card', () => {
 	if (/[\u4e00-\u9fff]/.test(stripped)) {
 		throw new Error('Hardcoded Chinese text found in prefs.xhtml; all labels must use data-l10n-id');
 	}
-	const openCount = (stripped.match(/<html:details\b[^>]*\bopen=/g) || []).length;
-	if (openCount !== 1) {
-		throw new Error(`Expected exactly 1 default-open <html:details> card, found ${openCount}`);
+	const tabCount = (stripped.match(/role="tab"/g) || []).length;
+	const panelCount = (stripped.match(/class="zbf-tabpanel"/g) || []).length;
+	if (tabCount < 4 || tabCount !== panelCount) {
+		throw new Error(`Expected matching >= 4 tabs (${tabCount}) and panels (${panelCount}) in prefs.xhtml`);
 	}
 });
 

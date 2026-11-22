@@ -88,6 +88,21 @@ export class WorkspaceStateStore {
 		return true;
 	}
 
+	setGroupColor(groupId: string, color: string): boolean {
+		const group = this.state.groups.find((g) => g.id === groupId);
+		if (!group || !color) return false;
+		group.color = color;
+		this.save();
+		return true;
+	}
+
+	restoreSessionLayout(session: WorkspaceSession): void {
+		this.state.groups = session.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
+		this.state.pinnedKeys = [...session.pinnedKeys];
+		this.state.remarks = { ...this.state.remarks, ...session.remarks };
+		this.save();
+	}
+
 	removeGroup(groupId: string): boolean {
 		const idx = this.state.groups.findIndex((g) => g.id === groupId);
 		if (idx < 0) return false;
