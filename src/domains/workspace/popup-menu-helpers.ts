@@ -1,5 +1,6 @@
 import { createWorkspaceElement } from './workspace-elements.ts';
-export function createFloatingPopup(doc: Document, anchor: HTMLElement, event?: MouseEvent, minWidth = 210): HTMLElement | null {
+import { createWorkspaceIcon, type WorkspaceIconName } from './workspace-icons.ts';
+export function createFloatingPopup(doc: Document, anchor: HTMLElement, event?: MouseEvent, minWidth = 228): HTMLElement | null {
 	const host = doc.documentElement || doc.body;
 	if (!host) return null;
 	const pop = createWorkspaceElement(doc, 'div');
@@ -29,13 +30,31 @@ export function addPopupButton(
 	label: string,
 	onClick: () => void,
 	closePopup: () => void,
-	options: { danger?: boolean; disabled?: boolean } = {},
+	options: { danger?: boolean; disabled?: boolean; icon?: WorkspaceIconName; badge?: string } = {},
 ): HTMLButtonElement {
 	const btn = createWorkspaceElement(doc, 'button');
 	btn.type = 'button';
 	btn.className = `zbf-popup-item${options.danger ? ' danger' : ''}`;
-	btn.textContent = label;
 	if (options.disabled) btn.disabled = true;
+
+	const left = createWorkspaceElement(doc, 'span');
+	left.className = 'zbf-popup-item-main';
+	if (options.icon) {
+		left.appendChild(createWorkspaceIcon(doc, options.icon, 14));
+	}
+	const textSpan = createWorkspaceElement(doc, 'span');
+	textSpan.className = 'zbf-popup-item-label';
+	textSpan.textContent = label;
+	left.appendChild(textSpan);
+	btn.appendChild(left);
+
+	if (options.badge) {
+		const badgeEl = createWorkspaceElement(doc, 'span');
+		badgeEl.className = 'zbf-popup-item-badge';
+		badgeEl.textContent = options.badge;
+		btn.appendChild(badgeEl);
+	}
+
 	btn.addEventListener('click', () => {
 		closePopup();
 		onClick();
@@ -48,6 +67,53 @@ export function addPopupSeparator(doc: Document, pop: HTMLElement): void {
 	const sep = createWorkspaceElement(doc, 'div');
 	sep.className = 'zbf-popup-sep';
 	pop.appendChild(sep);
+}
+
+export function addPopupSubmenuSection(
+	doc: Document,
+	pop: HTMLElement,
+	label: string,
+	icon: WorkspaceIconName,
+	build: (container: HTMLElement) => void,
+	dotColor?: string,
+): void {
+	const wrap = createWorkspaceElement(doc, 'div');
+	wrap.className = 'zbf-popup-submenu-wrap';
+	const trigger = createWorkspaceElement(doc, 'button');
+	trigger.type = 'button';
+	trigger.className = 'zbf-popup-item zbf-popup-submenu-trigger';
+
+	const left = createWorkspaceElement(doc, 'span');
+	left.className = 'zbf-popup-item-main';
+	left.appendChild(createWorkspaceIcon(doc, icon, 14));
+	const txt = createWorkspaceElement(doc, 'span');
+	txt.className = 'zbf-popup-item-label';
+	txt.textContent = label;
+	left.appendChild(txt);
+	if (dotColor) {
+		const dot = createWorkspaceElement(doc, 'span');
+		dot.className = 'zbf-popup-color-dot';
+		dot.style.background = dotColor;
+		left.appendChild(dot);
+	}
+
+	const arrow = createWorkspaceElement(doc, 'span');
+	arrow.className = 'zbf-popup-submenu-arrow';
+	arrow.textContent = '▸';
+	trigger.append(left, arrow);
+
+	const body = createWorkspaceElement(doc, 'div');
+	body.className = 'zbf-popup-submenu-body';
+	body.hidden = true;
+	build(body);
+
+	trigger.addEventListener('click', (e) => {
+		e.stopPropagation();
+		body.hidden = !body.hidden;
+		arrow.textContent = body.hidden ? '▸' : '▾';
+	});
+	wrap.append(trigger, body);
+	pop.appendChild(wrap);
 }
 
 export function openTextPromptModal(

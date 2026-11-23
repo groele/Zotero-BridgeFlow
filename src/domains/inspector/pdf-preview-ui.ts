@@ -106,10 +106,6 @@ export function ensureSectionConnected(
 	if (!owner) return null;
 	owner.removeAttribute?.('empty');
 	if ('empty' in owner) owner.empty = false;
-	if (!owner.hasAttribute?.('data-zbf-pdf-ready')) {
-		owner.setAttribute?.('data-zbf-pdf-ready', 'true');
-		owner.open = true;
-	}
 	(owner as HTMLElement).style?.setProperty?.('--open-height', 'auto');
 	return owner;
 }
@@ -118,6 +114,16 @@ export function applyPreviewLayoutMode(
 	body: HTMLElement, root: HTMLElement, savedSection: Element | null, fullActive: boolean,
 ): void {
 	root.setAttribute('data-layout-mode', fullActive ? 'full' : 'section');
+	const modeBtn = root.querySelector?.('.ztf-pdf-mode-btn') as HTMLButtonElement | null;
+	if (modeBtn) {
+		if (fullActive) {
+			modeBtn.setAttribute('data-active', 'true');
+			modeBtn.title = '退出全高独占模式，恢复侧边栏其他区块';
+		} else {
+			modeBtn.removeAttribute('data-active');
+			modeBtn.title = '切换内嵌区块 / 占满侧边栏预览模式';
+		}
+	}
 	const hostSection = (body.closest?.('item-pane-custom-section') || savedSection) as HTMLElement | null;
 	const stack = hostSection?.parentElement as HTMLElement | null;
 	if (!hostSection) return;
@@ -147,7 +153,7 @@ export function bindPreviewSidenavClick(
 		const paneID = btn?.getAttribute?.('data-pane') || '';
 		if (!btn || btn.hasAttribute?.('disabled')) return;
 		if (!paneID.includes('bridgeflow-pdf-preview')) { onFullModeChange(false); return; }
-		if (isFullMode()) onFullModeChange(true);
+		onFullModeChange(isFullMode());
 		const sidenav = btn.closest?.('item-pane-sidenav') as (Element & { container?: any }) | null;
 		const container = sidenav?.container;
 		const section = (container?.getEnabledPane?.(paneID) || doc.querySelector?.(`item-pane-custom-section[data-pane="${paneID}"]`)) as HTMLElement | null;

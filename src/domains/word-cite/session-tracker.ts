@@ -1,12 +1,12 @@
 import type { TypedEventBus } from '../../kernel/event-bus.ts';
-import type { CitationBadgeInfo, CitationSnapshotPayload } from '../../kernel/types.ts';
+import type { CitationBadgeInfo, CitationSessionSummary, CitationSnapshotPayload } from '../../kernel/types.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
 
 export interface WordSessionRecord {
 	readonly sessionID: string;
 	readonly documentPath: string;
 	readonly displayName: string;
-	readonly itemCitations: ReadonlyMap<number, { ordinal: number; shortText: string }>;
+	readonly itemCitations: ReadonlyMap<number, { ordinal: number; shortText: string; occurrences?: number }>;
 }
 
 export function extractDocumentBaseName(rawPath: string): string {
@@ -151,7 +151,7 @@ export class WordSessionTracker {
 	syncSessions(rawSessions: readonly {
 		sessionID: string;
 		documentPath: string;
-		citations: ReadonlyArray<{ itemID: number; ordinal: number; shortText: string }>;
+		citations: ReadonlyArray<{ itemID: number; ordinal: number; shortText: string; occurrences?: number }>;
 	}[]): boolean {
 		const names = disambiguateDocumentNames(
 			rawSessions.map((s) => ({ sessionID: s.sessionID, path: s.documentPath })),
@@ -159,11 +159,11 @@ export class WordSessionTracker {
 
 		this.sessions.clear();
 		for (const raw of rawSessions) {
-			const map = new Map<number, { ordinal: number; shortText: string }>();
+			const map = new Map<number, { ordinal: number; shortText: string; occurrences?: number }>();
 			for (const c of raw.citations) {
 				if (!Number.isInteger(c.itemID) || c.itemID <= 0) continue;
 				if (!map.has(c.itemID)) {
-					map.set(c.itemID, { ordinal: c.ordinal, shortText: c.shortText });
+					map.set(c.itemID, { ordinal: c.ordinal, shortText: c.shortText, occurrences: c.occurrences ?? 1 });
 				}
 			}
 			this.sessions.set(raw.sessionID, {
@@ -211,6 +211,19 @@ export class WordSessionTracker {
 		return true;
 	}
 
+	setActiveSession(sessionID: string): boolean {
+		if (!sessionID || !this.sessions.has(sessionID)) return false;
+		if (this.activeSessionID === sessionID) return false;
+		this.activeSessionID = sessionID;
+		this.lastFingerprint = this.computeFingerprint();
+		this.emitSnapshot();
+		return true;
+	}
+
+	emitCurrentSnapshot(): void {
+		this.emitSnapshot();
+	}
+
 	clear(): void {
 		this.sessions.clear();
 		this.activeSessionID = null;
@@ -223,7 +236,7 @@ export class WordSessionTracker {
 		for (const ses of this.sessions.values()) {
 			const items = [...ses.itemCitations.entries()]
 				.sort((a, b) => a[0] - b[0])
-				.map(([id, c]) => `${id}:${c.ordinal}:${c.shortText}`)
+				.map(([id, c]) => `${id}:${c.ordinal}:${c.occurrences ?? 1}:${c.shortText}`)
 				.join(',');
 			parts.push(`${ses.sessionID}|${ses.displayName}|${items}`);
 		}
@@ -232,25 +245,39 @@ export class WordSessionTracker {
 
 	private emitSnapshot(): void {
 		const active = this.getActiveSession();
-		const byItemID = new Map<number, CitationBadgeInfo>();
+		const sessions: CitationSessionSummary[] = [];
+		let activeByItemID = new Map<number, CitationBadgeInfo>();
 		const citedItemIDs: number[] = [];
-		if (active) {
-			for (const [itemID, info] of active.itemCitations.entries()) {
-				byItemID.set(itemID, {
+
+		for (const ses of this.sessions.values()) {
+			const map = new Map<number, CitationBadgeInfo>();
+			for (const [itemID, info] of ses.itemCitations.entries()) {
+				map.set(itemID, {
 					itemID,
 					ordinal: info.ordinal,
+					occurrences: info.occurrences ?? 1,
 					shortText: info.shortText,
-					documentName: active.displayName,
-					sessionID: active.sessionID,
+					documentName: ses.displayName,
+					sessionID: ses.sessionID,
 				});
-				citedItemIDs.push(itemID);
+				if (ses.sessionID === active?.sessionID) citedItemIDs.push(itemID);
 			}
+			if (ses.sessionID === active?.sessionID) activeByItemID = map;
+			sessions.push({
+				sessionID: ses.sessionID,
+				documentName: ses.displayName,
+				totalCitedCount: map.size,
+				byItemID: map,
+			});
 		}
+
 		const payload: CitationSnapshotPayload = {
 			activeSessionID: active?.sessionID ?? null,
 			activeDocumentName: active?.displayName ?? '',
-			byItemID,
+			byItemID: activeByItemID,
 			citedItemIDs,
+			totalCitedCount: activeByItemID.size,
+			sessions,
 		};
 		this.bus.emit('citation:snapshot-updated', payload);
 	}

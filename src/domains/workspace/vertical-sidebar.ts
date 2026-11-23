@@ -177,6 +177,8 @@ export class WorkspaceVerticalSidebar {
 			this.doc, this.prefs, this.store, actions, aside, list,
 			() => this.onRefresh(),
 			(ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true }),
+			(itemIDs) => void this.tabs.copyItemsCitations(itemIDs),
+			(itemIDs) => { this.tabs.citeItemsInWord(this.win, itemIDs); },
 		);
 		bindSidebarKeyboardNavigation(aside, list, searchInput, () => {
 			this.searchTerm = '';
@@ -191,19 +193,6 @@ export class WorkspaceVerticalSidebar {
 				this.onRefresh();
 			});
 		});
-		this.addHeaderBtn(actions, 'folder', '按 Zotero 集合自动归组', () => {
-			this.tabs.autoGroupByCollection(this.win);
-			this.onRefresh();
-		});
-		if (this.prefs.get('workspace.enableTabSleep')) {
-			this.addHeaderBtn(actions, 'sleep', '休眠后台非固定标签（释放内存）', () => {
-				this.tabs.sleepInactiveTabs(this.win);
-				this.onRefresh();
-			});
-		}
-		if (this.prefs.get('workspace.enableSessions')) {
-			this.addHeaderBtn(actions, 'workspace', '打开工作区与已保存文献快照', (btn) => this.popover.openHub(btn));
-		}
 		this.addHeaderBtn(actions, 'sidebar', '折叠 / 展开侧边栏', () => {
 			this.prefs.set('workspace.verticalSidebarCollapsed', true);
 			this.onRefresh();

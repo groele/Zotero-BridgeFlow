@@ -78,9 +78,13 @@ export class PluginKernel {
 		}
 
 		// Attach to already-open main windows
-		const existing = (globalThis as any).Zotero?.getMainWindows?.() as Window[] | undefined;
-		if (Array.isArray(existing)) {
+		const zot = (globalThis as any).Zotero;
+		const existing = zot?.getMainWindows?.() as Window[] | undefined;
+		if (Array.isArray(existing) && existing.length) {
 			for (const win of existing) this.onMainWindowLoad(win);
+		} else {
+			const mainWin = zot?.getMainWindow?.() as Window | undefined;
+			if (mainWin) this.onMainWindowLoad(mainWin);
 		}
 	}
 

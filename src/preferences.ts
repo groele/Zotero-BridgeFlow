@@ -78,6 +78,7 @@ function updateDependencies(doc: Document, prefs: UnifiedPrefService): void {
 	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-quota'), !historyOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-preview'), !insOn || !prefs.get('inspector.pdfPreview.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-folder'), !insOn || !prefs.get('inspector.pdfFolder.enable'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-word-cite-pos'), !wcOn || !insOn || !prefs.get('wordCite.dragCite.enable') || !prefs.get('inspector.wordCite.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-wc-tag-text'), !wcOn || !prefs.get('wordCite.citationTags.enable'));
 
 	syncMenulistLabels(doc);

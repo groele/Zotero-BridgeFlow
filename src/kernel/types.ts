@@ -9,9 +9,17 @@ export interface PluginInfo {
 export interface CitationBadgeInfo {
 	itemID: number;
 	ordinal: number;
+	occurrences?: number;
 	shortText: string;
 	documentName: string;
 	sessionID: string;
+}
+
+export interface CitationSessionSummary {
+	readonly sessionID: string;
+	readonly documentName: string;
+	readonly totalCitedCount: number;
+	readonly byItemID: ReadonlyMap<number, CitationBadgeInfo>;
 }
 
 export interface CitationSnapshotPayload {
@@ -19,6 +27,14 @@ export interface CitationSnapshotPayload {
 	readonly activeDocumentName: string;
 	readonly byItemID: ReadonlyMap<number, CitationBadgeInfo>;
 	readonly citedItemIDs: readonly number[];
+	readonly totalCitedCount: number;
+	readonly sessions?: readonly CitationSessionSummary[];
+}
+
+export interface WorkspaceGroupSummary {
+	readonly groupId: string;
+	readonly groupName: string;
+	readonly itemIDs: readonly number[];
 }
 
 export interface CitationCopiedPayload {
@@ -58,6 +74,19 @@ export interface SpotlightProvider {
 	query(term: string, win: Window): readonly SpotlightItemResult[];
 }
 
+export interface WordInsertResultPayload {
+	readonly requestId?: string;
+	readonly status: 'inserted' | 'busy' | 'non-word' | 'cancelled' | 'unavailable';
+	readonly documentName: string;
+	readonly itemCount: number;
+}
+
+export interface WordRefreshResultPayload {
+	readonly requestId?: string;
+	readonly ok: boolean;
+	readonly documentName: string;
+}
+
 export interface BridgeFlowEventMap {
 	'prefs:changed': { readonly key: string; readonly value: unknown };
 	'notifier:event': NotifierEventPayload;
@@ -65,6 +94,15 @@ export interface BridgeFlowEventMap {
 	'citation:copied': CitationCopiedPayload;
 	'workspace:tabs-updated': { readonly windowCount: number; readonly openItemIDs: readonly number[] };
 	'workspace:open-item-request': OpenItemRequestPayload;
+	'workspace:groups-updated': { readonly groups: readonly WorkspaceGroupSummary[] };
+	'workspace:groups-query': { readonly requester?: string };
+	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
+	'word:insert-result': WordInsertResultPayload;
+	'word:refresh-request': { readonly requestId?: string; readonly win?: Window };
+	'word:refresh-result': WordRefreshResultPayload;
+	'word:snapshot-query': { readonly requester?: string };
+	'word:switch-session-request': { readonly sessionID: string };
+	'word:select-collection-request': { readonly sessionID?: string; readonly win?: Window };
 	'inspector:lookup-clipboard': { readonly win?: Window };
 	'inspector:clear-cache': { readonly target: 'memory' | 'disk' | 'all' };
 }

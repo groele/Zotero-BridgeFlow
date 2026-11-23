@@ -7,6 +7,7 @@ import { CitationLookupSectionController } from './citation-lookup-section.ts';
 import { CslPreviewSectionController } from './csl-preview-section.ts';
 import { PdfFolderSectionController } from './pdf-folder-section.ts';
 import { PdfPreviewSectionController } from './pdf-preview-section.ts';
+import { WordCiteSectionController } from './word-cite-section.ts';
 
 export class InspectorDomainModule implements DomainModule {
 	public readonly id = 'inspector' as const;
@@ -17,6 +18,7 @@ export class InspectorDomainModule implements DomainModule {
 	private readonly lookupSection: CitationLookupSectionController;
 	private readonly pdfPreview: PdfPreviewSectionController;
 	private readonly pdfFolder: PdfFolderSectionController;
+	private readonly wordCiteSection: WordCiteSectionController;
 	private readonly disposables = new DisposableStack();
 	private active = false;
 
@@ -31,6 +33,7 @@ export class InspectorDomainModule implements DomainModule {
 		this.lookupSection = new CitationLookupSectionController(kernel, services, this.lookupEngine);
 		this.pdfPreview = new PdfPreviewSectionController(kernel, services);
 		this.pdfFolder = new PdfFolderSectionController(kernel, services);
+		this.wordCiteSection = new WordCiteSectionController(kernel, services);
 	}
 
 	isActive(): boolean {
@@ -50,6 +53,9 @@ export class InspectorDomainModule implements DomainModule {
 					'inspector.lookup.enable',
 					'inspector.pdfPreview.enable',
 					'inspector.pdfFolder.enable',
+					'inspector.wordCite.enable',
+					'modules.wordCite.enable',
+					'wordCite.dragCite.enable',
 				],
 				() => this.syncSections(),
 			),
@@ -61,6 +67,7 @@ export class InspectorDomainModule implements DomainModule {
 					'inspector.cslPreview.position',
 					'inspector.pdfPreview.position',
 					'inspector.pdfFolder.position',
+					'inspector.wordCite.position',
 				],
 				() => this.services.panePositions.queueAll(),
 			),
@@ -91,6 +98,7 @@ export class InspectorDomainModule implements DomainModule {
 		this.lookupSection.unregister();
 		this.pdfPreview.unregister();
 		this.pdfFolder.unregister();
+		this.wordCiteSection.unregister();
 		this.disposables.disposeAll();
 	}
 
@@ -108,6 +116,14 @@ export class InspectorDomainModule implements DomainModule {
 
 		if (this.kernel.prefs.get('inspector.pdfFolder.enable')) this.pdfFolder.register();
 		else this.pdfFolder.unregister();
+
+		if (this.kernel.prefs.get('inspector.wordCite.enable')
+			&& this.kernel.prefs.get('modules.wordCite.enable')
+			&& this.kernel.prefs.get('wordCite.dragCite.enable')) {
+			this.wordCiteSection.register();
+		} else {
+			this.wordCiteSection.unregister();
+		}
 
 		this.services.panePositions.queueAll();
 	}

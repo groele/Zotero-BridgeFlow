@@ -13,6 +13,8 @@ export class SidebarSelection {
 	private readonly groupSelect: HTMLSelectElement;
 	private readonly pinBtn: HTMLButtonElement;
 	private readonly unpinBtn: HTMLButtonElement;
+	private readonly copyRefsBtn: HTMLButtonElement;
+	private readonly citeWordBtn: HTMLButtonElement;
 	private readonly closeBtn: HTMLButtonElement;
 	private readonly doc: Document;
 	private readonly prefs: UnifiedPrefService;
@@ -20,6 +22,8 @@ export class SidebarSelection {
 	private readonly list: HTMLElement;
 	private readonly onChange: () => void;
 	private readonly onCloseSelected: (tabIDs: string[]) => void;
+	private readonly onCopySelected?: (itemIDs: number[]) => void;
+	private readonly onCiteSelected?: (itemIDs: number[]) => void;
 
 	constructor(
 		doc: Document,
@@ -30,6 +34,8 @@ export class SidebarSelection {
 		list: HTMLElement,
 		onChange: () => void,
 		onCloseSelected: (tabIDs: string[]) => void,
+		onCopySelected?: (itemIDs: number[]) => void,
+		onCiteSelected?: (itemIDs: number[]) => void,
 	) {
 		this.doc = doc;
 		this.prefs = prefs;
@@ -37,6 +43,8 @@ export class SidebarSelection {
 		this.list = list;
 		this.onChange = onChange;
 		this.onCloseSelected = onCloseSelected;
+		this.onCopySelected = onCopySelected;
+		this.onCiteSelected = onCiteSelected;
 
 		this.toggleBtn = this.btn('多选', () => {
 			this.active = !this.active;
@@ -76,12 +84,18 @@ export class SidebarSelection {
 			for (const key of this.selectedKeys()) this.store.setPinned(key, false);
 			this.onChange();
 		});
+		this.copyRefsBtn = this.btn('复制引文', () => {
+			this.onCopySelected?.(this.selectedItemIDs());
+		});
+		this.citeWordBtn = this.btn('插入Word', () => {
+			this.onCiteSelected?.(this.selectedItemIDs());
+		});
 		this.closeBtn = this.btn('关闭', () => {
 			const ids = [...this.selected];
 			this.selected.clear();
 			this.onCloseSelected(ids);
 		});
-		this.controls.append(this.countEl, this.selectAllBtn, this.groupSelect, this.pinBtn, this.unpinBtn, this.closeBtn);
+		this.controls.append(this.countEl, this.selectAllBtn, this.groupSelect, this.pinBtn, this.unpinBtn, this.copyRefsBtn, this.citeWordBtn, this.closeBtn);
 		aside.insertBefore(this.controls, list);
 	}
 
@@ -123,6 +137,10 @@ export class SidebarSelection {
 		this.unpinBtn.hidden = !pinOn;
 		this.pinBtn.disabled = !count;
 		this.unpinBtn.disabled = !count;
+		this.copyRefsBtn.hidden = !this.onCopySelected || !this.prefs.get('workspace.enableCopyReference');
+		this.copyRefsBtn.disabled = !count;
+		this.citeWordBtn.hidden = !this.onCiteSelected || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.dragCite.enable');
+		this.citeWordBtn.disabled = !count;
 		this.closeBtn.disabled = !count;
 	}
 
@@ -153,6 +171,10 @@ export class SidebarSelection {
 
 	private selectedKeys(): string[] {
 		return [...new Set(this.tracked.filter((t) => this.selected.has(t.tabID)).map((t) => t.key))];
+	}
+
+	private selectedItemIDs(): number[] {
+		return [...new Set(this.tracked.filter((t) => this.selected.has(t.tabID)).map((t) => t.parentItemID || t.itemID).filter((id) => id > 0))];
 	}
 
 	private h<K extends keyof HTMLElementTagNameMap>(tag: K): HTMLElementTagNameMap[K] {

@@ -1,5 +1,6 @@
 import { projectWorkspaceTabs } from './tab-projection.ts';
 import { closeWorkspaceTabs, isTabBusy } from './tab-close.ts';
+import type { TypedEventBus } from '../../kernel/event-bus.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { OpenItemRequestPayload } from '../../kernel/types.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
@@ -25,6 +26,7 @@ export class WorkspaceTabController {
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly clipboard: UnifiedClipboardService;
+	private readonly bus?: TypedEventBus;
 	private readonly closedByWindow = new WeakMap<Window, ClosedTabRecord[]>();
 
 	private closedHistory(win: Window): ClosedTabRecord[] {
@@ -37,10 +39,21 @@ export class WorkspaceTabController {
 		prefs: UnifiedPrefService,
 		store: WorkspaceStateStore,
 		clipboard: UnifiedClipboardService,
+		bus?: TypedEventBus,
 	) {
 		this.prefs = prefs;
 		this.store = store;
 		this.clipboard = clipboard;
+		this.bus = bus;
+	}
+
+	citeItemsInWord(win: Window, itemIDs: readonly number[]): boolean {
+		const valid = [...new Set(itemIDs.filter((id) => Number.isInteger(id) && id > 0))];
+		if (!valid.length || !this.bus || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.dragCite.enable')) {
+			return false;
+		}
+		this.bus.emit('word:insert-items-request', { itemIDs: valid, win });
+		return true;
 	}
 
 	buildTrackedTabs(win: Window): TrackedTab[] {
@@ -264,6 +277,13 @@ export class WorkspaceTabController {
 		const item = (globalThis as any).Zotero?.Items?.get?.(tracked.parentItemID || tracked.itemID);
 		if (!item) return false;
 		return this.clipboard.copyItems([item], { source: 'tab-menu' });
+	}
+
+	async copyItemsCitations(itemIDs: readonly number[]): Promise<boolean> {
+		const hostItems = (globalThis as any).Zotero?.Items;
+		const items = itemIDs.map((id) => hostItems?.get?.(id)).filter(Boolean);
+		if (!items.length) return false;
+		return this.clipboard.copyItems(items, { source: 'tab-menu' });
 	}
 
 	focusOrOpenItem(win: Window, req: OpenItemRequestPayload): Promise<'focused' | 'opened' | 'not-found'> {

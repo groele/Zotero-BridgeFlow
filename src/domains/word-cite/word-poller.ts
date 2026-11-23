@@ -82,7 +82,7 @@ export class WordIntegrationPoller {
 			const rawSessions: Array<{
 				sessionID: string;
 				documentPath: string;
-				citations: Array<{ itemID: number; ordinal: number; shortText: string }>;
+				citations: Array<{ itemID: number; ordinal: number; shortText: string; occurrences?: number }>;
 			}> = [];
 
 			for (const [rawID, session] of entries) {
@@ -108,6 +108,7 @@ export class WordIntegrationPoller {
 								itemID,
 								ordinal: info.ordinal,
 								shortText: info.shortText,
+								occurrences: info.occurrences,
 							})),
 						});
 						continue;
@@ -196,9 +197,9 @@ export class WordIntegrationPoller {
 	}
 
 	// Extracts unique valid cited items in exact order of appearance across citationsByIndex (1, 2, 3, 4...).
-	private extractSessionCitations(session: any): Array<{ itemID: number; ordinal: number; shortText: string }> {
+	private extractSessionCitations(session: any): Array<{ itemID: number; ordinal: number; shortText: string; occurrences: number }> {
 		const hostItems = (globalThis as any).Zotero?.Items;
-		const ordinalMap = new Map<number, { ordinal: number; labels: string[] }>();
+		const ordinalMap = new Map<number, { ordinal: number; occurrences: number; labels: string[] }>();
 		const trashedIDs = new Set<number>();
 		let nextOrdinal = 1;
 
@@ -214,7 +215,7 @@ export class WordIntegrationPoller {
 			return false;
 		};
 
-		const recordHit = (itemID: number, shortText: unknown, explicitItemOrdinal?: number) => {
+		const recordHit = (itemID: number, shortText: unknown, explicitItemOrdinal?: number, countOcc = false) => {
 			if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
 			if (isDeletedOrTrashed(itemID)) return;
 
@@ -223,9 +224,11 @@ export class WordIntegrationPoller {
 			if (!existing) {
 				const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
 				nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-				existing = { ordinal: assigned, labels: [] };
+				existing = { ordinal: assigned, occurrences: 0, labels: [] };
 				ordinalMap.set(itemID, existing);
 			}
+			if (countOcc) existing.occurrences += 1;
+			else if (existing.occurrences === 0) existing.occurrences = 1;
 			if (label && !existing.labels.includes(label)) {
 				existing.labels.push(label);
 			}
@@ -244,7 +247,7 @@ export class WordIntegrationPoller {
 				for (const ci of cItems) {
 					const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
 					const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
-					recordHit(itemID, shortText, explicitOrdinal > 0 ? explicitOrdinal : undefined);
+					recordHit(itemID, shortText, explicitOrdinal > 0 ? explicitOrdinal : undefined, true);
 				}
 			}
 		}
@@ -266,6 +269,7 @@ export class WordIntegrationPoller {
 			itemID,
 			ordinal: info.ordinal,
 			shortText: info.labels.join(', '),
+			occurrences: info.occurrences,
 		}));
 	}
 

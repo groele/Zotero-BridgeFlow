@@ -90,6 +90,10 @@ export class WorkspaceWindowUI {
 		this.render();
 	}
 
+	openSpotlightWithQuery(initialQuery = ''): void {
+		this.spotlightPanel?.open(initialQuery);
+	}
+
 	render(): void {
 		if (this.destroyed || !this.doc) return;
 		try {

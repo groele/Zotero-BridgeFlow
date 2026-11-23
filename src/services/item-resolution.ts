@@ -6,16 +6,13 @@ export interface ResolvedPdfAttachment {
 }
 
 export function isItemTrashedOrDeleted(item: any): boolean {
-	if (!item) return true;
-	if (item.deleted) return true;
-	if (typeof item.isTrashed === 'function' && item.isTrashed()) return true;
-	return false;
+	if (!item || item.deleted) return true;
+	return typeof item.isTrashed === 'function' ? Boolean(item.isTrashed()) : false;
 }
 
 export function isItemWritable(item: any): boolean {
 	if (isItemTrashedOrDeleted(item)) return false;
-	if (typeof item.isEditable === 'function' && !item.isEditable()) return false;
-	return true;
+	return typeof item.isEditable === 'function' ? Boolean(item.isEditable()) : true;
 }
 
 export function isRegularValidItem(item: any): boolean {
@@ -24,16 +21,11 @@ export function isRegularValidItem(item: any): boolean {
 	return item.itemType !== 'attachment' && item.itemType !== 'note' && item.itemType !== 'annotation';
 }
 
-/**
- * Traverses attachment/note parent chains safely with cycle detection
- * and returns the owning regular item if available and non-trashed.
- */
 export function normalizeToRegularItem(item: any): any | null {
 	if (isItemTrashedOrDeleted(item)) return null;
 	const seen = new Set<number>();
 	let current = item;
-	while (current) {
-		if (isItemTrashedOrDeleted(current)) return null;
+	while (current && !isItemTrashedOrDeleted(current)) {
 		const id = Number(current.id || 0);
 		if (id > 0) {
 			if (seen.has(id)) return null;
@@ -41,31 +33,19 @@ export function normalizeToRegularItem(item: any): any | null {
 		}
 		if (isRegularValidItem(current)) return current;
 		const parentID = Number(current.parentID || current.parentItemID || 0);
-		if (current.parentItem) {
-			current = current.parentItem;
-			continue;
-		}
-		if (parentID > 0 && (globalThis as any).Zotero?.Items?.get) {
-			current = (globalThis as any).Zotero.Items.get(parentID);
-			continue;
-		}
-		return null;
+		if (current.parentItem) current = current.parentItem;
+		else if (parentID > 0 && (globalThis as any).Zotero?.Items?.get) current = (globalThis as any).Zotero.Items.get(parentID);
+		else return null;
 	}
 	return null;
 }
 
 export async function normalizeToRegularItemAsync(item: any): Promise<any | null> {
 	const sync = normalizeToRegularItem(item);
-	if (sync) return sync;
-	if (isItemTrashedOrDeleted(item)) return null;
+	if (sync || isItemTrashedOrDeleted(item)) return sync;
 	const parentID = Number(item.parentID || item.parentItemID || 0);
 	if (parentID > 0 && (globalThis as any).Zotero?.Items?.getAsync) {
-		try {
-			const parent = await (globalThis as any).Zotero.Items.getAsync(parentID);
-			return normalizeToRegularItem(parent);
-		} catch {
-			return null;
-		}
+		try { return normalizeToRegularItem(await (globalThis as any).Zotero.Items.getAsync(parentID)); } catch { return null; }
 	}
 	return null;
 }
@@ -82,10 +62,7 @@ export function deduplicateRegularItems(items: readonly any[], maxItems = 100): 
 			if (seen.has(id)) continue;
 			seen.add(id);
 		}
-		if (result.length >= maxItems) {
-			truncated = true;
-			break;
-		}
+		if (result.length >= maxItems) { truncated = true; break; }
 		result.push(norm);
 	}
 	return { items: result, truncated };
@@ -289,32 +266,73 @@ export async function locateItemInZoteroLibrary(
 	}
 }
 
+interface CachedPrimaryFields {
+	stamp: string;
+	title: string;
+	shortTitle: string;
+	source: string;
+	creatorYear: string;
+}
+
+const MAX_ITEM_FIELD_CACHE = 800;
+const itemFieldCache = new Map<number, CachedPrimaryFields>();
+const titleMarkupCache = new Map<string, string>();
+
+export function invalidateResolvedItemCache(itemIDs?: Iterable<number>): void {
+	if (!itemIDs) {
+		itemFieldCache.clear();
+		titleMarkupCache.clear();
+		return;
+	}
+	for (const id of itemIDs) itemFieldCache.delete(Number(id));
+}
+
+export function getCachedPrimaryItemFields(item: any, fallbackTitle = ''): CachedPrimaryFields {
+	const primary = normalizeToRegularItem(item) || item;
+	const id = Number(primary?.id || 0);
+	const stamp = String(primary?.dateModified || primary?.version || '');
+	if (id > 0 && stamp) {
+		const hit = itemFieldCache.get(id);
+		if (hit && hit.stamp === stamp) return hit;
+	}
+	const title = safeGetItemField(primary, 'title') || stripItemTitleMarkup(fallbackTitle);
+	const shortTitle = safeGetItemField(primary, 'shortTitle') || title;
+	const source = safeGetItemField(primary, 'publicationTitle')
+		|| safeGetItemField(primary, 'proceedingsTitle')
+		|| safeGetItemField(primary, 'bookTitle')
+		|| safeGetItemField(primary, 'repository');
+	const creatorYear = formatCreatorYear(primary);
+	const entry: CachedPrimaryFields = { stamp, title, shortTitle, source, creatorYear };
+	if (id > 0 && stamp && title) {
+		if (itemFieldCache.size >= MAX_ITEM_FIELD_CACHE) itemFieldCache.clear();
+		itemFieldCache.set(id, entry);
+	}
+	return entry;
+}
+
 export function stripItemTitleMarkup(value: string): string {
 	const raw = String(value || '');
 	if (!raw || !raw.includes('<')) return raw;
+	const cached = titleMarkupCache.get(raw);
+	if (cached !== undefined) return cached;
+	let out = raw.replace(/<[^>]*>/g, '').trim();
 	const render = (globalThis as any).Zotero?.Utilities?.Internal?.renderItemTitle;
 	if (typeof render === 'function') {
 		try {
-			const rendered = render.call((globalThis as any).Zotero.Utilities.Internal, raw);
-			const text = typeof rendered === 'string' ? rendered : String(rendered?.textContent ?? raw);
-			return text.replace(/<[^>]*>/g, '').trim();
-		} catch { /* fall through */ }
+			const r = render.call((globalThis as any).Zotero.Utilities.Internal, raw);
+			out = (typeof r === 'string' ? r : String(r?.textContent ?? raw)).replace(/<[^>]*>/g, '').trim();
+		} catch { /* fallback to regex */ }
 	}
-	return raw.replace(/<[^>]*>/g, '').trim();
+	if (titleMarkupCache.size >= MAX_ITEM_FIELD_CACHE) titleMarkupCache.clear();
+	titleMarkupCache.set(raw, out);
+	return out;
 }
 
 export function safeGetItemField(item: any, field: string): string {
 	if (!item || typeof item.getField !== 'function') return '';
 	let out = '';
-	try {
-		out = String(item.getField(field, false, true) || '');
-	} catch {
-		try {
-			out = String(item.getField(field) || '');
-		} catch {
-			return '';
-		}
-	}
+	try { out = String(item.getField(field, false, true) || ''); }
+	catch { try { out = String(item.getField(field) || ''); } catch { return ''; } }
 	return field === 'title' || field === 'shortTitle' ? stripItemTitleMarkup(out) : out;
 }
 
@@ -326,9 +344,12 @@ export function formatCreatorYear(item: any): string {
 }
 
 export function resolvePrimaryCollectionName(item: any): string {
-	if (!item || typeof item.getCollections !== 'function') return '';
-	const ids: number[] = item.getCollections() || [];
-	if (!ids.length) return '';
-	const col = (globalThis as any).Zotero?.Collections?.get?.(ids[0]);
-	return String(col?.name || '');
+	const ids: number[] = item?.getCollections?.() || [];
+	const hostCols = (globalThis as any).Zotero?.Collections;
+	for (const id of ids) {
+		const col = hostCols?.get?.(id);
+		const name = col && !col._isBridgeFlowCollection && !col._isCiteFlowCollection ? String(col.name || '') : '';
+		if (name && !name.startsWith('📝 ')) return name;
+	}
+	return '';
 }

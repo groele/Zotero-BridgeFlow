@@ -123,7 +123,7 @@ function createMockWindow(tabsList) {
 	};
 }
 
-test('Domain B: Inspector registers all 4 right-hand sections and hot-toggles individually', async () => {
+test('Domain B: Inspector registers all 5 right-hand sections (including Word Cite icon) and hot-toggles individually', async () => {
 	const env = createMockZoteroEnv();
 	globalThis.Zotero = env.mockZotero;
 	const mem = createMemoryPrefs();
@@ -131,11 +131,14 @@ test('Domain B: Inspector registers all 4 right-hand sections and hot-toggles in
 	app.init({ id: 'bridgeflow@groele', version: '0.0.1', rootURI: 'chrome://test/' });
 	await app.start();
 
-	assert.equal(env.registeredPanes.size, 4);
+	assert.equal(env.registeredPanes.size, 5);
 	app.kernel.prefs.set('inspector.pdfFolder.enable', false);
+	assert.equal(env.registeredPanes.size, 4);
+	app.kernel.prefs.set('inspector.wordCite.enable', false);
 	assert.equal(env.registeredPanes.size, 3);
 	app.kernel.prefs.set('inspector.pdfFolder.enable', true);
-	assert.equal(env.registeredPanes.size, 4);
+	app.kernel.prefs.set('inspector.wordCite.enable', true);
+	assert.equal(env.registeredPanes.size, 5);
 
 	app.shutdown();
 	assert.equal(env.registeredPanes.size, 0);
@@ -252,3 +255,253 @@ test('Fusion Bridges 1-4: Tab copy -> Reverse lookup -> Jump open tab + Word bad
 	app.shutdown();
 	delete globalThis.Zotero;
 });
+
+function createMockElement(tag, ownerDocument) {
+	const attrs = new Map();
+	const listeners = new Map();
+	const classes = new Set();
+	const children = [];
+	const el = {
+		tagName: String(tag).toUpperCase(),
+		localName: String(tag).toLowerCase(),
+		ownerDocument,
+		children,
+		parentElement: null,
+		hidden: false,
+		disabled: false,
+		open: false,
+		textContent: '',
+		title: '',
+		type: '',
+		id: '',
+		set className(val) {
+			classes.clear();
+			for (const c of String(val || '').split(/\s+/).filter(Boolean)) classes.add(c);
+		},
+		get className() { return [...classes].join(' '); },
+		classList: {
+			add(...names) { for (const n of names) classes.add(n); },
+			remove(...names) { for (const n of names) classes.delete(n); },
+			toggle(name, force) {
+				const next = force === undefined ? !classes.has(name) : Boolean(force);
+				if (next) classes.add(name); else classes.delete(name);
+				return next;
+			},
+			contains(name) { return classes.has(name); },
+		},
+		setAttribute(k, v) { attrs.set(k, String(v)); },
+		getAttribute(k) { return attrs.get(k) ?? null; },
+		append(...nodes) {
+			for (const n of nodes) {
+				if (!n || typeof n === 'string') continue;
+				n.parentElement = el;
+				children.push(n);
+			}
+		},
+		appendChild(n) { el.append(n); return n; },
+		addEventListener(evt, fn, opts) {
+			if (!listeners.has(evt)) listeners.set(evt, new Set());
+			listeners.get(evt).add(fn);
+			opts?.signal?.addEventListener?.('abort', () => listeners.get(evt)?.delete(fn));
+		},
+		dispatchEvent(evt) {
+			evt.target = evt.target || el;
+			for (const fn of [...(listeners.get(evt.type) || [])]) fn(evt);
+			if (el.parentElement) el.parentElement.dispatchEvent(evt);
+			else ownerDocument?.dispatchEvent?.(evt);
+			return true;
+		},
+		click() { el.dispatchEvent({ type: 'click', target: el, preventDefault() {}, stopPropagation() {} }); },
+		closest(selector) {
+			let cur = el;
+			while (cur) {
+				if (selector.includes('zbf-pane-word-cite-sidenav') && cur.getAttribute?.('data-l10n-id') === 'zbf-pane-word-cite-sidenav' && cur.parentElement?.localName === 'item-pane-sidenav') return cur;
+				if (cur.localName === selector) return cur;
+				cur = cur.parentElement;
+			}
+			return null;
+		},
+	};
+	return el;
+}
+
+function createMockDocument(win) {
+	const docListeners = new Map();
+	const byId = new Map();
+	const doc = {
+		defaultView: win,
+		head: null,
+		documentElement: null,
+		createElement(tag) {
+			const node = createMockElement(tag, doc);
+			let _id = '';
+			Object.defineProperty(node, 'id', {
+				get: () => _id,
+				set: (v) => { _id = String(v); byId.set(_id, node); },
+			});
+			return node;
+		},
+		getElementById(id) { return byId.get(id) || null; },
+		addEventListener(evt, fn, opts) {
+			if (!docListeners.has(evt)) docListeners.set(evt, new Set());
+			docListeners.get(evt).add(fn);
+			opts?.signal?.addEventListener?.('abort', () => docListeners.get(evt)?.delete(fn));
+		},
+		dispatchEvent(evt) {
+			for (const fn of [...(docListeners.get(evt.type) || [])]) fn(evt);
+		},
+	};
+	doc.head = doc.createElement('head');
+	doc.documentElement = doc.createElement('html');
+	return doc;
+}
+
+test('WordSessionTracker tracks occurrences, totalCitedCount, sessions and manual session switch', () => {
+	const app = new BridgeFlowApp(
+		{ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' },
+		createMemoryPrefs().adapter,
+	);
+	const snapshots = [];
+	app.kernel.bus.on('citation:snapshot-updated', (s) => snapshots.push(s));
+
+	app.wordCite.tracker.syncSessions([
+		{
+			sessionID: 'doc-a',
+			documentPath: 'C:\\Papers\\draft.docx',
+			citations: [
+				{ itemID: 101, ordinal: 1, occurrences: 3, shortText: '(Author, 2024)' },
+				{ itemID: 102, ordinal: 2, occurrences: 1, shortText: '(Lee, 2025)' },
+			],
+		},
+		{
+			sessionID: 'doc-b',
+			documentPath: 'C:\\Papers\\notes.docx',
+			citations: [{ itemID: 103, ordinal: 1, occurrences: 2, shortText: '(Kim, 2023)' }],
+		},
+	]);
+
+	const snap1 = snapshots.at(-1);
+	assert.equal(snap1.activeSessionID, 'doc-a');
+	assert.equal(snap1.totalCitedCount, 2);
+	assert.equal(snap1.byItemID.get(101)?.occurrences, 3);
+	assert.equal(snap1.sessions?.length, 2);
+	assert.equal(snap1.sessions?.[1].documentName, 'notes.docx');
+
+	const switched = app.wordCite.tracker.setActiveSession('doc-b');
+	assert.equal(switched, true);
+	const snap2 = snapshots.at(-1);
+	assert.equal(snap2.activeSessionID, 'doc-b');
+	assert.equal(snap2.totalCitedCount, 1);
+	assert.equal(snap2.byItemID.get(103)?.occurrences, 2);
+});
+
+test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons dispatch Word & Workspace synergy actions', () => {
+	const item201 = {
+		id: 201, libraryID: 1, key: 'KEY201', deleted: false,
+		isRegularItem: () => true, isTrashed: () => false,
+		getField: (f) => (f === 'title' ? 'Optical Microcavity' : f === 'date' ? '2024' : ''),
+		getCreators: () => [{ lastName: 'Wu' }, { lastName: 'Li' }],
+	};
+	const sections = [];
+	globalThis.Zotero = {
+		locale: 'zh-CN',
+		Items: { get: (id) => (id === 201 ? item201 : null) },
+		ItemPaneManager: {
+			registerSection(desc) { sections.push(desc); return `sec-${sections.length}`; },
+			unregisterSection() {},
+		},
+	};
+
+	const app = new BridgeFlowApp(
+		{ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' },
+		createMemoryPrefs({
+			'inspector.wordCite.enable': true,
+			'modules.wordCite.enable': true,
+			'wordCite.dragCite.enable': true,
+		}).adapter,
+	);
+	const inserts = [];
+	const refreshes = [];
+	const switches = [];
+	const colSelects = [];
+	app.kernel.bus.on('word:insert-items-request', (e) => inserts.push(e));
+	app.kernel.bus.on('word:refresh-request', (e) => refreshes.push(e));
+	app.kernel.bus.on('word:switch-session-request', (e) => switches.push(e));
+	app.kernel.bus.on('word:select-collection-request', (e) => colSelects.push(e));
+
+	app.inspector.wordCiteSection.register();
+	const registered = sections.find((s) => s.paneID === 'bridgeflow-word-cite');
+	assert.ok(registered, 'Expected bridgeflow-word-cite section registration');
+
+	const win = { ZoteroPane: { getSelectedItems: () => [item201] } };
+	const doc = createMockDocument(win);
+	const collapsible = doc.createElement('collapsible-section');
+	collapsible.open = false;
+	const body = doc.createElement('div');
+	collapsible.appendChild(body);
+	const sidenav = doc.createElement('item-pane-sidenav');
+	const sidenavBtn = doc.createElement('button');
+	sidenavBtn.setAttribute('data-l10n-id', 'zbf-pane-word-cite-sidenav');
+	sidenav.appendChild(sidenavBtn);
+
+	let latestSummary = '';
+	registered.onInit({
+		doc, body, item: item201,
+		setEnabled() {},
+		setSectionSummary(s) { latestSummary = s; },
+	});
+
+	app.kernel.bus.emit('citation:snapshot-updated', {
+		activeSessionID: 'doc-a',
+		activeDocumentName: 'de.docx',
+		totalCitedCount: 14,
+		citedItemIDs: [201],
+		byItemID: new Map([[201, { itemID: 201, ordinal: 3, occurrences: 2, shortText: '[3]', documentName: 'de.docx', sessionID: 'doc-a' }]]),
+		sessions: [
+			{ sessionID: 'doc-a', documentName: 'de.docx', totalCitedCount: 14, byItemID: new Map() },
+			{ sessionID: 'doc-b', documentName: 'si.docx', totalCitedCount: 5, byItemID: new Map() },
+		],
+	});
+	app.kernel.bus.emit('workspace:groups-updated', {
+		groups: [{ groupId: 'g1', groupName: '核心基底', itemIDs: [201, 202, 203] }],
+	});
+
+	assert.equal(latestSummary, '序号 [3] · 共引 14 篇');
+	const wrap = body.children[0];
+	const [row1, , actions, synergy, receipt] = wrap.children;
+	const [docBtn, statsEl] = row1.children;
+	const [insertBtn, refreshBtn] = actions.children;
+	const [groupBtn, colBtn] = synergy.children;
+
+	assert.equal(docBtn.children[1].textContent, 'de.docx');
+	assert.equal(statsEl.textContent, '序号 [3] / 共 14 篇');
+	assert.equal(groupBtn.textContent, '引用所在分组「核心基底」(3)');
+	assert.equal(colBtn.hidden, false);
+
+	// Critical UX rule: clicking sidenav W+ icon ONLY opens section and NEVER cites
+	sidenavBtn.click();
+	assert.equal(collapsible.open, true);
+	assert.equal(inserts.length, 0);
+
+	insertBtn.click();
+	assert.deepEqual(inserts.at(-1)?.itemIDs, [201]);
+
+	groupBtn.click();
+	assert.deepEqual(inserts.at(-1)?.itemIDs, [201, 202, 203]);
+
+	refreshBtn.click();
+	assert.equal(refreshes.length, 1);
+
+	docBtn.click();
+	assert.equal(switches.at(-1)?.sessionID, 'doc-b');
+
+	colBtn.click();
+	assert.equal(colSelects.at(-1)?.sessionID, 'doc-a');
+
+	app.kernel.bus.emit('word:insert-result', { status: 'inserted', documentName: 'de.docx', itemCount: 1 });
+	assert.ok(receipt.textContent.includes('✓ 已插入'));
+
+	app.inspector.wordCiteSection.unregister();
+	delete globalThis.Zotero;
+});
+

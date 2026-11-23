@@ -4,7 +4,11 @@ var activeRootURI = null;
 
 async function startup({ id, version, rootURI }) {
 	const generation = ++startupGeneration;
-	await Zotero.initializationPromise;
+	await Promise.all([
+		Zotero.initializationPromise,
+		Zotero.unlockPromise,
+		Zotero.uiReadyPromise,
+	].filter(Boolean));
 	if (generation !== startupGeneration) return;
 	try {
 

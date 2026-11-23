@@ -26,18 +26,37 @@ export class CopyHistoryBridge implements BridgeModule {
 			this.kernel.bus.on('citation:copied', (ev) => {
 				if (!this.kernel.prefs.get('fusion.copyToLookupHistory')) return;
 				if (!this.kernel.prefs.get('inspector.lookup.historyEnable')) return;
-				if (!ev.text || ev.itemIDs.length !== 1) return;
+				if (!ev.text || !ev.itemIDs.length) return;
 
-				const itemID = ev.itemIDs[0];
-				const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
-				this.services.history.record({
-					text: ev.text,
-					libraryID: Number(item?.libraryID || 1),
-					itemKey: String(item?.key || ''),
-					itemID,
-					title: String(item?.getField?.('title') || item?.title || ev.text.slice(0, 80)),
-					style: ev.styleID,
-				});
+				if (ev.itemIDs.length === 1) {
+					const itemID = ev.itemIDs[0];
+					const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
+					this.services.history.record({
+						text: ev.text,
+						libraryID: Number(item?.libraryID || 1),
+						itemKey: String(item?.key || ''),
+						itemID,
+						title: String(item?.getField?.('title') || item?.title || ev.text.slice(0, 80)),
+						style: ev.styleID,
+					});
+					return;
+				}
+
+				const lines = ev.text.split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length >= 12);
+				if (lines.length === ev.itemIDs.length) {
+					for (let i = 0; i < ev.itemIDs.length; i++) {
+						const itemID = ev.itemIDs[i];
+						const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
+						this.services.history.record({
+							text: lines[i],
+							libraryID: Number(item?.libraryID || 1),
+							itemKey: String(item?.key || ''),
+							itemID,
+							title: String(item?.getField?.('title') || item?.title || lines[i].slice(0, 80)),
+							style: ev.styleID,
+						});
+					}
+				}
 			}),
 		);
 	}

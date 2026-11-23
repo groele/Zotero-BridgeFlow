@@ -12,10 +12,16 @@ const RECOGNIZED_MARKERS = new Set([
 	'BridgeFlow',
 ]);
 
-export function isCitationCollectionRef(ref: any, activeKeys: ReadonlySet<string>): boolean {
+export function isCitationCollectionRef(
+	ref: any,
+	activeKeys: ReadonlySet<string>,
+	activeNames?: ReadonlySet<string>,
+): boolean {
 	if (!ref || typeof ref !== 'object') return false;
 	if (ref._isBridgeFlowCollection === true || ref._isCiteFlowCollection === true) return true;
 	if (typeof ref.key === 'string' && ref.key && activeKeys.has(ref.key)) return true;
+	const name = String(ref.name || '');
+	if (name && (activeNames?.has(name) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(name))) return true;
 	try {
 		const rels = ref.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION) || [];
 		if (Array.isArray(rels) && rels.some((r) => RECOGNIZED_MARKERS.has(r))) return true;
@@ -43,13 +49,11 @@ export function reorderCitationRowsInSlice(
 	endIndex: number,
 	targetLevel: number,
 	activeKeys: ReadonlySet<string>,
+	activeNames?: ReadonlySet<string>,
 ): boolean {
 	if (!Array.isArray(rows) || startIndex < 0 || endIndex <= startIndex || endIndex > rows.length) return false;
-	const beforeBlocks: any[][] = [];
-	const citationBlocks: any[][] = [];
-	const afterBlocks: any[][] = [];
-	let i = startIndex;
-	let reachedBottomVirtual = false;
+	const beforeBlocks: any[][] = [], citationBlocks: any[][] = [], afterBlocks: any[][] = [];
+	let i = startIndex, reachedBottomVirtual = false;
 
 	while (i < endIndex) {
 		const head = rows[i];
@@ -61,36 +65,23 @@ export function reorderCitationRowsInSlice(
 		}
 		const isCitation = Boolean(
 			(head?.isCollection?.() || head?.type === 'collection' || head?.ref?.key)
-			&& isCitationCollectionRef(head?.ref, activeKeys),
+			&& isCitationCollectionRef(head?.ref, activeKeys, activeNames),
 		);
-		if (isCitation) {
-			citationBlocks.push(block);
-		} else if (reachedBottomVirtual || isBottomVirtualRow(head)) {
-			reachedBottomVirtual = true;
-			afterBlocks.push(block);
-		} else {
-			beforeBlocks.push(block);
-		}
+		if (isCitation) citationBlocks.push(block);
+		else if (reachedBottomVirtual || isBottomVirtualRow(head)) { reachedBottomVirtual = true; afterBlocks.push(block); }
+		else beforeBlocks.push(block);
 	}
 
 	if (!citationBlocks.length) return false;
 	citationBlocks.sort((a, b) => compareCollectionNames(a[0]?.ref?.name, b[0]?.ref?.name));
 	const reordered = [...beforeBlocks.flat(), ...citationBlocks.flat(), ...afterBlocks.flat()];
 	if (reordered.length !== endIndex - startIndex) return false;
-
-	let changed = false;
-	for (let k = 0; k < reordered.length; k++) {
-		if (rows[startIndex + k] !== reordered[k]) {
-			changed = true;
-			break;
-		}
-	}
-	if (!changed) return false;
+	if (reordered.every((item, idx) => rows[startIndex + idx] === item)) return false;
 	rows.splice(startIndex, endIndex - startIndex, ...reordered);
 	return true;
 }
 
-export function reorderViewCollections(cv: any, activeKeys: ReadonlySet<string>): boolean {
+export function reorderViewCollections(cv: any, activeKeys: ReadonlySet<string>, activeNames?: ReadonlySet<string>): boolean {
 	const rows: any[] = cv?._rows;
 	if (!cv || !Array.isArray(rows) || rows.length < 2) return false;
 
@@ -117,7 +108,7 @@ export function reorderViewCollections(cv: any, activeKeys: ReadonlySet<string>)
 					if (nextLevel <= libLevel) break;
 					endIndex += 1;
 				}
-				if (reorderCitationRowsInSlice(rows, i + 1, endIndex, libLevel + 1, activeKeys)) {
+				if (reorderCitationRowsInSlice(rows, i + 1, endIndex, libLevel + 1, activeKeys, activeNames)) {
 					anyChanged = true;
 				}
 				i = endIndex;
@@ -129,7 +120,7 @@ export function reorderViewCollections(cv: any, activeKeys: ReadonlySet<string>)
 
 	if (!sawLibraryRow) {
 		const baseLevel = typeof cv.getLevel === 'function' ? cv.getLevel(0) : (rows[0]?.level ?? 0);
-		if (reorderCitationRowsInSlice(rows, 0, rows.length, baseLevel, activeKeys)) {
+		if (reorderCitationRowsInSlice(rows, 0, rows.length, baseLevel, activeKeys, activeNames)) {
 			anyChanged = true;
 		}
 	}
@@ -189,30 +180,98 @@ export function insertCitationRowAbovePublications(
 	return beforeRow;
 }
 
+const WORD_COLLECTION_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="16" height="16" fill="none" style="width:16px;height:16px;display:block;flex-shrink:0;pointer-events:none;"><defs><linearGradient id="msWordTop" x1="36" y1="12" x2="118" y2="40" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#41A5EE"/><stop offset="100%" stop-color="#2B7CD3"/></linearGradient><linearGradient id="msWordTile" x1="10" y1="32" x2="72" y2="96" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#2368C4"/><stop offset="50%" stop-color="#185ABD"/><stop offset="100%" stop-color="#114694"/></linearGradient></defs><path d="M 38 22 C 38 15.4 43.4 10 50 10 H 106 C 112.6 10 118 15.4 118 22 V 37 H 38 Z" fill="url(#msWordTop)"/><rect x="38" y="36" width="80" height="28" fill="#2B7CD3"/><rect x="38" y="63" width="80" height="28" fill="#185ABD"/><path d="M 38 90 H 118 V 106 C 118 112.6 112.6 118 106 118 H 50 C 43.4 118 38 112.6 38 106 Z" fill="#103F91"/><rect x="13" y="36" width="62" height="62" rx="13" fill="#0B2559" fill-opacity="0.32"/><rect x="10" y="33" width="62" height="62" rx="13" fill="url(#msWordTile)"/><path d="M 20.5 47 H 28.5 L 33.5 72.5 L 40 47 H 46.8 L 53.2 72.5 L 58.2 47 H 66 L 57.5 82 H 49.8 L 43.4 58.2 L 37 82 H 29.2 Z" fill="#FFFFFF"/></svg>`;
+const WORD_COLLECTION_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent(WORD_COLLECTION_SVG)}`;
+
 export function patchCollectionsViewForWindow(
 	win: Window,
 	runtime: NativeRuntime,
 	getActiveKeys: () => ReadonlySet<string>,
 	wordIconURI?: string,
+	getActiveNames?: () => ReadonlySet<string>,
 ): Disposable {
 	const cv = (win as any)?.ZoteroPane?.collectionsView;
 	if (!cv) return () => {};
 	const disposers: Disposable[] = [];
-	const iconStates = new Map<HTMLElement, { bg: string; hadSearch: boolean; hadCol: boolean; hadPub: boolean }>();
+	const iconStates = new Map<HTMLElement, { bg: string; bgSize: string; bgPos: string; bgRepeat: string; hadSearch: boolean; hadCol: boolean; hadPub: boolean; children: Node[] }>();
+	const resolvedURI = wordIconURI || WORD_COLLECTION_DATA_URI;
+	const doc = win.document;
+	let styleEl = doc?.getElementById?.('zbf-word-collection-style') as HTMLStyleElement | null;
+	if (doc && !styleEl) {
+		styleEl = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style') as HTMLStyleElement;
+		styleEl.id = 'zbf-word-collection-style';
+		styleEl.textContent = `.cell-icon.zbf-word-collection-icon::before, .cell-icon.zbf-word-collection-icon::after { display: none !important; content: none !important; } .cell-icon.zbf-word-collection-icon > svg:not(.zbf-word-svg) { display: none !important; }`;
+		(doc.head || doc.documentElement)?.appendChild(styleEl);
+		disposers.push(() => styleEl?.remove());
+	}
 
 	const restoreIcon = (node: HTMLElement) => {
 		const st = iconStates.get(node);
 		if (!st) return;
 		iconStates.delete(node);
-		if (String(node.style?.backgroundImage || '').includes('word.svg')) {
-			node.style.backgroundImage = st.bg;
-		}
+		node.style.backgroundImage = st.bg;
+		node.style.backgroundSize = st.bgSize;
+		node.style.backgroundPosition = st.bgPos;
+		node.style.backgroundRepeat = st.bgRepeat;
+		node.classList?.remove('zbf-word-collection-icon');
 		node.classList?.toggle('icon-search', st.hadSearch);
 		node.classList?.toggle('icon-collection', st.hadCol);
 		node.classList?.toggle('icon-publications', st.hadPub);
+		if (typeof node.replaceChildren === 'function') {
+			node.replaceChildren(...st.children);
+		}
 	};
 
-	if (wordIconURI && typeof cv.renderItem === 'function') {
+	const applyWordIcon = (iconNode: HTMLElement) => {
+		if (!iconStates.has(iconNode)) {
+			iconStates.set(iconNode, {
+				bg: iconNode.style?.backgroundImage || '', bgSize: iconNode.style?.backgroundSize || '',
+				bgPos: iconNode.style?.backgroundPosition || '', bgRepeat: iconNode.style?.backgroundRepeat || '',
+				hadSearch: iconNode.classList?.contains('icon-search') === true,
+				hadCol: iconNode.classList?.contains('icon-collection') === true,
+				hadPub: iconNode.classList?.contains('icon-publications') === true,
+				children: Array.from(iconNode.childNodes || []),
+			});
+		}
+		iconNode.classList?.remove('icon-search', 'icon-collection', 'icon-css');
+		iconNode.classList?.add('icon-publications', 'zbf-word-collection-icon');
+		iconNode.style.backgroundImage = `url("${resolvedURI}")`;
+		iconNode.style.backgroundSize = '16px 16px';
+		iconNode.style.backgroundPosition = 'center';
+		iconNode.style.backgroundRepeat = 'no-repeat';
+		const ownerDoc = iconNode.ownerDocument;
+		const Parser = (ownerDoc?.defaultView as any)?.DOMParser || (globalThis as any).DOMParser;
+		if (ownerDoc && Parser && typeof iconNode.replaceChildren === 'function') {
+			try {
+				const parsed = new Parser().parseFromString(WORD_COLLECTION_SVG, 'image/svg+xml');
+				if (parsed?.documentElement) {
+					const svgEl = ownerDoc.importNode(parsed.documentElement, true) as Element;
+					svgEl.classList?.add('zbf-word-svg');
+					iconNode.replaceChildren(svgEl);
+				}
+			} catch { /* fallback to backgroundImage */ }
+		}
+	};
+
+	const isCiteRow = (row: any): boolean =>
+		Boolean((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
+
+	const syncLiveRowIcons = (): void => {
+		if (!doc?.querySelectorAll) return;
+		const rows: any[] = cv._rows || [];
+		const rowNodes = Array.from(doc.querySelectorAll('#zotero-collections-tree .virtualized-table-body .row, #zotero-collections-tree .row')) as HTMLElement[];
+		for (const rowEl of rowNodes) {
+			const iconNode = rowEl.querySelector?.('.cell-icon') as HTMLElement | null;
+			if (!iconNode) continue;
+			const label = (rowEl.querySelector?.('.cell-text, .label')?.textContent || rowEl.textContent || '').trim();
+			const matchedCite = rows.some((r) => isCiteRow(r) && String(r?.ref?.name || '').trim() === label)
+				|| (label && (getActiveNames?.().has(label) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(label)));
+			if (matchedCite) applyWordIcon(iconNode);
+			else if (iconStates.has(iconNode)) restoreIcon(iconNode);
+		}
+	};
+
+	if (typeof cv.renderItem === 'function') {
 		disposers.push(
 			runtime.patch(cv, 'renderItem', 'collectionsView', (orig) => function (this: any, ...args: unknown[]) {
 				const [index, , oldDiv] = args as [number, unknown, HTMLElement | null];
@@ -221,20 +280,9 @@ export function patchCollectionsViewForWindow(
 				const div = orig.apply(this, args) as HTMLElement | null;
 				try {
 					const row = this.getRow?.(index) ?? this._rows?.[index];
-					const isCite = Boolean((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, getActiveKeys()));
 					const iconNode = div?.querySelector?.('.cell-icon') as HTMLElement | null;
-					if (isCite && iconNode) {
-						if (!iconStates.has(iconNode)) {
-							iconStates.set(iconNode, {
-								bg: iconNode.style?.backgroundImage || '',
-								hadSearch: iconNode.classList?.contains('icon-search') === true,
-								hadCol: iconNode.classList?.contains('icon-collection') === true,
-								hadPub: iconNode.classList?.contains('icon-publications') === true,
-							});
-						}
-						iconNode.style.backgroundImage = `url(${wordIconURI})`;
-						iconNode.classList?.remove('icon-search', 'icon-collection');
-						iconNode.classList?.add('icon-publications');
+					if (isCiteRow(row) && iconNode) {
+						applyWordIcon(iconNode);
 					} else if (iconNode && iconStates.has(iconNode)) {
 						restoreIcon(iconNode);
 					}
@@ -243,6 +291,7 @@ export function patchCollectionsViewForWindow(
 			}),
 		);
 	}
+	syncLiveRowIcons();
 
 	if (typeof cv._expandRow === 'function') {
 		disposers.push(

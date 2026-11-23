@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.1.2 - Preferences controller. */
+/* Zotero BridgeFlow v0.1.4 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -106,6 +106,11 @@
     "inspector.pdfFolder.openMode": {
       defaultValue: "reveal",
       enumValues: ["reveal", "folder"]
+    },
+    "inspector.wordCite.enable": { defaultValue: true },
+    "inspector.wordCite.position": {
+      defaultValue: "zotero-editpane-related",
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
     },
     // === Domain C: Word Citation Tracking & Governance ===
     "wordCite.dragCite.enable": { defaultValue: true },
@@ -326,6 +331,7 @@
     setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-quota"), !historyOn);
     setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-preview"), !insOn || !prefs.get("inspector.pdfPreview.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-folder"), !insOn || !prefs.get("inspector.pdfFolder.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-word-cite-pos"), !wcOn || !insOn || !prefs.get("wordCite.dragCite.enable") || !prefs.get("inspector.wordCite.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-wc-tag-text"), !wcOn || !prefs.get("wordCite.citationTags.enable"));
     syncMenulistLabels(doc);
   }
@@ -423,8 +429,8 @@
       bindTabs(pane);
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.1.2" }));
-        versionEl.textContent = `v${"0.1.2"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.1.4" }));
+        versionEl.textContent = `v${"0.1.4"}`;
       }
       const checkboxes = Array.from(pane.querySelectorAll("checkbox[preference]"));
       const menulists = Array.from(pane.querySelectorAll("menulist[preference]"));

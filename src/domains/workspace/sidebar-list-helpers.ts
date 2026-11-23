@@ -90,7 +90,12 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		const badge = createWorkspaceElement(doc, 'span');
 		badge.className = 'zbf-cite-badge';
 		badge.textContent = `[${citeInfo.ordinal}]`;
-		badge.title = `${citeInfo.documentName}: ${citeInfo.shortText}`;
+		badge.title = `${citeInfo.documentName}: ${citeInfo.shortText}（点击在文献库中定位）`;
+		badge.style.cursor = 'pointer';
+		badge.addEventListener('click', (e) => {
+			e.stopPropagation();
+			void tabs.showInLibrary(win, tab.parentItemID || tab.itemID, true);
+		});
 		right.appendChild(badge);
 	}
 
@@ -211,6 +216,7 @@ export function bindSidebarSplitter(
 		const me = e as MouseEvent;
 		me.preventDefault();
 		dragging = true;
+		splitter.classList.add('active');
 		const startX = me.clientX;
 		const startW = aside.getBoundingClientRect().width || 276;
 		const onMove = (ev: Event) => {
@@ -222,13 +228,14 @@ export function bindSidebarSplitter(
 		const onUp = () => {
 			if (!dragging) return;
 			dragging = false;
+			splitter.classList.remove('active');
 			const w = Math.round(aside.getBoundingClientRect().width || 276);
 			prefs.set('workspace.verticalSidebarWidth', Math.max(200, Math.min(440, w)));
-			doc.removeEventListener('mousemove', onMove);
-			doc.removeEventListener('mouseup', onUp);
+			doc.removeEventListener('mousemove', onMove, true);
+			doc.removeEventListener('mouseup', onUp, true);
 		};
-		doc.addEventListener('mousemove', onMove);
-		doc.addEventListener('mouseup', onUp);
+		doc.addEventListener('mousemove', onMove, true);
+		doc.addEventListener('mouseup', onUp, true);
 	});
 }
 

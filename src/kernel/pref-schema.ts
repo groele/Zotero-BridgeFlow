@@ -115,6 +115,11 @@ export const PREF_SCHEMA = {
 		defaultValue: 'reveal',
 		enumValues: ['reveal', 'folder'],
 	},
+	'inspector.wordCite.enable': { defaultValue: true },
+	'inspector.wordCite.position': {
+		defaultValue: 'zotero-editpane-related',
+		enumValues: ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'],
+	},
 
 	// === Domain C: Word Citation Tracking & Governance ===
 	'wordCite.dragCite.enable': { defaultValue: true },

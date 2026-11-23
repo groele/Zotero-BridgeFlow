@@ -6,6 +6,7 @@ export interface LookupCardCallbacks {
 	resolveItem: (candidate: LookupCandidate) => any;
 	onLocate: (itemID: number) => Promise<boolean>;
 	onOpenPdf: (itemOrID: any) => Promise<boolean>;
+	onCiteWord?: (itemID: number) => boolean;
 	isActive: () => boolean;
 }
 
@@ -67,6 +68,19 @@ export function renderLookupItemCard(
 	};
 
 	actRow.append(locateBtn, pdfBtn);
+	if (cb.onCiteWord) {
+		const citeBtn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
+		citeBtn.type = 'button';
+		citeBtn.textContent = '插入 Word';
+		citeBtn.title = '在当前 Word 光标处插入此文献的可编辑引文域';
+		citeBtn.onclick = () => {
+			const sent = cb.onCiteWord?.(candidate.itemID);
+			if (cb.isActive() && sent) {
+				setLookupL10n(stateEl, 'zbf-lookup-status-located', '已发送至 Word 光标处');
+			}
+		};
+		actRow.appendChild(citeBtn);
+	}
 	card.appendChild(actRow);
 	statusDiv.appendChild(card);
 }

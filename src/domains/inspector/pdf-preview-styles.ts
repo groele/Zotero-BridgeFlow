@@ -41,6 +41,11 @@ export const PREVIEW_CSS = `
 	background: var(--fill-quarternary, color-mix(in srgb, currentColor 14%, transparent)) !important;
 }
 .ztf-pdf-btn:disabled { opacity: 0.32; cursor: default; }
+.ztf-pdf-mode-btn[data-active="true"] {
+	color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
+	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
+}
 .ztf-pdf-compare-bar {
 	display: flex; align-items: center; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
 	padding-top: 3px; margin-top: 2px;
@@ -109,7 +114,7 @@ export const PREVIEW_CSS = `
 }
 .ztf-pdf-viewport {
 	position: relative; display: flex; flex-direction: column; align-items: stretch;
-	gap: 8px; max-block-size: calc(100vh - 170px);
+	gap: 8px; max-block-size: clamp(240px, 38vh, 420px);
 	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
 	scrollbar-width: thin; outline: none;
 	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
@@ -117,8 +122,8 @@ export const PREVIEW_CSS = `
 .ztf-pdf-page-card {
 	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
 	inline-size: 100%; box-sizing: border-box; background: #fff;
-	border-radius: 5px; border: 1px solid var(--fill-quarternary, rgba(0, 0, 0, 0.12));
-	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05); overflow: hidden; cursor: pointer;
+	border-radius: 5px; border: 1px solid light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.18));
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden; cursor: pointer;
 	transition: border-color 0.14s ease, box-shadow 0.14s ease;
 }
 .ztf-pdf-page-card:hover {
@@ -126,7 +131,7 @@ export const PREVIEW_CSS = `
 	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
 }
 .ztf-pdf-page-card[data-unrendered="true"] {
-	aspect-ratio: 1 / 1.4142; min-block-size: 320px;
+	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
 	background: var(--fill-senary, rgba(0, 0, 0, 0.02));
 }
 .ztf-pdf-canvas { display: block; inline-size: 100%; block-size: auto; background: #fff; }

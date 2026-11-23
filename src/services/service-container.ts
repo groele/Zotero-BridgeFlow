@@ -2,6 +2,7 @@ import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import { CitationHistoryStore } from './citation-history-store.ts';
 import { UnifiedClipboardService } from './clipboard-service.ts';
 import { CslFormattingEngine } from './csl-engine.ts';
+import { invalidateResolvedItemCache } from './item-resolution.ts';
 import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
@@ -33,7 +34,10 @@ export class ServiceContainer {
 		this.kernel.disposables.add(
 			this.kernel.notifier.subscribe(['item'], (ev) => {
 				const ids = ev.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
-				if (ids.length) this.csl.invalidateItems(ids);
+				if (ids.length) {
+					this.csl.invalidateItems(ids);
+					invalidateResolvedItemCache(ids);
+				}
 			}),
 		);
 

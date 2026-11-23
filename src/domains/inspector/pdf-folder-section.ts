@@ -13,6 +13,7 @@ interface FolderPaneState {
 	selectEl: HTMLSelectElement;
 	btn: HTMLButtonElement;
 	meta: HTMLDivElement;
+	setSectionSummary?: (summary: string) => void;
 }
 
 type ItemPaneSidenav = Element & { container?: { item?: any } };
@@ -48,20 +49,20 @@ export class PdfFolderSectionController {
 			pluginID: this.kernel.info.id,
 			header: { l10nID: 'zbf-pane-pdf-folder-header', icon },
 			sidenav: { l10nID: 'zbf-pane-pdf-folder-sidenav', icon, orderable: true },
-			onInit: ({ doc, body, item, setEnabled }: { doc?: Document; body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
-				this.initBody(doc || body.ownerDocument!, body, item, setEnabled);
+			onInit: ({ doc, body, item, setEnabled, setSectionSummary }: { doc?: Document; body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
+				this.initBody(doc || body.ownerDocument!, body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
 			},
 			onDestroy: ({ doc, body }: { doc?: Document; body: HTMLElement }) => {
 				this.onDestroy(doc || body.ownerDocument, body);
 			},
-			onItemChange: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
-				this.updateState(body, item, setEnabled);
+			onItemChange: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
+				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
 				return this.kernel.prefs.get('inspector.pdfFolder.enable') && Boolean(item);
 			},
-			onRender: ({ body, item, setEnabled }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void }) => {
-				this.updateState(body, item, setEnabled);
+			onRender: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
+				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
 			},
 		});
@@ -91,7 +92,7 @@ export class PdfFolderSectionController {
 		this.states.clear();
 	}
 
-	private initBody(doc: Document | null, body: HTMLElement, item?: any, setEnabled?: (v: boolean) => void): void {
+	private initBody(doc: Document | null, body: HTMLElement, item?: any, setEnabled?: (v: boolean) => void, setSectionSummary?: (s: string) => void): void {
 		const win = doc?.defaultView;
 		if (!doc || !win) return;
 		(win as any).MozXULElement?.insertFTLIfNeeded?.('zotero-bridgeflow.ftl');
@@ -121,7 +122,7 @@ export class PdfFolderSectionController {
 		btn.style.cssText = 'justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;';
 		btn.disabled = true;
 
-		const st: FolderPaneState = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta };
+		const st: FolderPaneState = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta, setSectionSummary };
 		selectEl.addEventListener('change', () => {
 			const hit = st.entries.find((e) => String(e.id) === selectEl.value);
 			if (hit) {
@@ -151,7 +152,7 @@ export class PdfFolderSectionController {
 		wrap.append(selectEl, meta, btn);
 		body.append(wrap);
 		this.states.set(body, st);
-		this.updateState(body, item, setEnabled);
+		this.updateState(body, item, setEnabled, setSectionSummary);
 	}
 
 	private bindFolderActions(doc: Document, win: Window, signal: AbortSignal): void {
@@ -195,11 +196,13 @@ export class PdfFolderSectionController {
 		this.listeners.delete(doc);
 	}
 
-	private updateState(body: HTMLElement, item: any, setEnabled?: (v: boolean) => void): void {
+	private updateState(body: HTMLElement, item: any, setEnabled?: (v: boolean) => void, setSectionSummary?: (s: string) => void): void {
 		const enabled = this.kernel.prefs.get('inspector.pdfFolder.enable') && Boolean(item);
 		setEnabled?.(enabled);
 		const st = this.states.get(body);
 		if (!st) return;
+		if (setSectionSummary) st.setSectionSummary = setSectionSummary;
+		st.setSectionSummary?.('打开 PDF 文件夹');
 		st.item = enabled ? item : null;
 		void this.refreshMeta(st);
 	}

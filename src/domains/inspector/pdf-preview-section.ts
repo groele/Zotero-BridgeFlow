@@ -149,7 +149,7 @@ export class PdfPreviewSectionController {
 		const zoomOutBtn = toolBtn(doc, '−', 'zbf-pdf-preview-zoom-out', '', 'zoomOut');
 		const zoomLabel = toolBtn(doc, '100%');
 		const zoomInBtn = toolBtn(doc, '+', 'zbf-pdf-preview-zoom-in', '', 'zoomIn');
-		const modeBtn = toolBtn(doc, '', 'zbf-pdf-preview-toggle-mode', '', 'toggleMode');
+		const modeBtn = toolBtn(doc, '', 'zbf-pdf-preview-toggle-mode', 'ztf-pdf-mode-btn', 'toggleMode');
 		const openBtn = toolBtn(doc, '在阅读器中打开', 'zbf-pdf-preview-open-reader', 'ztf-pdf-open-btn', 'openReader');
 		zoomGroup.append(zoomOutBtn, zoomLabel, zoomInBtn, modeBtn, openBtn);
 		const attSelect = el(doc, 'select', 'display:none');
@@ -186,7 +186,7 @@ export class PdfPreviewSectionController {
 			doc, win, body, root, customSection, collapsible, setSectionSummary,
 			item: null, ownerID: 0, attIdsKey: '', attachment: null, attachments: [], pageByAttachment: new Map<number, number>(),
 			pdfDoc: null, loading: false, generation: 0,
-			fullActive: this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full',
+			fullActive: false,
 			zoom: Math.round(this.kernel.prefs.get('inspector.pdfPreview.defaultZoom')) / 100,
 			currentPage: 0, numPages: 0, lastWidth: 0, resizeTimer: null, resizeObserver: null,
 			slots: [], observer: null, statusEl, pageLabel, zoomLabel, prevBtn, nextBtn, openBtn, attSelect, viewportEl, compare, compareUI,
@@ -219,9 +219,7 @@ export class PdfPreviewSectionController {
 		zoomInBtn.addEventListener('click', () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
 		state.zoomLabel.addEventListener('click', () => this.setZoom(state, 1), opts);
 		modeBtn.addEventListener('click', () => {
-			const next = this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full' ? 'section' : 'full';
-			this.kernel.prefs.set('inspector.pdfPreview.mode', next);
-			state.fullActive = next === 'full';
+			state.fullActive = !state.fullActive;
 			applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
 			invalidateVisibleSlots(state, this.onRenderError);
 		}, opts);
@@ -308,7 +306,7 @@ export class PdfPreviewSectionController {
 			applyStatusMessage(state.statusEl, '');
 			return false;
 		}
-		applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full');
+		applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
 		const nextTabType = tabType || 'library';
 		const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === 'attachment');
 		const nextAttIdsKey = computeOwnerAttachmentSignature(item);

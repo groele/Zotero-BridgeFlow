@@ -7,7 +7,7 @@ import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
 import { WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
-import { resolveActiveSelectionForWord } from './word-inserter.ts';
+import { refreshActiveWordDocument, resolveActiveSelectionForWord } from './word-inserter.ts';
 import { WordIntegrationPoller } from './word-poller.ts';
 
 export class WordCiteDomainModule implements DomainModule {
@@ -74,6 +74,61 @@ export class WordCiteDomainModule implements DomainModule {
 				['wordCite.collections.enable'],
 				() => this.collections.sync(this.tracker.getAllSessions()),
 			),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:insert-items-request', ({ itemIDs, requestId }) => {
+				if (!this.active || !this.kernel.prefs.get('wordCite.dragCite.enable')) return;
+				const hostItems = (globalThis as any).Zotero?.Items;
+				const items = itemIDs
+					.map((id) => hostItems?.get?.(id) || { id, isRegularItem: () => true })
+					.filter(Boolean);
+				if (!items.length) return;
+				void this.dragCite.insertItems(items).then((status) => {
+					const docName = this.tracker.getActiveSession()?.displayName || '';
+					this.kernel.bus.emit('word:insert-result', {
+						requestId,
+						status,
+						documentName: docName,
+						itemCount: items.length,
+					});
+				});
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:refresh-request', ({ requestId }) => {
+				if (!this.active) return;
+				void refreshActiveWordDocument(this.kernel, {
+					onCommitted: () => { void this.poller.notifyCommittedSession(); },
+				}).then(async (ok) => {
+					if (ok) await this.poller.notifyCommittedSession();
+					const docName = this.tracker.getActiveSession()?.displayName || '';
+					this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: docName });
+				});
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:snapshot-query', () => {
+				if (this.active) this.tracker.emitCurrentSnapshot();
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:switch-session-request', ({ sessionID }) => {
+				if (this.active && !this.tracker.setActiveSession(sessionID)) {
+					this.tracker.emitCurrentSnapshot();
+				}
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:select-collection-request', ({ sessionID, win }) => {
+				if (!this.active) return;
+				const sid = sessionID || this.tracker.getActiveSession()?.sessionID || null;
+				this.collections.selectSessionCollection(win, sid);
+			}),
 		);
 	}
 

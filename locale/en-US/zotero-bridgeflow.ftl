@@ -215,6 +215,9 @@ zbf-opt-folder-reveal =
     .label = Reveal PDF file in folder
 zbf-opt-folder-open =
     .label = Open containing folder
+zbf-pref-ins-word-cite =
+    .label = Enable right-hand one-click Word citation insert icon
+zbf-pref-ins-word-position = Word citation icon sidebar position
 
 zbf-banner-word-title = Microsoft Word Citation Tracking & Drag-to-Cite
 zbf-banner-word-desc = Track active Word document sessions, display the Citation column, drag-insert editable CSL citations, and govern citation tags safely.
@@ -249,6 +252,12 @@ zbf-pane-pdf-folder-header =
     .label = Open PDF Folder
 zbf-pane-pdf-folder-sidenav =
     .tooltiptext = Open PDF Folder & Reveal File
+zbf-pane-word-cite-header =
+    .label = Insert Citation in Word
+zbf-pane-word-cite-sidenav =
+    .tooltiptext = Open & Scroll to Word Citation Panel
+zbf-word-cite-insert-btn = Insert Citation at Word Cursor
+zbf-word-cite-unavailable = Select an item to insert a Word citation
 zbf-col-citation-title = Citation
 
 zbf-preview-select-items = Select one or more items to preview.

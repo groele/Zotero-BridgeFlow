@@ -245,3 +245,52 @@ export async function insertItemsIntoWord(
 		insertInFlight = false;
 	}
 }
+
+export async function refreshActiveWordDocument(
+	kernel: PluginKernel,
+	options: { onCommitted?: (session?: unknown) => void } = {},
+): Promise<boolean> {
+	if (insertInFlight) return false;
+	const host = (globalThis as any).Zotero;
+	const integration = host?.Integration;
+	if (typeof integration?.execCommand !== 'function') return false;
+	const isMac = host?.isMac === true;
+	const origGetApp = integration.getApplication;
+	let wrappedGetApp: ((...args: unknown[]) => unknown) | null = null;
+	const patchedApps = new Map<any, any>();
+
+	if (!isMac && typeof origGetApp === 'function') {
+		wrappedGetApp = function (this: unknown, ...args: unknown[]) {
+			const app = Reflect.apply(origGetApp, this, args) as any;
+			if (args[0] === 'WinWord' && typeof app?.getDocument === 'function' && typeof app?.getActiveDocument === 'function') {
+				if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
+				app.getActiveDocument = function () { return this.getDocument(''); };
+			}
+			return app;
+		};
+		integration.getApplication = wrappedGetApp;
+	}
+
+	insertInFlight = true;
+	try {
+		if (isMac) {
+			await integration.execCommand('MacWord16', 'refresh', '/Applications/Microsoft Word.app/', 2);
+		} else {
+			await integration.execCommand('WinWord', 'refresh', null, 1);
+		}
+		try { options.onCommitted?.(); } catch { /* ignore */ }
+		return true;
+	} catch (err) {
+		kernel.logger.error('word-cite:refresh', err);
+		return false;
+	} finally {
+		for (const [app, origFn] of patchedApps) {
+			try { app.getActiveDocument = origFn; } catch { /* ignore */ }
+		}
+		patchedApps.clear();
+		if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
+			integration.getApplication = origGetApp;
+		}
+		insertInFlight = false;
+	}
+}

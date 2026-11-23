@@ -215,6 +215,9 @@ zbf-opt-folder-reveal =
     .label = 定位并选中 PDF 文件
 zbf-opt-folder-open =
     .label = 仅打开所在目录
+zbf-pref-ins-word-cite =
+    .label = 启用右侧栏一键插入 Word 引文图标
+zbf-pref-ins-word-position = Word 引文图标在侧栏中的位置
 
 zbf-banner-word-title = Microsoft Word 实时引用追踪与拖拽直插
 zbf-banner-word-desc = 自动识别活跃 Word 文档会话、提供原生「引用」列与 Windows 拖拽直插，并以所有权追踪保护用户手工标签。
@@ -249,6 +252,12 @@ zbf-pane-pdf-folder-header =
     .label = 打开 PDF 文件夹
 zbf-pane-pdf-folder-sidenav =
     .tooltiptext = 一键打开文件夹并定位当前 PDF
+zbf-pane-word-cite-header =
+    .label = 插入引文到 Word
+zbf-pane-word-cite-sidenav =
+    .tooltiptext = 定位并展开 Word 引文面板
+zbf-word-cite-insert-btn = 插入引文到 Word 光标处
+zbf-word-cite-unavailable = 请选择文献条目以插入 Word 引文
 zbf-col-citation-title = 引用
 
 zbf-preview-select-items = 请选择一个或多个条目以预览引用。

@@ -1,7 +1,15 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { CitationBadgeInfo, Disposable, DomainModule, OpenItemRequestPayload, SpotlightProvider } from '../../kernel/types.ts';
+import type {
+	CitationBadgeInfo,
+	Disposable,
+	DomainModule,
+	OpenItemRequestPayload,
+	SpotlightProvider,
+	WorkspaceGroupSummary,
+} from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import { normalizeToRegularItem } from '../../services/item-resolution.ts';
 import { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
 import { WorkspaceStateStore } from './state-store.ts';
 import { WorkspaceTabController } from './tab-controller.ts';
@@ -53,11 +61,12 @@ export class WorkspaceDomainModule implements DomainModule {
 	private lastRollingAt = 0;
 	private viewedDirty = false;
 	private refreshQueued = false;
+	private lastGroupFingerprint = '';
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
 		this.store = new WorkspaceStateStore(kernel.prefs);
-		this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard);
+		this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard, kernel.bus);
 		this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
 	}
 
@@ -77,6 +86,21 @@ export class WorkspaceDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
+			this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
+				const targetWin = win || this.getTargetWindow();
+				if (targetWin && this.active) {
+					this.windows.get(targetWin)?.openSpotlightWithQuery('');
+				}
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('workspace:groups-query', () => {
+				if (this.active) this.emitGroupSummaries(true);
+			}),
+		);
+
+		this.disposables.add(
 			this.kernel.notifier.subscribe(['tab', 'collection', 'item'], ({ event, type, ids }) => {
 				if (type === 'tab') {
 					this.handleTabEvent(event, ids.map(String));
@@ -90,6 +114,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		for (const win of this.getMainWindows()) {
 			this.onMainWindowLoad(win);
 		}
+		this.emitGroupSummaries(true);
 
 		this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 60_000);
 		this.readingTimer = setInterval(() => {
@@ -161,6 +186,47 @@ export class WorkspaceDomainModule implements DomainModule {
 		for (const ui of this.windows.values()) {
 			ui.render();
 		}
+		this.emitGroupSummaries();
+	}
+
+	private emitGroupSummaries(force = false): void {
+		const tabParentByKey = new Map<string, number>();
+		for (const win of this.windows.keys()) {
+			for (const tab of this.tabs.buildTrackedTabs(win)) {
+				const pid = Number(tab.parentItemID || tab.itemID || 0);
+				if (pid > 0) tabParentByKey.set(tab.key, pid);
+			}
+		}
+		const hostItems = (globalThis as any).Zotero?.Items;
+		const resolveRegularId = (rawId: number): number => {
+			if (!Number.isSafeInteger(rawId) || rawId <= 0) return 0;
+			const zItem = hostItems?.get?.(rawId);
+			if (!zItem) return rawId;
+			const reg = normalizeToRegularItem(zItem);
+			return Number(reg?.id || 0);
+		};
+		const groups: WorkspaceGroupSummary[] = [];
+		for (const group of this.store.state.groups) {
+			const seen = new Set<number>();
+			for (const key of group.memberKeys) {
+				let rawId = tabParentByKey.get(key) || 0;
+				if (!rawId) {
+					const vm = this.store.state.virtualMembers[key];
+					if (vm) rawId = Number(vm.parentItemID || vm.itemID || 0);
+				}
+				if (!rawId) {
+					const m = key.match(/^item:(\d+)/);
+					if (m) rawId = Number(m[1]);
+				}
+				const resolved = resolveRegularId(rawId);
+				if (resolved > 0) seen.add(resolved);
+			}
+			groups.push({ groupId: group.id, groupName: group.name, itemIDs: [...seen] });
+		}
+		const fp = groups.map((g) => `${g.groupId}:${g.groupName}:${g.itemIDs.join(',')}`).join('|');
+		if (!force && fp === this.lastGroupFingerprint) return;
+		this.lastGroupFingerprint = fp;
+		this.kernel.bus.emit('workspace:groups-updated', { groups });
 	}
 
 	setCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {

@@ -58,13 +58,40 @@ export class WordCitationCollectionManager {
 		return keys;
 	}
 
+	private getActiveNameSet(): Set<string> {
+		const names = new Set<string>();
+		for (const col of this.sessionCollections.values()) {
+			const name = String(col?.name || '');
+			if (name) names.add(name);
+		}
+		return names;
+	}
+
 	attachWindow(win: Window): void {
 		if (!win || this.windowDisposers.has(win)) return;
 		const iconURI = this.kernel.info.rootURI ? `${this.kernel.info.rootURI}assets/word.svg` : undefined;
-		const dispose = patchCollectionsViewForWindow(win, this.kernel.runtime, () => this.getActiveKeySet(), iconURI);
-		this.windowDisposers.set(win, dispose);
-		const cv = (win as any)?.ZoteroPane?.collectionsView;
-		if (cv) reorderViewCollections(cv, this.getActiveKeySet());
+		const tryPatch = (attempt = 0): void => {
+			if ((win as any).closed || this.windowDisposers.has(win)) return;
+			const cv = (win as any)?.ZoteroPane?.collectionsView;
+			if (!cv) {
+				if (attempt < 120) {
+					const schedule = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
+					schedule(() => tryPatch(attempt + 1), 50);
+				}
+				return;
+			}
+			const dispose = patchCollectionsViewForWindow(
+				win,
+				this.kernel.runtime,
+				() => this.getActiveKeySet(),
+				iconURI,
+				() => this.getActiveNameSet(),
+			);
+			this.windowDisposers.set(win, dispose);
+			reorderViewCollections(cv, this.getActiveKeySet(), this.getActiveNameSet());
+			cv.tree?.invalidate?.();
+		};
+		tryPatch();
 	}
 
 	detachWindow(win: Window): void {
@@ -80,6 +107,23 @@ export class WordCitationCollectionManager {
 			if (col?.key === collectionKey) return sid;
 		}
 		return null;
+	}
+
+	selectSessionCollection(win?: Window | null, sessionID?: string | null): boolean {
+		const targetID = sessionID || this.sessionCollections.keys().next().value;
+		const col = targetID ? this.sessionCollections.get(targetID) : null;
+		if (!col?.id) return false;
+		const targetWin: any = (win as any)?.ZoteroPane ? win : (globalThis as any).Zotero?.getMainWindow?.();
+		const tabs = targetWin?.Zotero_Tabs;
+		if (tabs?.selectedID && tabs.selectedID !== 'zotero-pane' && typeof tabs.select === 'function') {
+			try { tabs.select('zotero-pane'); } catch { /* ignore */ }
+		}
+		const cv = targetWin?.ZoteroPane?.collectionsView;
+		if (typeof cv?.selectCollection === 'function') {
+			void cv.selectCollection(col.id);
+			return true;
+		}
+		return false;
 	}
 
 	resolveSelectedCollectionSessionID(win?: Window | null): string | null {
@@ -187,7 +231,7 @@ export class WordCitationCollectionManager {
 
 		for (const ses of sessions) {
 			let col = this.sessionCollections.get(ses.sessionID);
-			const colName = `📝 ${ses.displayName}`;
+			const colName = ses.displayName;
 			if (!col || col.deleted) {
 				col = new ZoteroObj.Collection();
 				col._isBridgeFlowCollection = true;
@@ -249,12 +293,18 @@ export class WordCitationCollectionManager {
 
 	private repositionAllViews(zoteroObj: any): void {
 		const wins: any[] = zoteroObj?.getMainWindows?.() || [];
+		const mainWin = zoteroObj?.getMainWindow?.();
+		if (mainWin && !wins.includes(mainWin)) wins.push(mainWin);
 		const activeKeys = this.getActiveKeySet();
+		const activeNames = this.getActiveNameSet();
 		for (const win of wins) {
 			try {
 				if (!this.windowDisposers.has(win)) this.attachWindow(win);
 				const cv = win?.ZoteroPane?.collectionsView;
-				if (cv) reorderViewCollections(cv, activeKeys);
+				if (cv) {
+					reorderViewCollections(cv, activeKeys, activeNames);
+					cv.tree?.invalidate?.();
+				}
 			} catch { /* ignore */ }
 		}
 	}

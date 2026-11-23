@@ -26,8 +26,21 @@ export class DragCiteController {
 
 	attachWindow(win: Window): void {
 		if (this.windowDisposers.has(win)) return;
+		const tryBind = (attempt = 0): void => {
+			if ((win as any).closed || this.windowDisposers.has(win)) return;
+			const itemsView = (win as any).ZoteroPane?.itemsView;
+			if (!itemsView && attempt < 120 && typeof win.setTimeout === 'function') {
+				win.setTimeout(() => tryBind(attempt + 1), 50);
+				return;
+			}
+			this.bindWindowImmediate(win, itemsView);
+		};
+		tryBind();
+	}
+
+	private bindWindowImmediate(win: Window, itemsView: any): void {
+		if (this.windowDisposers.has(win)) return;
 		const disposers: Disposable[] = [];
-		const itemsView = (win as any).ZoteroPane?.itemsView;
 
 		if (itemsView && typeof itemsView.onDragStart === 'function' && (this.win32.supportsNativeWin32() || (globalThis as any).Zotero?.isMac)) {
 			const unpatch = this.kernel.runtime.patch(

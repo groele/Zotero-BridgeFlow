@@ -1,6 +1,6 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
-import { normalizeToRegularItem, safeGetItemField, stripItemTitleMarkup } from '../../services/item-resolution.ts';
-import { disambiguateSameParentTabs, formatCreatorYear, resolvePrimaryCollectionName } from './tab-actions-helpers.ts';
+import { getCachedPrimaryItemFields, normalizeToRegularItem, stripItemTitleMarkup } from '../../services/item-resolution.ts';
+import { disambiguateSameParentTabs, resolvePrimaryCollectionName } from './tab-actions-helpers.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { TrackedTab, VirtualMemberMeta } from './types.ts';
 
@@ -14,13 +14,15 @@ interface NativeTab {
 function describe(key: string, itemID: number, type: string, fallbackTitle: string): VirtualMemberMeta {
 	const item = itemID ? (globalThis as any).Zotero?.Items?.get?.(itemID) : null;
 	const display = normalizeToRegularItem(item) || item;
-	const title = safeGetItemField(display, 'title') || stripItemTitleMarkup(fallbackTitle) || key;
+	const fields = getCachedPrimaryItemFields(display, fallbackTitle || key);
+	const title = fields.title || stripItemTitleMarkup(fallbackTitle) || key;
 	return {
 		key, itemID, parentItemID: Number(display?.id || itemID), type, title,
-		shortTitle: safeGetItemField(display, 'shortTitle') || title,
+		shortTitle: fields.shortTitle || title,
 		filename: String(item?.attachmentFilename || ''),
-		source: safeGetItemField(display, 'publicationTitle') || safeGetItemField(display, 'proceedingsTitle'),
-		creatorYear: formatCreatorYear(display), collection: resolvePrimaryCollectionName(display),
+		source: fields.source,
+		creatorYear: fields.creatorYear,
+		collection: resolvePrimaryCollectionName(display),
 	};
 }
 

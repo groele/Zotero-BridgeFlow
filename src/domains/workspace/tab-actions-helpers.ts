@@ -193,7 +193,11 @@ export function autoGroupTrackedByCollection(
 		if (tab.virtual || tab.groupId) continue;
 		const item = hostItems?.get?.(tab.parentItemID || tab.itemID);
 		const colIDs: number[] = item?.getCollections?.() || [];
-		const colNames = colIDs.map((id) => String(hostCols?.get?.(id)?.name || '')).filter(Boolean);
+		const colNames = colIDs
+			.map((id) => hostCols?.get?.(id))
+			.filter((col) => col && !col._isBridgeFlowCollection && !col._isCiteFlowCollection)
+			.map((col) => String(col?.name || ''))
+			.filter((n) => Boolean(n && !n.startsWith('📝 ')));
 		if (!colNames.length) continue;
 
 		let chosen = '';

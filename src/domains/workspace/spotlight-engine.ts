@@ -158,21 +158,48 @@ export class WorkspaceSpotlightEngine {
 
 			if (this.prefs.get('workspace.enableSessions')) {
 				for (const ses of this.store.state.sessions.filter((s) => !s.isTemplate).slice(0, 8)) {
-					if (needle && !ses.name.toLowerCase().includes(needle)) continue;
-					const itemCount = new Set([...ses.openKeys, ...ses.groups.flatMap((g) => g.memberKeys)]).size;
-					scored.push({
-						score: 52,
-						item: {
-							id: `session:${ses.id}`,
-							category: 'collection',
-							title: `会话：${ses.name}`,
-							subtitle: `${itemCount} 篇文献 · ${ses.groups.length} 个分组 · 点击合并恢复`,
-							badge: '工作区',
-							action: () => {
-								void this.tabs.restoreSession(win, ses, true);
+					const itemKeys = [...new Set([
+						...ses.openKeys,
+						...ses.groups.flatMap((g) => g.memberKeys),
+						...Object.keys(ses.virtualMembers),
+					])];
+					if (!needle || ses.name.toLowerCase().includes(needle)) {
+						scored.push({
+							score: 52,
+							item: {
+								id: `session:${ses.id}`,
+								category: 'collection',
+								title: `会话：${ses.name}`,
+								subtitle: `${itemKeys.length} 篇文献 · ${ses.groups.length} 个分组 · 点击合并恢复`,
+								badge: '工作区',
+								action: () => {
+									void this.tabs.restoreSession(win, ses, true);
+								},
 							},
-						},
-					});
+						});
+					}
+					if (needle.length >= 2) {
+						for (const key of itemKeys) {
+							const meta = ses.virtualMembers[key] || this.store.state.virtualMembers[key];
+							if (!meta || tracked.some((t) => t.key === key && !t.virtual)) continue;
+							const hay = `${meta.title} ${meta.shortTitle || ''} ${meta.creatorYear || ''} ${meta.source || ''} ${ses.name}`.toLowerCase();
+							if (!hay.includes(needle)) continue;
+							scored.push({
+								score: 68,
+								item: {
+									id: `session:${ses.id}:${key}`,
+									category: 'tab',
+									title: meta.title,
+									subtitle: `已保存于快照「${ses.name}」${meta.creatorYear ? ` · ${meta.creatorYear}` : ''}`,
+									badge: '快照文献',
+									action: () => {
+										const grpId = ses.groups.find((g) => g.memberKeys.includes(key))?.id;
+										void this.tabs.openVirtualOrItem(win, meta.itemID, grpId);
+									},
+								},
+							});
+						}
+					}
 				}
 			}
 
@@ -253,6 +280,17 @@ export class WorkspaceSpotlightEngine {
 				subtitle: '保存当前所有分组、固定标签与备注配置',
 				badge: '命令',
 				action: () => { this.store.saveSession(`快照 ${new Date().toLocaleTimeString()}`, { openKeys: this.tabs.openKeys(win) }); },
+			},
+			{
+				id: 'cmd:copy-active-citation',
+				category: 'command',
+				title: '> 复制当前阅读文献的标准引文',
+				subtitle: '复制当前标签页文献的 CSL 引文并自动记入反查历史',
+				badge: '命令',
+				action: () => {
+					const selID = String((win as any).Zotero_Tabs?.selectedID || '');
+					if (selID) void this.tabs.copyTabCitation(win, selID);
+				},
 			},
 			{
 				id: 'cmd:undo-close',
