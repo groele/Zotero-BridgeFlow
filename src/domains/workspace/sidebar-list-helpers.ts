@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import { formatRelativeTimeZh, type WorkspaceHoverCard } from './hover-card.ts';
@@ -33,7 +34,7 @@ export interface SidebarRowDeps {
 export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLElement {
 	const { win, doc, prefs, store, tabs, menus, hover, selection, wordCiteMap, selectedID, onRefresh } = deps;
 	const isSelected = !tab.virtual && tab.tabID === selectedID;
-	const row = doc.createElement('div');
+	const row = createWorkspaceElement(doc, 'div');
 	row.className = `zbf-vtab-row${isSelected ? ' selected' : ''}${tab.sleeping ? ' sleeping' : ''}${tab.virtual ? ' virtual' : ''}`;
 	row.tabIndex = 0;
 	row.setAttribute('data-zbf-nav', 'row');
@@ -46,9 +47,9 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	const iconName = tab.pinned ? 'pin' : tab.sleeping ? 'sleep' : tab.virtual ? 'virtual' : tab.type.includes('note') ? 'note' : 'pdf';
 	row.appendChild(createWorkspaceIcon(doc, iconName, 13));
 
-	const main = doc.createElement('div');
+	const main = createWorkspaceElement(doc, 'div');
 	main.className = 'zbf-vtab-main';
-	const titleEl = doc.createElement('div');
+	const titleEl = createWorkspaceElement(doc, 'div');
 	titleEl.className = 'zbf-vtab-title';
 	titleEl.textContent = tabs.getDisplayTitle(tab);
 	main.appendChild(titleEl);
@@ -66,15 +67,15 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	const prog = formatReadingProgress(store.state.readingProgress[tab.key]);
 	const subText = [subBase, prog.text].filter(Boolean).join(' · ');
 	if (subText) {
-		const subEl = doc.createElement('div');
+		const subEl = createWorkspaceElement(doc, 'div');
 		subEl.className = 'zbf-vtab-sub';
 		subEl.textContent = subText;
 		main.appendChild(subEl);
 	}
 	if (prog.ratio !== null && prog.ratio > 0) {
-		const bar = doc.createElement('div');
+		const bar = createWorkspaceElement(doc, 'div');
 		bar.className = 'zbf-vtab-progress';
-		const fill = doc.createElement('span');
+		const fill = createWorkspaceElement(doc, 'span');
 		fill.className = 'zbf-vtab-progress-fill';
 		fill.style.width = `${Math.round(prog.ratio * 100)}%`;
 		bar.appendChild(fill);
@@ -82,11 +83,11 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	}
 	row.appendChild(main);
 
-	const right = doc.createElement('div');
+	const right = createWorkspaceElement(doc, 'div');
 	right.className = 'zbf-vtab-right';
 	const citeInfo = wordCiteMap.get(tab.parentItemID) || wordCiteMap.get(tab.itemID);
 	if (citeInfo) {
-		const badge = doc.createElement('span');
+		const badge = createWorkspaceElement(doc, 'span');
 		badge.className = 'zbf-cite-badge';
 		badge.textContent = `[${citeInfo.ordinal}]`;
 		badge.title = `${citeInfo.documentName}: ${citeInfo.shortText}`;
@@ -94,7 +95,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	}
 
 	if (!tab.virtual && tab.itemID > 0 && prefs.get('workspace.enableShowInFilesystem')) {
-		const folderBtn = doc.createElement('button');
+		const folderBtn = createWorkspaceElement(doc, 'button');
 		folderBtn.type = 'button';
 		folderBtn.className = 'zbf-row-btn';
 		folderBtn.title = '在文件管理器中显示';
@@ -107,7 +108,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	}
 
 	if (!tab.virtual && !tab.pinned && prefs.get('workspace.enableTabSleep')) {
-		const sleepBtn = doc.createElement('button');
+		const sleepBtn = createWorkspaceElement(doc, 'button');
 		sleepBtn.type = 'button';
 		sleepBtn.className = 'zbf-row-btn';
 		sleepBtn.title = tab.sleeping ? '唤醒并重新加载' : '休眠释放内存';
@@ -123,7 +124,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		right.appendChild(sleepBtn);
 	}
 
-	const closeBtn = doc.createElement('button');
+	const closeBtn = createWorkspaceElement(doc, 'button');
 	closeBtn.type = 'button';
 	closeBtn.className = 'zbf-row-btn';
 	closeBtn.title = tab.virtual ? '移除虚拟成员' : '关闭标签页';

@@ -31,9 +31,9 @@ export class WordCiteDomainModule implements DomainModule {
 		this.tracker = new WordSessionTracker(kernel.bus, services.win32);
 		this.tagGovernance = new CitationTagGovernance(kernel.prefs);
 		this.collections = new WordCitationCollectionManager(kernel);
-		this.poller = new WordIntegrationPoller(kernel, this.tracker);
-		this.dragCite = new DragCiteController(kernel, services.win32, () => {
-			this.poller.pollOnce();
+		this.poller = new WordIntegrationPoller(kernel, this.tracker, services.win32);
+		this.dragCite = new DragCiteController(kernel, services.win32, (session) => {
+			void this.poller.notifyCommittedSession(session);
 		});
 		this.column = new CitationColumnController(kernel, this.tracker, this.collections);
 	}
@@ -80,10 +80,12 @@ export class WordCiteDomainModule implements DomainModule {
 	onMainWindowLoad(win: Window): void {
 		if (!this.active) return;
 		this.dragCite.attachWindow(win);
+		this.collections.attachWindow(win);
 	}
 
 	onMainWindowUnload(win: Window): void {
 		this.dragCite.detachWindow(win);
+		this.collections.detachWindow(win);
 	}
 
 	stop(): void {

@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import { openTextPromptModal } from './popup-menu-helpers.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
@@ -8,13 +9,14 @@ export async function exportWorkspaceJson(win: Window, store: WorkspaceStateStor
 	const json = store.exportJson();
 	const ZoteroObj = (globalThis as any).Zotero;
 	try {
-		const fp = ZoteroObj?.File?.FilePicker ? new ZoteroObj.File.FilePicker() : null;
+		const { FilePicker } = (globalThis as any).ChromeUtils.importESModule('chrome://zotero/content/modules/filePicker.mjs');
+		const fp = new FilePicker();
 		if (fp?.init) {
 			fp.init(win, '导出工作区备份 (JSON)', fp.modeSave ?? 1);
 			fp.appendFilter('JSON 文件', '*.json');
 			fp.defaultString = `BridgeFlow-Workspace-${new Date().toISOString().slice(0, 10)}.json`;
 			const rv = await fp.show();
-			if (rv !== undefined && fp.file) {
+			if ((rv === fp.returnOK || rv === fp.returnReplace) && fp.file) {
 				await ZoteroObj.File.putContentsAsync(fp.file, json);
 				return '已导出工作区 JSON 文件';
 			}
@@ -23,7 +25,7 @@ export async function exportWorkspaceJson(win: Window, store: WorkspaceStateStor
 	} catch { /* fall back to clipboard */ }
 
 	try {
-		await win.navigator.clipboard?.writeText?.(json);
+		await win.navigator.clipboard.writeText(json);
 		return '已复制工作区 JSON 到剪贴板';
 	} catch {
 		openTextPromptModal(win, '工作区 JSON 备份（请全选复制）', '', json, () => { /* readonly */ });
@@ -38,12 +40,13 @@ export async function importWorkspaceJsonInteractive(
 ): Promise<void> {
 	const ZoteroObj = (globalThis as any).Zotero;
 	try {
-		const fp = ZoteroObj?.File?.FilePicker ? new ZoteroObj.File.FilePicker() : null;
+		const { FilePicker } = (globalThis as any).ChromeUtils.importESModule('chrome://zotero/content/modules/filePicker.mjs');
+		const fp = new FilePicker();
 		if (fp?.init) {
 			fp.init(win, '导入工作区备份 (JSON)', fp.modeOpen ?? 0);
 			fp.appendFilter('JSON 文件', '*.json');
 			const rv = await fp.show();
-			if (rv !== undefined && fp.file) {
+			if (rv === fp.returnOK && fp.file) {
 				const content = await ZoteroObj.File.getContentsAsync(fp.file);
 				if (content && store.importJson(String(content))) onImported();
 				return;
@@ -64,29 +67,29 @@ export function renderPublicationSuggestionsSection(
 	onApplied: () => void,
 ): HTMLElement | null {
 	if (!suggestions.length) return null;
-	const wrap = doc.createElement('div');
+	const wrap = createWorkspaceElement(doc, 'div');
 	wrap.className = 'zbf-hub-section';
 
-	const heading = doc.createElement('div');
+	const heading = createWorkspaceElement(doc, 'div');
 	heading.className = 'zbf-hub-section-title';
 	heading.textContent = `期刊 / 会议智能分组建议 (${suggestions.length})`;
 	wrap.appendChild(heading);
 
 	for (const sug of suggestions.slice(0, 5)) {
-		const card = doc.createElement('div');
+		const card = createWorkspaceElement(doc, 'div');
 		card.className = 'zbf-hub-card';
 
-		const info = doc.createElement('div');
+		const info = createWorkspaceElement(doc, 'div');
 		info.className = 'zbf-hub-card-info';
-		const nameEl = doc.createElement('div');
+		const nameEl = createWorkspaceElement(doc, 'div');
 		nameEl.className = 'zbf-hub-card-name';
 		nameEl.textContent = `📚 ${sug.venue}`;
-		const metaEl = doc.createElement('div');
+		const metaEl = createWorkspaceElement(doc, 'div');
 		metaEl.className = 'zbf-hub-card-meta';
 		metaEl.textContent = `${sug.keys.length} 篇同源未分组文献`;
 		info.append(nameEl, metaEl);
 
-		const applyBtn = doc.createElement('button');
+		const applyBtn = createWorkspaceElement(doc, 'button');
 		applyBtn.type = 'button';
 		applyBtn.className = 'zbf-hub-btn primary';
 		applyBtn.textContent = '一键归组';
@@ -117,16 +120,16 @@ export function renderSessionSection(
 	emptyText: string,
 	handlers: SessionSectionHandlers,
 ): HTMLElement {
-	const wrap = doc.createElement('div');
+	const wrap = createWorkspaceElement(doc, 'div');
 	wrap.className = 'zbf-hub-section';
 
-	const heading = doc.createElement('div');
+	const heading = createWorkspaceElement(doc, 'div');
 	heading.className = 'zbf-hub-section-title';
 	heading.textContent = `${titleText} (${sessions.length})`;
 	wrap.appendChild(heading);
 
 	if (!sessions.length) {
-		const empty = doc.createElement('div');
+		const empty = createWorkspaceElement(doc, 'div');
 		empty.className = 'zbf-hub-empty';
 		empty.textContent = emptyText;
 		wrap.appendChild(empty);
@@ -135,42 +138,51 @@ export function renderSessionSection(
 
 	const { win, store, isRolling, onRestore, onChanged } = handlers;
 	for (const session of sessions) {
-		const card = doc.createElement('div');
+		const card = createWorkspaceElement(doc, 'div');
 		card.className = 'zbf-hub-card';
 
-		const info = doc.createElement('div');
+		const topRow = createWorkspaceElement(doc, 'div');
+		topRow.className = 'zbf-hub-card-top';
+
+		const info = createWorkspaceElement(doc, 'div');
 		info.className = 'zbf-hub-card-info';
 		const icon = session.isTemplate ? '📐 ' : session.kind === 'pre-replace' ? '↩ ' : isRolling ? '🕒 ' : '💾 ';
-		const nameEl = doc.createElement('div');
+		const nameEl = createWorkspaceElement(doc, 'div');
 		nameEl.className = 'zbf-hub-card-name';
 		nameEl.textContent = `${icon}${session.name}`;
 
-		const metaEl = doc.createElement('div');
+		const itemKeys = [...new Set([
+			...session.openKeys,
+			...session.groups.flatMap((g) => g.memberKeys),
+			...Object.keys(session.virtualMembers),
+		])].filter((k) => k.startsWith('item:'));
+
+		const metaEl = createWorkspaceElement(doc, 'div');
 		metaEl.className = 'zbf-hub-card-meta';
 		const dt = new Date(session.createdAt || Date.now()).toLocaleString();
-		metaEl.textContent = `${dt} · ${session.groups.length} 个分组 · ${session.pinnedKeys.length} 个固定`;
+		metaEl.textContent = `${itemKeys.length} 篇文献 · ${session.groups.length} 个分组 · ${dt}`;
 		info.append(nameEl, metaEl);
 
-		const btns = doc.createElement('div');
+		const btns = createWorkspaceElement(doc, 'div');
 		btns.className = 'zbf-hub-card-actions';
 
-		const mergeBtn = doc.createElement('button');
+		const mergeBtn = createWorkspaceElement(doc, 'button');
 		mergeBtn.type = 'button';
 		mergeBtn.className = 'zbf-hub-btn primary';
-		mergeBtn.textContent = '合并恢复';
-		mergeBtn.title = '保留当前已打开文献与分组，合并会话布局并后台补开缺失文献';
+		mergeBtn.textContent = '重新打开';
+		mergeBtn.title = '保留当前已打开文献与分组，重新打开该快照保存的分组与全部文献条目';
 		mergeBtn.addEventListener('click', () => onRestore(session, true));
 
-		const replaceBtn = doc.createElement('button');
+		const replaceBtn = createWorkspaceElement(doc, 'button');
 		replaceBtn.type = 'button';
 		replaceBtn.className = 'zbf-hub-btn';
-		replaceBtn.textContent = '替换';
+		replaceBtn.textContent = '替换布局';
 		replaceBtn.title = '自动先保存恢复前备份，再替换为该快照布局';
 		replaceBtn.addEventListener('click', () => onRestore(session, false));
 		btns.append(mergeBtn, replaceBtn);
 
 		if (isRolling) {
-			const promoteBtn = doc.createElement('button');
+			const promoteBtn = createWorkspaceElement(doc, 'button');
 			promoteBtn.type = 'button';
 			promoteBtn.className = 'zbf-hub-btn';
 			promoteBtn.textContent = '转存';
@@ -179,14 +191,14 @@ export function renderSessionSection(
 			});
 			btns.appendChild(promoteBtn);
 		} else if (session.kind !== 'pre-replace') {
-			const updateBtn = doc.createElement('button');
+			const updateBtn = createWorkspaceElement(doc, 'button');
 			updateBtn.type = 'button';
 			updateBtn.className = 'zbf-hub-btn';
 			updateBtn.textContent = '更新';
 			updateBtn.addEventListener('click', () => {
-				if (store.updateSession(session.id)) onChanged();
+				if (store.updateSession(session.id, handlers.tabs.openKeys(win))) onChanged();
 			});
-			const renameBtn = doc.createElement('button');
+			const renameBtn = createWorkspaceElement(doc, 'button');
 			renameBtn.type = 'button';
 			renameBtn.className = 'zbf-hub-btn';
 			renameBtn.textContent = '重命名';
@@ -198,7 +210,7 @@ export function renderSessionSection(
 			btns.append(updateBtn, renameBtn);
 		}
 
-		const delBtn = doc.createElement('button');
+		const delBtn = createWorkspaceElement(doc, 'button');
 		delBtn.type = 'button';
 		delBtn.className = 'zbf-hub-btn';
 		delBtn.textContent = '删除';
@@ -207,7 +219,38 @@ export function renderSessionSection(
 		});
 		btns.appendChild(delBtn);
 
-		card.append(info, btns);
+		topRow.append(info, btns);
+		card.appendChild(topRow);
+
+		if (itemKeys.length && !session.isTemplate) {
+			const itemsBox = createWorkspaceElement(doc, 'div');
+			itemsBox.className = 'zbf-hub-items';
+			for (const key of itemKeys.slice(0, 12)) {
+				const meta = session.virtualMembers[key] || store.state.virtualMembers[key];
+				const rawID = Number(meta?.itemID || key.replace(/^item:/, '') || 0);
+				const zotItem = rawID > 0 ? (globalThis as any).Zotero?.Items?.get?.(rawID) : null;
+				const rawTitleStr = meta?.title || zotItem?.getField?.('title') || `文献条目 #${rawID}`;
+				const titleStr = String(rawTitleStr).replace(/<[^>]*>/g, '');
+				const subStr = [meta?.creatorYear, meta?.source].filter(Boolean).join(' · ');
+
+				const row = createWorkspaceElement(doc, 'button');
+				row.type = 'button';
+				row.className = 'zbf-hub-item-row';
+				row.title = '点击单独打开此篇文献';
+				const label = createWorkspaceElement(doc, 'span');
+				label.className = 'zbf-hub-item-title';
+				label.textContent = `📄 ${titleStr}${subStr ? ` (${subStr})` : ''}`;
+				row.appendChild(label);
+				row.addEventListener('click', () => {
+					if (rawID > 0) {
+						const grpId = session.groups.find((g) => g.memberKeys.includes(key))?.id;
+						void handlers.tabs.openVirtualOrItem(win, rawID, grpId, false);
+					}
+				});
+				itemsBox.appendChild(row);
+			}
+			card.appendChild(itemsBox);
+		}
 		wrap.appendChild(card);
 	}
 

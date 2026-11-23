@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.12 - Preferences controller. */
+/* Zotero BridgeFlow v0.1.2 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -7,131 +7,115 @@
     // === Core Module & Fusion Master Switches ===
     "modules.workspace.enable": { defaultValue: true },
     "modules.inspector.enable": { defaultValue: true },
-    "modules.wordCite.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.zoterocitation.enable"] },
+    "modules.wordCite.enable": { defaultValue: true },
     "fusion.copyToLookupHistory": { defaultValue: true },
     "fusion.sidebarCiteBadge": { defaultValue: true },
     "fusion.spotlightCrossDomain": { defaultValue: true },
     "fusion.lookupJumpExistingTab": { defaultValue: true },
     "debug": {
-      defaultValue: false,
-      legacyKeys: [
-        "extensions.zotero.tabflow.debug",
-        "extensions.zoteropreview.debug",
-        "extensions.zotero.zoterocitation.debug"
-      ]
+      defaultValue: false
     },
-    "migrationVersion": { defaultValue: 0, resettable: false },
     // === Domain A: Workspace (Tabs, Groups, Sessions, Sleep, Spotlight) ===
-    "workspace.enableHorizontalGroups": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableHorizontalGroups"] },
+    "workspace.enableHorizontalGroups": { defaultValue: true },
     "workspace.horizontalTabCompactMode": {
       defaultValue: "auto",
-      enumValues: ["auto", "compact", "normal"],
-      legacyKeys: ["extensions.zotero.tabflow.horizontalTabCompactMode"]
+      enumValues: ["auto", "compact", "normal"]
     },
-    "workspace.compactTopBar": { defaultValue: false, legacyKeys: ["extensions.zotero.tabflow.compactTopBar"] },
-    "workspace.enableVerticalSidebar": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableVerticalSidebar"] },
-    "workspace.enableBatchSelection": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableBatchSelection"] },
-    "workspace.enablePinnedTabs": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePinnedTabs"] },
-    "workspace.pinnedIconOnly": { defaultValue: false, legacyKeys: ["extensions.zotero.tabflow.pinnedIconOnly"] },
-    "workspace.enableVirtualMembers": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableVirtualMembers"] },
+    "workspace.compactTopBar": { defaultValue: false },
+    "workspace.enableVerticalSidebar": { defaultValue: true },
+    "workspace.enableBatchSelection": { defaultValue: true },
+    "workspace.enablePinnedTabs": { defaultValue: true },
+    "workspace.pinnedIconOnly": { defaultValue: false },
+    "workspace.enableVirtualMembers": { defaultValue: true },
     "workspace.newTabMode": {
       defaultValue: "independent",
-      enumValues: ["independent", "collection"],
-      legacyKeys: ["extensions.zotero.tabflow.newTabMode"]
+      enumValues: ["independent", "collection"]
     },
     "workspace.multiCollectionStrategy": {
       defaultValue: "active",
-      enumValues: ["active", "existing", "first"],
-      legacyKeys: ["extensions.zotero.tabflow.multiCollectionStrategy"]
+      enumValues: ["active", "existing", "first"]
     },
-    "workspace.enableTabRemarks": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableTabRemarks"] },
+    "workspace.enableTabRemarks": { defaultValue: true },
     "workspace.remarkDisplayMode": {
       defaultValue: "both",
-      enumValues: ["both", "remark", "title"],
-      legacyKeys: ["extensions.zotero.tabflow.remarkDisplayMode"]
+      enumValues: ["both", "remark", "title"]
     },
     "workspace.verticalTabTitleMode": {
       defaultValue: "title",
-      enumValues: ["title", "shortTitle", "filename"],
-      legacyKeys: ["extensions.zotero.tabflow.verticalTabTitleMode"]
+      enumValues: ["title", "shortTitle", "filename"]
     },
     "workspace.verticalTabSubtitleMode": {
       defaultValue: "source",
-      enumValues: ["source", "creatorYear", "collection", "lastViewed", "none"],
-      legacyKeys: ["extensions.zotero.tabflow.verticalTabSubtitleMode"]
+      enumValues: ["source", "creatorYear", "collection", "lastViewed", "none"]
     },
-    "workspace.verticalTabRowHeight": { defaultValue: 42, min: 28, max: 72, legacyKeys: ["extensions.zotero.tabflow.verticalTabRowHeight"] },
-    "workspace.verticalTabFontSize": { defaultValue: 13, min: 11, max: 18, legacyKeys: ["extensions.zotero.tabflow.verticalTabFontSize"] },
-    "workspace.verticalSidebarWidth": { defaultValue: 276, min: 200, max: 440, legacyKeys: ["extensions.zotero.tabflow.verticalSidebarWidth"] },
-    "workspace.verticalSidebarCollapsed": { defaultValue: false, legacyKeys: ["extensions.zotero.tabflow.verticalSidebarCollapsed"] },
-    "workspace.enableHoverPreview": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableHoverPreview"] },
-    "workspace.enableSpotlight": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableSpotlight"] },
-    "workspace.enableSessions": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableSessions"] },
-    "workspace.enableRollingSnapshots": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableRollingSnapshots"] },
-    "workspace.enableTabSleep": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableTabSleep"] },
-    "workspace.autoSleepMinutes": { defaultValue: 0, min: 0, max: 1440, legacyKeys: ["extensions.zotero.tabflow.autoSleepMinutes"] },
-    "workspace.activeReaderBudget": { defaultValue: 0, min: 0, max: 100, legacyKeys: ["extensions.zotero.tabflow.activeReaderBudget"] },
-    "workspace.enableStaleSuggestions": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableStaleSuggestions"] },
-    "workspace.staleSuggestDays": { defaultValue: 7, min: 1, max: 3650, legacyKeys: ["extensions.zotero.tabflow.staleSuggestDays"] },
-    "workspace.enableTabContextMenu": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableTabContextMenu"] },
-    "workspace.enableItemContextMenu": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableItemContextMenu"] },
-    "workspace.enableCopyReference": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableCopyReference"] },
-    "workspace.enableShowInFilesystem": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableShowInFilesystem"] },
-    "workspace.enableReloadTab": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enableReloadTab"] },
-    "workspace.state": { defaultValue: "", resettable: false, legacyKeys: ["extensions.zotero.tabflow.state"] },
+    "workspace.verticalTabRowHeight": { defaultValue: 42, min: 28, max: 72 },
+    "workspace.verticalTabFontSize": { defaultValue: 13, min: 11, max: 18 },
+    "workspace.verticalSidebarWidth": { defaultValue: 276, min: 200, max: 440 },
+    "workspace.verticalSidebarCollapsed": { defaultValue: false },
+    "workspace.enableHoverPreview": { defaultValue: true },
+    "workspace.enableSpotlight": { defaultValue: true },
+    "workspace.enableSessions": { defaultValue: true },
+    "workspace.enableRollingSnapshots": { defaultValue: true },
+    "workspace.enableTabSleep": { defaultValue: true },
+    "workspace.autoSleepMinutes": { defaultValue: 0, min: 0, max: 1440 },
+    "workspace.activeReaderBudget": { defaultValue: 0, min: 0, max: 100 },
+    "workspace.enableStaleSuggestions": { defaultValue: true },
+    "workspace.staleSuggestDays": { defaultValue: 7, min: 1, max: 3650 },
+    "workspace.enableTabContextMenu": { defaultValue: true },
+    "workspace.enableItemContextMenu": { defaultValue: true },
+    "workspace.enableCopyReference": { defaultValue: true },
+    "workspace.enableShowInFilesystem": { defaultValue: true },
+    "workspace.enableReloadTab": { defaultValue: true },
+    "workspace.document": { defaultValue: "", resettable: false },
     // === Domain B: Inspector (CSL Preview, Citation Lookup, PDF Preview & Folder) ===
     "inspector.cslPreview.enable": { defaultValue: true },
-    "inspector.cslPreview.citationstyle": { defaultValue: "", legacyKeys: ["extensions.zoteropreview.citationstyle"] },
+    "inspector.cslPreview.citationstyle": { defaultValue: "" },
     "inspector.cslPreview.position": {
       defaultValue: "zotero-item-pane-header",
-      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"],
-      legacyKeys: ["extensions.zoteropreview.position"]
+      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
     },
     "inspector.cslPreview.whatToShow": {
       defaultValue: "zpboth",
-      enumValues: ["zpboth", "zpcite", "zpbib"],
-      legacyKeys: ["extensions.zoteropreview.whatToShow"]
+      enumValues: ["zpboth", "zpcite", "zpbib"]
     },
-    "inspector.cslPreview.fontsize": { defaultValue: "1", legacyKeys: ["extensions.zoteropreview.fontsize"] },
-    "inspector.cslPreview.spacing": { defaultValue: "1.5", legacyKeys: ["extensions.zoteropreview.spacing"] },
-    "inspector.cslPreview.maxPreviewItems": { defaultValue: 100, min: 1, max: 500, legacyKeys: ["extensions.zoteropreview.maxPreviewItems"] },
-    "inspector.lookup.enable": { defaultValue: true, legacyKeys: ["extensions.zoteropreview.lookupEnabled"] },
-    "inspector.lookup.historyEnable": { defaultValue: true, legacyKeys: ["extensions.zoteropreview.lookupHistoryEnabled"] },
-    "inspector.lookup.cacheDirectory": { defaultValue: "", legacyKeys: ["extensions.zoteropreview.cacheDirectory"] },
-    "inspector.lookup.cacheMaxEntries": { defaultValue: 2e3, min: 100, max: 1e5, legacyKeys: ["extensions.zoteropreview.cacheMaxEntries"] },
-    "inspector.lookup.cacheTtlDays": { defaultValue: 90, min: 7, max: 3650, legacyKeys: ["extensions.zoteropreview.cacheTtlDays"] },
-    "inspector.pdfPreview.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfPreviewSidenav"] },
+    "inspector.cslPreview.fontsize": { defaultValue: "1" },
+    "inspector.cslPreview.spacing": { defaultValue: "1.5" },
+    "inspector.cslPreview.maxPreviewItems": { defaultValue: 100, min: 1, max: 500 },
+    "inspector.lookup.enable": { defaultValue: true },
+    "inspector.lookup.historyEnable": { defaultValue: true },
+    "inspector.lookup.cacheDirectory": { defaultValue: "" },
+    "inspector.lookup.cacheMaxEntries": { defaultValue: 2e3, min: 100, max: 1e5 },
+    "inspector.lookup.cacheTtlDays": { defaultValue: 90, min: 7, max: 3650 },
+    "inspector.pdfPreview.enable": { defaultValue: true },
     "inspector.pdfPreview.position": {
       defaultValue: "zotero-editpane-related",
       enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
     },
     "inspector.pdfPreview.mode": {
       defaultValue: "section",
-      enumValues: ["section", "full"],
-      legacyKeys: ["extensions.zotero.tabflow.pdfPreviewMode"]
+      enumValues: ["section", "full"]
     },
-    "inspector.pdfPreview.defaultZoom": { defaultValue: 100, min: 60, max: 200, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewDefaultZoom"] },
-    "inspector.pdfPreview.doubleClickOpen": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewDoubleClickOpen"] },
-    "inspector.pdfPreview.showPageBadge": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.pdfPreviewShowPageBadge"] },
-    "inspector.pdfFolder.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.tabflow.enablePdfFolderSidenav"] },
+    "inspector.pdfPreview.defaultZoom": { defaultValue: 100, min: 60, max: 200 },
+    "inspector.pdfPreview.doubleClickOpen": { defaultValue: true },
+    "inspector.pdfPreview.showPageBadge": { defaultValue: true },
+    "inspector.pdfFolder.enable": { defaultValue: true },
     "inspector.pdfFolder.position": {
       defaultValue: "zotero-editpane-related",
       enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
     },
     "inspector.pdfFolder.openMode": {
       defaultValue: "reveal",
-      enumValues: ["reveal", "folder"],
-      legacyKeys: ["extensions.zotero.tabflow.pdfFolderOpenMode"]
+      enumValues: ["reveal", "folder"]
     },
     // === Domain C: Word Citation Tracking & Governance ===
-    "wordCite.dragCite.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.zoterocitation.dragCite.enable"] },
-    "wordCite.collections.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.zoterocitation.collections.enable"] },
-    "wordCite.citationTags.enable": { defaultValue: true, legacyKeys: ["extensions.zotero.zoterocitation.citationTags.enable"] },
-    "wordCite.citationTags.text": { defaultValue: "/Citations", legacyKeys: ["extensions.zotero.zoterocitation.citationTags.text"] },
-    "wordCite.citationTagDebounceMs": { defaultValue: 150, min: 0, max: 2e3, legacyKeys: ["extensions.zotero.zoterocitation.citationTagDebounceMs"] },
-    "wordCite.itemsViewRefreshDebounceMs": { defaultValue: 120, min: 0, max: 2e3, legacyKeys: ["extensions.zotero.zoterocitation.itemsViewRefreshDebounceMs"] },
-    "wordCite.healthWindowMs": { defaultValue: 3e5, min: 1e4, max: 36e5, legacyKeys: ["extensions.zotero.zoterocitation.healthWindowMs"] },
-    "wordCite.perfSlowThresholdMs": { defaultValue: 50, min: 5, max: 5e3, legacyKeys: ["extensions.zotero.zoterocitation.perfSlowThresholdMs"] }
+    "wordCite.dragCite.enable": { defaultValue: true },
+    "wordCite.collections.enable": { defaultValue: true },
+    "wordCite.citationTags.enable": { defaultValue: true },
+    "wordCite.citationTags.text": { defaultValue: "/Citations" },
+    "wordCite.citationTagDebounceMs": { defaultValue: 150, min: 0, max: 2e3 },
+    "wordCite.itemsViewRefreshDebounceMs": { defaultValue: 120, min: 0, max: 2e3 },
+    "wordCite.healthWindowMs": { defaultValue: 3e5, min: 1e4, max: 36e5 },
+    "wordCite.perfSlowThresholdMs": { defaultValue: 50, min: 5, max: 5e3 }
   };
 
   // src/kernel/pref-service.ts
@@ -142,7 +126,7 @@
   function normalizePrefValue(key, raw) {
     const desc = PREF_SCHEMA[key];
     const def = desc.defaultValue;
-    if (raw === void 0 || raw === null) return def;
+    if (raw === void 0 || raw === null || raw === "undefined" || raw === "null") return def;
     if (typeof def === "boolean") return Boolean(raw);
     if (typeof def === "number") {
       const n = typeof raw === "number" ? raw : Number(raw);
@@ -153,6 +137,10 @@
       return clamped;
     }
     const str = String(raw);
+    if (key === "inspector.cslPreview.fontsize" || key === "inspector.cslPreview.spacing") {
+      const num = Number(str);
+      if (!Number.isFinite(num) || num <= 0) return def;
+    }
     if (desc.enumValues && !desc.enumValues.includes(str)) {
       return def;
     }
@@ -214,10 +202,11 @@
       for (const key of Object.keys(PREF_SCHEMA)) {
         const full = this.fullKey(key);
         const existing = this.readRaw(full);
-        if (existing === void 0) {
-          const desc = PREF_SCHEMA[key];
+        const desc = PREF_SCHEMA[key];
+        const normalized = normalizePrefValue(key, existing);
+        if (existing === void 0 || existing === "undefined" || existing === "null" || existing !== normalized) {
           try {
-            adapter.set(full, desc.defaultValue, true);
+            adapter.set(full, normalized ?? desc.defaultValue, true);
           } catch {
           }
         }
@@ -434,8 +423,8 @@
       bindTabs(pane);
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.0.12" }));
-        versionEl.textContent = `v${"0.0.12"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.1.2" }));
+        versionEl.textContent = `v${"0.1.2"}`;
       }
       const checkboxes = Array.from(pane.querySelectorAll("checkbox[preference]"));
       const menulists = Array.from(pane.querySelectorAll("menulist[preference]"));
@@ -484,7 +473,11 @@
           }
           for (const input of inputs) {
             const key = extractPrefKey(input);
-            if (key) input.value = String(prefs.get(key));
+            if (!key) continue;
+            const val = prefs.get(key);
+            const strVal = val == null || val === "undefined" ? String(PREF_SCHEMA[key].defaultValue) : String(val);
+            input.value = strVal;
+            input.setAttribute("value", strVal);
           }
           const cacheDirInput = doc.getElementById("zbf-input-cachedir");
           const defaultDir = globalThis.Zotero?.zoterobridgeflow?.services?.history?.getDirectoryPath?.() || "";
@@ -523,8 +516,7 @@
         if (!key) continue;
         const commitInput = () => {
           const raw = input.type === "number" ? Number(input.value) : input.value.trim();
-          const next = prefs.set(key, raw);
-          input.value = String(next);
+          input.value = String(prefs.set(key, raw));
           updateDependencies(doc, prefs);
           setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
         };
@@ -539,7 +531,7 @@
         setStatusFeedback(doc, "zbf-prefs-status-cache-cleared", "✓ 已清空全部引文与反查缓存");
       });
       bindActionBtn(doc.getElementById("zbf-clear-workspace-state"), () => {
-        prefs.set("workspace.state", "");
+        prefs.set("workspace.document", "");
         const app = globalThis.Zotero?.zoterobridgeflow;
         app?.workspace?.store?.load?.();
         app?.workspace?.refreshAllWindows?.();
@@ -577,7 +569,7 @@
         if (!disposed) syncMenulistLabels(doc);
       });
       if (globalThis.Zotero?.Prefs?.registerObserver) {
-        const keys = Object.keys(PREF_SCHEMA).filter((k) => k !== "workspace.state" && k !== "migrationVersion");
+        const keys = Object.keys(PREF_SCHEMA).filter((k) => k !== "workspace.document");
         for (const k of keys) {
           localObservers.push(globalThis.Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => syncAll(), true));
         }
@@ -585,6 +577,12 @@
         targetWin?.addEventListener?.("unload", cleanup, { once: true });
       }
       syncAll();
+      targetWin?.setTimeout?.(() => {
+        if (!disposed) syncAll();
+      }, 30);
+      targetWin?.setTimeout?.(() => {
+        if (!disposed) syncAll();
+      }, 150);
       return true;
     }
   };

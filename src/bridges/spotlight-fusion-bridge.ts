@@ -56,16 +56,18 @@ export class SpotlightFusionBridge implements BridgeModule {
 
 						// 2. Active Word cited items quick jump
 						for (const [itemID, info] of active.itemCitations.entries()) {
-							const label = `${info.shortText} (${active.displayName})`;
+							const zotItem = (globalThis as any).Zotero?.Items?.get?.(itemID);
+							const itemTitle = String(zotItem?.getField?.('title') || info.shortText || `文献 #${itemID}`);
+							const label = `${itemTitle} ${info.shortText} (${active.displayName})`;
 							if (term && !label.toLowerCase().includes(term) && !`[${info.ordinal}]`.includes(term)) {
 								continue;
 							}
 							out.push({
 								id: `word-cite:${active.sessionID}:${itemID}`,
 								category: 'citation',
-								title: info.shortText || `Item #${itemID}`,
-								subtitle: active.displayName,
-								badge: `[${info.ordinal}]`,
+								title: itemTitle,
+								subtitle: `${active.displayName} · ${info.shortText}`,
+								badge: `Word [${info.ordinal}]`,
 								action: async () => {
 									await this.workspace.focusOrOpenItem({
 										itemID,
@@ -84,9 +86,9 @@ export class SpotlightFusionBridge implements BridgeModule {
 							out.push({
 								id: 'cmd:cite-selected-word',
 								category: 'command',
-								title: `> ${insertLabel}`,
+								title: insertLabel,
 								subtitle: '在当前 Word 光标处生成原生 Zotero 可编辑引文域',
-								badge: 'WORD',
+								badge: 'Word',
 								action: async () => {
 									await this.wordCite.citeCurrentSelection(win);
 								},
@@ -95,12 +97,13 @@ export class SpotlightFusionBridge implements BridgeModule {
 					}
 
 					// 4. Clear citation caches command
-					if (!term || 'clear cache'.includes(term)) {
+					if (!term || 'clear cache 清空缓存'.includes(term)) {
 						out.push({
 							id: 'cmd:clear-citation-cache',
 							category: 'command',
-							title: 'Clear citation memory & reverse-lookup cache',
-							badge: 'CMD',
+							title: '清空引文记忆与反查缓存',
+							subtitle: '重置已记录的引文复制历史与反查索引',
+							badge: '维护',
 							action: () => {
 								this.kernel.bus.emit('inspector:clear-cache', { target: 'all' });
 							},

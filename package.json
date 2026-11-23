@@ -1,8 +1,9 @@
 {
   "name": "zotero-bridgeflow",
-  "version": "0.0.12",
+  "version": "0.1.2",
   "description": "Zotero BridgeFlow (桥引) — Unified reading workspace, citation preview & reverse lookup, and Microsoft Word citation tracking for Zotero 10-12.",
   "private": true,
+  "type": "module",
   "license": "AGPL-3.0-or-later",
   "homepage": "https://github.com/groele/Zotero-BridgeFlow",
   "repository": {
@@ -23,8 +24,11 @@
     "test": "npm run build:bundle && npm run guard && npm run test:syntax && npm run test:unit"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
-    "typescript": "^5.9.3",
-    "zotero-types": "^4.1.3"
+    "esbuild": "0.28.2",
+    "typescript": "6.0.3",
+    "zotero-types": "4.1.3"
+  },
+  "dependencies": {
+    "valibot": "1.5.0"
   }
 }

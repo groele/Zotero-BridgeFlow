@@ -220,10 +220,9 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 		agent: 'WinWord',
 		doc: { filePath: 'D:\\Manuscript\\PaperDraft.docx' },
 		citationsByIndex: {
-			10: { citationItems: [{ id: 503 }], properties: { plainCitation: '[11]' } },
-			0: { citationItems: [{ id: 501 }], properties: { plainCitation: '[1]' } },
-			2: { citationItems: [{ id: 502 }], properties: { plainCitation: '[3]' } },
-			1: { citationItems: [{ id: 599 }], properties: { plainCitation: '[2]' } }, // trashed item -> ignored
+			10: { citationItems: [{ id: 505 }, { id: 502 }], properties: { plainCitation: '2, 5' } },
+			0: { citationItems: [{ id: 501 }, { id: 502 }, { id: 503 }, { id: 504 }], properties: { plainCitation: '1–4' } },
+			1: { citationItems: [{ id: 599 }], properties: { plainCitation: 'trashed' } }, // trashed item -> ignored
 		},
 		citationsByItemID: {},
 	};
@@ -238,18 +237,60 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 	await poller.pollOnce();
 	const ses = tracker.getActiveSession();
 	assert.ok(ses);
-	assert.deepEqual([...ses.itemCitations.keys()], [501, 502, 503]);
-	assert.equal(ses.itemCitations.get(501)?.ordinal, 1);
-	assert.equal(ses.itemCitations.get(503)?.ordinal, 11);
+	assert.deepEqual([...ses.itemCitations.keys()], [501, 502, 503, 504, 505]);
+	assert.equal(tracker.getCitationDisplayForItem(501), '[1] 1–4');
+	assert.equal(tracker.getCitationDisplayForItem(502), '[2] 1–4, 2, 5');
+	assert.equal(tracker.getCitationDisplayForItem(503), '[3] 1–4');
+	assert.equal(tracker.getCitationDisplayForItem(504), '[4] 1–4');
+	assert.equal(tracker.getCitationDisplayForItem(505), '[5] 2, 5');
 
 	// Single transient empty snapshot must preserve prior citations
 	mockSession.citationsByIndex = {};
 	await poller.pollOnce();
-	assert.equal(tracker.getActiveSession()?.itemCitations.size, 3);
+	assert.equal(tracker.getActiveSession()?.itemCitations.size, 5);
 
 	// Second consecutive empty snapshot confirms citations were actually removed
 	await poller.pollOnce();
 	assert.equal(tracker.getActiveSession()?.itemCitations.size, 0);
+
+	// 3. Collection tree reordering preserves subcollections, Feeds section, and selection indices without calling destructive cv.refresh()
+	let refreshCalled = false;
+	const cvRows = [
+		{ id: 'L1', type: 'library', level: 0, isLibrary: () => true },
+		{ id: 'C-cite', type: 'collection', level: 1, isCollection: () => true, ref: { key: 'K_WORD', name: '📝 PaperDraft.docx', _isBridgeFlowCollection: true } },
+		{ id: 'C-parent', type: 'collection', level: 1, isCollection: () => true, ref: { key: 'K_PARENT', name: '5.2 02_First-Author' } },
+		{ id: 'C-child', type: 'collection', level: 2, isCollection: () => true, ref: { key: 'K_CHILD', name: '5.2.2 PhD' } },
+		{ id: 'V-pub', type: 'publications', level: 1, isPublications: () => true },
+		{ id: 'V-trash', type: 'trash', level: 1, isTrash: () => true },
+		{ id: 'L-feeds', type: 'group', level: 0, isLibrary: () => true },
+		{ id: 'F-nature', type: 'feed', level: 1 },
+	];
+	const mockCv = {
+		_rows: cvRows,
+		_rowMap: {},
+		selection: { focused: 3, pivot: 3, selected: new Set([3]) }, // C-child ('5.2.2 PhD') is currently selected at index 3
+		refresh() { refreshCalled = true; },
+		getRow(idx) { return this._rows[idx]; },
+		getLevel(idx) { return this._rows[idx]?.level ?? 0; },
+		isContainerOpen() { return true; },
+		_refreshRowMap() {
+			this._rowMap = {};
+			this._rows.forEach((r, idx) => { this._rowMap[r.id] = idx; });
+		},
+		tree: { invalidate() {} },
+	};
+	mockCv._refreshRowMap();
+	const { reorderViewCollections } = await import('../src/domains/word-cite/collection-tree-order.ts');
+	assert.equal(reorderViewCollections(mockCv, new Set(['K_WORD'])), true);
+	assert.equal(refreshCalled, false);
+	// Word collection moved right above V-pub, C-parent and its level-2 C-child stay intact, and Feeds stay at the bottom
+	assert.deepEqual(
+		mockCv._rows.map((r) => r.id),
+		['L1', 'C-parent', 'C-child', 'C-cite', 'V-pub', 'V-trash', 'L-feeds', 'F-nature'],
+	);
+	// Selection of '5.2.2 PhD' (C-child) automatically updated from old index 3 to new index 2!
+	assert.equal(mockCv.selection.focused, 2);
+	assert.equal(mockCv.selection.selected.has(2), true);
 
 	delete globalThis.Zotero;
 });
@@ -342,7 +383,7 @@ test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replac
 	store.restoreSessionLayout({
 		id: 'ext', name: 'External', createdAt: 1,
 		groups: [{ id: 'g-ext', name: 'Ext', color: '#000', memberKeys: ['item:302'] }],
-		pinnedKeys: ['item:302'], remarks: {},
+		pinnedKeys: ['item:302'], remarks: {}, collapsed: [], virtualMembers: {}, remarkModes: {}, openKeys: [],
 	}, false);
 	assert.equal(store.state.rollingSessions.some((r) => r.kind === 'pre-replace'), true);
 	assert.equal(store.state.groups.some((g) => g.id === g2.id), false);

@@ -63,7 +63,7 @@ export async function insertItemsIntoWord(
 	kernel: PluginKernel,
 	win32: Win32BridgeService,
 	rawItems: readonly any[],
-	options: { verifyCursor?: boolean; onCommitted?: () => void } = {},
+	options: { verifyCursor?: boolean; onCommitted?: (session?: unknown) => void } = {},
 ): Promise<WordInsertResult> {
 	if (insertInFlight) return 'busy';
 	const { items } = deduplicateRegularItems(rawItems);
@@ -200,7 +200,7 @@ export async function insertItemsIntoWord(
 			committed = true;
 
 			try {
-				options.onCommitted?.();
+				options.onCommitted?.(this);
 			} catch { /* ignore UI refresh error after native commit */ }
 			return citations;
 		} catch (error) {

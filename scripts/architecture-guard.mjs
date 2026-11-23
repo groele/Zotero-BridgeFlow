@@ -112,7 +112,7 @@ check('Deprecated API ban (Cu.import / Components.classes)', () => {
 });
 
 // 6. Version alignment across package.json, manifest.json, update.json, baseline
-check('Version alignment & Zotero 10.0-12.* scope', () => {
+function checkVersionAlignment() {
 	const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 	const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
 	const update = JSON.parse(fs.readFileSync(path.join(root, 'update.json'), 'utf8'));
@@ -129,7 +129,13 @@ check('Version alignment & Zotero 10.0-12.* scope', () => {
 	if (baseline.lastReleasedVersion !== ver) {
 		throw new Error(`architecture-baseline.json (${baseline.lastReleasedVersion}) != package.json (${ver})`);
 	}
-});
+	const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+	if (lock.version !== ver || lock.packages[''].version !== ver) throw Error('Lockfile version mismatch');
+	if (!fs.readFileSync(path.join(root, 'prefs.xhtml'), 'utf8').includes(`"version":"${ver}"`)) throw Error('Preferences badge drift');
+	if (!fs.readFileSync(path.join(root, 'README.md'), 'utf8').includes(`**${ver}**`)) throw Error('README version drift');
+}
+check('Version alignment & Zotero 10.0-12.* scope', checkVersionAlignment);
+
 
 // 7. Fluent symmetry (en-US vs zh-CN) & zero duplicates
 check('Fluent FTL symmetry (en-US <-> zh-CN) & zero duplicates', () => {
@@ -174,6 +180,28 @@ check('Preferences XHTML zero hardcoded CJK & valid tabbed structure', () => {
 	if (tabCount < 4 || tabCount !== panelCount) {
 		throw new Error(`Expected matching >= 4 tabs (${tabCount}) and panels (${panelCount}) in prefs.xhtml`);
 	}
+});
+
+check('Debt baseline stays cleared', () => {
+	if (baseline.debtCleared !== true) throw Error('Debt baseline reopened');
+});
+check('Workspace HTML controls use the XHTML namespace', () => {
+	for (const f of srcFiles.filter(f => path.dirname(f).endsWith('workspace'))) {
+		if (/\.createElement\(/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+	}
+});
+check('Workspace 16px content and 24px subordinate indent', () => {
+	const css = fs.readFileSync(path.join(root, 'settings.css'), 'utf8');
+	if (!/padding:\s*\d+px 16px/.test(css) || !/margin-inline-start:\s*24px/.test(css)) throw Error('Preferences alignment drift');
+});
+check('Current Gecko APIs', () => {
+	for (const f of srcFiles) {
+		if (/\.ownerGlobal\b|\.jsm["']|Components\.utils/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+	}
+});
+check('Explicit package module and TypeScript 6+ toolchain', () => {
+	const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+	if (pkg.type !== 'module' || Number.parseInt(pkg.devDependencies.typescript) < 6) throw Error('Unsupported build configuration');
 });
 
 console.log(`\nArchitecture guard summary: ${passed} passed, ${failures.length} failed.`);

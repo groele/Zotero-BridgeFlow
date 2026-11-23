@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
@@ -54,25 +55,25 @@ export class WorkspaceHoverCard {
 		const host = this.doc.documentElement || this.doc.body;
 		if (!host) return;
 
-		const card = this.doc.createElement('div');
+		const card = createWorkspaceElement(this.doc, 'div');
 		card.className = 'zbf-hover-card';
 		card.setAttribute('data-zbf-hover-card', '1');
 
-		const titleEl = this.doc.createElement('div');
+		const titleEl = createWorkspaceElement(this.doc, 'div');
 		titleEl.className = 'zbf-hc-title';
 		titleEl.textContent = tab.title;
 		card.appendChild(titleEl);
 
 		const subParts = [tab.creatorYear, tab.source].filter(Boolean);
 		if (subParts.length) {
-			const subEl = this.doc.createElement('div');
+			const subEl = createWorkspaceElement(this.doc, 'div');
 			subEl.className = 'zbf-hc-meta';
 			subEl.textContent = subParts.join(' · ');
 			card.appendChild(subEl);
 		}
 
 		if (tab.remark) {
-			const remarkEl = this.doc.createElement('div');
+			const remarkEl = createWorkspaceElement(this.doc, 'div');
 			remarkEl.className = 'zbf-hc-note';
 			remarkEl.textContent = `备注：${tab.remark}`;
 			card.appendChild(remarkEl);
@@ -106,7 +107,7 @@ export class WorkspaceHoverCard {
 		}
 
 		if (statusParts.length) {
-			const footEl = this.doc.createElement('div');
+			const footEl = createWorkspaceElement(this.doc, 'div');
 			footEl.className = 'zbf-hc-meta';
 			footEl.textContent = statusParts.join(' · ');
 			card.appendChild(footEl);

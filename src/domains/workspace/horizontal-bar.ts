@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import { HorizontalPinnedStrip } from './pinned-strip.ts';
 import { openTextPromptModal } from './popup-menu-helpers.ts';
@@ -32,35 +33,22 @@ export class WorkspaceHorizontalBar {
 	private lastSelectedID = '';
 
 	constructor(
-		win: Window,
-		prefs: UnifiedPrefService,
-		store: WorkspaceStateStore,
-		tabs: WorkspaceTabController,
-		menus: WorkspaceTabContextMenu,
-		hover: WorkspaceHoverCard,
-		toolbar: WorkspaceToolbarActions,
-		onRefresh: () => void,
+		win: Window, prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController,
+		menus: WorkspaceTabContextMenu, hover: WorkspaceHoverCard, toolbar: WorkspaceToolbarActions, onRefresh: () => void,
 	) {
-		this.win = win;
-		this.doc = win.document;
-		this.prefs = prefs;
-		this.store = store;
-		this.tabs = tabs;
-		this.menus = menus;
-		this.hover = hover;
-		this.toolbar = toolbar;
-		this.onRefresh = onRefresh;
+		this.win = win; this.doc = win.document; this.prefs = prefs; this.store = store;
+		this.tabs = tabs; this.menus = menus; this.hover = hover; this.toolbar = toolbar; this.onRefresh = onRefresh;
 		this.pinnedStrip = new HorizontalPinnedStrip(win, prefs, tabs, menus, hover);
 	}
 
-	render(): void {
-		this.toolbar.render();
+	render(tracked: TrackedTab[]): void {
+		this.toolbar.render(tracked);
 		const tabBar = this.doc.getElementById('tab-bar-container');
 		const inner = tabBar?.querySelector('.tab-bar-inner-container') as HTMLElement | null;
 		if (!tabBar || !inner) return;
 
-		const sidebarHealthy = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
-		const compactTop = this.prefs.get('workspace.compactTopBar') && sidebarHealthy;
+		const sidebarHealthy = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed') && Boolean(this.doc.getElementById('zbf-sidebar')?.isConnected);
+		const compactTop = this.prefs.get('workspace.enableHorizontalGroups') && this.prefs.get('workspace.compactTopBar') && sidebarHealthy;
 		const enabled = this.prefs.get('workspace.enableHorizontalGroups') && !compactTop;
 		if (!enabled) {
 			tabBar.toggleAttribute('data-zbf-inline', compactTop);
@@ -71,7 +59,7 @@ export class WorkspaceHorizontalBar {
 		tabBar.setAttribute('data-zbf-inline', '1');
 		if (!this.inlineEl || !this.inlineEl.isConnected) {
 			this.doc.getElementById('zbf-inline')?.remove();
-			const inline = this.doc.createElement('div');
+			const inline = createWorkspaceElement(this.doc, 'div');
 			inline.id = 'zbf-inline';
 			inline.addEventListener('wheel', (e) => {
 				const we = e as WheelEvent;
@@ -79,14 +67,13 @@ export class WorkspaceHorizontalBar {
 				we.preventDefault();
 				inline.scrollLeft += we.deltaX || we.deltaY;
 			}, { passive: false });
-			inner.appendChild(inline);
+			inner.insertBefore(inline, inner.querySelector('.tabs-wrapper'));
 			this.inlineEl = inline;
 		}
 		this.inlineEl.removeAttribute('hidden');
 		this.inlineEl.textContent = '';
 
 		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
-		const tracked = this.tabs.buildTrackedTabs(this.win);
 		const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
 		const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
 
@@ -103,7 +90,7 @@ export class WorkspaceHorizontalBar {
 
 		const ungrouped = unpinned.filter((t) => !t.groupId);
 		if (ungrouped.length) {
-			const sec = this.doc.createElement('div');
+			const sec = createWorkspaceElement(this.doc, 'div');
 			sec.className = 'zbf-hsection';
 			for (const tab of ungrouped) {
 				sec.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
@@ -111,17 +98,22 @@ export class WorkspaceHorizontalBar {
 			this.inlineEl.appendChild(sec);
 		}
 
-		const addBtn = this.doc.createElement('button');
+		const addBtn = createWorkspaceElement(this.doc, 'button');
 		addBtn.type = 'button';
 		addBtn.className = 'zbf-add-group';
-		addBtn.title = '新建标签页分组（或拖放标签到此处建组）';
-		addBtn.appendChild(createWorkspaceIcon(this.doc, 'plus', 14));
+		addBtn.title = '新建分组';
+		addBtn.setAttribute('aria-label', '新建标签页分组');
+		addBtn.appendChild(createWorkspaceIcon(this.doc, 'plus', 13));
 		addBtn.addEventListener('click', () => {
 			openTextPromptModal(this.win, '新建分组', '输入分组名称...', '新分组', (name) => {
 				if (!name.trim()) return;
 				this.store.createGroup(name);
 				this.onRefresh();
 			});
+		});
+		addBtn.addEventListener('contextmenu', (e) => {
+			e.preventDefault();
+			this.menus.openAddGroupMenu(addBtn, e as MouseEvent);
 		});
 		this.bindDropToNewGroup(addBtn);
 		this.inlineEl.appendChild(addBtn);
@@ -141,22 +133,23 @@ export class WorkspaceHorizontalBar {
 	}
 
 	private buildGroupSection(group: TabGroup, members: TrackedTab[], selectedID: string, compactInactive: boolean): HTMLElement {
-		const sec = this.doc.createElement('div');
+		const sec = createWorkspaceElement(this.doc, 'div');
 		sec.className = 'zbf-hsection';
 		sec.setAttribute('data-grouped', 'true');
 		sec.style.setProperty('--zbf-gcolor', group.color);
 
 		const isCollapsed = this.store.state.collapsed.includes(group.id);
-		const head = this.doc.createElement('button');
+		const head = createWorkspaceElement(this.doc, 'button');
 		head.type = 'button';
 		head.className = 'zbf-hheading';
-		head.title = `${group.name} (${members.length}) · 单击折叠/展开，双击重命名，右键管理`;
+		const labelText = `${isCollapsed ? '▸' : '▾'} ${group.name} (${members.length})`;
+		head.title = labelText;
 
-		const dot = this.doc.createElement('span');
+		const dot = createWorkspaceElement(this.doc, 'span');
 		dot.className = 'zbf-sb-group-dot';
 		dot.style.background = group.color;
-		const nameSpan = this.doc.createElement('span');
-		nameSpan.textContent = `${isCollapsed ? '▸ ' : ''}${group.name} (${members.length})`;
+		const nameSpan = createWorkspaceElement(this.doc, 'span');
+		nameSpan.textContent = labelText;
 		head.append(dot, nameSpan);
 
 		head.addEventListener('click', () => {
@@ -183,7 +176,7 @@ export class WorkspaceHorizontalBar {
 		sec.appendChild(head);
 
 		if (!isCollapsed) {
-			const body = this.doc.createElement('div');
+			const body = createWorkspaceElement(this.doc, 'div');
 			body.className = 'zbf-hsection-body';
 			for (const tab of members) {
 				body.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
@@ -197,7 +190,7 @@ export class WorkspaceHorizontalBar {
 		const isSelected = !tab.virtual && tab.tabID === selectedID;
 		const collapsed = compactInactive && !isSelected;
 
-		const chip = this.doc.createElement('div');
+		const chip = createWorkspaceElement(this.doc, 'div');
 		chip.className = `zbf-htab${isSelected ? ' selected' : ''}${tab.sleeping ? ' sleeping' : ''}${tab.virtual ? ' virtual' : ''}${collapsed ? ' zbf-chip-collapsed' : ''}`;
 		chip.title = this.tabs.getDisplayTitle(tab);
 
@@ -206,13 +199,13 @@ export class WorkspaceHorizontalBar {
 			chip.addEventListener('dragstart', (e) => beginTabDrag((e as DragEvent).dataTransfer, tab.key, tab.tabID));
 		}
 
-		const titleEl = this.doc.createElement('span');
+		const titleEl = createWorkspaceElement(this.doc, 'span');
 		titleEl.className = 'zbf-htab-title';
 		titleEl.textContent = collapsed ? '···' : this.tabs.getDisplayTitle(tab);
 		chip.appendChild(titleEl);
 
 		if (!tab.virtual && !collapsed) {
-			const closeBtn = this.doc.createElement('button');
+			const closeBtn = createWorkspaceElement(this.doc, 'button');
 			closeBtn.type = 'button';
 			closeBtn.className = 'zbf-htab-close';
 			closeBtn.title = '关闭标签页';
@@ -245,7 +238,7 @@ export class WorkspaceHorizontalBar {
 	}
 
 	private startInlineRename(head: HTMLElement, group: TabGroup): void {
-		const input = this.doc.createElement('input') as HTMLInputElement;
+		const input = createWorkspaceElement(this.doc, 'input') as HTMLInputElement;
 		input.type = 'text';
 		input.className = 'zbf-inline-edit';
 		input.value = group.name;

@@ -215,7 +215,11 @@ const BridgeFlowPreferences = {
 				}
 				for (const input of inputs) {
 					const key = extractPrefKey(input);
-					if (key) input.value = String(prefs.get(key));
+					if (!key) continue;
+					const val = prefs.get(key);
+					const strVal = val == null || val === 'undefined' ? String(PREF_SCHEMA[key].defaultValue) : String(val);
+					input.value = strVal;
+					input.setAttribute('value', strVal);
 				}
 				const cacheDirInput = doc.getElementById('zbf-input-cachedir') as HTMLInputElement | null;
 				const defaultDir = (globalThis as any).Zotero?.zoterobridgeflow?.services?.history?.getDirectoryPath?.() || '';
@@ -255,15 +259,12 @@ const BridgeFlowPreferences = {
 			if (!key) continue;
 			const commitInput = () => {
 				const raw = input.type === 'number' ? Number(input.value) : input.value.trim();
-				const next = prefs.set(key, raw as never);
-				input.value = String(next);
+				input.value = String(prefs.set(key, raw as never));
 				updateDependencies(doc, prefs);
 				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
 			};
 			input.addEventListener('change', commitInput);
-			input.addEventListener('keydown', (ev: KeyboardEvent) => {
-				if (ev.key === 'Enter') commitInput();
-			});
+			input.addEventListener('keydown', (ev: KeyboardEvent) => { if (ev.key === 'Enter') commitInput(); });
 		}
 
 		bindActionBtn(doc.getElementById('zbf-clear-cache'), () => {
@@ -273,7 +274,7 @@ const BridgeFlowPreferences = {
 		});
 
 		bindActionBtn(doc.getElementById('zbf-clear-workspace-state'), () => {
-			prefs.set('workspace.state', '');
+			prefs.set('workspace.document', '');
 			const app = (globalThis as any).Zotero?.zoterobridgeflow;
 			app?.workspace?.store?.load?.();
 			app?.workspace?.refreshAllWindows?.();
@@ -313,7 +314,7 @@ const BridgeFlowPreferences = {
 		(doc as { l10n?: { ready?: Promise<unknown> } }).l10n?.ready?.then?.(() => { if (!disposed) syncMenulistLabels(doc); });
 
 		if ((globalThis as any).Zotero?.Prefs?.registerObserver) {
-			const keys = (Object.keys(PREF_SCHEMA) as PrefKey[]).filter((k) => k !== 'workspace.state' && k !== 'migrationVersion');
+			const keys = (Object.keys(PREF_SCHEMA) as PrefKey[]).filter((k) => k !== 'workspace.document');
 			for (const k of keys) {
 				localObservers.push((globalThis as any).Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => syncAll(), true));
 			}
@@ -322,6 +323,8 @@ const BridgeFlowPreferences = {
 		}
 
 		syncAll();
+		targetWin?.setTimeout?.(() => { if (!disposed) syncAll(); }, 30);
+		targetWin?.setTimeout?.(() => { if (!disposed) syncAll(); }, 150);
 		return true;
 	},
 };

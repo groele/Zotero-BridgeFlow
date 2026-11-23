@@ -49,8 +49,10 @@ export class WorkspaceDomainModule implements DomainModule {
 	private maintenanceTimer: ReturnType<typeof setInterval> | null = null;
 	private readingTimer: ReturnType<typeof setInterval> | null = null;
 	private autoGroupTimer: ReturnType<typeof setTimeout> | null = null;
+	private pendingAutoGroup = new Set<string>();
 	private lastRollingAt = 0;
 	private viewedDirty = false;
+	private refreshQueued = false;
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -64,8 +66,11 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.active = true;
 		this.disposables.reset();
 		this.store.load();
+		void this.store.initDiskCache().then((merged) => {
+			if (merged && this.active) this.refreshAllWindows();
+		});
 
-		this.disposables.add(this.store.onChange(() => this.refreshAllWindows()));
+		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
 
 		this.disposables.add(
 			this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()),
@@ -118,6 +123,10 @@ export class WorkspaceDomainModule implements DomainModule {
 			ui.destroy();
 		}
 		this.windows.clear();
+		this.pendingAutoGroup.clear();
+		if (this.viewedDirty) { this.viewedDirty = false; this.store.save(true); }
+		else { void this.store.diskCache.flushNow(this.store.state); }
+		this.store.diskCache.dispose();
 		this.disposables.disposeAll();
 	}
 
@@ -137,6 +146,15 @@ export class WorkspaceDomainModule implements DomainModule {
 		if (!ui) return;
 		ui.destroy();
 		this.windows.delete(win);
+	}
+
+	private queueRefresh(): void {
+		if (this.refreshQueued) return;
+		this.refreshQueued = true;
+		Promise.resolve().then(() => {
+			this.refreshQueued = false;
+			if (this.active) this.refreshAllWindows();
+		});
 	}
 
 	refreshAllWindows(): void {
@@ -180,6 +198,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	private handleTabEvent(event: string, tabIDs: readonly string[]): void {
 		for (const win of this.windows.keys()) {
 			const tracked = this.tabs.buildTrackedTabs(win);
+
 			for (const id of tabIDs) {
 				const tab = tracked.find((t) => t.tabID === id);
 				if (!tab) continue;
@@ -196,10 +215,13 @@ export class WorkspaceDomainModule implements DomainModule {
 		}
 
 		if (event === 'add' && this.kernel.prefs.get('workspace.newTabMode') === 'collection') {
+			for (const id of tabIDs) this.pendingAutoGroup.add(id);
 			if (this.autoGroupTimer !== null) clearTimeout(this.autoGroupTimer);
 			this.autoGroupTimer = setTimeout(() => {
 				this.autoGroupTimer = null;
-				for (const win of this.windows.keys()) this.tabs.autoGroupByCollection(win);
+				const added = this.pendingAutoGroup;
+				this.pendingAutoGroup = new Set();
+				for (const win of this.windows.keys()) this.tabs.autoGroupByCollection(win, added);
 				this.refreshAllWindows();
 			}, 80);
 		}
@@ -217,8 +239,9 @@ export class WorkspaceDomainModule implements DomainModule {
 			this.store.save();
 		}
 		if (this.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - this.lastRollingAt > 900_000) {
-			if (this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {
-				this.store.saveSession(`自动滚动快照 ${new Date().toLocaleTimeString()}`, { rolling: true });
+			const openKeys = [...new Set([...this.windows.keys()].flatMap(win => this.tabs.openKeys(win)))];
+			if (openKeys.length || this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {
+				this.store.saveSession(`自动滚动快照 ${new Date().toLocaleTimeString()}`, { rolling: true, openKeys });
 				this.lastRollingAt = Date.now();
 			}
 		}

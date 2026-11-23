@@ -44,11 +44,19 @@ export async function openItemAttachmentOrNote(
 ): Promise<boolean> {
 	try {
 		const hostItems = (globalThis as any).Zotero?.Items;
-		const item = itemID > 0 ? hostItems?.get?.(itemID) : null;
+		const vMeta = store.state.virtualMembers[`item:${itemID}`];
+		let item = itemID > 0 ? hostItems?.get?.(itemID) : null;
+		if ((!item || item.deleted) && vMeta?.parentItemID && vMeta.parentItemID !== itemID) {
+			item = hostItems?.get?.(vMeta.parentItemID);
+		}
 		if (!item || item.deleted) return false;
 
 		const isNote = item.isNote?.() === true;
-		const target = isNote || item.isAttachment?.() ? item : await item.getBestAttachment?.();
+		let target = isNote || item.isAttachment?.() ? item : await item.getBestAttachment?.();
+		if ((!target || target.deleted) && vMeta?.parentItemID) {
+			const parent = hostItems?.get?.(vMeta.parentItemID);
+			if (parent && !parent.deleted) target = await parent.getBestAttachment?.();
+		}
 		if (!target || target.deleted) return false;
 
 		const key = `item:${target.id}`;
@@ -59,12 +67,14 @@ export async function openItemAttachmentOrNote(
 		if (existing) {
 			if (!openInBackground) (win as any).Zotero_Tabs?.select?.(existing.id);
 		} else if (isNote) {
-			await (globalThis as any).Zotero?.Notes?.open?.(target.id, undefined, { openInBackground });
+			if (typeof (globalThis as any).Zotero?.Notes?.open !== 'function') return false;
+			await (globalThis as any).Zotero.Notes.open(target.id, undefined, { openInBackground });
 		} else {
 			if (target.isFileAttachment?.() && typeof target.fileExists === 'function' && !await target.fileExists()) {
 				return false;
 			}
-			await (globalThis as any).Zotero?.Reader?.open?.(target.id, undefined, { openInBackground });
+			if (typeof (globalThis as any).Zotero?.Reader?.open !== 'function') return false;
+			await (globalThis as any).Zotero.Reader.open(target.id, undefined, { openInBackground });
 		}
 
 		if (groupId !== undefined) {
@@ -173,7 +183,7 @@ export function autoGroupTrackedByCollection(
 	tracked: readonly { key: string; itemID: number; parentItemID: number; virtual: boolean; groupId: string }[],
 ): number {
 	const pane = (win as any).ZoteroPane;
-	const activeCol = pane?.getSelectedCollections?.()?.[0] || pane?.getSelectedCollection?.();
+	const activeCol = pane?.getSelectedCollections?.()?.[0];
 	const activeColName = String(activeCol?.name || '');
 	const hostItems = (globalThis as any).Zotero?.Items;
 	const hostCols = (globalThis as any).Zotero?.Collections;
@@ -202,33 +212,12 @@ export function autoGroupTrackedByCollection(
 export async function restoreSessionTabsAndLayout(
 	win: Window,
 	store: WorkspaceStateStore,
-	session: { groups: { id: string; memberKeys: string[] }[]; pinnedKeys: string[] },
-	openLimit = 10,
+	session: { openKeys: readonly string[] },
 ): Promise<number> {
-	const keysToOpen: Array<{ key: string; groupId?: string }> = [];
-	const seen = new Set<string>();
-	for (const g of session.groups) {
-		for (const k of g.memberKeys) {
-			if (!seen.has(k)) {
-				seen.add(k);
-				keysToOpen.push({ key: k, groupId: g.id });
-			}
-		}
-	}
-	for (const k of session.pinnedKeys) {
-		if (!seen.has(k)) {
-			seen.add(k);
-			keysToOpen.push({ key: k });
-		}
-	}
 	let opened = 0;
-	for (const entry of keysToOpen) {
-		if (opened >= openLimit) break;
-		const match = /^item:(\d+)$/.exec(entry.key);
-		if (match) {
-			const id = Number(match[1]);
-			if (await openItemAttachmentOrNote(win, store, id, entry.groupId, true)) opened++;
-		}
+	for (const key of new Set(session.openKeys)) {
+		const match = /^item:(\d+)$/.exec(key);
+		if (match && await openItemAttachmentOrNote(win, store, Number(match[1]), undefined, true)) opened++;
 	}
 	return opened;
 }

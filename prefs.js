@@ -7,7 +7,6 @@ pref("extensions.zotero.bridgeflow.fusion.sidebarCiteBadge", true);
 pref("extensions.zotero.bridgeflow.fusion.spotlightCrossDomain", true);
 pref("extensions.zotero.bridgeflow.fusion.lookupJumpExistingTab", true);
 pref("extensions.zotero.bridgeflow.debug", false);
-pref("extensions.zotero.bridgeflow.migrationVersion", 0);
 
 // Domain A: Workspace (Tabs, Groups, Sessions, Sleep, Spotlight)
 pref("extensions.zotero.bridgeflow.workspace.enableHorizontalGroups", true);
@@ -42,7 +41,7 @@ pref("extensions.zotero.bridgeflow.workspace.enableItemContextMenu", true);
 pref("extensions.zotero.bridgeflow.workspace.enableCopyReference", true);
 pref("extensions.zotero.bridgeflow.workspace.enableShowInFilesystem", true);
 pref("extensions.zotero.bridgeflow.workspace.enableReloadTab", true);
-pref("extensions.zotero.bridgeflow.workspace.state", "");
+pref("extensions.zotero.bridgeflow.workspace.document", "");
 
 // Domain B: Inspector (CSL Preview, Citation Lookup, PDF Preview & Folder)
 pref("extensions.zotero.bridgeflow.inspector.cslPreview.enable", true);

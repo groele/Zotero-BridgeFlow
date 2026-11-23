@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const buildVersion = String(pkg.version || '0.0.1');
-const buildTime = new Date().toISOString();
+const buildVersion = pkg.version;
 
 const sharedOptions = {
 	bundle: true,
@@ -18,7 +17,6 @@ const sharedOptions = {
 	minify: false,
 	define: {
 		__BRIDGEFLOW_VERSION__: JSON.stringify(buildVersion),
-		__BRIDGEFLOW_BUILD_TIME__: JSON.stringify(buildTime),
 	},
 };
 

@@ -157,16 +157,17 @@ export class WorkspaceSpotlightEngine {
 			}
 
 			if (this.prefs.get('workspace.enableSessions')) {
-				for (const ses of this.store.state.sessions.slice(0, 6)) {
+				for (const ses of this.store.state.sessions.filter((s) => !s.isTemplate).slice(0, 8)) {
 					if (needle && !ses.name.toLowerCase().includes(needle)) continue;
+					const itemCount = new Set([...ses.openKeys, ...ses.groups.flatMap((g) => g.memberKeys)]).size;
 					scored.push({
 						score: 52,
 						item: {
 							id: `session:${ses.id}`,
 							category: 'collection',
-							title: `工作区：${ses.name}`,
-							subtitle: `${ses.groups.length} 个分组 · 点击合并恢复此工作区`,
-							badge: ses.isTemplate ? '模板' : '会话',
+							title: `会话：${ses.name}`,
+							subtitle: `${itemCount} 篇文献 · ${ses.groups.length} 个分组 · 点击合并恢复`,
+							badge: '工作区',
 							action: () => {
 								void this.tabs.restoreSession(win, ses, true);
 							},
@@ -251,7 +252,7 @@ export class WorkspaceSpotlightEngine {
 				title: '> 保存当前工作区快照',
 				subtitle: '保存当前所有分组、固定标签与备注配置',
 				badge: '命令',
-				action: () => { this.store.saveSession(`快照 ${new Date().toLocaleTimeString()}`); },
+				action: () => { this.store.saveSession(`快照 ${new Date().toLocaleTimeString()}`, { openKeys: this.tabs.openKeys(win) }); },
 			},
 			{
 				id: 'cmd:undo-close',

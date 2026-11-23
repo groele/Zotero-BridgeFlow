@@ -16,9 +16,9 @@ export class DragCiteController {
 
 	private readonly kernel: PluginKernel;
 	private readonly win32: Win32BridgeService;
-	private readonly onInserted: () => void;
+	private readonly onInserted: (session?: unknown) => void;
 
-	constructor(kernel: PluginKernel, win32: Win32BridgeService, onInserted: () => void = () => {}) {
+	constructor(kernel: PluginKernel, win32: Win32BridgeService, onInserted: (session?: unknown) => void = () => {}) {
 		this.kernel = kernel;
 		this.win32 = win32;
 		this.onInserted = onInserted;

@@ -8,7 +8,7 @@
 		<html:div class="zbf-title-row">
 			<html:div class="zbf-title-left">
 				<html:h1 data-l10n-id="zbf-prefs-title"></html:h1>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.0.12"}'>v0.0.12</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.1.2"}'>v0.1.2</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"></html:span>
 		</html:div>
@@ -152,11 +152,11 @@
 						<html:div class="zbf-field-grid-2">
 							<html:div class="zbf-field-card">
 								<label data-l10n-id="zbf-pref-ws-autosleep" control="zbf-num-autosleep"></label>
-								<html:input id="zbf-num-autosleep" class="zbf-num-input" type="number" min="0" max="1440" data-zbf-pref="workspace.autoSleepMinutes" data-preference="extensions.zotero.bridgeflow.workspace.autoSleepMinutes"/>
+								<html:input id="zbf-num-autosleep" class="zbf-num-input" type="number" min="0" max="1440" value="0" data-zbf-pref="workspace.autoSleepMinutes"/>
 							</html:div>
 							<html:div class="zbf-field-card">
 								<label data-l10n-id="zbf-pref-ws-budget" control="zbf-num-budget"></label>
-								<html:input id="zbf-num-budget" class="zbf-num-input" type="number" min="0" max="100" data-zbf-pref="workspace.activeReaderBudget" data-preference="extensions.zotero.bridgeflow.workspace.activeReaderBudget"/>
+								<html:input id="zbf-num-budget" class="zbf-num-input" type="number" min="0" max="100" value="0" data-zbf-pref="workspace.activeReaderBudget"/>
 							</html:div>
 						</html:div>
 					</html:div>
@@ -166,7 +166,7 @@
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableStaleSuggestions" native="true" data-l10n-id="zbf-pref-ws-stale"/>
 					<html:div id="zbf-sub-stale-days" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-ws-stale-days" control="zbf-num-staledays"></label>
-						<html:input id="zbf-num-staledays" class="zbf-num-input" type="number" min="1" max="3650" data-zbf-pref="workspace.staleSuggestDays" data-preference="extensions.zotero.bridgeflow.workspace.staleSuggestDays"/>
+						<html:input id="zbf-num-staledays" class="zbf-num-input" type="number" min="1" max="3650" value="7" data-zbf-pref="workspace.staleSuggestDays"/>
 					</html:div>
 				</html:div>
 			</html:div>
@@ -231,11 +231,11 @@
 					<html:div class="zbf-field-grid-2">
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ws-row-height" control="zbf-num-rowh"></label>
-							<html:input id="zbf-num-rowh" class="zbf-num-input" type="number" min="28" max="72" data-zbf-pref="workspace.verticalTabRowHeight" data-preference="extensions.zotero.bridgeflow.workspace.verticalTabRowHeight"/>
+							<html:input id="zbf-num-rowh" class="zbf-num-input" type="number" min="28" max="72" value="42" data-zbf-pref="workspace.verticalTabRowHeight"/>
 						</html:div>
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ws-font-size" control="zbf-num-vfont"></label>
-							<html:input id="zbf-num-vfont" class="zbf-num-input" type="number" min="11" max="18" data-zbf-pref="workspace.verticalTabFontSize" data-preference="extensions.zotero.bridgeflow.workspace.verticalTabFontSize"/>
+							<html:input id="zbf-num-vfont" class="zbf-num-input" type="number" min="11" max="18" value="13" data-zbf-pref="workspace.verticalTabFontSize"/>
 						</html:div>
 					</html:div>
 				</html:div>
@@ -306,15 +306,15 @@
 					<html:div class="zbf-field-grid-3">
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ins-fontsize" control="zbf-input-fontsize"></label>
-							<html:input id="zbf-input-fontsize" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.fontsize" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.fontsize"/>
+							<html:input id="zbf-input-fontsize" class="zbf-num-input" type="text" value="1" data-zbf-pref="inspector.cslPreview.fontsize"/>
 						</html:div>
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ins-spacing" control="zbf-input-spacing"></label>
-							<html:input id="zbf-input-spacing" class="zbf-num-input" type="text" data-zbf-pref="inspector.cslPreview.spacing" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.spacing"/>
+							<html:input id="zbf-input-spacing" class="zbf-num-input" type="text" value="1.5" data-zbf-pref="inspector.cslPreview.spacing"/>
 						</html:div>
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ins-maxitems" control="zbf-num-maxitems"></label>
-							<html:input id="zbf-num-maxitems" class="zbf-num-input" type="number" min="1" max="500" data-zbf-pref="inspector.cslPreview.maxPreviewItems" data-preference="extensions.zotero.bridgeflow.inspector.cslPreview.maxPreviewItems"/>
+							<html:input id="zbf-num-maxitems" class="zbf-num-input" type="number" min="1" max="500" value="100" data-zbf-pref="inspector.cslPreview.maxPreviewItems"/>
 						</html:div>
 					</html:div>
 				</html:div>
@@ -329,7 +329,7 @@
 						<html:div class="zbf-path-block">
 							<label data-l10n-id="zbf-pref-ins-cache-dir" control="zbf-input-cachedir"></label>
 							<html:div class="zbf-path-row">
-								<html:input id="zbf-input-cachedir" class="zbf-text-input" type="text" data-zbf-pref="inspector.lookup.cacheDirectory" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheDirectory"/>
+								<html:input id="zbf-input-cachedir" class="zbf-text-input" type="text" value="" data-zbf-pref="inspector.lookup.cacheDirectory"/>
 								<button id="zbf-btn-browse-cachedir" native="true" data-l10n-id="zbf-btn-browse-dir"/>
 								<button id="zbf-btn-default-cachedir" native="true" data-l10n-id="zbf-btn-default-dir"/>
 							</html:div>
@@ -340,11 +340,11 @@
 					<html:div class="zbf-field-grid-2">
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ins-cache-max" control="zbf-num-cachemax"></label>
-							<html:input id="zbf-num-cachemax" class="zbf-num-input" type="number" min="100" max="100000" data-zbf-pref="inspector.lookup.cacheMaxEntries" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheMaxEntries"/>
+							<html:input id="zbf-num-cachemax" class="zbf-num-input" type="number" min="100" max="100000" value="2000" data-zbf-pref="inspector.lookup.cacheMaxEntries"/>
 						</html:div>
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ins-cache-ttl" control="zbf-num-cachettl"></label>
-							<html:input id="zbf-num-cachettl" class="zbf-num-input" type="number" min="7" max="3650" data-zbf-pref="inspector.lookup.cacheTtlDays" data-preference="extensions.zotero.bridgeflow.inspector.lookup.cacheTtlDays"/>
+							<html:input id="zbf-num-cachettl" class="zbf-num-input" type="number" min="7" max="3650" value="90" data-zbf-pref="inspector.lookup.cacheTtlDays"/>
 						</html:div>
 					</html:div>
 				</html:div>
@@ -386,7 +386,7 @@
 						</html:div>
 						<html:div class="zbf-inline-field">
 							<label data-l10n-id="zbf-pref-ins-pdf-zoom" control="zbf-num-pdfzoom"></label>
-							<html:input id="zbf-num-pdfzoom" class="zbf-num-input" type="number" min="60" max="200" data-zbf-pref="inspector.pdfPreview.defaultZoom" data-preference="extensions.zotero.bridgeflow.inspector.pdfPreview.defaultZoom"/>
+							<html:input id="zbf-num-pdfzoom" class="zbf-num-input" type="number" min="60" max="200" value="100" data-zbf-pref="inspector.pdfPreview.defaultZoom"/>
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.doubleClickOpen" native="true" data-l10n-id="zbf-pref-ins-pdf-dbl"/>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.showPageBadge" native="true" data-l10n-id="zbf-pref-ins-pdf-badge"/>
@@ -442,7 +442,7 @@
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.citationTags.enable" native="true" data-l10n-id="zbf-pref-wc-tags"/>
 					<html:div id="zbf-sub-wc-tag-text" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-wc-tag-text" control="zbf-input-tag-text"></label>
-						<html:input id="zbf-input-tag-text" class="zbf-text-input" type="text" data-zbf-pref="wordCite.citationTags.text" data-preference="extensions.zotero.bridgeflow.wordCite.citationTags.text"/>
+						<html:input id="zbf-input-tag-text" class="zbf-text-input" type="text" value="/Citations" data-zbf-pref="wordCite.citationTags.text"/>
 					</html:div>
 				</html:div>
 			</html:div>
@@ -452,19 +452,19 @@
 				<html:div class="zbf-field-grid-2">
 					<html:div class="zbf-field-card">
 						<label data-l10n-id="zbf-pref-wc-tag-debounce" control="zbf-num-tagdeb"></label>
-						<html:input id="zbf-num-tagdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.citationTagDebounceMs" data-preference="extensions.zotero.bridgeflow.wordCite.citationTagDebounceMs"/>
+						<html:input id="zbf-num-tagdeb" class="zbf-num-input" type="number" min="0" max="2000" value="150" data-zbf-pref="wordCite.citationTagDebounceMs"/>
 					</html:div>
 					<html:div class="zbf-field-card">
 						<label data-l10n-id="zbf-pref-wc-view-debounce" control="zbf-num-viewdeb"></label>
-						<html:input id="zbf-num-viewdeb" class="zbf-num-input" type="number" min="0" max="2000" data-zbf-pref="wordCite.itemsViewRefreshDebounceMs" data-preference="extensions.zotero.bridgeflow.wordCite.itemsViewRefreshDebounceMs"/>
+						<html:input id="zbf-num-viewdeb" class="zbf-num-input" type="number" min="0" max="2000" value="120" data-zbf-pref="wordCite.itemsViewRefreshDebounceMs"/>
 					</html:div>
 					<html:div class="zbf-field-card">
 						<label data-l10n-id="zbf-pref-wc-health-win" control="zbf-num-health"></label>
-						<html:input id="zbf-num-health" class="zbf-num-input" type="number" min="10000" max="3600000" data-zbf-pref="wordCite.healthWindowMs" data-preference="extensions.zotero.bridgeflow.wordCite.healthWindowMs"/>
+						<html:input id="zbf-num-health" class="zbf-num-input" type="number" min="10000" max="3600000" value="300000" data-zbf-pref="wordCite.healthWindowMs"/>
 					</html:div>
 					<html:div class="zbf-field-card">
 						<label data-l10n-id="zbf-pref-wc-slow-ms" control="zbf-num-slow"></label>
-						<html:input id="zbf-num-slow" class="zbf-num-input" type="number" min="5" max="5000" data-zbf-pref="wordCite.perfSlowThresholdMs" data-preference="extensions.zotero.bridgeflow.wordCite.perfSlowThresholdMs"/>
+						<html:input id="zbf-num-slow" class="zbf-num-input" type="number" min="5" max="5000" value="50" data-zbf-pref="wordCite.perfSlowThresholdMs"/>
 					</html:div>
 				</html:div>
 			</html:div>

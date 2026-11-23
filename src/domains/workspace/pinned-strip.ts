@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { WorkspaceHoverCard } from './hover-card.ts';
 import { addPopupButton, createFloatingPopup } from './popup-menu-helpers.ts';
@@ -34,7 +35,7 @@ export class HorizontalPinnedStrip {
 	render(container: HTMLElement, pinnedTabs: readonly TrackedTab[], selectedID: string): void {
 		if (!this.prefs.get('workspace.enablePinnedTabs') || !pinnedTabs.length) return;
 
-		const strip = this.doc.createElement('div');
+		const strip = createWorkspaceElement(this.doc, 'div');
 		strip.className = 'zbf-pinned-strip';
 		const maxVisible = 5;
 		const iconOnly = this.prefs.get('workspace.pinnedIconOnly');
@@ -42,13 +43,13 @@ export class HorizontalPinnedStrip {
 		const overflow = pinnedTabs.slice(maxVisible);
 
 		for (const tab of visible) {
-			const chip = this.doc.createElement('button');
+			const chip = createWorkspaceElement(this.doc, 'button');
 			chip.type = 'button';
 			chip.className = `zbf-pinned-chip${iconOnly ? ' icon-only' : ''}${tab.tabID === selectedID ? ' selected' : ''}`;
 			chip.title = tab.title;
 			chip.appendChild(createWorkspaceIcon(this.doc, 'pin', 12));
 			if (!iconOnly) {
-				const span = this.doc.createElement('span');
+				const span = createWorkspaceElement(this.doc, 'span');
 				span.textContent = this.tabs.getDisplayTitle(tab);
 				chip.appendChild(span);
 			}
@@ -62,7 +63,7 @@ export class HorizontalPinnedStrip {
 		}
 
 		if (overflow.length) {
-			const moreBtn = this.doc.createElement('button');
+			const moreBtn = createWorkspaceElement(this.doc, 'button');
 			moreBtn.type = 'button';
 			moreBtn.className = 'zbf-pinned-more';
 			moreBtn.textContent = `+${overflow.length}`;

@@ -1,7 +1,8 @@
+import { projectWorkspaceTabs } from './tab-projection.ts';
+import { closeWorkspaceTabs, isTabBusy } from './tab-close.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { OpenItemRequestPayload } from '../../kernel/types.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
-import { normalizeToRegularItem, safeGetItemField } from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import {
 	autoGroupTrackedByCollection,
@@ -9,11 +10,8 @@ import {
 	buildVirtualMetaFromTracked,
 	collectRecentlyClosed,
 	computeTabMoveTarget,
-	disambiguateSameParentTabs,
 	focusOrOpenTrackedItem,
-	formatCreatorYear,
 	openItemAttachmentOrNote,
-	resolvePrimaryCollectionName,
 	restoreSessionTabsAndLayout,
 	revealAttachmentFile,
 	selectItemInLibrary,
@@ -27,7 +25,13 @@ export class WorkspaceTabController {
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly clipboard: UnifiedClipboardService;
-	private closedStack: ClosedTabRecord[] = [];
+	private readonly closedByWindow = new WeakMap<Window, ClosedTabRecord[]>();
+
+	private closedHistory(win: Window): ClosedTabRecord[] {
+		let history = this.closedByWindow.get(win);
+		if (!history) { history = []; this.closedByWindow.set(win, history); }
+		return history;
+	}
 
 	constructor(
 		prefs: UnifiedPrefService,
@@ -39,85 +43,44 @@ export class WorkspaceTabController {
 		this.clipboard = clipboard;
 	}
 
-	tabKey(tab: any): string {
-		if (!tab) return '';
-		if (tab.type === 'library') return 'library';
-		const itemID = Number(tab.data?.itemID || tab.itemID || 0);
-		if (itemID > 0) return `item:${itemID}`;
-		return `tab:${String(tab.id || '')}`;
+	buildTrackedTabs(win: Window): TrackedTab[] {
+		return projectWorkspaceTabs(win, this.store, this.prefs);
 	}
 
-	buildTrackedTabs(win: Window): TrackedTab[] {
-		const tabsApi = (win as any).Zotero_Tabs;
-		const nativeTabs: any[] = Array.isArray(tabsApi?._tabs) ? tabsApi._tabs : [];
-		const hostItems = (globalThis as any).Zotero?.Items;
-		const tracked: TrackedTab[] = [];
-		const openKeys = new Set<string>();
-
-		for (const tab of nativeTabs) {
-			if (!tab || tab.type === 'library') continue;
-			const key = this.tabKey(tab);
-			openKeys.add(key);
-			const itemID = Number(tab.data?.itemID || 0);
-			const rawItem = itemID > 0 ? hostItems?.get?.(itemID) : null;
-			const parentItem = rawItem ? normalizeToRegularItem(rawItem) : null;
-			const displayItem = parentItem || rawItem;
-			const title = safeGetItemField(displayItem, 'title') || String(tab.title || key);
-			const shortTitle = safeGetItemField(displayItem, 'shortTitle') || title;
-			const filename = String(rawItem?.attachmentFilename || '');
-			const source = safeGetItemField(displayItem, 'publicationTitle') || safeGetItemField(displayItem, 'proceedingsTitle');
-			const creatorYear = formatCreatorYear(displayItem);
-			const collection = resolvePrimaryCollectionName(displayItem);
-
-			tracked.push({
-				tabID: String(tab.id || ''),
-				key,
-				type: String(tab.type || 'reader'),
-				itemID,
-				parentItemID: Number(parentItem?.id || itemID),
-				title,
-				shortTitle,
-				filename,
-				source,
-				creatorYear,
-				collection,
-				groupId: this.store.groupOfKey(key),
-				pinned: this.store.isPinned(key),
-				sleeping: this.store.isSleeping(key) || String(tab.type || '').endsWith('-unloaded'),
-				virtual: false,
-				remark: this.store.state.remarks[key] || '',
-				lastViewedAt: this.store.state.lastViewedAt[key] || 0,
-			});
+	openKeys(win: Window): string[] {
+		const tracked = this.buildTrackedTabs(win);
+		for (const t of tracked) {
+			if (t.itemID > 0) this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
 		}
+		return tracked.filter((t) => !t.virtual && t.itemID > 0).map((t) => t.key);
+	}
 
-		if (this.prefs.get('workspace.enableVirtualMembers')) {
-			for (const [key, meta] of Object.entries(this.store.state.virtualMembers)) {
-				if (openKeys.has(key)) continue;
-				const groupId = this.store.groupOfKey(key);
-				if (!groupId) continue;
-				tracked.push({
-					tabID: '',
-					key,
-					type: meta.type || 'reader',
-					itemID: meta.itemID,
-					parentItemID: meta.parentItemID || meta.itemID,
-					title: meta.title,
-					shortTitle: meta.shortTitle || meta.title,
-					filename: meta.filename || '',
-					source: meta.source || '',
-					creatorYear: meta.creatorYear || '',
-					collection: meta.collection || '',
-					groupId,
-					pinned: false,
-					sleeping: false,
-					virtual: true,
-					remark: this.store.state.remarks[key] || '',
-					lastViewedAt: this.store.state.lastViewedAt[key] || 0,
-				});
+	syncTrackedVirtualMeta(win: Window, groupId?: string): string[] {
+		const tracked = this.buildTrackedTabs(win).filter((t) => !groupId || t.groupId === groupId);
+		const keys: string[] = [];
+		for (const t of tracked) {
+			if (t.itemID > 0) {
+				this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
+				keys.push(t.key);
 			}
 		}
+		if (groupId) {
+			const grp = this.store.state.groups.find((g) => g.id === groupId);
+			for (const k of grp?.memberKeys || []) {
+				if (!keys.includes(k)) keys.push(k);
+			}
+		}
+		return [...new Set(keys)];
+	}
 
-		return disambiguateSameParentTabs(tracked);
+	saveGroupSnapshot(win: Window, groupId: string): WorkspaceSession | null {
+		const group = this.store.state.groups.find((g) => g.id === groupId);
+		if (!group) return null;
+		const groupKeys = this.syncTrackedVirtualMeta(win, groupId);
+		return this.store.saveSession(group.name, {
+			openKeys: groupKeys,
+			groupId,
+		});
 	}
 
 	selectTab(win: Window, tabID: string): boolean {
@@ -136,29 +99,7 @@ export class WorkspaceTabController {
 	}
 
 	async closeTabs(win: Window, tabIDs: readonly string[], options: TabCloseOptions = {}): Promise<number> {
-		const tabsApi = (win as any).Zotero_Tabs;
-		if (!tabsApi?.close || !tabIDs.length) return 0;
-		const selectedID = String(tabsApi.selectedID || '');
-		const trackedByID = new Map(this.buildTrackedTabs(win).map((t) => [t.tabID, t]));
-		const toClose: string[] = [];
-
-		for (const id of new Set(tabIDs)) {
-			const t = trackedByID.get(id);
-			if (!t || t.virtual) continue;
-			if (options.protectPinned && t.pinned) continue;
-			if (options.protectSelected && id === selectedID) continue;
-			if (t.groupId && (options.preserveVirtual ?? true) && this.prefs.get('workspace.enableVirtualMembers')) {
-				this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
-			}
-			if (t.itemID > 0) {
-				this.closedStack.push({ key: t.key, itemID: t.itemID, groupId: t.groupId, title: t.title, closedAt: Date.now() });
-				if (this.closedStack.length > 20) this.closedStack.shift();
-			}
-			toClose.push(id);
-		}
-		if (!toClose.length) return 0;
-		tabsApi.close(toClose.length === 1 ? toClose[0] : toClose);
-		return toClose.length;
+		return closeWorkspaceTabs(win, tabIDs, options, this.buildTrackedTabs(win), this.store, this.prefs, this.closedHistory(win));
 	}
 
 	undoCloseTab(win: Window): boolean {
@@ -169,11 +110,12 @@ export class WorkspaceTabController {
 				return true;
 			} catch { /* fall back */ }
 		}
-		const last = this.closedStack.pop();
+		const last = this.closedHistory(win).pop();
 		if (!last) return false;
 		void this.openVirtualOrItem(win, last.itemID, last.groupId || undefined, false);
 		return true;
 	}
+
 
 	sleepTab(win: Window, tabID: string): boolean {
 		if (!this.prefs.get('workspace.enableTabSleep')) return false;
@@ -181,9 +123,8 @@ export class WorkspaceTabController {
 		const tracked = this.buildTrackedTabs(win).find((t) => t.tabID === tabID);
 		if (!tracked || tracked.pinned || tracked.virtual || tracked.sleeping) return false;
 		if (tabsApi?.canUnload?.(tabID) === false) return false;
-		if (typeof tabsApi?.unload === 'function') {
-			tabsApi.unload(tabID);
-		}
+		if (typeof tabsApi?.unload !== 'function' || tabsApi.selectedID === tabID || isTabBusy(win, tabID)) return false;
+		if (tabsApi.unload(tabID) === false) return false;
 		this.store.setSleeping(tracked.key, true);
 		return true;
 	}
@@ -240,13 +181,13 @@ export class WorkspaceTabController {
 	}
 
 	async restoreSession(win: Window, session: WorkspaceSession, merge = true): Promise<number> {
-		this.store.restoreSessionLayout(session, merge);
+		this.store.restoreSessionLayout(session, merge, this.openKeys(win));
 		return restoreSessionTabsAndLayout(win, this.store, session);
 	}
 
 	getRecentlyClosed(win: Window): ClosedTabRecord[] {
 		const openKeys = new Set(this.buildTrackedTabs(win).filter((t) => !t.virtual).map((t) => t.key));
-		return collectRecentlyClosed(win, this.closedStack, openKeys);
+		return collectRecentlyClosed(win, this.closedHistory(win), openKeys);
 	}
 
 	getPublicationSuggestions(win: Window): PublicationGroupSuggestion[] {
@@ -273,17 +214,22 @@ export class WorkspaceTabController {
 	async archiveAndCloseGroup(win: Window, groupId: string): Promise<number> {
 		const group = this.store.state.groups.find((g) => g.id === groupId);
 		if (!group) return 0;
-		const ids = this.buildTrackedTabs(win).filter((t) => t.groupId === groupId && t.tabID).map((t) => t.tabID);
-		this.store.saveSession(group.name);
-		return this.closeTabs(win, ids, { preserveVirtual: true, protectPinned: true });
+		this.saveGroupSnapshot(win, groupId);
+		const ids = this.buildTrackedTabs(win).filter((t) => !t.virtual && t.groupId === groupId && t.tabID).map((t) => t.tabID);
+		const closed = await this.closeTabs(win, ids, { preserveVirtual: false, protectPinned: true });
+		const remainingLive = this.buildTrackedTabs(win).some((t) => !t.virtual && t.groupId === groupId);
+		if (!remainingLive) {
+			this.store.removeGroup(groupId);
+		}
+		return closed;
 	}
 
-	autoGroupByCollection(win: Window): number {
+	autoGroupByCollection(win: Window, onlyTabIDs?: ReadonlySet<string>): number {
 		return autoGroupTrackedByCollection(
 			win,
 			this.store,
 			this.prefs.get('workspace.multiCollectionStrategy'),
-			this.buildTrackedTabs(win),
+			this.buildTrackedTabs(win).filter(tab => !onlyTabIDs || onlyTabIDs.has(tab.tabID)),
 		);
 	}
 

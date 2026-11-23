@@ -289,17 +289,33 @@ export async function locateItemInZoteroLibrary(
 	}
 }
 
+export function stripItemTitleMarkup(value: string): string {
+	const raw = String(value || '');
+	if (!raw || !raw.includes('<')) return raw;
+	const render = (globalThis as any).Zotero?.Utilities?.Internal?.renderItemTitle;
+	if (typeof render === 'function') {
+		try {
+			const rendered = render.call((globalThis as any).Zotero.Utilities.Internal, raw);
+			const text = typeof rendered === 'string' ? rendered : String(rendered?.textContent ?? raw);
+			return text.replace(/<[^>]*>/g, '').trim();
+		} catch { /* fall through */ }
+	}
+	return raw.replace(/<[^>]*>/g, '').trim();
+}
+
 export function safeGetItemField(item: any, field: string): string {
 	if (!item || typeof item.getField !== 'function') return '';
+	let out = '';
 	try {
-		return String(item.getField(field, false, true) || '');
+		out = String(item.getField(field, false, true) || '');
 	} catch {
 		try {
-			return String(item.getField(field) || '');
+			out = String(item.getField(field) || '');
 		} catch {
 			return '';
 		}
 	}
+	return field === 'title' || field === 'shortTitle' ? stripItemTitleMarkup(out) : out;
 }
 
 export function formatCreatorYear(item: any): string {

@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { WorkspaceHoverCard } from './hover-card.ts';
@@ -33,7 +34,7 @@ export class WorkspaceVerticalSidebar {
 	private readonly menus: WorkspaceTabContextMenu;
 	private readonly hover: WorkspaceHoverCard;
 	private readonly popover: WorkspacePopover;
-	private readonly onToggleSpotlight: () => void;
+	private readonly onToggleSpotlight: (anchor?: HTMLElement) => void;
 	private readonly onRefresh: () => void;
 
 	private asideEl: HTMLElement | null = null;
@@ -54,7 +55,7 @@ export class WorkspaceVerticalSidebar {
 		menus: WorkspaceTabContextMenu,
 		hover: WorkspaceHoverCard,
 		popover: WorkspacePopover,
-		onToggleSpotlight: () => void,
+		onToggleSpotlight: (anchor?: HTMLElement) => void,
 		onRefresh: () => void,
 	) {
 		this.win = win;
@@ -73,8 +74,8 @@ export class WorkspaceVerticalSidebar {
 		this.wordCiteMap = new Map(badges);
 	}
 
-	render(): void {
-		const mainDeck = this.doc.getElementById('zotero-main-window-deck')
+	render(snapshot?: TrackedTab[]): void {
+		const mainDeck: Element | null = (this.win as any).Zotero_Tabs?.deck || this.doc.getElementById('zotero-main-window-deck')
 			|| this.doc.querySelector('#main-deck, #zotero-pane-stack')?.parentElement
 			|| this.doc.getElementById('zotero-pane')?.parentElement;
 		if (!mainDeck) return;
@@ -98,7 +99,7 @@ export class WorkspaceVerticalSidebar {
 		for (const [mode, btn] of this.viewButtons) {
 			btn.classList.toggle('active', mode === this.viewMode);
 		}
-		this.renderList();
+		this.renderList(snapshot);
 	}
 
 	destroy(): void {
@@ -111,26 +112,26 @@ export class WorkspaceVerticalSidebar {
 	}
 
 	private buildShell(mainDeck: Element): void {
-		const aside = this.doc.createElement('aside');
+		const aside = createWorkspaceElement(this.doc, 'aside');
 		aside.id = 'zbf-sidebar';
 
-		const header = this.doc.createElement('div');
+		const header = createWorkspaceElement(this.doc, 'div');
 		header.className = 'zbf-sb-header';
-		const title = this.doc.createElement('div');
+		const title = createWorkspaceElement(this.doc, 'div');
 		title.className = 'zbf-sb-title';
-		title.appendChild(createWorkspaceIcon(this.doc, 'bridge', 14));
-		const titleText = this.doc.createElement('span');
-		titleText.textContent = 'BridgeFlow 文献工作区';
+		title.appendChild(createWorkspaceIcon(this.doc, 'layers', 13));
+		const titleText = createWorkspaceElement(this.doc, 'span');
+		titleText.textContent = 'BridgeFlow';
 		title.appendChild(titleText);
 
-		const actions = this.doc.createElement('div');
+		const actions = createWorkspaceElement(this.doc, 'div');
 		actions.className = 'zbf-sb-actions';
 		header.append(title, actions);
 		aside.appendChild(header);
 
-		const searchWrap = this.doc.createElement('div');
+		const searchWrap = createWorkspaceElement(this.doc, 'div');
 		searchWrap.className = 'zbf-sb-search-wrap';
-		const searchInput = this.doc.createElement('input') as HTMLInputElement;
+		const searchInput = createWorkspaceElement(this.doc, 'input') as HTMLInputElement;
 		searchInput.type = 'search';
 		searchInput.className = 'zbf-sb-search';
 		searchInput.placeholder = '筛选标题、作者、备注、分组...';
@@ -142,10 +143,10 @@ export class WorkspaceVerticalSidebar {
 		searchWrap.appendChild(searchInput);
 		aside.appendChild(searchWrap);
 
-		const views = this.doc.createElement('div');
+		const views = createWorkspaceElement(this.doc, 'div');
 		views.className = 'zbf-sb-views';
 		for (const [mode, label] of [['groups', '分组'], ['collections', '集合'], ['status', '状态']] as const) {
-			const vBtn = this.doc.createElement('button');
+			const vBtn = createWorkspaceElement(this.doc, 'button');
 			vBtn.type = 'button';
 			vBtn.className = 'zbf-sb-view-btn';
 			vBtn.setAttribute('data-view-mode', mode);
@@ -159,15 +160,15 @@ export class WorkspaceVerticalSidebar {
 		}
 		aside.appendChild(views);
 
-		const list = this.doc.createElement('div');
+		const list = createWorkspaceElement(this.doc, 'div');
 		list.className = 'zbf-sb-list';
 		aside.appendChild(list);
 
-		const status = this.doc.createElement('div');
+		const status = createWorkspaceElement(this.doc, 'div');
 		status.className = 'zbf-sb-status';
 		aside.appendChild(status);
 
-		const splitter = this.doc.createElement('div');
+		const splitter = createWorkspaceElement(this.doc, 'div');
 		splitter.className = 'zbf-sb-splitter';
 		bindSidebarSplitter(this.doc, aside, splitter, this.prefs);
 		aside.appendChild(splitter);
@@ -190,17 +191,20 @@ export class WorkspaceVerticalSidebar {
 				this.onRefresh();
 			});
 		});
-		this.addHeaderBtn(actions, 'folder', '按集合自动分组', () => {
+		this.addHeaderBtn(actions, 'folder', '按 Zotero 集合自动归组', () => {
 			this.tabs.autoGroupByCollection(this.win);
 			this.onRefresh();
 		});
-		if (this.prefs.get('workspace.enableSpotlight')) {
-			this.addHeaderBtn(actions, 'search', '打开快速查找 (Ctrl+P)', () => this.onToggleSpotlight());
+		if (this.prefs.get('workspace.enableTabSleep')) {
+			this.addHeaderBtn(actions, 'sleep', '休眠后台非固定标签（释放内存）', () => {
+				this.tabs.sleepInactiveTabs(this.win);
+				this.onRefresh();
+			});
 		}
 		if (this.prefs.get('workspace.enableSessions')) {
-			this.addHeaderBtn(actions, 'archive', '打开工作区快照中心', (btn) => this.popover.openHub(btn));
+			this.addHeaderBtn(actions, 'workspace', '打开工作区与已保存文献快照', (btn) => this.popover.openHub(btn));
 		}
-		this.addHeaderBtn(actions, 'close', '收起文献工作区侧栏', () => {
+		this.addHeaderBtn(actions, 'sidebar', '折叠 / 展开侧边栏', () => {
 			this.prefs.set('workspace.verticalSidebarCollapsed', true);
 			this.onRefresh();
 		});
@@ -211,12 +215,12 @@ export class WorkspaceVerticalSidebar {
 		this.statusEl = status;
 	}
 
-	private renderList(): void {
+	private renderList(snapshot?: TrackedTab[]): void {
 		if (!this.listEl || !this.selection) return;
 		this.listEl.textContent = '';
 
 		const needle = this.searchTerm.trim().toLowerCase();
-		const allTracked = this.tabs.buildTrackedTabs(this.win);
+		const allTracked = snapshot ?? this.tabs.buildTrackedTabs(this.win);
 		const filtered = needle
 			? allTracked.filter((t) => `${t.title} ${t.shortTitle} ${t.creatorYear} ${t.collection} ${t.remark}`.toLowerCase().includes(needle))
 			: allTracked;
@@ -228,7 +232,7 @@ export class WorkspaceVerticalSidebar {
 			hover: this.hover, selection: this.selection, wordCiteMap: this.wordCiteMap, selectedID, onRefresh: this.onRefresh,
 		};
 
-		if (!filtered.length) {
+		if (!filtered.length && !(this.viewMode === 'groups' && !this.searchTerm && this.store.state.groups.length)) {
 			this.renderEmptyState(allTracked.length > 0);
 		} else if (this.viewMode === 'groups') {
 			const pinned = filtered.filter((t) => !t.virtual && t.pinned);
@@ -237,15 +241,15 @@ export class WorkspaceVerticalSidebar {
 			for (const grp of this.store.state.groups) {
 				const members = filtered.filter((t) => (t.virtual || !t.pinned) && t.groupId === grp.id);
 				const collapsed = this.store.state.collapsed.includes(grp.id);
-				const head = this.doc.createElement('button');
+				const head = createWorkspaceElement(this.doc, 'button');
 				head.type = 'button';
 				head.className = 'zbf-sb-group-head';
 				head.tabIndex = 0;
 				head.setAttribute('data-zbf-nav', 'head');
-				const dot = this.doc.createElement('span');
+				const dot = createWorkspaceElement(this.doc, 'span');
 				dot.className = 'zbf-sb-group-dot';
 				dot.style.background = grp.color;
-				const label = this.doc.createElement('span');
+				const label = createWorkspaceElement(this.doc, 'span');
 				label.textContent = `${collapsed ? '▸' : '▾'} ${grp.name} (${members.length})`;
 				head.append(dot, label);
 				head.addEventListener('click', () => {
@@ -335,14 +339,14 @@ export class WorkspaceVerticalSidebar {
 		title: string,
 		onClick: (btn: HTMLButtonElement) => void,
 	): void {
-		const btn = this.doc.createElement('button');
+		const btn = createWorkspaceElement(this.doc, 'button');
 		btn.type = 'button';
 		btn.className = 'zbf-sb-icon-btn';
 		btn.title = title;
 		btn.setAttribute('tooltiptext', title);
 		btn.setAttribute('aria-label', title);
 		btn.setAttribute('data-action', icon);
-		btn.appendChild(createWorkspaceIcon(this.doc, icon, 14));
+		btn.appendChild(createWorkspaceIcon(this.doc, icon, 13));
 		btn.addEventListener('click', () => onClick(btn));
 		container.appendChild(btn);
 	}

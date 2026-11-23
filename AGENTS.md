@@ -13,5 +13,6 @@
    - 任何单文件不得超过 `360` 行；执行 `npm test` 必须同时通过 `tsc --noEmit`、esbuild 打包、架构守卫 (`scripts/architecture-guard.mjs`)、语法校验与全部单元测试。
 4. **设置面板与本地化规范**：
    - 采用 5 卡片单层折叠布局（仅第 1 张卡片默认展开）、严格遵守 40px 黄金对齐基准线（16px / 24px / 40px）与 Fluent `data-l10n-id` 全本地化（`zh-CN` / `en-US` 100% 对称，零硬编码中文）。
-5. **冲突停用与无损迁移**：
-   - 启动时自动安全停用旧版 `zotero-tabflow@groele`、`zotero-viewflow@groele`、`citeflow@groele` 与 `zoterocitation@polygon.org`，并一次性无损迁移旧偏好设置与本地状态，不删除旧键，保障可回退。
+5. **独立运行与数据契约**：
+   - BridgeFlow 使用自己的偏好命名空间与工作区格式。工作区持久化和 JSON 导入以同一份运行时 schema 为准，类型从 schema 推导。
+   - 用户管理其他插件的启停。新功能直接基于当前 Zotero API 与 BridgeFlow 原生模型开发。

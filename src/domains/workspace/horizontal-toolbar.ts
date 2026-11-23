@@ -1,132 +1,206 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
+import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
+import type { TrackedTab } from './types.ts';
 import { createWorkspaceIcon, type WorkspaceIconName } from './workspace-icons.ts';
 import type { WorkspacePopover } from './workspace-popover.ts';
+
+interface ToolbarActionItem {
+	id: string;
+	label: string;
+	title?: string;
+	icon: WorkspaceIconName;
+	iconOnly?: boolean;
+	count?: number;
+	status?: 'attention';
+	pressed?: boolean;
+	popup?: 'dialog' | 'menu';
+	run: (button: HTMLButtonElement) => void;
+}
 
 export class WorkspaceToolbarActions {
 	private readonly win: Window;
 	private readonly doc: Document;
 	private readonly prefs: UnifiedPrefService;
+	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
 	private readonly popover: WorkspacePopover;
-	private readonly onToggleSpotlight: () => void;
+	private readonly onToggleSpotlight: (anchor?: HTMLElement) => void;
 	private readonly onRefresh: () => void;
+	private readonly buttons = new Map<string, HTMLButtonElement>();
 	private hostEl: HTMLElement | null = null;
 
 	constructor(
 		win: Window,
 		prefs: UnifiedPrefService,
+		store: WorkspaceStateStore,
 		tabs: WorkspaceTabController,
 		popover: WorkspacePopover,
-		onToggleSpotlight: () => void,
+		onToggleSpotlight: (anchor?: HTMLElement) => void,
 		onRefresh: () => void,
 	) {
 		this.win = win;
 		this.doc = win.document;
 		this.prefs = prefs;
+		this.store = store;
 		this.tabs = tabs;
 		this.popover = popover;
 		this.onToggleSpotlight = onToggleSpotlight;
 		this.onRefresh = onRefresh;
 	}
 
-	render(): void {
-		const bar = this.doc.getElementById('zotero-tabs-toolbar');
+	render(tracked?: readonly TrackedTab[]): void {
+		const bar = this.doc.getElementById('zotero-tabs-toolbar')
+			|| this.doc.querySelector('#tab-bar-container .tab-bar-inner-container');
 		if (!bar) return;
 
 		if (!this.hostEl || !this.hostEl.isConnected) {
 			this.doc.getElementById('zbf-toolbar-actions')?.remove();
-			const wrap = this.doc.createElement('div');
+			const wrap = createWorkspaceElement(this.doc, 'div');
 			wrap.id = 'zbf-toolbar-actions';
-			bar.prepend(wrap);
+			bar.appendChild(wrap);
 			this.hostEl = wrap;
 		}
-		this.hostEl.textContent = '';
 
-		const compact = this.prefs.get('workspace.compactTopBar');
-		const sidebarOn = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
-		const showStale = this.prefs.get('workspace.enableStaleSuggestions');
-		const staleCount = showStale ? this.tabs.findStaleTabs(this.win).length : 0;
+		const sidebarHealthy = this.prefs.get('workspace.enableVerticalSidebar')
+			&& !this.prefs.get('workspace.verticalSidebarCollapsed')
+			&& Boolean(this.doc.getElementById('zbf-sidebar')?.isConnected);
+		const compactMode = this.prefs.get('workspace.enableHorizontalGroups')
+			&& this.prefs.get('workspace.compactTopBar')
+			&& sidebarHealthy;
 
-		this.addBtn('topbar', compact ? '展开横版分栏' : '切换为精简顶栏', () => {
-			this.prefs.set('workspace.compactTopBar', !compact);
-			this.onRefresh();
-		}, { pressed: compact });
+		const actions: ToolbarActionItem[] = [];
+		if (compactMode || (this.prefs.get('workspace.enableHorizontalGroups') && sidebarHealthy)) {
+			actions.push({
+				id: 'compact',
+				icon: 'topbar',
+				iconOnly: true,
+				pressed: compactMode,
+				label: '精简顶栏',
+				title: compactMode
+					? '恢复水平分组标签栏'
+					: '收起水平文献标签以节省顶部空间（保留文库与侧栏）',
+				run: () => {
+					this.prefs.set('workspace.compactTopBar', !compactMode);
+					this.onRefresh();
+				},
+			});
+		}
 
-		this.addBtn('sidebar', '展开/收起左侧竖版文献工作区', () => {
-			const cur = this.prefs.get('workspace.enableVerticalSidebar') && !this.prefs.get('workspace.verticalSidebarCollapsed');
-			if (!this.prefs.get('workspace.enableVerticalSidebar')) {
-				this.prefs.set('workspace.enableVerticalSidebar', true);
-				this.prefs.set('workspace.verticalSidebarCollapsed', false);
-			} else {
-				this.prefs.set('workspace.verticalSidebarCollapsed', cur);
-			}
-			this.onRefresh();
-		}, { pressed: sidebarOn });
-
-		this.addBtn('folder', '按所属 Zotero 集合自动分组当前标签页', () => {
-			this.tabs.autoGroupByCollection(this.win);
-			this.onRefresh();
-		});
-
-		if (this.prefs.get('workspace.enableSessions')) {
-			this.addBtn('bridge', '打开工作区快照、模板与 JSON 备份中心', (btn) => {
-				this.popover.openHub(btn);
+		if (this.prefs.get('workspace.enableVerticalSidebar')) {
+			const open = !this.prefs.get('workspace.verticalSidebarCollapsed');
+			actions.push({
+				id: 'sidebar',
+				icon: 'sidebar',
+				iconOnly: true,
+				pressed: open,
+				label: '标签侧栏',
+				title: open ? '收起垂直标签侧边栏' : '展开垂直标签侧边栏',
+				run: () => {
+					this.prefs.set('workspace.verticalSidebarCollapsed', open);
+					this.onRefresh();
+				},
 			});
 		}
 
 		if (this.prefs.get('workspace.enableSpotlight')) {
-			this.addBtn('search', '打开快速查找与命令面板 (Ctrl+P)', () => {
-				this.onToggleSpotlight();
+			const isMac = Boolean((globalThis as any).Zotero?.isMac);
+			const shortcut = isMac ? '⌘P' : 'Ctrl+P';
+			actions.push({
+				id: 'search',
+				icon: 'search',
+				label: '快速查找',
+				title: `查找标签、文献和操作（${shortcut}）`,
+				run: (button) => this.onToggleSpotlight(button),
 			});
 		}
 
-		if (this.prefs.get('workspace.enableTabSleep')) {
-			this.addBtn('sleep', '休眠所有后台非固定标签页以释放内存', () => {
-				this.tabs.sleepInactiveTabs(this.win);
-				this.onRefresh();
+		if (this.prefs.get('workspace.enableSessions')) {
+			const totalSaved = this.store.state.sessions.length + this.store.state.rollingSessions.length;
+			actions.push({
+				id: 'workspace',
+				icon: 'workspace',
+				popup: 'dialog',
+				count: totalSaved,
+				label: '工作区',
+				title: `已保存的工作区与快照 (${totalSaved})`,
+				run: (button) => this.popover.openHub(button),
 			});
 		}
 
-		if (showStale && staleCount > 0) {
-			this.addBtn('clock', `查看超过阈值天数的陈旧标签页（${staleCount} 篇）`, (btn, ev) => {
-				this.popover.openStaleMenu(btn, ev);
-			}, { count: staleCount, attention: true });
+		if (this.prefs.get('workspace.enableStaleSuggestions')) {
+			const staleCount = this.tabs.findStaleTabs(this.win).length;
+			if (staleCount > 0) {
+				actions.push({
+					id: 'stale',
+					icon: 'clock',
+					popup: 'menu',
+					count: staleCount,
+					status: 'attention',
+					label: '建议关闭',
+					title: `建议关闭 (${staleCount})`,
+					run: (button) => this.popover.openStaleMenu(button),
+				});
+			}
 		}
+
+		this.syncButtons(this.hostEl, actions);
 	}
 
 	destroy(): void {
+		this.buttons.clear();
 		this.hostEl?.remove();
 		this.hostEl = null;
 	}
 
-	private addBtn(
-		icon: WorkspaceIconName,
-		tooltip: string,
-		onClick: (btn: HTMLButtonElement, ev: MouseEvent) => void,
-		opts: { pressed?: boolean; count?: number; attention?: boolean } = {},
-	): void {
-		if (!this.hostEl) return;
-		const btn = this.doc.createElement('button');
-		btn.type = 'button';
-		btn.className = `zbf-tb-btn${opts.attention ? ' attention' : ''}`;
-		btn.title = tooltip;
-		btn.setAttribute('tooltiptext', tooltip);
-		btn.setAttribute('aria-label', tooltip);
-		btn.setAttribute('data-action', icon);
-		if (opts.pressed !== undefined) btn.setAttribute('aria-pressed', String(opts.pressed));
-		btn.appendChild(createWorkspaceIcon(this.doc, icon, 15));
-
-		if (opts.count !== undefined && opts.count > 0) {
-			const badge = this.doc.createElement('span');
-			badge.className = 'zbf-tb-count';
-			badge.textContent = opts.count > 99 ? '99+' : String(opts.count);
-			btn.appendChild(badge);
+	private syncButtons(bar: HTMLElement, actions: readonly ToolbarActionItem[]): void {
+		const ids = new Set(actions.map(({ id }) => id));
+		for (const [id, button] of this.buttons) {
+			if (!ids.has(id)) {
+				button.remove();
+				this.buttons.delete(id);
+			}
 		}
-		btn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			onClick(btn, e as MouseEvent);
-		});
-		this.hostEl.appendChild(btn);
+		bar.hidden = actions.length === 0;
+		let next = bar.firstElementChild;
+		for (const action of actions) {
+			const { id, label, title, icon, count, pressed, popup } = action;
+			let button = this.buttons.get(id);
+			if (!button) {
+				button = createWorkspaceElement(this.doc, 'button');
+				button.type = 'button';
+				button.className = 'zbf-tb-btn';
+				button.setAttribute('data-action', id);
+				const svg = createWorkspaceIcon(this.doc, icon, 16);
+				const caption = createWorkspaceElement(this.doc, 'span');
+				caption.className = 'zbf-tb-label';
+				const badge = createWorkspaceElement(this.doc, 'span');
+				badge.className = 'zbf-tb-count';
+				badge.setAttribute('aria-hidden', 'true');
+				button.append(svg, caption, badge);
+				this.buttons.set(id, button);
+			}
+			const caption = button.children[1] as HTMLElement;
+			const badge = button.children[2] as HTMLElement;
+			if (caption.textContent !== label) caption.textContent = label;
+			const number = count ? (count > 99 ? '99+' : String(count)) : '';
+			if (badge.textContent !== number) badge.textContent = number;
+			badge.hidden = !number;
+			button.title = title ?? label;
+			button.setAttribute('aria-label', title?.startsWith(label) ? title : title ? `${label} · ${title}` : label);
+			if (popup) button.setAttribute('aria-haspopup', popup);
+			else button.removeAttribute('aria-haspopup');
+			if (pressed !== undefined) button.setAttribute('aria-pressed', String(pressed));
+			else button.removeAttribute('aria-pressed');
+			button.classList.toggle('zbf-tb-icon-only', Boolean(action.iconOnly));
+			button.classList.toggle('zbf-tb-attention', action.status === 'attention');
+			button.onclick = (e) => {
+				e.stopPropagation();
+				action.run(button!);
+			};
+			if (button !== next) bar.insertBefore(button, next);
+			next = button.nextElementSibling;
+		}
 	}
 }

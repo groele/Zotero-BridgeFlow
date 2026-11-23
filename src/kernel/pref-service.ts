@@ -18,7 +18,7 @@ function resolveDefaultAdapter(): HostPrefsAdapter | null {
 export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): PrefValue<K> {
 	const desc = PREF_SCHEMA[key] as PrefDescriptor;
 	const def = desc.defaultValue;
-	if (raw === undefined || raw === null) return def as PrefValue<K>;
+	if (raw === undefined || raw === null || raw === 'undefined' || raw === 'null') return def as PrefValue<K>;
 	if (typeof def === 'boolean') return Boolean(raw) as PrefValue<K>;
 	if (typeof def === 'number') {
 		const n = typeof raw === 'number' ? raw : Number(raw);
@@ -29,6 +29,10 @@ export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): Pre
 		return clamped as PrefValue<K>;
 	}
 	const str = String(raw);
+	if (key === 'inspector.cslPreview.fontsize' || key === 'inspector.cslPreview.spacing') {
+		const num = Number(str);
+		if (!Number.isFinite(num) || num <= 0) return def as PrefValue<K>;
+	}
 	if (desc.enumValues && !desc.enumValues.includes(str)) {
 		return def as PrefValue<K>;
 	}
@@ -99,10 +103,11 @@ export class UnifiedPrefService {
 		for (const key of Object.keys(PREF_SCHEMA) as PrefKey[]) {
 			const full = this.fullKey(key);
 			const existing = this.readRaw(full);
-			if (existing === undefined) {
-				const desc = PREF_SCHEMA[key] as PrefDescriptor;
+			const desc = PREF_SCHEMA[key] as PrefDescriptor;
+			const normalized = normalizePrefValue(key, existing);
+			if (existing === undefined || existing === 'undefined' || existing === 'null' || existing !== normalized) {
 				try {
-					adapter.set(full, desc.defaultValue, true);
+					adapter.set(full, normalized ?? desc.defaultValue, true);
 				} catch { /* ignore */ }
 			}
 		}

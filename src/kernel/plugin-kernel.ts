@@ -1,7 +1,6 @@
 import { DisposableStack } from './disposable.ts';
 import { TypedEventBus } from './event-bus.ts';
 import { KernelLogger } from './logger.ts';
-import { runLegacyPrefMigration, type MigrationReport } from './migration.ts';
 import { NativeRuntime } from './native-runtime.ts';
 import { UnifiedNotifierHub } from './notifier-hub.ts';
 import type { PrefKey } from './pref-schema.ts';
@@ -16,7 +15,6 @@ export class PluginKernel {
 	public readonly runtime = new NativeRuntime();
 	public readonly notifier: UnifiedNotifierHub;
 	public readonly disposables = new DisposableStack();
-	public lastMigrationReport: MigrationReport | null = null;
 	public _ftlRegistered = false;
 
 	private readonly domains = new Map<DomainModule['id'], DomainModule>();
@@ -49,7 +47,6 @@ export class PluginKernel {
 	async start(): Promise<void> {
 		if (this.started) return;
 		this.started = true;
-		this.lastMigrationReport = runLegacyPrefMigration(this.prefs);
 		this.prefs.seedDefaults();
 		this.syncLoggerConfig();
 		this.notifier.start();

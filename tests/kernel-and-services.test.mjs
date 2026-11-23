@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DisposableStack } from '../src/kernel/disposable.ts';
 import { TypedEventBus } from '../src/kernel/event-bus.ts';
-import { runLegacyPrefMigration, CURRENT_MIGRATION_VERSION } from '../src/kernel/migration.ts';
 import { NativeRuntime } from '../src/kernel/native-runtime.ts';
 import { UnifiedPrefService } from '../src/kernel/pref-service.ts';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
@@ -61,26 +60,13 @@ test('NativeRuntime patches and restores nested wrapper chains safely', () => {
 	assert.equal(rt.pendingPatchCount, 0);
 });
 
-test('MigrationEngine migrates non-default legacy prefs idempotently without deleting legacy keys', () => {
-	const mem = createMemoryPrefs({
-		'extensions.zotero.tabflow.verticalSidebarWidth': 320,
-		'extensions.zoteropreview.whatToShow': 'zpbib',
-		'extensions.zotero.zoterocitation.citationTags.text': 'CitedInPaper',
-	});
-	const prefs = new UnifiedPrefService({ adapter: mem.adapter });
-	const report1 = runLegacyPrefMigration(prefs);
-	assert.equal(report1.skipped, false);
-	assert.deepEqual(new Set(report1.sourcesDetected), new Set(['TabFlow', 'ViewFlow', 'CiteFlow']));
-	assert.equal(prefs.get('workspace.verticalSidebarWidth'), 320);
-	assert.equal(prefs.get('inspector.cslPreview.whatToShow'), 'zpbib');
-	assert.equal(prefs.get('wordCite.citationTags.text'), 'CitedInPaper');
-	assert.equal(prefs.get('migrationVersion'), CURRENT_MIGRATION_VERSION);
-	// Legacy keys remain intact for rollback
+test('kernel starts with independent BridgeFlow preferences', async () => {
+	const mem = createMemoryPrefs({ 'extensions.zotero.tabflow.verticalSidebarWidth': 320 });
+	const kernel = new PluginKernel({ prefAdapter: mem.adapter });
+	await kernel.start();
+	assert.equal(kernel.prefs.get('workspace.verticalSidebarWidth'), 276);
 	assert.equal(mem.store.get('extensions.zotero.tabflow.verticalSidebarWidth'), 320);
-
-	// Second run is a no-op
-	const report2 = runLegacyPrefMigration(prefs);
-	assert.equal(report2.skipped, true);
+	kernel.shutdown();
 });
 
 test('PluginKernel hot-toggles domain modules cleanly on pref change', async () => {

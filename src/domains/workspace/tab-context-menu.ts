@@ -1,4 +1,6 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
+import type { WorkspaceHoverCard } from './hover-card.ts';
 import { addPopupButton, addPopupSeparator, createFloatingPopup, openTextPromptModal } from './popup-menu-helpers.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
@@ -11,6 +13,7 @@ export class WorkspaceTabContextMenu {
 	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
 	private readonly onRefresh: () => void;
+	private readonly hoverCard?: WorkspaceHoverCard | null;
 	private activePopup: HTMLElement | null = null;
 	private boundOutside: ((e: Event) => void) | null = null;
 
@@ -20,6 +23,7 @@ export class WorkspaceTabContextMenu {
 		store: WorkspaceStateStore,
 		tabs: WorkspaceTabController,
 		onRefresh: () => void,
+		hoverCard?: WorkspaceHoverCard | null,
 	) {
 		this.win = win;
 		this.doc = win.document;
@@ -27,113 +31,107 @@ export class WorkspaceTabContextMenu {
 		this.store = store;
 		this.tabs = tabs;
 		this.onRefresh = onRefresh;
+		this.hoverCard = hoverCard;
 	}
 
 	openTabMenu(anchor: HTMLElement, tab: TrackedTab, event?: MouseEvent): void {
+		this.hoverCard?.hide();
 		if (tab.virtual) {
 			this.openVirtualMenu(anchor, tab, event);
 			return;
 		}
 		this.close();
-		const pop = createFloatingPopup(this.doc, anchor, event, 215);
+		const pop = createFloatingPopup(this.doc, anchor, event, 210);
 		if (!pop) return;
 		const close = () => this.close();
 
-		addPopupButton(this.doc, pop, '➕ 新建分组并加入', () => {
-			openTextPromptModal(this.win, '新建分组', '输入分组名称...', '新分组', (name) => {
-				if (!name.trim()) return;
-				const grp = this.store.createGroup(name);
-				this.store.assignToGroup(tab.key, grp.id);
-				this.onRefresh();
-			});
-		}, close);
-
-		for (const group of this.store.state.groups) {
-			const inThis = tab.groupId === group.id;
-			addPopupButton(this.doc, pop, `${inThis ? '✓ ' : '   '}加入分组：${group.name}`, () => {
-				this.store.assignToGroup(tab.key, group.id);
-				this.onRefresh();
-			}, close);
-		}
-		if (tab.groupId) {
-			addPopupButton(this.doc, pop, '从当前分组移出', () => {
-				this.store.assignToGroup(tab.key, null);
-				this.onRefresh();
-			}, close);
-		}
-
-		addPopupSeparator(this.doc, pop);
-
 		if (this.prefs.get('workspace.enablePinnedTabs')) {
-			addPopupButton(this.doc, pop, tab.pinned ? '📌 取消固定标签' : '📌 固定此标签', () => {
+			addPopupButton(this.doc, pop, tab.pinned ? '取消固定标签' : '📌 固定标签（防误关）', () => {
 				this.store.setPinned(tab.key, !tab.pinned);
 				this.onRefresh();
 			}, close);
 		}
-		if (this.prefs.get('workspace.enableTabSleep') && !tab.pinned) {
-			addPopupButton(this.doc, pop, tab.sleeping ? '⚡ 唤醒并重新加载' : '🌙 休眠释放内存', () => {
-				if (tab.sleeping) void this.tabs.reloadTab(this.win, tab.tabID);
-				else this.tabs.sleepTab(this.win, tab.tabID);
-				this.onRefresh();
-			}, close);
-		}
 		if (this.prefs.get('workspace.enableTabRemarks')) {
-			addPopupButton(this.doc, pop, tab.remark ? '✎ 编辑标签页备注' : '✎ 添加标签页备注', () => {
-				openTextPromptModal(this.win, '设置标签页备注', '输入简短备注（留空清除）...', tab.remark || '', (val) => {
+			addPopupButton(this.doc, pop, tab.remark ? '✎ 编辑标签备注…' : '✎ 设置标签备注…', () => {
+				openTextPromptModal(this.win, '设置标签备注', '输入备注（≤300 字，留空清除）：', tab.remark || '', (val) => {
 					this.store.setRemark(tab.key, val);
 					this.onRefresh();
 				});
 			}, close);
 			if (tab.remark) {
-				const curMode = this.store.state.remarkModes[tab.key] || '';
-				for (const [m, lbl] of [['', '显示：跟随全局'], ['both', '显示：备注+标题'], ['remark', '显示：仅备注'], ['title', '显示：仅标题']] as const) {
-					addPopupButton(this.doc, pop, `${curMode === m ? '✓ ' : '   '}${lbl}`, () => {
-						this.store.setRemarkMode(tab.key, m);
-						this.onRefresh();
-					}, close);
-				}
+				this.appendSubmenuSection(pop, '标签显示模式', (sub) => {
+					const curMode = this.store.state.remarkModes[tab.key] || '';
+					for (const [m, lbl] of [['', '跟随全局设置'], ['both', '备注 + 原标题'], ['remark', '仅显示备注'], ['title', '仅显示原标题']] as const) {
+						addPopupButton(this.doc, sub, `${curMode === m ? '✓ ' : '   '}${lbl}`, () => {
+							this.store.setRemarkMode(tab.key, m);
+							this.onRefresh();
+						}, close);
+					}
+				});
 			}
+		}
+		if (this.prefs.get('workspace.enableTabSleep') && !tab.pinned) {
+			addPopupButton(this.doc, pop, tab.sleeping ? '⚡ 唤醒标签页' : '💤 休眠标签（释放内存）', () => {
+				if (tab.sleeping) void this.tabs.reloadTab(this.win, tab.tabID);
+				else this.tabs.sleepTab(this.win, tab.tabID);
+				this.onRefresh();
+			}, close);
 		}
 
 		addPopupSeparator(this.doc, pop);
+
+		this.appendSubmenuSection(pop, '加入分组', (sub) => {
+			for (const group of this.store.state.groups) {
+				const inThis = tab.groupId === group.id;
+				addPopupButton(this.doc, sub, `${inThis ? '✓ ' : '   '}${group.name}`, () => {
+					this.store.assignToGroup(tab.key, group.id);
+					this.onRefresh();
+				}, close);
+			}
+			addPopupButton(this.doc, sub, '新建分组并加入…', () => {
+				openTextPromptModal(this.win, '新建分组', '输入分组名称...', '新分组', (name) => {
+					if (!name.trim()) return;
+					const grp = this.store.createGroup(name);
+					this.store.assignToGroup(tab.key, grp.id);
+					this.onRefresh();
+				});
+			}, close);
+			if (tab.groupId) {
+				addPopupButton(this.doc, sub, '移出当前分组', () => {
+					this.store.assignToGroup(tab.key, null);
+					this.onRefresh();
+				}, close);
+			}
+		});
+
+		addPopupSeparator(this.doc, pop);
+
+		if (tab.itemID > 0) {
+			addPopupButton(this.doc, pop, '在文献库中定位', () => {
+				void this.tabs.showInLibrary(this.win, tab.itemID, false);
+			}, close);
+			addPopupButton(this.doc, pop, '在集合树中定位所属集合', () => {
+				void this.tabs.showInLibrary(this.win, tab.itemID, true);
+			}, close);
+		}
 		if (this.prefs.get('workspace.enableCopyReference')) {
-			addPopupButton(this.doc, pop, '📋 复制标准引文（并记入反查）', () => {
+			addPopupButton(this.doc, pop, '复制引用到剪贴板', () => {
 				void this.tabs.copyTabCitation(this.win, tab.tabID);
 			}, close);
 		}
-		if (tab.itemID > 0) {
-			addPopupButton(this.doc, pop, '📚 在文献库中定位', () => {
-				void this.tabs.showInLibrary(this.win, tab.itemID, false);
+		if (tab.itemID > 0 && this.prefs.get('workspace.enableShowInFilesystem')) {
+			addPopupButton(this.doc, pop, '在文件管理器中显示', () => {
+				void this.tabs.revealTabAttachment(this.win, tab.itemID);
 			}, close);
-			addPopupButton(this.doc, pop, '🗂 在集合树中定位所属集合', () => {
-				void this.tabs.showInLibrary(this.win, tab.itemID, true);
-			}, close);
-			if (this.prefs.get('workspace.enableShowInFilesystem')) {
-				addPopupButton(this.doc, pop, '📂 在文件管理器中显示', () => {
-					void this.tabs.revealTabAttachment(this.win, tab.itemID);
-				}, close);
-			}
 		}
 		if (this.prefs.get('workspace.enableReloadTab')) {
-			addPopupButton(this.doc, pop, '🔄 重新加载此标签页', () => {
+			addPopupButton(this.doc, pop, '重新加载标签页', () => {
 				void this.tabs.reloadTab(this.win, tab.tabID).then(() => this.onRefresh());
 			}, close);
 		}
-		addPopupButton(this.doc, pop, '↩ 恢复最近关闭的标签页', () => {
-			this.tabs.undoCloseTab(this.win);
-			this.onRefresh();
-		}, close);
 
 		addPopupSeparator(this.doc, pop);
-		addPopupButton(this.doc, pop, '关闭右侧标签页', () => {
-			const open = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual);
-			const idx = open.findIndex((t) => t.tabID === tab.tabID);
-			if (idx >= 0) void this.tabs.closeTabs(this.win, open.slice(idx + 1).map((t) => t.tabID), { protectPinned: true });
-		}, close);
-		addPopupButton(this.doc, pop, '关闭其他未固定标签页', () => {
-			const others = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.tabID !== tab.tabID).map((t) => t.tabID);
-			void this.tabs.closeTabs(this.win, others, { protectPinned: true });
-		}, close);
+
 		if (this.prefs.get('workspace.enableVirtualMembers') && tab.groupId) {
 			addPopupButton(this.doc, pop, '关闭标签（保留在分组）', () => {
 				void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
@@ -142,25 +140,30 @@ export class WorkspaceTabContextMenu {
 		addPopupButton(this.doc, pop, '彻底关闭标签页', () => {
 			void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: false });
 		}, close, { danger: true });
+		addPopupButton(this.doc, pop, '↩ 恢复最近关闭的标签页', () => {
+			this.tabs.undoCloseTab(this.win);
+			this.onRefresh();
+		}, close);
 
 		this.bindPopup(pop);
 	}
 
 	openVirtualMenu(anchor: HTMLElement, tab: TrackedTab, event?: MouseEvent): void {
+		this.hoverCard?.hide();
 		this.close();
-		const pop = createFloatingPopup(this.doc, anchor, event, 200);
+		const pop = createFloatingPopup(this.doc, anchor, event, 195);
 		if (!pop) return;
 		const close = () => this.close();
 
-		addPopupButton(this.doc, pop, '📖 加载并打开文献', () => {
+		addPopupButton(this.doc, pop, '▶ 加载标签页', () => {
 			void this.tabs.openVirtualOrItem(this.win, tab.itemID, tab.groupId).then(() => this.onRefresh());
 		}, close);
 		if (tab.itemID > 0) {
-			addPopupButton(this.doc, pop, '📚 在文献库中定位', () => {
+			addPopupButton(this.doc, pop, '在文献库中定位', () => {
 				void this.tabs.showInLibrary(this.win, tab.itemID, true);
 			}, close);
 		}
-		addPopupButton(this.doc, pop, '🗑 从分组移除虚拟成员', () => {
+		addPopupButton(this.doc, pop, '从分组移除虚拟成员', () => {
 			this.store.removeVirtualMember(tab.key);
 			this.store.assignToGroup(tab.key, null);
 			this.onRefresh();
@@ -170,79 +173,132 @@ export class WorkspaceTabContextMenu {
 	}
 
 	openGroupMenu(anchor: HTMLElement, group: TabGroup, event?: MouseEvent): void {
+		this.hoverCard?.hide();
 		this.close();
-		const pop = createFloatingPopup(this.doc, anchor, event, 210);
+		const pop = createFloatingPopup(this.doc, anchor, event, 205);
 		if (!pop) return;
 		const close = () => this.close();
-		const isCollapsed = this.store.state.collapsed.includes(group.id);
 
-		addPopupButton(this.doc, pop, isCollapsed ? '▾ 展开此分组' : '▸ 折叠此分组', () => {
-			this.store.setCollapsed(group.id, !isCollapsed);
-			this.onRefresh();
-		}, close);
-		addPopupButton(this.doc, pop, '✎ 重命名分组', () => {
-			openTextPromptModal(this.win, '重命名分组', '输入新的分组名称...', group.name, (val) => {
+		addPopupButton(this.doc, pop, '重命名分组…', () => {
+			openTextPromptModal(this.win, '重命名分组', '分组名称：', group.name, (val) => {
 				if (this.store.renameGroup(group.id, val)) this.onRefresh();
 			});
 		}, close);
 
-		const swatchRow = this.doc.createElement('div');
-		swatchRow.className = 'zbf-color-row';
-		for (const color of GROUP_PALETTE) {
-			const swatch = this.doc.createElement('button');
-			swatch.type = 'button';
-			swatch.className = `zbf-color-swatch${color === group.color ? ' active' : ''}`;
-			swatch.style.background = color;
-			swatch.title = color;
-			swatch.addEventListener('click', () => {
-				this.store.setGroupColor(group.id, color);
-				this.close();
-				this.onRefresh();
-			});
-			swatchRow.appendChild(swatch);
-		}
-		pop.appendChild(swatchRow);
-
-		addPopupButton(this.doc, pop, '🎨 自定义十六进制颜色...', () => {
-			openTextPromptModal(this.win, '自定义分组颜色', '例如 #3b82f6', group.color, (hex) => {
-				if (/^#[0-9a-fA-F]{3,8}$/.test(hex.trim())) {
-					this.store.setGroupColor(group.id, hex.trim());
-					this.onRefresh();
-				}
-			});
+		addPopupButton(this.doc, pop, '解散此分组', () => {
+			this.store.removeGroup(group.id);
+			this.onRefresh();
 		}, close);
 
-		const hasVirtual = this.tabs.buildTrackedTabs(this.win).some((t) => t.virtual && t.groupId === group.id);
-		if (hasVirtual) {
-			addPopupButton(this.doc, pop, '📖 打开组内全部虚拟文献', () => {
+		this.appendSubmenuSection(pop, '分组颜色', (sub) => {
+			const swatchRow = createWorkspaceElement(this.doc, 'div');
+			swatchRow.className = 'zbf-color-row';
+			for (const color of GROUP_PALETTE) {
+				const swatch = createWorkspaceElement(this.doc, 'button');
+				swatch.type = 'button';
+				swatch.className = `zbf-color-swatch${color === group.color ? ' active' : ''}`;
+				swatch.style.background = color;
+				swatch.title = color;
+				swatch.addEventListener('click', () => {
+					this.store.setGroupColor(group.id, color);
+					this.close();
+					this.onRefresh();
+				});
+				swatchRow.appendChild(swatch);
+			}
+			sub.appendChild(swatchRow);
+			addPopupButton(this.doc, sub, '自定义 Hex 颜色…', () => {
+				openTextPromptModal(this.win, '自定义颜色', '输入 3 位或 6 位 Hex 颜色（如 #3b82f6）：', group.color, (hex) => {
+					if (/^#[0-9a-fA-F]{3,8}$/.test(hex.trim())) {
+						this.store.setGroupColor(group.id, hex.trim());
+						this.onRefresh();
+					}
+				});
+			}, close);
+		});
+
+		addPopupSeparator(this.doc, pop);
+
+		if (this.prefs.get('workspace.enableSessions')) {
+			addPopupButton(this.doc, pop, '保存到工作区并关闭…', () => {
+				void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
+			}, close);
+			addPopupButton(this.doc, pop, '保存分组快照（保留已开标签）', () => {
+				this.tabs.saveGroupSnapshot(this.win, group.id);
+				this.onRefresh();
+			}, close);
+		}
+
+		addPopupButton(this.doc, pop, '折叠其他分组', () => {
+			this.store.collapseOtherGroups(group.id);
+			this.onRefresh();
+		}, close, { disabled: this.store.state.groups.length <= 1 });
+
+		const virtualCount = this.tabs.buildTrackedTabs(this.win).filter((t) => t.virtual && t.groupId === group.id).length;
+		if (virtualCount > 0) {
+			addPopupButton(this.doc, pop, `▶ 打开组内全部虚拟文献 (${virtualCount})`, () => {
 				void this.tabs.openGroupVirtuals(this.win, group.id).then(() => this.onRefresh());
 			}, close);
 		}
 
-		addPopupSeparator(this.doc, pop);
-		addPopupButton(this.doc, pop, '折叠其他分组', () => {
-			this.store.collapseOtherGroups(group.id);
-			this.onRefresh();
-		}, close);
-		if (this.prefs.get('workspace.enableSessions')) {
-			addPopupButton(this.doc, pop, '📦 归档为快照并关闭组内标签', () => {
-				void this.tabs.archiveAndCloseGroup(this.win, group.id).then(() => this.onRefresh());
-			}, close);
-		}
-		addPopupButton(this.doc, pop, '仅保留本组（关闭其他标签）', () => {
+		addPopupButton(this.doc, pop, '仅打开本组（关闭其他标签）', () => {
 			const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId !== group.id).map((t) => t.tabID);
 			void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
 		}, close);
+
 		addPopupButton(this.doc, pop, '关闭组内所有已开标签', () => {
 			const ids = this.tabs.buildTrackedTabs(this.win).filter((t) => !t.virtual && t.groupId === group.id).map((t) => t.tabID);
 			void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }).then(() => this.onRefresh());
 		}, close);
-		addPopupButton(this.doc, pop, '解散分组（保留已打开标签）', () => {
-			this.store.removeGroup(group.id);
-			this.onRefresh();
-		}, close, { danger: true });
 
 		this.bindPopup(pop);
+	}
+
+	openAddGroupMenu(anchor: HTMLElement, event?: MouseEvent): void {
+		this.hoverCard?.hide();
+		this.close();
+		const pop = createFloatingPopup(this.doc, anchor, event, 210);
+		if (!pop) return;
+		const close = () => this.close();
+		addPopupButton(this.doc, pop, '新建空白分组…', () => {
+			openTextPromptModal(this.win, '新建分组', '输入分组名称...', '新分组', (name) => {
+				if (!name.trim()) return;
+				this.store.createGroup(name);
+				this.onRefresh();
+			});
+		}, close);
+		addPopupButton(this.doc, pop, '按当前 Zotero 集合自动分组', () => {
+			this.tabs.autoGroupByCollection(this.win);
+			this.onRefresh();
+		}, close);
+		this.bindPopup(pop);
+	}
+
+	private appendSubmenuSection(pop: HTMLElement, label: string, build: (container: HTMLElement) => void): void {
+		const wrap = createWorkspaceElement(this.doc, 'div');
+		wrap.className = 'zbf-popup-submenu-wrap';
+		const trigger = createWorkspaceElement(this.doc, 'button');
+		trigger.type = 'button';
+		trigger.className = 'zbf-popup-item zbf-popup-submenu-trigger';
+		const txt = createWorkspaceElement(this.doc, 'span');
+		txt.textContent = label;
+		const arrow = createWorkspaceElement(this.doc, 'span');
+		arrow.className = 'zbf-popup-submenu-arrow';
+		arrow.textContent = '▸';
+		trigger.append(txt, arrow);
+
+		const body = createWorkspaceElement(this.doc, 'div');
+		body.className = 'zbf-popup-submenu-body';
+		body.hidden = true;
+		build(body);
+
+		trigger.addEventListener('click', (e) => {
+			e.stopPropagation();
+			body.hidden = !body.hidden;
+			arrow.textContent = body.hidden ? '▸' : '▾';
+		});
+		wrap.append(trigger, body);
+		pop.appendChild(wrap);
 	}
 
 	close(): void {

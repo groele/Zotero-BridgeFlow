@@ -1,3 +1,4 @@
+import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import { WorkspaceHorizontalBar } from './horizontal-bar.ts';
@@ -30,6 +31,7 @@ export class WorkspaceWindowUI {
 	private tabObserver: MutationObserver | null = null;
 	private renderTimer = 0;
 	private destroyed = false;
+	private readonly lifetime: AbortController | null;
 
 	private readonly onKeydown = (ev: Event) => {
 		const e = ev as KeyboardEvent;
@@ -60,7 +62,8 @@ export class WorkspaceWindowUI {
 		this.doc = win.document;
 		this.prefs = prefs;
 		this.tabs = tabs;
-		if (!this.doc) return;
+		this.lifetime = this.doc ? new ((win as Window & typeof globalThis).AbortController)() : null;
+		if (!this.doc || !this.lifetime) return;
 
 		this.mountStyle();
 		const refresh = () => this.render();
@@ -68,16 +71,16 @@ export class WorkspaceWindowUI {
 		this.hoverCard = new WorkspaceHoverCard(this.doc, prefs, store);
 		this.popover = new WorkspacePopover(win, prefs, store, tabs, refresh);
 		this.spotlightPanel = new WorkspaceSpotlightPanel(win, spotlightEngine);
-		this.tabMenu = new WorkspaceTabContextMenu(win, prefs, store, tabs, refresh);
+		this.tabMenu = new WorkspaceTabContextMenu(win, prefs, store, tabs, refresh, this.hoverCard);
 		this.itemMenu = new ItemContextMenuController(win, this.doc, prefs, store, tabs, refresh);
-		this.toolbar = new WorkspaceToolbarActions(win, prefs, tabs, this.popover, () => this.spotlightPanel?.toggle(), refresh);
+		this.toolbar = new WorkspaceToolbarActions(win, prefs, store, tabs, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
 		this.horizontal = new WorkspaceHorizontalBar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.toolbar, refresh);
-		this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, () => this.spotlightPanel?.toggle(), refresh);
+		this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
 
 		this.itemMenu.attach();
 		this.attachObservers();
-		this.doc.addEventListener('keydown', this.onKeydown, true);
-		this.win.addEventListener('resize', this.onResize);
+		this.doc.addEventListener('keydown', this.onKeydown, { capture: true, signal: this.lifetime.signal });
+		this.win.addEventListener('resize', this.onResize, { signal: this.lifetime.signal });
 		this.render();
 	}
 
@@ -90,9 +93,10 @@ export class WorkspaceWindowUI {
 	render(): void {
 		if (this.destroyed || !this.doc) return;
 		try {
-			this.horizontal?.render();
-			this.sidebar?.render();
-		} catch { /* keep Zotero window resilient */ }
+			const snapshot = this.tabs.buildTrackedTabs(this.win);
+			this.sidebar?.render(snapshot);
+			this.horizontal?.render(snapshot);
+		} catch (error) { (globalThis as any).Zotero?.logError?.(error); }
 	}
 
 	destroy(): void {
@@ -103,8 +107,7 @@ export class WorkspaceWindowUI {
 		}
 		this.tabObserver?.disconnect();
 		this.tabObserver = null;
-		this.doc?.removeEventListener('keydown', this.onKeydown, true);
-		this.win.removeEventListener?.('resize', this.onResize);
+		this.lifetime?.abort();
 		this.horizontal?.destroy();
 		this.sidebar?.destroy();
 		this.tabMenu?.destroy();
@@ -119,7 +122,7 @@ export class WorkspaceWindowUI {
 	private mountStyle(): void {
 		if (!this.doc) return;
 		this.doc.getElementById('zbf-workspace-style')?.remove();
-		const style = this.doc.createElement('style');
+		const style = createWorkspaceElement(this.doc, 'style');
 		style.id = 'zbf-workspace-style';
 		style.textContent = WORKSPACE_CSS;
 		const target = this.doc.head || this.doc.documentElement;
