@@ -1,3 +1,10 @@
+import {
+	formatCompactPdfOptionLabel,
+	formatPdfAttachmentDisplayTitle,
+	getPdfAttachmentSortRank,
+	normalizeToRegularItemAsync,
+} from '../../services/item-resolution.ts';
+
 export interface PdfViewport {
 	width: number;
 	height: number;
@@ -35,6 +42,8 @@ export interface PdfJsLib {
 export interface PdfAttachmentEntry {
 	id: number;
 	title: string;
+	shortLabel?: string;
+	fullTitle?: string;
 	attachment: any;
 }
 
@@ -63,69 +72,69 @@ function isPdfAttachment(att: any): boolean {
 	return name.endsWith('.pdf');
 }
 
-function getAttachmentTitle(att: any, index: number): string {
-	const title = String(att?.getField?.('title') || '').trim();
-	const filename = String(att?.attachmentFilename || '').trim();
-	if (title && filename && title.toLowerCase() !== filename.toLowerCase() && !title.toLowerCase().endsWith('.pdf')) {
-		return `${title} (${filename})`;
-	}
-	return title || filename || `PDF ${index + 1}`;
-}
-
-async function resolveOwnerRegularItem(item: any): Promise<any> {
-	if (!item || item.deleted || item.isTrashed?.()) return null;
-	if (item.isRegularItem?.()) return item;
-	if (item.parentItem) return item.parentItem;
-	const parentID = Number(item.parentID || item.parentItemID || 0);
-	const hostItems = (globalThis as any).Zotero?.Items;
-	if (parentID > 0 && hostItems) {
-		const syncParent = hostItems.get?.(parentID);
-		if (syncParent) return syncParent;
-		if (hostItems.getAsync) {
-			const asyncParent = await hostItems.getAsync(parentID).catch(() => null);
-			if (asyncParent) return asyncParent;
-		}
-	}
-	return item;
-}
+const resolveOwnerRegularItem = async (it: any) => (await normalizeToRegularItemAsync(it)) || it;
 
 export async function resolveAllPdfAttachments(item: any): Promise<PdfAttachmentEntry[]> {
 	if (!item || item.deleted || item.isTrashed?.()) return [];
 	const target = await resolveOwnerRegularItem(item);
 	if (!target || target.deleted || target.isTrashed?.()) return [];
-	if (isPdfAttachment(target) && !target.isRegularItem?.()) {
-		return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
-	}
-	const results: PdfAttachmentEntry[] = [];
+	const rawAtts: any[] = [];
 	const seen = new Set<number>();
 	const pushIfPdf = (att: any) => {
 		if (!isPdfAttachment(att)) return;
-		const id = Number(att.id) || results.length + 1;
+		const id = Number(att.id) || rawAtts.length + 1;
 		if (seen.has(id)) return;
 		seen.add(id);
-		results.push({ id, title: getAttachmentTitle(att, results.length), attachment: att });
+		rawAtts.push(att);
 	};
-	const best = await target.getBestAttachment?.().catch(() => null);
-	pushIfPdf(best);
-	const ids: number[] = target.getAttachments?.() || [];
-	const hostItems = (globalThis as any).Zotero?.Items;
-	if (ids.length && hostItems?.getAsync) {
-		const batch = await hostItems.getAsync(ids).catch(() => null);
-		if (Array.isArray(batch)) {
-			for (const att of batch) pushIfPdf(att);
+	if (isPdfAttachment(target) && !target.isRegularItem?.()) {
+		pushIfPdf(target);
+	} else {
+		const best = await target.getBestAttachment?.().catch(() => null);
+		pushIfPdf(best);
+		const ids: number[] = target.getAttachments?.() || [];
+		const hostItems = (globalThis as any).Zotero?.Items;
+		if (ids.length && hostItems?.getAsync) {
+			const batch = await hostItems.getAsync(ids).catch(() => null);
+			if (Array.isArray(batch)) {
+				for (const att of batch) pushIfPdf(att);
+			}
 		}
-	}
-	for (const rawId of ids) {
-		const id = Number(rawId) || 0;
-		if (!id || seen.has(id)) continue;
-		let att = hostItems?.get?.(id) || null;
-		if (!att && hostItems?.getAsync) {
-			att = await hostItems.getAsync(id).catch(() => null);
+		for (const rawId of ids) {
+			const id = Number(rawId) || 0;
+			if (!id || seen.has(id)) continue;
+			const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
+			pushIfPdf(att);
 		}
-		pushIfPdf(att);
+		if (isPdfAttachment(item)) pushIfPdf(item);
 	}
-	if (isPdfAttachment(item)) pushIfPdf(item);
-	return results;
+	const bestID = Number((await target.getBestAttachment?.().catch(() => null))?.id || 0);
+	const ranked = rawAtts.map((att, origIdx) => {
+		const id = Number(att.id) || origIdx + 1;
+		const rawTitle = String(att?.getField?.('title') || '').trim();
+		const filename = String(att?.attachmentFilename || '').trim();
+		const rank = getPdfAttachmentSortRank(rawTitle, filename, id === bestID);
+		return { att, id, rawTitle, filename, rank, origIdx };
+	});
+	ranked.sort((a, b) => (a.rank - b.rank) || (a.origIdx - b.origIdx));
+	const titleCounts = new Map<string, number>();
+	for (const r of ranked) {
+		if (r.rawTitle) titleCounts.set(r.rawTitle.toLowerCase(), (titleCounts.get(r.rawTitle.toLowerCase()) || 0) + 1);
+	}
+	return ranked.map((r, idx) => {
+		const hasDup = Boolean(r.rawTitle && (titleCounts.get(r.rawTitle.toLowerCase()) || 0) > 1);
+		const title = formatPdfAttachmentDisplayTitle(r.rawTitle, r.filename, idx, hasDup);
+		const fullTitle = (r.rawTitle && r.filename && r.rawTitle.toLowerCase() !== r.filename.toLowerCase())
+			? `${r.rawTitle} (${r.filename})`
+			: title;
+		return {
+			id: r.id,
+			title,
+			shortLabel: formatCompactPdfOptionLabel(title, 40),
+			fullTitle,
+			attachment: r.att,
+		};
+	});
 }
 
 export async function resolveSameItemPdfContext(item: any, win?: Window | null): Promise<SameItemPdfContext> {

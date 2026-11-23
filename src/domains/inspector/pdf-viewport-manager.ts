@@ -221,6 +221,19 @@ export async function loadAttachmentPreviewDoc(
 	}
 }
 
+export function computeOwnerAttachmentSignature(item: any): string {
+	if (!item) return '';
+	const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === 'attachment');
+	const ownerRef = (isAtt && item.parentItem) ? item.parentItem : item;
+	const ids: number[] = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments() : [];
+	if (!ids.length) return `${Number(item.id) || 0}:${item.getField?.('title') || ''}:${item.attachmentFilename || ''}`;
+	const hostItems = (globalThis as any).Zotero?.Items;
+	return ids.map((id) => {
+		const a = hostItems?.get?.(id);
+		return `${id}:${a?.getField?.('title') || ''}:${a?.attachmentFilename || ''}`;
+	}).join('|');
+}
+
 export async function loadItemPreviewAttachments(
 	state: PreviewState,
 	item: any,
@@ -242,7 +255,6 @@ export async function loadItemPreviewAttachments(
 	const chosen = entries.length > 0
 		? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID, isReader ? 'reader' : 'library')
 		: null;
-	if (chosen) state.compare.pickedAttachmentID = chosen.id;
 	syncCompareBar(state.compareUI, state.compare, entries, chosen?.id || 0);
 	state.attSelect.textContent = '';
 	if (entries.length > 1) {

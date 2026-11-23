@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.0.11 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.0.12 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -322,6 +322,38 @@
     }
     return { items: result, truncated };
   }
+  function getPdfAttachmentSortRank(rawTitle, filename, isBest = false) {
+    const probe = `${rawTitle} ${filename}`;
+    const isSupp = /\[补充材料\]|【补充材料】|\[附(?:件|录|表|图)?\]|(?:\b|_|-)(?:supp(?:lement(?:ary|al)?)?|si|supporting[\s_-]*info(?:rmation)?|appendix)(?:\b|_|\.pdf|$)/i.test(probe);
+    const isReview = /\[审稿|\[回复|(?:\b|_|-)(?:peer[\s_-]*review|rebuttal|response[\s_-]*to[\s_-]*reviewers?)(?:\b|_|\.pdf|$)/i.test(probe);
+    const isMain = /\[正文\]|【正文】|(?:\b|_|-)(?:main|manuscript)(?:\b|_|\.pdf|$)/i.test(probe);
+    if (isMain && !isSupp) return 0;
+    if (!isSupp && !isReview) return isBest ? 1 : 2;
+    if (isSupp) return 3;
+    return 4;
+  }
+  function formatPdfAttachmentDisplayTitle(rawTitle, filename, index, hasDuplicateRawTitle = false) {
+    const t = String(rawTitle || "").trim();
+    const f = String(filename || "").trim();
+    if (!t) return f || `PDF ${index + 1}`;
+    if (!f || t.toLowerCase() === f.toLowerCase() || t.toLowerCase().endsWith(".pdf")) return t;
+    const hasRolePrefix = /^(?:\[[^\]]+\]|【[^】]+】)/.test(t);
+    if ((hasRolePrefix || t.length > 32) && !hasDuplicateRawTitle) {
+      return t;
+    }
+    const shortFile = f.length > 36 ? `…${f.slice(-24)}` : f;
+    return `${t} (${shortFile})`;
+  }
+  function formatCompactPdfOptionLabel(title, maxChars = 40) {
+    const clean = String(title || "").replace(/\s+/g, " ").trim();
+    if (clean.length <= maxChars) return clean;
+    if (/^(?:\[[^\]]+\]|【[^】]+】)/.test(clean)) {
+      return `${clean.slice(0, maxChars - 1).trimEnd()}…`;
+    }
+    const tailLen = Math.min(18, Math.floor((maxChars - 1) * 0.45));
+    const headLen = Math.max(12, maxChars - 1 - tailLen);
+    return `${clean.slice(0, headLen).trimEnd()}…${clean.slice(-tailLen).trimStart()}`;
+  }
   async function resolvePdfAttachments(item) {
     if (isItemTrashedOrDeleted(item)) return [];
     const hostItems = globalThis.Zotero?.Items;
@@ -336,10 +368,9 @@
       if (id > 0) seen.add(id);
       candidates.push(att);
     };
-    if (typeof target?.getBestAttachment === "function") {
-      const best = await target.getBestAttachment().catch(() => null);
-      pushIfPdf(best);
-    }
+    const best = typeof target?.getBestAttachment === "function" ? await target.getBestAttachment().catch(() => null) : null;
+    const bestID = Number(best?.id || 0);
+    pushIfPdf(best);
     if (typeof target?.getAttachments === "function") {
       const ids = target.getAttachments() || [];
       for (const id of ids) {
@@ -348,17 +379,29 @@
       }
     }
     pushIfPdf(item);
-    return candidates.map((att) => {
+    const rawList = candidates.map((att, origIdx) => {
+      const id = Number(att.id || 0);
       const rawTitle = safeGetItemField(att, "title").trim();
       const filename = String(att.attachmentFilename || "").trim();
-      const title = rawTitle && filename && rawTitle.toLowerCase() !== filename.toLowerCase() && !rawTitle.toLowerCase().endsWith(".pdf") ? `${rawTitle} (${filename})` : rawTitle || filename || "PDF";
-      return {
-        item: att,
-        id: Number(att.id || 0),
-        title,
-        filename
-      };
+      const rank = getPdfAttachmentSortRank(rawTitle, filename, id > 0 && id === bestID);
+      return { att, id, rawTitle, filename, rank, origIdx };
     });
+    rawList.sort((a, b) => a.rank - b.rank || a.origIdx - b.origIdx);
+    const titleCounts = /* @__PURE__ */ new Map();
+    for (const r of rawList) {
+      if (r.rawTitle) titleCounts.set(r.rawTitle.toLowerCase(), (titleCounts.get(r.rawTitle.toLowerCase()) || 0) + 1);
+    }
+    return rawList.map((r, idx) => ({
+      item: r.att,
+      id: r.id,
+      title: formatPdfAttachmentDisplayTitle(
+        r.rawTitle,
+        r.filename,
+        idx,
+        Boolean(r.rawTitle && (titleCounts.get(r.rawTitle.toLowerCase()) || 0) > 1)
+      ),
+      filename: r.filename
+    }));
   }
   async function resolveBestFileAttachment(itemOrID) {
     const hostItems = globalThis.Zotero?.Items;
@@ -1905,67 +1948,66 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const name = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
     return name.endsWith(".pdf");
   }
-  function getAttachmentTitle(att, index) {
-    const title = String(att?.getField?.("title") || "").trim();
-    const filename = String(att?.attachmentFilename || "").trim();
-    if (title && filename && title.toLowerCase() !== filename.toLowerCase() && !title.toLowerCase().endsWith(".pdf")) {
-      return `${title} (${filename})`;
-    }
-    return title || filename || `PDF ${index + 1}`;
-  }
-  async function resolveOwnerRegularItem(item) {
-    if (!item || item.deleted || item.isTrashed?.()) return null;
-    if (item.isRegularItem?.()) return item;
-    if (item.parentItem) return item.parentItem;
-    const parentID = Number(item.parentID || item.parentItemID || 0);
-    const hostItems = globalThis.Zotero?.Items;
-    if (parentID > 0 && hostItems) {
-      const syncParent = hostItems.get?.(parentID);
-      if (syncParent) return syncParent;
-      if (hostItems.getAsync) {
-        const asyncParent = await hostItems.getAsync(parentID).catch(() => null);
-        if (asyncParent) return asyncParent;
-      }
-    }
-    return item;
-  }
+  var resolveOwnerRegularItem = async (it) => await normalizeToRegularItemAsync(it) || it;
   async function resolveAllPdfAttachments(item) {
     if (!item || item.deleted || item.isTrashed?.()) return [];
     const target = await resolveOwnerRegularItem(item);
     if (!target || target.deleted || target.isTrashed?.()) return [];
-    if (isPdfAttachment(target) && !target.isRegularItem?.()) {
-      return [{ id: Number(target.id) || 0, title: getAttachmentTitle(target, 0), attachment: target }];
-    }
-    const results = [];
+    const rawAtts = [];
     const seen = /* @__PURE__ */ new Set();
     const pushIfPdf = (att) => {
       if (!isPdfAttachment(att)) return;
-      const id = Number(att.id) || results.length + 1;
+      const id = Number(att.id) || rawAtts.length + 1;
       if (seen.has(id)) return;
       seen.add(id);
-      results.push({ id, title: getAttachmentTitle(att, results.length), attachment: att });
+      rawAtts.push(att);
     };
-    const best = await target.getBestAttachment?.().catch(() => null);
-    pushIfPdf(best);
-    const ids = target.getAttachments?.() || [];
-    const hostItems = globalThis.Zotero?.Items;
-    if (ids.length && hostItems?.getAsync) {
-      const batch = await hostItems.getAsync(ids).catch(() => null);
-      if (Array.isArray(batch)) {
-        for (const att of batch) pushIfPdf(att);
+    if (isPdfAttachment(target) && !target.isRegularItem?.()) {
+      pushIfPdf(target);
+    } else {
+      const best = await target.getBestAttachment?.().catch(() => null);
+      pushIfPdf(best);
+      const ids = target.getAttachments?.() || [];
+      const hostItems = globalThis.Zotero?.Items;
+      if (ids.length && hostItems?.getAsync) {
+        const batch = await hostItems.getAsync(ids).catch(() => null);
+        if (Array.isArray(batch)) {
+          for (const att of batch) pushIfPdf(att);
+        }
       }
-    }
-    for (const rawId of ids) {
-      const id = Number(rawId) || 0;
-      if (!id || seen.has(id)) continue;
-      let att = hostItems?.get?.(id) || null;
-      if (!att && hostItems?.getAsync) {
-        att = await hostItems.getAsync(id).catch(() => null);
+      for (const rawId of ids) {
+        const id = Number(rawId) || 0;
+        if (!id || seen.has(id)) continue;
+        const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
+        pushIfPdf(att);
       }
-      pushIfPdf(att);
+      if (isPdfAttachment(item)) pushIfPdf(item);
     }
-    if (isPdfAttachment(item)) pushIfPdf(item);
-    return results;
+    const bestID = Number((await target.getBestAttachment?.().catch(() => null))?.id || 0);
+    const ranked = rawAtts.map((att, origIdx) => {
+      const id = Number(att.id) || origIdx + 1;
+      const rawTitle = String(att?.getField?.("title") || "").trim();
+      const filename = String(att?.attachmentFilename || "").trim();
+      const rank = getPdfAttachmentSortRank(rawTitle, filename, id === bestID);
+      return { att, id, rawTitle, filename, rank, origIdx };
+    });
+    ranked.sort((a, b) => a.rank - b.rank || a.origIdx - b.origIdx);
+    const titleCounts = /* @__PURE__ */ new Map();
+    for (const r of ranked) {
+      if (r.rawTitle) titleCounts.set(r.rawTitle.toLowerCase(), (titleCounts.get(r.rawTitle.toLowerCase()) || 0) + 1);
+    }
+    return ranked.map((r, idx) => {
+      const hasDup = Boolean(r.rawTitle && (titleCounts.get(r.rawTitle.toLowerCase()) || 0) > 1);
+      const title = formatPdfAttachmentDisplayTitle(r.rawTitle, r.filename, idx, hasDup);
+      const fullTitle = r.rawTitle && r.filename && r.rawTitle.toLowerCase() !== r.filename.toLowerCase() ? `${r.rawTitle} (${r.filename})` : title;
+      return {
+        id: r.id,
+        title,
+        shortLabel: formatCompactPdfOptionLabel(title, 40),
+        fullTitle,
+        attachment: r.att
+      };
+    });
   }
   async function resolveSameItemPdfContext(item, win) {
     if (!item || item.deleted || item.isTrashed?.()) {
@@ -2355,13 +2397,17 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         entries.forEach((entry, idx) => {
           const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
           opt.value = String(entry.id);
-          opt.textContent = `${idx + 1}. ${entry.title}`;
+          const compact = entry.shortLabel || entry.title;
+          opt.textContent = `${idx + 1}. ${compact}`;
+          opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
           st.selectEl.append(opt);
         });
         const directID = Number(item?.id) || 0;
         const initial = entries.find((e) => e.id === directID) || entries[0];
+        const initIdx = Math.max(0, entries.findIndex((e) => e.id === initial.id));
         st.selectedAttachment = initial.attachment;
         st.selectEl.value = String(initial.id);
+        st.selectEl.title = `${initIdx + 1}. ${initial.fullTitle || initial.title}`;
         st.selectEl.style.display = "block";
       } else {
         st.selectedAttachment = att;
@@ -2438,11 +2484,25 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
 	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
 }
-.ztf-pdf-compare-select {
-	flex: 1 1 auto; min-inline-size: 0; block-size: 20px; padding: 0 5px; border-radius: 4px;
+.ztf-pdf-compare-select, .ztf-pdf-att-select, .ztf-pdf-folder-select {
+	appearance: none !important; -moz-appearance: none !important;
+	flex: 1 1 auto; min-inline-size: 0; max-inline-size: 100%;
+	block-size: 22px; padding: 0 20px 0 7px; border-radius: 5px;
 	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
-	background: var(--material-background, transparent); color: var(--fill-primary, inherit);
-	font: 500 11px/1.2 system-ui, sans-serif; cursor: pointer;
+	background-color: var(--fill-senary, rgba(127, 127, 127, 0.06));
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat; background-position: right 6px center;
+	color: var(--fill-primary, inherit);
+	font: 500 11.5px/20px system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+	transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+.ztf-pdf-compare-select:hover, .ztf-pdf-att-select:hover, .ztf-pdf-folder-select:hover {
+	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
+	background-color: var(--fill-quinary, rgba(127, 127, 127, 0.11));
+}
+.ztf-pdf-compare-select:focus-visible, .ztf-pdf-att-select:focus-visible, .ztf-pdf-folder-select:focus-visible {
+	outline: none; border-color: var(--accent-blue, #4072e5);
 }
 .ztf-pdf-open-btn {
 	padding: 0 7px !important; color: var(--accent-blue, #4072e5) !important;
@@ -2748,10 +2808,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const opt = createXhtmlEl(doc, "option");
       opt.value = String(entry.id);
       const isCurrent = st.currentAttachmentID > 0 && entry.id === st.currentAttachmentID;
-      opt.textContent = isCurrent ? `● ${idx + 1}. ${entry.title}` : `${idx + 1}. ${entry.title}`;
+      const compact = entry.shortLabel || entry.title;
+      opt.textContent = isCurrent ? `● ${idx + 1}. ${compact}` : `${idx + 1}. ${compact}`;
+      opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
       ui.selectEl.append(opt);
     });
     if (activeAttachmentID) ui.selectEl.value = String(activeAttachmentID);
+    const activeEntry = entries[activeIdx];
+    if (activeEntry) {
+      ui.selectEl.title = `${activeIdx + 1}. ${activeEntry.fullTitle || activeEntry.title}`;
+    }
     ui.countLabel.textContent = `PDF ${activeIdx + 1}/${entries.length}`;
   }
   function openPageJumpInput(doc, pageLabel, currentPage, numPages, onCommit) {
@@ -2959,6 +3025,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
     }
   }
+  function computeOwnerAttachmentSignature(item) {
+    if (!item) return "";
+    const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment");
+    const ownerRef = isAtt && item.parentItem ? item.parentItem : item;
+    const ids = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments() : [];
+    if (!ids.length) return `${Number(item.id) || 0}:${item.getField?.("title") || ""}:${item.attachmentFilename || ""}`;
+    const hostItems = globalThis.Zotero?.Items;
+    return ids.map((id) => {
+      const a = hostItems?.get?.(id);
+      return `${id}:${a?.getField?.("title") || ""}:${a?.attachmentFilename || ""}`;
+    }).join("|");
+  }
   async function loadItemPreviewAttachments(state, item, isDblClickOpenEnabled, onError) {
     disposePreviewDocument(state, true);
     const gen = state.generation;
@@ -2976,7 +3054,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     state.attachments = entries;
     state.compare.currentAttachmentID = ctx.currentAttachmentID;
     const chosen = entries.length > 0 ? pickCompareAttachment(ctx, state.compare.mode, state.compare.pickedAttachmentID, isReader ? "reader" : "library") : null;
-    if (chosen) state.compare.pickedAttachmentID = chosen.id;
     syncCompareBar(state.compareUI, state.compare, entries, chosen?.id || 0);
     state.attSelect.textContent = "";
     if (entries.length > 1) {
@@ -3364,8 +3441,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get("inspector.pdfPreview.mode") === "full");
       const nextTabType = tabType || "library";
       const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === "attachment");
-      const ownerRef = isAtt && item?.parentItem ? item.parentItem : item;
-      const nextAttIdsKey = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments().join(",") : String(item?.id || "");
+      const nextAttIdsKey = computeOwnerAttachmentSignature(item);
       const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
       state.compare.tabType = nextTabType;
       state.attIdsKey = nextAttIdsKey;

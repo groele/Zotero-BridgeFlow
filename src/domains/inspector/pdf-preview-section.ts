@@ -11,7 +11,7 @@ import {
 } from './pdf-preview-ui.ts';
 import { openPdfInReader, pickCompareAttachment } from './pdf-renderer.ts';
 import {
-	disposePreviewDocument, invalidateVisibleSlots, jumpToPreviewPage,
+	computeOwnerAttachmentSignature, disposePreviewDocument, invalidateVisibleSlots, jumpToPreviewPage,
 	loadAttachmentPreviewDoc, loadItemPreviewAttachments, syncPreviewControls, type PreviewState,
 } from './pdf-viewport-manager.ts';
 
@@ -311,8 +311,7 @@ export class PdfPreviewSectionController {
 		applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive && this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full');
 		const nextTabType = tabType || 'library';
 		const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === 'attachment');
-		const ownerRef = (isAtt && item?.parentItem) ? item.parentItem : item;
-		const nextAttIdsKey = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments().join(',') : String(item?.id || '');
+		const nextAttIdsKey = computeOwnerAttachmentSignature(item);
 		const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
 		state.compare.tabType = nextTabType;
 		state.attIdsKey = nextAttIdsKey;

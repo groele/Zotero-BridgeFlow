@@ -327,5 +327,50 @@ test('Multi-PDF discovery, selection, and comparison under a single parent item 
 	assert.equal(disambTabs[1].title, 'Unified Paper Title (Paper-Supplementary.pdf)');
 	assert.equal(disambTabs[2].title, 'Single PDF Paper');
 
+	// 6. Smart [正文] / [补充材料] sorting and compact option label without redundant long filename duplication
+	const suppAtt = {
+		id: 601,
+		parentID: 600,
+		isRegularItem: () => false,
+		isAttachment: () => true,
+		isPDFAttachment: () => true,
+		attachmentFilename: 'Hou_2026_Sliding-ferroelectric order imprinted onto excitonic and valley responses in van_Supplement.pdf',
+		getField: (f) => (f === 'title' ? '[补充材料] Sliding-ferroelectric order imprinted onto excitonic and valley responses in van der waals heterostructures' : ''),
+	};
+	const mainAtt = {
+		id: 602,
+		parentID: 600,
+		isRegularItem: () => false,
+		isAttachment: () => true,
+		isPDFAttachment: () => true,
+		attachmentFilename: 'Hou_2026_Sliding-ferroelectric order imprinted onto excitonic and valley responses in van_Main.pdf',
+		getField: (f) => (f === 'title' ? '[正文] Sliding-ferroelectric order imprinted onto excitonic and valley responses in van der waals heterostructures' : ''),
+	};
+	const longParent = {
+		id: 600,
+		isRegularItem: () => true,
+		isAttachment: () => false,
+		getBestAttachment: async () => suppAtt,
+		getAttachments: () => [601, 602],
+	};
+	itemMap.set(600, longParent);
+	itemMap.set(601, suppAtt);
+	itemMap.set(602, mainAtt);
+
+	const sortedEntries = await resolveAllPdfAttachments(longParent);
+	assert.equal(sortedEntries.length, 2);
+	// [正文] (602) must be sorted to #1 even though [补充材料] (601) was first in getAttachments()
+	assert.equal(sortedEntries[0].id, 602);
+	assert.equal(sortedEntries[1].id, 601);
+	// Must not redundantly append (Hou_2026_..._Main.pdf) to title
+	assert.equal(sortedEntries[0].title.includes('Hou_2026_'), false);
+	// shortLabel for <option> must be compact (<= 40 chars) and preserve [正文] / [补充材料] prefix
+	assert.ok((sortedEntries[0].shortLabel || '').startsWith('[正文] Sliding-ferroelectric'));
+	assert.ok((sortedEntries[0].shortLabel || '').length <= 40);
+	assert.ok((sortedEntries[1].shortLabel || '').startsWith('[补充材料] Sliding-ferroelectric'));
+	assert.ok((sortedEntries[1].shortLabel || '').length <= 40);
+	// fullTitle preserves full title + filename for hover tooltip
+	assert.equal(sortedEntries[0].fullTitle?.includes('Hou_2026_'), true);
+
 	delete globalThis.Zotero;
 });

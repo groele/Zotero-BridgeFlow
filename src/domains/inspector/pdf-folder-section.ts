@@ -230,13 +230,17 @@ export class PdfFolderSectionController {
 			entries.forEach((entry, idx) => {
 				const opt = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option') as HTMLOptionElement;
 				opt.value = String(entry.id);
-				opt.textContent = `${idx + 1}. ${entry.title}`;
+				const compact = entry.shortLabel || entry.title;
+				opt.textContent = `${idx + 1}. ${compact}`;
+				opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
 				st.selectEl.append(opt);
 			});
 			const directID = Number(item?.id) || 0;
 			const initial = entries.find((e) => e.id === directID) || entries[0];
+			const initIdx = Math.max(0, entries.findIndex((e) => e.id === initial.id));
 			st.selectedAttachment = initial.attachment;
 			st.selectEl.value = String(initial.id);
+			st.selectEl.title = `${initIdx + 1}. ${initial.fullTitle || initial.title}`;
 			st.selectEl.style.display = 'block';
 		} else {
 			st.selectedAttachment = att;

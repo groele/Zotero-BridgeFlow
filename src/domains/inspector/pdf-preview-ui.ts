@@ -246,10 +246,16 @@ export function syncCompareBar(ui: CompareBarUI, st: CompareState, entries: read
 		const opt = createXhtmlEl(doc, 'option');
 		opt.value = String(entry.id);
 		const isCurrent = st.currentAttachmentID > 0 && entry.id === st.currentAttachmentID;
-		opt.textContent = isCurrent ? `● ${idx + 1}. ${entry.title}` : `${idx + 1}. ${entry.title}`;
+		const compact = entry.shortLabel || entry.title;
+		opt.textContent = isCurrent ? `● ${idx + 1}. ${compact}` : `${idx + 1}. ${compact}`;
+		opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
 		ui.selectEl.append(opt);
 	});
 	if (activeAttachmentID) ui.selectEl.value = String(activeAttachmentID);
+	const activeEntry = entries[activeIdx];
+	if (activeEntry) {
+		ui.selectEl.title = `${activeIdx + 1}. ${activeEntry.fullTitle || activeEntry.title}`;
+	}
 	ui.countLabel.textContent = `PDF ${activeIdx + 1}/${entries.length}`;
 }
 

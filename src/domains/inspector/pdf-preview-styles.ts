@@ -59,11 +59,25 @@ export const PREVIEW_CSS = `
 	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
 	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
 }
-.ztf-pdf-compare-select {
-	flex: 1 1 auto; min-inline-size: 0; block-size: 20px; padding: 0 5px; border-radius: 4px;
+.ztf-pdf-compare-select, .ztf-pdf-att-select, .ztf-pdf-folder-select {
+	appearance: none !important; -moz-appearance: none !important;
+	flex: 1 1 auto; min-inline-size: 0; max-inline-size: 100%;
+	block-size: 22px; padding: 0 20px 0 7px; border-radius: 5px;
 	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
-	background: var(--material-background, transparent); color: var(--fill-primary, inherit);
-	font: 500 11px/1.2 system-ui, sans-serif; cursor: pointer;
+	background-color: var(--fill-senary, rgba(127, 127, 127, 0.06));
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat; background-position: right 6px center;
+	color: var(--fill-primary, inherit);
+	font: 500 11.5px/20px system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+	transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+.ztf-pdf-compare-select:hover, .ztf-pdf-att-select:hover, .ztf-pdf-folder-select:hover {
+	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
+	background-color: var(--fill-quinary, rgba(127, 127, 127, 0.11));
+}
+.ztf-pdf-compare-select:focus-visible, .ztf-pdf-att-select:focus-visible, .ztf-pdf-folder-select:focus-visible {
+	outline: none; border-color: var(--accent-blue, #4072e5);
 }
 .ztf-pdf-open-btn {
 	padding: 0 7px !important; color: var(--accent-blue, #4072e5) !important;
