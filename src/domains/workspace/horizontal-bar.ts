@@ -31,6 +31,7 @@ export class WorkspaceHorizontalBar {
 	private inlineEl: HTMLElement | null = null;
 	private headingClickTimer = 0;
 	private lastSelectedID = '';
+	private lastRenderKey = '';
 
 	constructor(
 		win: Window, prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController,
@@ -71,15 +72,20 @@ export class WorkspaceHorizontalBar {
 			this.inlineEl = inline;
 		}
 		this.inlineEl.removeAttribute('hidden');
+		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
+		const compactMode = this.prefs.get('workspace.horizontalTabCompactMode');
+		const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(',');
+		const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join('|');
+		const renderKey = `${selectedID}|${compactMode}|${this.prefs.get('workspace.pinnedIconOnly')}|${this.store.state.collapsed.join(',')}|${gKey}|${tKey}`;
+		if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
+		this.lastRenderKey = renderKey;
 		this.inlineEl.textContent = '';
 
-		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
 		const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
 		const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
 
 		this.pinnedStrip.render(this.inlineEl, pinnedTabs, selectedID);
 
-		const compactMode = this.prefs.get('workspace.horizontalTabCompactMode');
 		const compactInactive = compactMode === 'compact' || (compactMode === 'auto' && unpinned.length > 5);
 
 		for (const group of this.store.state.groups) {

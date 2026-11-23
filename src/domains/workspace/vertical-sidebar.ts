@@ -45,6 +45,7 @@ export class WorkspaceVerticalSidebar {
 
 	private viewMode: SidebarViewMode = 'groups';
 	private searchTerm = '';
+	private lastRenderKey = '';
 	private wordCiteMap = new Map<number, CitationBadgeInfo>();
 
 	constructor(
@@ -206,16 +207,23 @@ export class WorkspaceVerticalSidebar {
 
 	private renderList(snapshot?: TrackedTab[]): void {
 		if (!this.listEl || !this.selection) return;
-		this.listEl.textContent = '';
-
 		const needle = this.searchTerm.trim().toLowerCase();
 		const allTracked = snapshot ?? this.tabs.buildTrackedTabs(this.win);
+		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
+		const badgeKey = [...this.wordCiteMap.entries()].map(([id, b]) => `${id}:${b.ordinal}`).join(',');
+		const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(',');
+		const tabKey = allTracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join('|');
+		const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(',')}|${this.prefs.get('workspace.verticalTabRowHeight')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${this.prefs.get('workspace.verticalTabSubtitleMode')}|${this.prefs.get('workspace.enableBatchSelection')}|${groupKey}|${badgeKey}|${tabKey}`;
+		if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
+		this.lastRenderKey = renderKey;
+		const prevScroll = this.listEl.scrollTop;
+		this.listEl.textContent = '';
+
 		const filtered = needle
 			? allTracked.filter((t) => `${t.title} ${t.shortTitle} ${t.creatorYear} ${t.collection} ${t.remark}`.toLowerCase().includes(needle))
 			: allTracked;
 
 		this.selection.beginRender(filtered);
-		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
 		const rowDeps = {
 			win: this.win, doc: this.doc, prefs: this.prefs, store: this.store, tabs: this.tabs, menus: this.menus,
 			hover: this.hover, selection: this.selection, wordCiteMap: this.wordCiteMap, selectedID, onRefresh: this.onRefresh,
@@ -272,6 +280,7 @@ export class WorkspaceVerticalSidebar {
 
 		this.renderFooter(allTracked);
 		this.selection.updateControls();
+		if (prevScroll > 0) this.listEl.scrollTop = prevScroll;
 	}
 
 	private renderStatusView(filtered: readonly TrackedTab[], rowDeps: any): void {

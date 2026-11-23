@@ -118,9 +118,14 @@ export class WordCitationCollectionManager {
 		if (tabs?.selectedID && tabs.selectedID !== 'zotero-pane' && typeof tabs.select === 'function') {
 			try { tabs.select('zotero-pane'); } catch { /* ignore */ }
 		}
-		const cv = targetWin?.ZoteroPane?.collectionsView;
+		const pane = targetWin?.ZoteroPane;
+		const cv = pane?.collectionsView;
 		if (typeof cv?.selectCollection === 'function') {
-			void cv.selectCollection(col.id);
+			void Promise.resolve(cv.selectCollection(col.id)).catch(() => {});
+			return true;
+		}
+		if (typeof pane?.selectCollection === 'function') {
+			void Promise.resolve(pane.selectCollection(col.id)).catch(() => {});
 			return true;
 		}
 		return false;

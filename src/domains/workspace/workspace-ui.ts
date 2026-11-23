@@ -48,7 +48,7 @@ export class WorkspaceWindowUI {
 	};
 
 	private readonly onResize = () => {
-		this.scheduleRender(80);
+		this.scheduleRender(140);
 	};
 
 	constructor(
@@ -87,7 +87,7 @@ export class WorkspaceWindowUI {
 	setCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
 		this.hoverCard?.setWordCitationBadges(badges);
 		this.sidebar?.setWordCitationBadges(badges);
-		this.render();
+		this.scheduleRender(16);
 	}
 
 	openSpotlightWithQuery(initialQuery = ''): void {
@@ -153,7 +153,7 @@ export class WorkspaceWindowUI {
 		if (!node) return false;
 		const el = typeof (node as any).closest === 'function' ? (node as unknown as Element) : (node as any).parentElement;
 		if (!el || typeof el.closest !== 'function') return false;
-		return Boolean(el.closest('#zbf-inline, #zbf-toolbar-actions'));
+		return Boolean(el.closest('#zbf-inline, #zbf-toolbar-actions, #zbf-sidebar'));
 	}
 
 	private scheduleRender(delayMs: number): void {

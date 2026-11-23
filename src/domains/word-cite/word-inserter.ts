@@ -1,6 +1,7 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
+import { runWordCommand } from './word-command.ts';
 
 interface NativeField {
 	type?: number;
@@ -28,14 +29,10 @@ interface NativeSession {
 	updateFromDocument(index: number): Promise<void>;
 	citationsByItemID: Record<string, unknown>;
 	data: { prefs: { delayCitationUpdates: boolean } };
-	_sessionUpToDate?: boolean;
-	style: { opt: { sort_citations: boolean } };
-	sessionID?: string;
+	cite(field: NativeField | null): Promise<NativeCitation[]>;
 }
 
 export type WordInsertResult = 'inserted' | 'busy' | 'non-word' | 'cancelled' | 'unavailable';
-
-let insertInFlight = false;
 
 export function resolveActiveSelectionForWord(win?: Window): any[] {
 	const zotero = (globalThis as any).Zotero;
@@ -56,8 +53,7 @@ export function resolveActiveSelectionForWord(win?: Window): any[] {
 
 /**
  * Inserts real Zotero native Word field codes (`ADDIN ZOTERO_ITEM CSL_CITATION`)
- * at the active Word cursor via temporary `Session.prototype.cite` interception.
- * Faithfully replicates Zotero-CiteFlow's transactional insertion + rollback guard.
+ * at the active Word cursor through the native citation command and session writer.
  */
 export async function insertItemsIntoWord(
 	kernel: PluginKernel,
@@ -65,57 +61,19 @@ export async function insertItemsIntoWord(
 	rawItems: readonly any[],
 	options: { verifyCursor?: boolean; onCommitted?: (session?: unknown) => void } = {},
 ): Promise<WordInsertResult> {
-	if (insertInFlight) return 'busy';
 	const { items } = deduplicateRegularItems(rawItems);
-	const selectedIDs = [...new Set(items.map((item) => Number(item?.id || 0)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+	const selectedIDs = items.map((item) => Number(item.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
 	if (!selectedIDs.length) return 'unavailable';
 
 	const host = (globalThis as any).Zotero;
 	const integration = host?.Integration;
-	const origCite = integration?.Session?.prototype?.cite;
-	if (typeof origCite !== 'function' || typeof integration?.execCommand !== 'function') {
-		return 'unavailable';
-	}
+	if (typeof integration?.CitationField !== 'function' || typeof integration?.Citation !== 'function'
+		|| typeof integration?.Field?.loadExisting !== 'function') return 'unavailable';
 
-	const isMac = host?.isMac === true;
-	if (!isMac && options.verifyCursor && !win32.verifyDroppedWordTarget()) {
-		return 'non-word';
-	}
+	const verifyDrop = host.isMac !== true && options.verifyCursor;
+	if (verifyDrop && !win32.verifyDroppedWordTarget()) return 'non-word';
 
-	insertInFlight = true;
-	const origGetApp = integration.getApplication;
-	let wrappedGetApp: ((...args: unknown[]) => unknown) | null = null;
-	const patchedApps = new Map<any, any>();
-
-	const restoreApps = (): void => {
-		for (const [app, origFn] of patchedApps) {
-			try { app.getActiveDocument = origFn; } catch { /* ignore */ }
-		}
-		patchedApps.clear();
-	};
-
-	// Workaround Zotero 10 WinWord adapter getActiveDocument() null-name bug
-	if (!isMac && typeof origGetApp === 'function') {
-		wrappedGetApp = function (this: unknown, ...args: unknown[]) {
-			const app = Reflect.apply(origGetApp, this, args) as any;
-			if (args[0] === 'WinWord' && typeof app?.getDocument === 'function' && typeof app?.getActiveDocument === 'function') {
-				if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
-				app.getActiveDocument = function () {
-					return this.getDocument('');
-				};
-			}
-			return app;
-		};
-		integration.getApplication = wrappedGetApp;
-	}
-
-	const patchedCite = async function (this: NativeSession, field: NativeField | null): Promise<unknown> {
-		if (typeof this._insertCitingResult !== 'function'
-			|| typeof this.addCitation !== 'function'
-			|| typeof integration.CitationEditInterface !== 'function') {
-			return Reflect.apply(origCite, this, arguments);
-		}
-
+	const insertCitation = async function (this: NativeSession, field: NativeField | null): Promise<NativeCitation[]> {
 		let newField = false;
 		let activeField: NativeField | null = field;
 		let citation: NativeCitation;
@@ -141,42 +99,29 @@ export async function insertItemsIntoWord(
 			}
 
 			await citation.prepareForEditing();
-			let fieldIndexPromise: Promise<number>;
-			let citationsByItemIDPromise: Promise<Record<string, unknown>>;
-
-			if (!this.data?.prefs?.delayCitationUpdates || !Object.keys(this.citationsByItemID || {}).length || this._sessionUpToDate) {
-				fieldIndexPromise = this.getFields().then(async (fieldsList: NativeField[]) => {
-					for (let i = 0, n = fieldsList.length; i < n; i++) {
-						if (await fieldsList[i].equals(activeField?._field)) {
-							activeField = new integration.CitationField(fieldsList[i]);
-							return i;
+			let fieldIndex = -1;
+			if (!this.data.prefs.delayCitationUpdates || !Object.keys(this.citationsByItemID).length) {
+				const findFieldIndex = this.getFields().then(async (fields) => {
+					for (const [index, candidate] of fields.entries()) {
+						if (await candidate.equals(activeField?._field)) {
+							activeField = new integration.CitationField(candidate);
+							return index;
 						}
 					}
-					return -1;
+					throw new Error('Could not locate the Word citation field');
 				});
-				citationsByItemIDPromise = this.updateFromDocument(0).then(() => this.citationsByItemID);
-			} else {
-				fieldIndexPromise = Promise.resolve(-1);
-				citationsByItemIDPromise = Promise.resolve(this.citationsByItemID);
+				const [fieldResult, updateResult] = await Promise.allSettled([findFieldIndex, this.updateFromDocument(0)]);
+				if (fieldResult.status === 'rejected') throw fieldResult.reason;
+				if (updateResult.status === 'rejected') throw updateResult.reason;
+				fieldIndex = fieldResult.value;
 			}
 
-			const io = new integration.CitationEditInterface(
-				citation,
-				Boolean(this.style?.opt?.sort_citations),
-				fieldIndexPromise,
-				citationsByItemIDPromise,
-			);
+			const existingIDs = new Set(citation.citationItems.map((item) => Number(item.id)));
 			for (const id of selectedIDs) {
-				if (!io.citation.citationItems.some((c: any) => Number(c.id) === id)) {
-					io.citation.citationItems.push({ id });
-				}
+				if (!existingIDs.has(id)) citation.citationItems.push({ id });
 			}
-			if (!io.citation.citationItems.length) {
-				throw new host.Exception.UserCancelled('inserting citation');
-			}
-
-			const [fieldIndex] = await Promise.all([fieldIndexPromise, citationsByItemIDPromise]);
-			const citations: NativeCitation[] = await this._insertCitingResult(fieldIndex, activeField!, io.citation);
+			const citations = await this._insertCitingResult(fieldIndex, activeField!, citation);
+			if (!citations.length) throw new Error('Word returned no citation fields');
 			let refreshedFields: NativeField[] | undefined;
 
 			if (!this.data?.prefs?.delayCitationUpdates) {
@@ -197,11 +142,6 @@ export async function insertItemsIntoWord(
 				await this.addCitation(idx, await citField.getNoteIndex(), cit);
 				committed = true;
 			}
-			committed = true;
-
-			try {
-				options.onCommitted?.(this);
-			} catch { /* ignore UI refresh error after native commit */ }
 			return citations;
 		} catch (error) {
 			if (newField && !committed && typeof activeField?.delete === 'function') {
@@ -217,80 +157,35 @@ export async function insertItemsIntoWord(
 		}
 	};
 
-	integration.Session.prototype.cite = patchedCite;
+	let committedSession: NativeSession | undefined;
 	try {
-		if (isMac) {
-			await integration.execCommand('MacWord16', 'addEditCitation', '/Applications/Microsoft Word.app/', 2);
-		} else {
-			if (options.verifyCursor && !win32.verifyDroppedWordTarget()) {
-				return 'non-word';
+		const result = await runWordCommand(kernel, 'addEditCitation', async (invoke, session: NativeSession) => {
+			if (typeof session?.cite !== 'function' || typeof session._insertCitingResult !== 'function'
+				|| typeof session.addCitation !== 'function') throw new Error('Word citation API unavailable');
+			let wroteCitation = false;
+			const dispose = kernel.runtime.patch(session as unknown as Record<string, unknown>, 'cite', 'Word session',
+				() => async (field) => {
+					const citations = await insertCitation.call(session, field as NativeField | null);
+					wroteCitation = true;
+					return citations;
+				},
+			);
+			try {
+				await invoke();
+				if (!wroteCitation) throw new Error('The Word command did not insert a citation');
+				committedSession = session;
+			} finally {
+				dispose();
 			}
-			await integration.execCommand('WinWord', 'addEditCitation', null, 1);
-		}
+		});
+		if (result !== 'completed') return result;
+		try { options.onCommitted?.(committedSession); } catch { /* Word has already completed */ }
 		return 'inserted';
-	} catch (err) {
-		const name = String((err as any)?.name || '');
-		if (name.includes('UserCancelled')) return 'cancelled';
-		kernel.logger.error('word-cite:insert', err);
-		return 'unavailable';
 	} finally {
-		win32.clearLastDroppedWordTarget();
-		restoreApps();
-		if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
-			integration.getApplication = origGetApp;
-		}
-		if (integration.Session.prototype.cite === patchedCite) {
-			integration.Session.prototype.cite = origCite;
-		}
-		insertInFlight = false;
+		if (verifyDrop) win32.clearLastDroppedWordTarget();
 	}
 }
 
-export async function refreshActiveWordDocument(
-	kernel: PluginKernel,
-	options: { onCommitted?: (session?: unknown) => void } = {},
-): Promise<boolean> {
-	if (insertInFlight) return false;
-	const host = (globalThis as any).Zotero;
-	const integration = host?.Integration;
-	if (typeof integration?.execCommand !== 'function') return false;
-	const isMac = host?.isMac === true;
-	const origGetApp = integration.getApplication;
-	let wrappedGetApp: ((...args: unknown[]) => unknown) | null = null;
-	const patchedApps = new Map<any, any>();
-
-	if (!isMac && typeof origGetApp === 'function') {
-		wrappedGetApp = function (this: unknown, ...args: unknown[]) {
-			const app = Reflect.apply(origGetApp, this, args) as any;
-			if (args[0] === 'WinWord' && typeof app?.getDocument === 'function' && typeof app?.getActiveDocument === 'function') {
-				if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
-				app.getActiveDocument = function () { return this.getDocument(''); };
-			}
-			return app;
-		};
-		integration.getApplication = wrappedGetApp;
-	}
-
-	insertInFlight = true;
-	try {
-		if (isMac) {
-			await integration.execCommand('MacWord16', 'refresh', '/Applications/Microsoft Word.app/', 2);
-		} else {
-			await integration.execCommand('WinWord', 'refresh', null, 1);
-		}
-		try { options.onCommitted?.(); } catch { /* ignore */ }
-		return true;
-	} catch (err) {
-		kernel.logger.error('word-cite:refresh', err);
-		return false;
-	} finally {
-		for (const [app, origFn] of patchedApps) {
-			try { app.getActiveDocument = origFn; } catch { /* ignore */ }
-		}
-		patchedApps.clear();
-		if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
-			integration.getApplication = origGetApp;
-		}
-		insertInFlight = false;
-	}
+export async function refreshActiveWordDocument(kernel: PluginKernel): Promise<boolean> {
+	return await runWordCommand(kernel, 'refresh', async (invoke) => invoke()) === 'completed';
 }

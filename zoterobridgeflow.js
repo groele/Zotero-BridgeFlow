@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.1.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.2.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -229,7 +229,7 @@
                 });
               }
             }
-            if (this.wordCite.isActive() && this.kernel.prefs.get("wordCite.dragCite.enable")) {
+            if (this.wordCite.isActive()) {
               const insertLabel = "插入当前文献到 Word 光标处";
               if (!term || insertLabel.toLowerCase().includes(term) || "word".includes(term) || "cite".includes(term)) {
                 out.push({
@@ -930,11 +930,17 @@
   };
 
   // src/services/pane-positioner.ts
+  var PANE_POSITION_ANCHORS = {
+    "zotero-item-pane-header": null,
+    "zotero-editpane-item-box": "info",
+    "zotero-editpane-abstract": "abstract",
+    "zotero-editpane-attachments": "attachments",
+    "zotero-editpane-notes": "notes",
+    "zotero-editpane-related": null
+  };
+  var PANE_POSITIONS = Object.keys(PANE_POSITION_ANCHORS);
   function normalizePanePosition(raw, fallback = "zotero-item-pane-header") {
-    if (raw === "zotero-item-pane-header" || raw === "zotero-editpane-item-box" || raw === "zotero-editpane-related") {
-      return raw;
-    }
-    return fallback;
+    return typeof raw === "string" && Object.hasOwn(PANE_POSITION_ANCHORS, raw) ? raw : fallback;
   }
   var ItemPanePositionCoordinator = class {
     targets = /* @__PURE__ */ new Map();
@@ -996,71 +1002,44 @@
       this.dirty.clear();
     }
     async applyAll(owner) {
-      if (owner.skipRender) return;
-      const groups = {
-        "zotero-item-pane-header": [],
-        "zotero-editpane-item-box": [],
-        "zotero-editpane-related": []
-      };
-      const independent = [...this.targets.values()].filter((s) => !s.anchorAfterSectionID);
-      const anchored = [...this.targets.values()].filter((s) => Boolean(s.anchorAfterSectionID));
-      for (const spec of independent) {
-        groups[spec.getPosition()].push(spec);
+      if (owner.skipRender || owner.querySelector?.("[data-ztf-pdf-full-section]")) return;
+      const paneIDs = this.getPaneIDs(owner);
+      const targets = Array.from(this.targets.values()).filter((spec) => paneIDs.includes(spec.sectionID));
+      if (!targets.length) return;
+      const managed = new Set(targets.map((spec) => spec.sectionID));
+      const desired = paneIDs.filter((id) => !managed.has(id));
+      const native = [...desired];
+      const groups = new Map(PANE_POSITIONS.map((position) => [position, []]));
+      for (const spec of targets.filter((spec2) => !spec2.anchorAfterSectionID)) {
+        groups.get(spec.getPosition()).push(spec.sectionID);
       }
-      for (const spec of anchored) {
-        const pos = spec.getPosition();
-        const list = groups[pos];
-        const anchorIdx = list.findIndex((item) => item.sectionID === spec.anchorAfterSectionID);
-        if (anchorIdx >= 0) list.splice(anchorIdx + 1, 0, spec);
-        else list.push(spec);
+      for (const spec of targets.filter((spec2) => spec2.anchorAfterSectionID)) {
+        const group2 = groups.get(spec.getPosition());
+        const anchor = group2.indexOf(spec.anchorAfterSectionID);
+        group2.splice(anchor < 0 ? group2.length : anchor + 1, 0, spec.sectionID);
       }
-      for (const position of ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]) {
-        await this.alignGroup(owner, position, groups[position]);
+      for (const position of PANE_POSITIONS) {
+        const group2 = groups.get(position);
+        if (!group2.length) continue;
+        const anchor = PANE_POSITION_ANCHORS[position];
+        const nativeIndex = anchor ? native.indexOf(anchor) : -1;
+        const nextNative = native[nativeIndex + 1];
+        const index = position === "zotero-editpane-related" || nextNative === void 0 ? desired.length : desired.indexOf(nextNative);
+        desired.splice(index, 0, ...group2);
+      }
+      for (let index = desired.length - 1; index >= 0; index--) {
+        const id = desired[index];
+        if (!managed.has(id)) continue;
+        const next = desired[index + 1];
+        const current = this.getPaneIDs(owner);
+        const currentIndex = current.indexOf(id);
+        const targetIndex = next === void 0 ? current.length : current.indexOf(next);
+        if (currentIndex < 0 || targetIndex < 0 || currentIndex + 1 === targetIndex) continue;
+        await this.reorderPane(owner, id, next, targetIndex);
       }
     }
-    async alignGroup(owner, position, group2) {
-      const presentIDs = group2.map((s) => s.sectionID).filter((id) => owner.getPanes().some((p) => p.dataset.pane === id));
-      if (!presentIDs.length) return;
-      const panes = owner.getPanes();
-      const startIdx = this.computeGroupStartIndex(panes, position, presentIDs.length);
-      const slice = panes.slice(startIdx, startIdx + presentIDs.length).map((p) => p.dataset.pane);
-      if (slice.length === presentIDs.length && presentIDs.every((id, idx) => slice[idx] === id)) {
-        return;
-      }
-      await this.moveSectionToPosition(owner, presentIDs[0], position);
-      for (let i = 1; i < presentIDs.length; i++) {
-        await this.moveSectionAfter(owner, presentIDs[i], presentIDs[i - 1]);
-      }
-    }
-    computeGroupStartIndex(panes, position, groupSize) {
-      if (position === "zotero-item-pane-header") return 0;
-      if (position === "zotero-editpane-related") return Math.max(0, panes.length - groupSize);
-      const info = panes.findIndex((p) => p.dataset.pane === "info");
-      return info < 0 ? 0 : info + 1;
-    }
-    async moveSectionToPosition(owner, sectionID, position) {
-      const panes = owner.getPanes();
-      const current = panes.findIndex((p) => p.dataset.pane === sectionID);
-      if (current < 0) return;
-      let targetIdx = 0;
-      if (position === "zotero-editpane-related") {
-        targetIdx = panes.length;
-      } else if (position === "zotero-editpane-item-box") {
-        const info = panes.findIndex((p) => p.dataset.pane === "info");
-        targetIdx = info < 0 ? 0 : info + 1;
-      }
-      if (current === targetIdx || current === targetIdx - 1) return;
-      const targetPaneID = panes[targetIdx]?.dataset.pane;
-      await this.reorderPane(owner, sectionID, targetPaneID, targetIdx);
-    }
-    async moveSectionAfter(owner, sectionID, anchorSectionID) {
-      const panes = owner.getPanes();
-      const anchorIdx = panes.findIndex((p) => p.dataset.pane === anchorSectionID);
-      const currentIdx = panes.findIndex((p) => p.dataset.pane === sectionID);
-      if (anchorIdx < 0 || currentIdx < 0 || currentIdx === anchorIdx + 1) return;
-      const desiredPaneIndex = currentIdx < anchorIdx ? anchorIdx : anchorIdx + 1;
-      const targetPaneID = panes[anchorIdx + 1]?.dataset.pane;
-      await this.reorderPane(owner, sectionID, targetPaneID, desiredPaneIndex);
+    getPaneIDs(owner) {
+      return owner.getPanes().flatMap((pane) => pane.dataset.pane ? [pane.dataset.pane] : []);
     }
     async reorderPane(owner, sectionID, targetPaneID, fallbackIdx) {
       const sidenav = owner.sidenav;
@@ -1616,7 +1595,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           resolveItem,
           onLocate: (id) => this.locateItem(id),
           onOpenPdf: (target) => this.openItemPdf(target),
-          onCiteWord: this.kernel.prefs.get("modules.wordCite.enable") && this.kernel.prefs.get("wordCite.dragCite.enable") ? (id) => {
+          onCiteWord: this.kernel.prefs.get("modules.wordCite.enable") && this.kernel.prefs.get("wordCite.tabContextMenu.enable") ? (id) => {
             this.kernel.bus.emit("word:insert-items-request", { itemIDs: [id], win: doc.defaultView || void 0 });
             return true;
           } : void 0,
@@ -2259,7 +2238,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   async function openPdfInReader(att, win, pageNumber) {
     if (!att?.id) return false;
     const zotero = globalThis.Zotero;
-    const location = typeof pageNumber === "number" && pageNumber > 1 ? { pageIndex: pageNumber - 1 } : void 0;
+    const location = typeof pageNumber === "number" && pageNumber >= 1 ? { pageIndex: pageNumber - 1 } : void 0;
     try {
       if (zotero?.Reader?.open) {
         try {
@@ -2281,11 +2260,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   }
 
   // src/domains/inspector/pdf-folder-section.ts
+  function displayAttachmentName(raw) {
+    return raw.replace(/(?:%[a-f\d]{2})+/gi, (encoded) => {
+      try {
+        return decodeURIComponent(encoded);
+      } catch {
+        return encoded;
+      }
+    });
+  }
   var FOLDER_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-pdf-folder-sidenav"]';
-  var FOLDER_ACTION = `${FOLDER_ICON}, button.ztf-pdf-folder-action`;
   function folderActionTarget(event) {
     return event.composedPath?.().find(
-      (node) => node.matches?.(FOLDER_ACTION) === true
+      (node) => node.matches?.(FOLDER_ICON) === true
     );
   }
   var PdfFolderSectionController = class {
@@ -2293,7 +2280,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     states = /* @__PURE__ */ new Map();
     listeners = /* @__PURE__ */ new Map();
     openingFolders = /* @__PURE__ */ new WeakSet();
-    lastLaunched = /* @__PURE__ */ new Map();
     kernel;
     services;
     constructor(kernel, services) {
@@ -2341,7 +2327,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     unregister() {
       this.services.panePositions.setTarget("pdf-folder", null);
-      this.lastLaunched.clear();
+      for (const state of this.states.values()) state.controller.abort();
       for (const controller of this.listeners.values()) controller.abort();
       this.listeners.clear();
       this.unregisterFn?.();
@@ -2365,7 +2351,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       selectEl.className = "ztf-pdf-folder-select";
       selectEl.style.cssText = "display:none;min-inline-size:0;inline-size:100%;block-size:22px;padding:0 6px;border-radius:4px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);background:transparent;color:inherit;font:500 11px/1.2 system-ui,sans-serif;cursor:pointer;";
       const meta = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
-      meta.style.cssText = "opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+      meta.style.cssText = "display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;";
       const btn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
       btn.type = "button";
       btn.className = "ztf-pdf-folder-action";
@@ -2373,13 +2359,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       btn.textContent = "打开文件夹并选中 PDF";
       btn.style.cssText = "justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;";
       btn.disabled = true;
-      const st = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta, setSectionSummary };
+      this.states.get(body)?.controller.abort();
+      const panelController = new win.AbortController();
+      const st = { body, controller: panelController, refreshRevision: 0, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta, setSectionSummary };
+      btn.addEventListener("click", () => {
+        if (!btn.disabled) this.openFolder(st.selectedAttachment, win);
+      }, { signal: panelController.signal });
       selectEl.addEventListener("change", () => {
         const hit = st.entries.find((e) => String(e.id) === selectEl.value);
         if (hit) {
           st.selectedAttachment = hit.attachment;
-          st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || "附件文件");
+          st.meta.textContent = displayAttachmentName(String(hit.attachment?.attachmentFilename || hit.title || "附件文件"));
           st.meta.title = st.meta.textContent;
+          st.setSectionSummary?.(st.entries.length > 1 ? `${st.entries.length} · ${st.meta.textContent}` : st.meta.textContent);
           try {
             const CustomEv = win?.CustomEvent || CustomEvent;
             doc.dispatchEvent?.(new CustomEv("zbf:pdf-folder-attachment-selected", {
@@ -2388,7 +2380,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           } catch {
           }
         }
-      }, { signal: controller.signal });
+      }, { signal: panelController.signal });
       doc.addEventListener("zbf:pdf-attachment-selected", ((ev) => {
         const attID = Number(ev?.detail?.attachmentID || 0);
         if (!attID || !st.entries.length) return;
@@ -2396,10 +2388,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         if (hit && st.selectedAttachment !== hit.attachment) {
           st.selectedAttachment = hit.attachment;
           st.selectEl.value = String(hit.id);
-          st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || "附件文件");
+          st.meta.textContent = displayAttachmentName(String(hit.attachment?.attachmentFilename || hit.title || "附件文件"));
           st.meta.title = st.meta.textContent;
         }
-      }), { signal: controller.signal });
+      }), { signal: panelController.signal });
       wrap.append(selectEl, meta, btn);
       body.append(wrap);
       this.states.set(body, st);
@@ -2427,16 +2419,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         if (!activated || event.button !== 0 || event.detail > 1) return;
         if (!this.kernel.prefs.get("inspector.pdfFolder.enable")) return;
         const sidenav = target.closest("item-pane-sidenav");
-        const stHit = [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled);
-        const stByDoc = [...this.states.values()].find((s) => s.body.ownerDocument === doc && (s.selectedAttachment || s.item));
-        const item = sidenav ? stByDoc?.selectedAttachment ?? sidenav.container?.item ?? stByDoc?.item ?? win.ZoteroPane?.getSelectedItems?.()?.[0] : stHit?.selectedAttachment ?? stHit?.item;
-        if (item && !signal.aborted && !this.openingFolders.has(win)) {
-          this.openingFolders.add(win);
-          void this.revealAttachmentFolder(item, win).finally(() => this.openingFolders.delete(win));
-        }
+        const item = sidenav?.container?.item ?? win.ZoteroPane?.getSelectedItems?.()?.[0];
+        const state = [...this.states.values()].find((s) => s.body.ownerDocument === doc && s.item === item);
+        this.openFolder(state?.selectedAttachment ?? item, win);
       }, options);
     }
+    openFolder(item, win) {
+      if (!item || this.openingFolders.has(win) || !this.kernel.prefs.get("inspector.pdfFolder.enable")) return;
+      this.openingFolders.add(win);
+      void this.revealAttachmentFolder(item, win).catch((error) => this.kernel.logger.error("pdf-folder", error)).finally(() => this.openingFolders.delete(win));
+    }
     onDestroy(doc, body) {
+      this.states.get(body)?.controller.abort();
       this.states.delete(body);
       if (!doc || [...this.states.keys()].some((other) => other.ownerDocument === doc)) return;
       this.listeners.get(doc)?.abort();
@@ -2448,11 +2442,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const st = this.states.get(body);
       if (!st) return;
       if (setSectionSummary) st.setSectionSummary = setSectionSummary;
-      st.setSectionSummary?.("打开 PDF 文件夹");
+      if (!enabled) st.setSectionSummary?.("");
+      const previousID = st.item === item ? st.selectedAttachment?.id : null;
       st.item = enabled ? item : null;
-      void this.refreshMeta(st);
+      const revision = ++st.refreshRevision;
+      st.btn.disabled = true;
+      void Promise.resolve().then(() => {
+        if (this.states.get(body) === st && revision === st.refreshRevision) void this.refreshMeta(st, revision, previousID);
+      });
     }
-    async refreshMeta(st) {
+    async refreshMeta(st, revision, previousID) {
       const item = st.item;
       st.btn.disabled = true;
       st.btn.style.opacity = "0.5";
@@ -2466,7 +2465,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (!item) return;
       const entries = await resolveAllPdfAttachments(item).catch(() => []);
       const att = entries[0]?.attachment || await this.resolveFileAttachment(item).catch(() => null);
-      if (this.states.get(st.body) !== st || st.item !== item) return;
+      if (this.states.get(st.body) !== st || st.refreshRevision !== revision) return;
       if (!att) {
         st.meta.setAttribute("data-l10n-id", "zbf-pdf-folder-unavailable");
         st.meta.textContent = "当前条目没有文件附件";
@@ -2478,24 +2477,25 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         entries.forEach((entry, idx) => {
           const opt = doc.createElementNS("http://www.w3.org/1999/xhtml", "option");
           opt.value = String(entry.id);
-          const compact = entry.shortLabel || entry.title;
+          const compact = displayAttachmentName(entry.shortLabel || entry.title);
           opt.textContent = `${idx + 1}. ${compact}`;
-          opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
+          opt.title = `${idx + 1}. ${displayAttachmentName(entry.fullTitle || entry.title)}`;
           st.selectEl.append(opt);
         });
         const directID = Number(item?.id) || 0;
-        const initial = entries.find((e) => e.id === directID) || entries[0];
+        const initial = entries.find((e) => e.id === previousID) || entries.find((e) => e.id === directID) || entries[0];
         const initIdx = Math.max(0, entries.findIndex((e) => e.id === initial.id));
         st.selectedAttachment = initial.attachment;
         st.selectEl.value = String(initial.id);
-        st.selectEl.title = `${initIdx + 1}. ${initial.fullTitle || initial.title}`;
+        st.selectEl.title = `${initIdx + 1}. ${displayAttachmentName(initial.fullTitle || initial.title)}`;
         st.selectEl.style.display = "block";
       } else {
         st.selectedAttachment = att;
       }
       const activeAtt = st.selectedAttachment || att;
-      st.meta.textContent = String(activeAtt.attachmentFilename || activeAtt.getField?.("title") || "附件文件");
+      st.meta.textContent = displayAttachmentName(String(activeAtt.attachmentFilename || activeAtt.getField?.("title") || "附件文件"));
       st.meta.title = st.meta.textContent;
+      st.setSectionSummary?.(st.entries.length > 1 ? `${st.entries.length} · ${st.meta.textContent}` : st.meta.textContent);
       st.btn.disabled = false;
       st.btn.style.opacity = "1";
     }
@@ -2516,6 +2516,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .ztf-pdf-toolbar {
 	display: flex; align-items: center; justify-content: space-between;
 	gap: 4px; flex-wrap: wrap; min-block-size: 24px; padding: 0 1px 4px;
+	min-inline-size: 0; max-inline-size: 100%; overflow: hidden;
 	background: transparent;
 	border-bottom: 1px solid var(--fill-quinary, color-mix(in srgb, currentColor 7%, transparent));
 }
@@ -2621,12 +2622,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .ztf-pdf-viewport {
 	position: relative; display: flex; flex-direction: column; align-items: stretch;
 	gap: 8px; max-block-size: clamp(240px, 38vh, 420px);
+	min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box;
 	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
 	scrollbar-width: thin; outline: none;
 	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
 }
 .ztf-pdf-page-card {
 	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
+	min-inline-size: 0; max-inline-size: 100%;
 	inline-size: 100%; box-sizing: border-box; background: #fff;
 	border-radius: 5px; border: 1px solid light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.18));
 	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden; cursor: pointer;
@@ -2649,7 +2652,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 }
 .ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
 .ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
-[data-ztf-pdf-full-hidden="true"], [data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"]::before { display: none !important; }
 [data-ztf-pdf-full-stack="true"] {
 	display: flex !important; flex-direction: column !important;
 	block-size: 100% !important; max-block-size: 100% !important; overflow: hidden !important;
@@ -2738,33 +2742,30 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     statusEl.setAttribute("data-l10n-id", l10nId);
     statusEl.textContent = STATUS_FALLBACKS[l10nId] || l10nId;
   }
-  function ensureSectionConnected(body, root, savedSection, savedCollapsible) {
+  function ensureSectionConnected(body, root, _savedSection, savedCollapsible) {
     if (!body.contains(root)) body.replaceChildren(root);
-    let owner = body.closest?.("collapsible-section") || (body.parentElement?.localName === "collapsible-section" ? body.parentElement : null);
-    if (!owner) {
-      const doc = body.ownerDocument;
-      let hostSection = body.closest?.("item-pane-custom-section") || savedSection || null;
-      if ((!hostSection || hostSection.isConnected === false) && doc?.querySelectorAll) {
-        const candidates = Array.from(doc.querySelectorAll('item-pane-custom-section[data-pane*="bridgeflow-pdf-preview"]'));
-        hostSection = candidates.find((c) => c._body === body) || candidates.find((c) => !c.querySelector('[data-type="body"]')) || hostSection;
-      }
-      const liveCollapsible = hostSection?.querySelector?.("collapsible-section") || (savedCollapsible?.isConnected ? savedCollapsible : null);
-      if (liveCollapsible) {
-        const existingBody = liveCollapsible.querySelector?.('[data-type="body"]');
-        if (!existingBody) liveCollapsible.append(body);
-        else if (existingBody !== body) {
-          existingBody.replaceWith(body);
-          if (hostSection) hostSection._body = body;
-        }
-        owner = liveCollapsible;
-      }
-    }
+    const owner = body.closest?.("collapsible-section") || (savedCollapsible?.contains(body) ? savedCollapsible : null);
     if (!owner) return null;
     owner.removeAttribute?.("empty");
-    if ("empty" in owner) owner.empty = false;
     owner.style?.setProperty?.("--open-height", "auto");
     return owner;
   }
+  var PreviewFocus = class {
+    owners = /* @__PURE__ */ new WeakSet();
+    isActive(body) {
+      const owner = body.closest("item-details");
+      return !!owner && this.owners.has(owner);
+    }
+    set(state, active) {
+      const owner = state.body.closest("item-details");
+      if (owner) {
+        if (active) this.owners.add(owner);
+        else this.owners.delete(owner);
+      }
+      state.fullActive = active;
+      applyPreviewLayoutMode(state.body, state.root, state.customSection, active);
+    }
+  };
   function applyPreviewLayoutMode(body, root, savedSection, fullActive) {
     root.setAttribute("data-layout-mode", fullActive ? "full" : "section");
     const modeBtn = root.querySelector?.(".ztf-pdf-mode-btn");
@@ -2783,40 +2784,31 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (fullActive) {
       hostSection.setAttribute("data-ztf-pdf-full-section", "true");
       stack?.setAttribute("data-ztf-pdf-full-stack", "true");
-      for (const child of Array.from(stack?.parentElement?.children || [])) {
-        const tag = (child.localName || child.tagName || "").toLowerCase();
-        if (child !== stack && tag !== "item-pane-sidenav" && !child.querySelector?.("item-pane-sidenav")) {
-          child.setAttribute("data-ztf-pdf-full-hidden", "true");
-        }
-      }
     } else {
       hostSection.removeAttribute("data-ztf-pdf-full-section");
-      stack?.removeAttribute("data-ztf-pdf-full-stack");
-      body.ownerDocument?.querySelectorAll?.("[data-ztf-pdf-full-hidden]").forEach((el) => el.removeAttribute("data-ztf-pdf-full-hidden"));
+      if (!stack?.querySelector("[data-ztf-pdf-full-section]")) stack?.removeAttribute("data-ztf-pdf-full-stack");
     }
   }
-  function bindPreviewSidenavClick(doc, signal, isFullMode, onFullModeChange) {
-    if (typeof doc.addEventListener !== "function") return;
+  function bindPreviewSidenavClick(doc, signal, body, onFullModeChange) {
     doc.addEventListener("click", (event) => {
-      if (event.button !== 0) return;
-      const btn = event.target?.closest?.("item-pane-sidenav .btn[data-pane]");
-      const paneID = btn?.getAttribute?.("data-pane") || "";
-      if (!btn || btn.hasAttribute?.("disabled")) return;
-      if (!paneID.includes("bridgeflow-pdf-preview")) {
-        onFullModeChange(false);
-        return;
+      const mouse = event;
+      if (mouse.button !== 0 || mouse.detail > 1) return;
+      const selector = "item-pane-sidenav .btn[data-pane]";
+      const btn = event.composedPath?.().find((node) => node?.matches?.(selector)) || event.target?.closest?.(selector);
+      if (!btn || btn.hasAttribute("disabled")) return;
+      const container = btn.closest("item-pane-sidenav")?.container;
+      if (!container?.contains(body)) return;
+      const section = body.closest("item-pane-custom-section");
+      if (!section) return;
+      const selected = btn.getAttribute("data-pane") === section.getAttribute("data-pane");
+      if (selected) {
+        const collapsible = body.closest("collapsible-section");
+        if (collapsible && !collapsible.open) {
+          collapsible.removeAttribute("empty");
+          collapsible.open = true;
+        }
       }
-      onFullModeChange(isFullMode());
-      const sidenav = btn.closest?.("item-pane-sidenav");
-      const container = sidenav?.container;
-      const section = container?.getEnabledPane?.(paneID) || doc.querySelector?.(`item-pane-custom-section[data-pane="${paneID}"]`);
-      const collapsible = section?.querySelector?.("collapsible-section");
-      if (collapsible) {
-        collapsible.removeAttribute?.("empty");
-        collapsible.open = true;
-        collapsible.style?.setProperty?.("--open-height", "auto");
-      }
-      if (container?.scrollToPane) void container.scrollToPane(paneID, "smooth");
+      onFullModeChange(selected);
     }, { capture: true, signal });
   }
   function createCompareBar(doc, signal, getState, onChange) {
@@ -3060,7 +3052,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     void renderPageSlot(state, slot, state.generation, onError);
     evictDistantPageCanvases(state.slots, state.currentPage);
   }
-  async function loadAttachmentPreviewDoc(state, att, isDblClickOpenEnabled, onError) {
+  async function loadAttachmentPreviewDoc(state, att, onError) {
     disposePreviewDocument(state, false);
     const gen = state.generation;
     state.loading = true;
@@ -3103,7 +3095,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         return;
       }
       applyStatusMessage(state.statusEl, "");
-      buildSlots(state, gen, isDblClickOpenEnabled, onError);
+      buildSlots(state, gen, onError);
       if (state.currentPage > 1) {
         jumpToPreviewPage(state, state.currentPage, onError);
       } else {
@@ -3121,7 +3113,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!item) return "";
     const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment");
     const ownerRef = isAtt && item.parentItem ? item.parentItem : item;
-    const ids = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments() : [];
+    const ids = ownerRef?.getAttachments?.() ?? [];
     if (!ids.length) return `${Number(item.id) || 0}:${item.getField?.("title") || ""}:${item.attachmentFilename || ""}`;
     const hostItems = globalThis.Zotero?.Items;
     return ids.map((id) => {
@@ -3129,7 +3121,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return `${id}:${a?.getField?.("title") || ""}:${a?.attachmentFilename || ""}`;
     }).join("|");
   }
-  async function loadItemPreviewAttachments(state, item, isDblClickOpenEnabled, onError) {
+  async function loadItemPreviewAttachments(state, item, onError) {
     disposePreviewDocument(state, true);
     const gen = state.generation;
     if (!item) {
@@ -3139,7 +3131,17 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     state.loading = true;
     applyStatusMessage(state.statusEl, "zbf-pdf-preview-loading");
     const isReader = state.compare.tabType === "reader";
-    const ctx = await resolveSameItemPdfContext(item, state.win);
+    let ctx;
+    try {
+      ctx = await resolveSameItemPdfContext(item, state.win);
+    } catch (error) {
+      if (state.generation === gen) {
+        state.loading = false;
+        applyStatusMessage(state.statusEl, "zbf-pdf-preview-error");
+        onError(error);
+      }
+      return;
+    }
     if (state.generation !== gen) return;
     const entries = ctx.entries;
     state.ownerID = ctx.ownerID;
@@ -3164,9 +3166,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       applyStatusMessage(state.statusEl, "zbf-pdf-preview-unavailable");
       return;
     }
-    await loadAttachmentPreviewDoc(state, chosen.attachment, isDblClickOpenEnabled, onError);
+    await loadAttachmentPreviewDoc(state, chosen.attachment, onError);
   }
-  function buildSlots(state, gen, isDblClickOpenEnabled, onError) {
+  function buildSlots(state, gen, onError) {
     state.viewportEl.textContent = "";
     state.slots = [];
     const frag = state.doc.createDocumentFragment();
@@ -3180,13 +3182,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const badge = createXhtmlEl(state.doc, "span");
       badge.className = "ztf-pdf-page-badge";
       badge.textContent = String(p);
-      card.addEventListener("dblclick", (e) => {
-        if (state.attachment && isDblClickOpenEnabled()) {
-          e.preventDefault?.();
-          e.stopPropagation?.();
-          void openPdfInReader(state.attachment, state.win, p);
-        }
-      });
       card.append(canvas, badge);
       frag.append(card);
       state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, renderToken: 0, lastHeight: 0 });
@@ -3194,19 +3189,34 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     state.viewportEl.append(frag);
     const Observer = state.win.IntersectionObserver;
     if (Observer) {
+      const slotByCard = new Map(state.slots.map((s) => [s.card, s]));
       state.observer = new Observer((entries) => {
         if (state.generation !== gen) return;
         for (const entry of entries) {
           if (entry.isIntersecting) {
-            const slot = state.slots.find((s) => s.card === entry.target);
-            if (slot) void renderPageSlot(state, slot, gen, onError);
+            const slot = slotByCard.get(entry.target);
+            if (slot) {
+              void renderPageSlot(state, slot, gen, onError);
+              evictDistantPageCanvases(state.slots, slot.pageNumber, 6);
+            }
           }
         }
-      }, { root: state.viewportEl, rootMargin: "320px 0px", threshold: 0.01 });
+      }, { root: state.viewportEl, rootMargin: "220px 0px", threshold: 0.01 });
       for (const slot of state.slots) state.observer.observe(slot.card);
     }
     if (state.slots[0]) void renderPageSlot(state, state.slots[0], gen, onError);
     if (state.slots[1]) void renderPageSlot(state, state.slots[1], gen, onError);
+  }
+  function nearestPreviewPage(slots, top) {
+    let low = 0;
+    let high = slots.length - 1;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      if (slots[mid].card.offsetTop < top) low = mid + 1;
+      else high = mid;
+    }
+    if (low > 0 && top - slots[low - 1].card.offsetTop <= slots[low].card.offsetTop - top) low--;
+    return slots[low].pageNumber;
   }
 
   // src/domains/inspector/pdf-preview-section.ts
@@ -3216,6 +3226,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   var PdfPreviewSectionController = class {
     unregisterFn = null;
     prefSub = null;
+    focus = new PreviewFocus();
     states = /* @__PURE__ */ new Map();
     listeners = /* @__PURE__ */ new Map();
     kernel;
@@ -3263,10 +3274,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             const showBadge = this.kernel.prefs.get("inspector.pdfPreview.showPageBadge");
             const defaultZoom = Math.round(this.kernel.prefs.get("inspector.pdfPreview.defaultZoom")) / 100;
             for (const st of this.states.values()) {
-              st.fullActive = isFull;
+              if (changedKey === "inspector.pdfPreview.mode" || changedKey === "inspector.pdfPreview.enable") this.focus.set(st, isFull);
               st.root.setAttribute("data-show-badge", showBadge ? "true" : "false");
               if (changedKey === "inspector.pdfPreview.defaultZoom") st.zoom = defaultZoom;
-              applyPreviewLayoutMode(st.body, st.root, st.customSection, isFull);
               syncPreviewControls(st);
               invalidateVisibleSlots(st, this.onRenderError);
             }
@@ -3293,6 +3303,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       for (const controller of this.listeners.values()) controller.abort();
       this.listeners.clear();
       this.states.clear();
+      this.focus = new PreviewFocus();
       this.unregisterFn?.();
       this.unregisterFn = null;
     }
@@ -3310,7 +3321,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       setEnabled?.(this.isSectionEnabled(tabType));
       win.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
       ensurePdfPreviewStyles(doc);
-      this.listeners.get(body)?.abort();
+      if (this.states.has(body)) this.onDestroy(body);
       const controller = new win.AbortController();
       this.listeners.set(body, controller);
       body.textContent = "";
@@ -3352,7 +3363,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         }
         syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
         if (chosen && chosen.attachment !== state.attachment) {
-          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+          void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
         }
       });
       toolbar.append(navGroup, zoomGroup, attSelect, compareUI.bar);
@@ -3380,7 +3391,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         pdfDoc: null,
         loading: false,
         generation: 0,
-        fullActive: false,
+        fullActive: this.focus.isActive(body),
         zoom: Math.round(this.kernel.prefs.get("inspector.pdfPreview.defaultZoom")) / 100,
         currentPage: 0,
         numPages: 0,
@@ -3403,14 +3414,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       root.setAttribute("data-show-badge", this.kernel.prefs.get("inspector.pdfPreview.showPageBadge") ? "true" : "false");
       this.states.set(body, state);
       ensureSectionConnected(body, root, customSection, collapsible);
+      if (state.fullActive && state.collapsible) state.collapsible.open = true;
       applyPreviewLayoutMode(body, root, customSection, state.fullActive);
       bindPreviewSidenavClick(
         doc,
         controller.signal,
-        () => this.kernel.prefs.get("inspector.pdfPreview.mode") === "full",
+        body,
         (active) => {
-          state.fullActive = active;
-          applyPreviewLayoutMode(state.body, state.root, state.customSection, active);
+          this.focus.set(state, active);
+          if (!active) this.services.panePositions.observeAndQueue(body);
         }
       );
       this.bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal);
@@ -3429,8 +3441,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       zoomInBtn.addEventListener("click", () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
       state.zoomLabel.addEventListener("click", () => this.setZoom(state, 1), opts);
       modeBtn.addEventListener("click", () => {
-        state.fullActive = !state.fullActive;
-        applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
+        this.focus.set(state, !state.fullActive);
+        if (!state.fullActive) this.services.panePositions.observeAndQueue(state.body);
         invalidateVisibleSlots(state, this.onRenderError);
       }, opts);
       state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
@@ -3443,7 +3455,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         state.attSelect.value = String(chosen.id);
         syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
         if (chosen.attachment !== state.attachment) {
-          void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+          void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
         }
       };
       state.attSelect.addEventListener("change", () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
@@ -3535,6 +3547,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
       state.compare.tabType = nextTabType;
       state.attIdsKey = nextAttIdsKey;
+      if (state.collapsible?.open === false && !state.fullActive) {
+        if (itemChanged || state.loading) disposePreviewDocument(state, true);
+        state.item = item ?? null;
+        return enabled;
+      }
       if (!itemChanged && item && (state.pdfDoc || state.loading)) return true;
       const nextOwnerID = isAtt ? Number(item?.parentID || item?.parentItemID || item?.parentItem?.id || 0) : Number(item?.id || 0);
       const sameOwner = nextOwnerID > 0 && nextOwnerID === state.ownerID;
@@ -3543,7 +3560,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       state.compare.currentAttachmentID = 0;
       syncCompareBar(state.compareUI, state.compare, [], 0);
       state.item = item ?? null;
-      void loadItemPreviewAttachments(state, state.item, this.isDblClickOpen, this.onRenderError);
+      void loadItemPreviewAttachments(state, state.item, this.onRenderError);
       return enabled;
     }
     setZoom(state, nextZoom) {
@@ -3556,15 +3573,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     updateCurrentPageFromScroll(state) {
       if (!state.slots.length) return;
       const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
-      let best = 1;
-      let bestDist = Infinity;
-      for (const slot of state.slots) {
-        const dist = Math.abs(slot.card.offsetTop - top);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = slot.pageNumber;
-        }
-      }
+      const best = nearestPreviewPage(state.slots, top);
       if (best !== state.currentPage) {
         state.currentPage = best;
         const attID = Number(state.attachment?.id) || 0;
@@ -3576,202 +3585,88 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   };
 
   // src/domains/inspector/word-cite-panel-ui.ts
+  function formatInsertReceipt(res, zh) {
+    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
+    if (res.status === "inserted") return { tone: "ok", text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到 ${doc}` : `✓ Inserted ${res.itemCount} citation(s) into ${doc}` };
+    if (res.status === "busy") return { tone: "warn", text: zh ? "⌛ Word 正在处理引文，请稍候再试" : "⌛ Word is busy updating citations, try again" };
+    if (res.status === "non-word") return { tone: "warn", text: zh ? "⚠ 当前激活文档不是受支持的 Word 文档" : "⚠ Active document is not a supported Word document" };
+    if (res.status === "cancelled") return { tone: "warn", text: zh ? "ⓘ 已取消插入引文" : "ⓘ Citation insertion cancelled" };
+    return { tone: "err", text: zh ? "✕ 插入失败：请先打开 Word 并确认插件连接正常" : "✕ Unable to insert: verify Word is open and connected" };
+  }
+  function formatRefreshReceipt(res, zh) {
+    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
+    if (res.ok) return { tone: "ok", text: zh ? `↻ 已刷新 ${doc}，并同步序号` : `↻ Refreshed ${doc} citations` };
+    return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
+  }
+  function formatPendingReceipt(kind, zh) {
+    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
+    return { tone: "warn", text: text2 };
+  }
+  function buildWordCiteMetaText(zh, items) {
+    if (!items.length) return zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation";
+    const info = getCachedPrimaryItemFields(items[0]);
+    const first = [info.creatorYear, info.title].filter(Boolean).join(" · ") || info.title;
+    if (items.length === 1) return first;
+    return zh ? `已选 ${items.length} 篇：${first}` : `${items.length} items: ${first}`;
+  }
   var STYLE_ID2 = "zbf-word-cite-styles";
+  var XHTML_NS2 = "http://www.w3.org/1999/xhtml";
+  function createXhtmlEl2(doc, tag) {
+    return typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS2, tag) : doc.createElement(tag);
+  }
   function ensureWordCitePanelStyles(doc) {
-    if (!doc || doc.getElementById(STYLE_ID2)) return;
-    const style = doc.createElement("style");
-    style.id = STYLE_ID2;
-    style.textContent = `
-.zbf-word-cite-wrap {
-	display: flex;
-	flex-direction: column;
-	gap: 7px;
-	padding: 6px 8px 8px;
-	font-size: 12px;
+    if (!doc?.getElementById) return;
+    let style = doc.getElementById(STYLE_ID2);
+    if (!style) {
+      style = createXhtmlEl2(doc, "style");
+      style.id = STYLE_ID2;
+      (doc.head || doc.documentElement)?.appendChild(style);
+    }
+    const css = `
+/* Zotero's synthetic scroll spacer can leave a viewport of empty space after
+   the final action. Keep the native alignment space for pinned sections. */
+item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before {
+	height: 0;
 }
-.zbf-wc-row1 {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 6px;
-	min-height: 22px;
-}
-.zbf-wc-doc {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	max-width: 56%;
-	padding: 2px 7px;
-	border-radius: 999px;
-	border: 1px solid rgba(128, 128, 128, 0.24);
-	background: var(--fill-quinary, rgba(128, 128, 128, 0.08));
-	color: inherit;
-	font-size: 11px;
-	line-height: 1.4;
-	cursor: default;
-	appearance: none;
-}
-.zbf-wc-doc.is-multi {
-	cursor: pointer;
-	border-color: rgba(37, 99, 235, 0.35);
-}
-.zbf-wc-doc.is-multi:hover {
-	background: rgba(37, 99, 235, 0.12);
-}
-.zbf-wc-dot {
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	flex: none;
-	background: #94a3b8;
-}
-.zbf-wc-dot.is-live {
-	background: #16a34a;
-}
-.zbf-wc-docname {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.zbf-wc-swap {
-	flex: none;
-	opacity: 0.78;
-	font-size: 10px;
-}
-.zbf-wc-stats {
-	font-size: 11px;
-	padding: 2px 7px;
-	border-radius: 999px;
-	white-space: nowrap;
-	font-variant-numeric: tabular-nums;
-	background: rgba(128, 128, 128, 0.1);
-	color: inherit;
-	opacity: 0.85;
-}
-.zbf-wc-stats.is-cited {
-	background: rgba(22, 163, 74, 0.14);
-	color: #15803d;
-	font-weight: 600;
-	opacity: 1;
-}
-.zbf-wc-meta {
-	font-size: 12px;
-	opacity: 0.88;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	padding-inline: 2px;
-}
-.zbf-wc-actions {
-	display: flex;
-	align-items: stretch;
-	gap: 6px;
-}
-.zbf-word-cite-action {
-	flex: 1 1 auto;
-	min-width: 0;
-	padding: 5px 10px;
-	border-radius: 6px;
-	border: 1px solid rgba(37, 99, 235, 0.42);
-	background: rgba(37, 99, 235, 0.11);
-	color: inherit;
-	font-size: 12px;
-	font-weight: 600;
-	cursor: pointer;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-}
-.zbf-word-cite-action:hover:not(:disabled) {
-	background: rgba(37, 99, 235, 0.2);
-}
-.zbf-word-cite-action:disabled {
-	opacity: 0.45;
-	cursor: default;
-}
-.zbf-word-refresh-action {
-	flex: none;
-	width: 30px;
-	border-radius: 6px;
-	border: 1px solid rgba(128, 128, 128, 0.28);
-	background: var(--fill-quinary, rgba(128, 128, 128, 0.08));
-	color: inherit;
-	font-size: 13px;
-	cursor: pointer;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-}
-.zbf-word-refresh-action:hover:not(:disabled) {
-	background: var(--fill-quarternary, rgba(128, 128, 128, 0.16));
-}
-.zbf-wc-synergy {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 8px;
-	padding-top: 4px;
-	border-top: 1px dashed rgba(128, 128, 128, 0.2);
-}
-.zbf-wc-link {
-	background: none;
-	border: none;
-	padding: 1px 2px;
-	font-size: 11px;
-	color: #2563eb;
-	cursor: pointer;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	text-align: left;
-}
-.zbf-wc-link:hover {
-	text-decoration: underline;
-}
-.zbf-wc-col-link {
-	flex: none;
-	margin-inline-start: auto;
-}
-.zbf-wc-receipt {
-	font-size: 11px;
-	padding: 4px 7px;
-	border-radius: 5px;
-	line-height: 1.4;
-}
-.zbf-wc-receipt.is-ok {
-	background: rgba(22, 163, 74, 0.12);
-	color: #15803d;
-}
-.zbf-wc-receipt.is-warn {
-	background: rgba(217, 119, 6, 0.12);
-	color: #b45309;
-}
-.zbf-wc-receipt.is-err {
-	background: rgba(220, 38, 38, 0.12);
-	color: #b91c1c;
-}
+.zbf-word-cite-wrap { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden; padding: 6px 2px 8px; font-size: 12px; }
+.zbf-word-cite-wrap [hidden] { display: none !important; }
+.zbf-wc-row1 { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; min-height: 22px; }
+.zbf-wc-doc { box-sizing: border-box; display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; flex: 0 1 auto; padding: 2px 7px; border-radius: 999px; border: 1px solid rgba(128,128,128,0.24); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 11px; line-height: 1.4; cursor: default; appearance: none; }
+.zbf-wc-doc.is-multi { cursor: pointer; border-color: rgba(37,99,235,0.35); }
+.zbf-wc-doc.is-multi:hover { background: rgba(37,99,235,0.12); }
+.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #94a3b8; }
+.zbf-wc-dot.is-live { background: #16a34a; }
+.zbf-wc-docname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-swap { flex: none; opacity: 0.78; font-size: 10px; }
+.zbf-wc-stats { box-sizing: border-box; font-size: 11px; padding: 2px 7px; border-radius: 999px; max-width: 100%; min-width: 0; flex: 0 1 auto; margin-inline-start: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; background: rgba(128,128,128,0.1); color: inherit; opacity: 0.85; }
+.zbf-wc-stats.is-cited { background: rgba(22,163,74,0.14); color: #15803d; font-weight: 600; opacity: 1; }
+.zbf-wc-meta { min-width: 0; max-width: 100%; font-size: 12px; opacity: 0.88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-inline: 2px; }
+.zbf-wc-actions { display: flex; align-items: stretch; gap: 6px; min-width: 0; max-width: 100%; }
+.zbf-word-cite-action { box-sizing: border-box; flex: 1 1 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(37,99,235,0.42); background: rgba(37,99,235,0.11); color: inherit; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.zbf-word-cite-action:hover:not(:disabled) { background: rgba(37,99,235,0.2); }
+.zbf-word-cite-action:disabled { opacity: 0.45; cursor: default; }
+.zbf-word-refresh-action { box-sizing: border-box; flex: 0 0 30px; width: 30px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.28); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
+.zbf-word-refresh-action:hover:not(:disabled) { background: var(--fill-quarternary, rgba(128,128,128,0.16)); }
+.zbf-wc-synergy { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; padding-top: 4px; border-top: 1px dashed rgba(128,128,128,0.2); }
+.zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: none; padding: 1px 2px; font-size: 11px; color: #2563eb; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.zbf-wc-link:hover { text-decoration: underline; }
+.zbf-wc-col-link { flex: none; margin-inline-start: auto; }
+.zbf-wc-receipt { font-size: 11px; padding: 4px 7px; border-radius: 5px; line-height: 1.4; }
+.zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.12); color: #15803d; }
+.zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.12); color: #b45309; }
+.zbf-wc-receipt.is-err { background: rgba(220,38,38,0.12); color: #b91c1c; }
 @media (prefers-color-scheme: dark) {
-	.zbf-wc-stats.is-cited,
-	.zbf-wc-receipt.is-ok {
-		color: #4ade80;
-	}
-	.zbf-wc-receipt.is-warn {
-		color: #fbbf24;
-	}
-	.zbf-wc-receipt.is-err {
-		color: #f87171;
-	}
-	.zbf-wc-link {
-		color: #60a5fa;
-	}
-}
-`;
-    (doc.head || doc.documentElement)?.appendChild(style);
+	.zbf-wc-stats.is-cited, .zbf-wc-receipt.is-ok { color: #4ade80; }
+	.zbf-wc-receipt.is-warn { color: #fbbf24; }
+	.zbf-wc-receipt.is-err { color: #f87171; }
+	.zbf-wc-link { color: #60a5fa; }
+}`;
+    if (style.textContent !== css) style.textContent = css;
   }
   function createWordCiteBodyState(doc, body) {
     ensureWordCitePanelStyles(doc);
     const el = (tag, cls) => {
-      const node = doc.createElement(tag);
+      const node = createXhtmlEl2(doc, tag);
       node.className = cls;
       return node;
     };
@@ -3803,10 +3698,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     synergyEl.append(groupBtn, colBtn);
     const receiptEl = el("div", "zbf-wc-receipt");
     receiptEl.hidden = true;
+    receiptEl.setAttribute("role", "status");
     root.append(row1, metaEl, actions, synergyEl, receiptEl);
     body.appendChild(root);
     return {
       root,
+      row1,
       docBtn,
       docDot,
       docName,
@@ -3825,16 +3722,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     };
   }
   function renderWordCitePanel(st, vm) {
+    st.docBtn.hidden = !vm.showDocSwitcher;
     st.docBtn.classList.toggle("is-multi", vm.isMultiSession);
     st.docBtn.disabled = !vm.isMultiSession;
     st.docBtn.title = vm.docTitle;
     st.docDot.classList.toggle("is-live", vm.hasWordSession);
     st.docName.textContent = vm.docName;
     st.docSwap.hidden = !vm.isMultiSession;
+    st.statsEl.hidden = !vm.showSummaryCounts;
     st.statsEl.textContent = vm.statsText;
     st.statsEl.title = vm.statsTitle;
     st.statsEl.classList.toggle("is-cited", vm.statsState === "cited");
     st.statsEl.classList.toggle("is-uncited", vm.statsState !== "cited");
+    st.row1.hidden = !vm.showDocSwitcher && !vm.showSummaryCounts;
     st.metaEl.textContent = vm.metaText;
     st.metaEl.title = vm.metaTitle;
     st.insertBtn.textContent = vm.insertLabel;
@@ -3842,6 +3742,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     st.refreshBtn.disabled = vm.refreshDisabled;
     st.refreshBtn.title = vm.refreshTitle;
     st.groupBtn.hidden = !vm.groupButtonText;
+    st.groupBtn.disabled = vm.refreshDisabled;
     st.groupBtn.textContent = vm.groupButtonText;
     st.groupBtn.title = vm.groupButtonTitle;
     st.colBtn.hidden = !vm.showCollectionButton;
@@ -3864,13 +3765,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     services;
     disposables = new DisposableStack();
     states = /* @__PURE__ */ new Map();
-    bodyListeners = /* @__PURE__ */ new Map();
+    buttonListeners = /* @__PURE__ */ new Map();
     docListeners = /* @__PURE__ */ new Map();
     unregisterFn = null;
     snapshot = null;
     groups = [];
+    receiptOwner;
     receipt = { text: "", tone: "none" };
     requestSeq = 0;
+    pendingRequest;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.services = services;
@@ -3887,11 +3790,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => {
-        this.receipt = this.formatInsertReceipt(res);
+        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+        this.pendingRequest = void 0;
+        this.receipt = formatInsertReceipt(res, isZhLocale());
         this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => {
-        this.receipt = this.formatRefreshReceipt(res);
+        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+        this.pendingRequest = void 0;
+        this.receipt = formatRefreshReceipt(res, isZhLocale());
         this.renderAllBodies();
       }));
       const icon = `${this.kernel.info.rootURI}assets/word-cite.svg`;
@@ -3908,7 +3815,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           this.onDestroy(doc || body.ownerDocument, body);
         },
         onItemChange: ({ body, item, setEnabled, setSectionSummary }) => {
-          this.receipt = { text: "", tone: "none" };
+          if (this.states.get(body) === this.receiptOwner && !this.pendingRequest) this.receipt = { text: "", tone: "none" };
           this.updateState(body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
           return this.isSectionEnabled() && Boolean(item);
@@ -3916,6 +3823,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         onRender: ({ body, item, setEnabled, setSectionSummary }) => {
           this.updateState(body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
+        },
+        onToggle: ({ body, item, setEnabled, setSectionSummary }) => {
+          this.updateState(body, item, setEnabled, setSectionSummary);
+          this.kernel.bus.emit("word:snapshot-query", { requester: "inspector" });
+          this.kernel.bus.emit("workspace:groups-query", { requester: "inspector" });
         }
       });
       this.unregisterFn = reg.dispose;
@@ -3928,27 +3840,41 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.kernel.bus.emit("word:snapshot-query", { requester: "inspector" });
       this.kernel.bus.emit("workspace:groups-query", { requester: "inspector" });
     }
+    refreshAll() {
+      this.renderAllBodies();
+    }
     unregister() {
       this.services.panePositions.setTarget("word-cite", null);
       this.disposables.disposeAll();
-      for (const c of this.bodyListeners.values()) c.abort();
-      this.bodyListeners.clear();
+      for (const c of this.buttonListeners.values()) c.abort();
+      this.buttonListeners.clear();
       for (const c of this.docListeners.values()) c.abort();
       this.docListeners.clear();
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
+      this.receiptOwner = void 0;
+      this.pendingRequest = void 0;
+      this.receipt = { text: "", tone: "none" };
     }
-    citeItemsInWord(itemIDs, win) {
+    citeItemsInWord(itemIDs, win, owner) {
       const valid = [...new Set(itemIDs.filter((id) => Number.isSafeInteger(id) && id > 0))];
-      if (!valid.length || !this.isSectionEnabled()) return false;
-      const requestId = `wc-${++this.requestSeq}`;
+      if (!valid.length || !this.isSectionEnabled() || this.pendingRequest) return false;
+      const requestId = this.beginRequest("insert", owner);
       this.kernel.bus.emit("word:insert-items-request", { itemIDs: valid, win, requestId });
       return true;
     }
+    beginRequest(kind, owner) {
+      const requestId = `word-${++this.requestSeq}`;
+      this.pendingRequest = requestId;
+      this.receiptOwner = owner;
+      this.receipt = formatPendingReceipt(kind, isZhLocale());
+      this.renderAllBodies();
+      return requestId;
+    }
     isSectionEnabled() {
       return Boolean(
-        this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable") && this.kernel.prefs.get("wordCite.dragCite.enable")
+        this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable")
       );
     }
     initBody(doc, body, item, setEnabled, setSectionSummary) {
@@ -3957,47 +3883,53 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const st = createWordCiteBodyState(doc, body);
       st.setSectionSummary = setSectionSummary;
       this.states.set(body, st);
-      const ac = new AbortController();
-      this.bodyListeners.set(body, ac);
-      const { signal } = ac;
-      st.insertBtn.addEventListener("click", () => {
-        if (st.lastItemIDs.length) this.citeItemsInWord(st.lastItemIDs, doc.defaultView || void 0);
-      }, { signal });
-      st.refreshBtn.addEventListener("click", () => {
-        const requestId = `wr-${++this.requestSeq}`;
-        this.kernel.bus.emit("word:refresh-request", { requestId, win: doc.defaultView || void 0 });
-      }, { signal });
-      st.docBtn.addEventListener("click", () => this.cycleWordSession(), { signal });
-      st.groupBtn.addEventListener("click", () => {
-        if (st.lastGroup?.itemIDs.length) this.citeItemsInWord(st.lastGroup.itemIDs, doc.defaultView || void 0);
-      }, { signal });
-      st.colBtn.addEventListener("click", () => {
-        this.kernel.bus.emit("word:select-collection-request", {
-          sessionID: this.snapshot?.activeSessionID || void 0,
-          win: doc.defaultView || void 0
-        });
-      }, { signal });
-      this.bindDocumentSidenav(doc);
+      const win = body.ownerDocument.defaultView;
+      const controller = new (win?.AbortController ?? AbortController)();
+      this.buttonListeners.set(body, controller);
+      const click = (button, action) => {
+        button.addEventListener("click", () => {
+          if (!button.disabled && !button.hidden) action();
+        }, { signal: controller.signal });
+      };
+      click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? void 0, st));
+      click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", {
+        requestId: this.beginRequest("refresh", st),
+        win: win ?? void 0
+      }));
+      click(st.docBtn, () => this.cycleWordSession());
+      click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
+      click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", {
+        sessionID: this.snapshot?.activeSessionID || void 0,
+        win: win ?? void 0
+      }));
+      this.bindDocumentEvents(doc);
       this.updateState(body, item, setEnabled, setSectionSummary);
     }
-    bindDocumentSidenav(doc) {
+    bindDocumentEvents(doc) {
       if (this.docListeners.has(doc)) return;
-      const ac = new AbortController();
+      const ac = new (doc.defaultView?.AbortController ?? AbortController)();
       this.docListeners.set(doc, ac);
       doc.addEventListener("click", (event) => {
+        const me = event;
+        if (typeof me.button === "number" && me.button !== 0) return;
         const target = event.target;
-        if (!target?.closest?.(WORD_CITE_ICON)) return;
-        for (const st of this.states.values()) {
-          if (st.root.ownerDocument !== doc) continue;
-          const collapsible = st.root.closest?.("collapsible-section");
-          if (collapsible && !collapsible.open) collapsible.open = true;
-          this.renderBodyState(st);
+        const path = event.composedPath?.();
+        const hitIcon = path?.some((n) => n?.matches?.(WORD_CITE_ICON)) ?? Boolean(target?.closest?.(WORD_CITE_ICON));
+        if (hitIcon) {
+          for (const st of this.states.values()) {
+            if (st.root.ownerDocument !== doc) continue;
+            const collapsible = st.root.closest?.("collapsible-section");
+            if (collapsible && !collapsible.open) collapsible.open = true;
+            this.renderBodyState(st);
+          }
+          return;
         }
-      }, { signal: ac.signal });
+      }, { capture: true, signal: ac.signal });
     }
     onDestroy(doc, body) {
-      this.bodyListeners.get(body)?.abort();
-      this.bodyListeners.delete(body);
+      this.buttonListeners.get(body)?.abort();
+      this.buttonListeners.delete(body);
+      if (this.states.get(body) === this.receiptOwner) this.receiptOwner = void 0;
       this.states.delete(body);
       body.textContent = "";
       if (doc && ![...this.states.keys()].some((b) => b.ownerDocument === doc)) {
@@ -4031,15 +3963,20 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const zh = isZhLocale();
       const snap = this.snapshot;
       const hasSession = Boolean(snap?.activeSessionID);
-      const total = snap?.totalCitedCount ?? 0;
       const sessionCount = snap?.sessions?.length ?? 0;
-      const primaryId = st.lastItemIDs[0] || 0;
-      const matchedGroup = primaryId ? this.groups.find((g) => g.itemIDs.includes(primaryId) && g.itemIDs.length >= 2) ?? null : null;
+      const showDocSwitcher = this.kernel.prefs.get("inspector.wordCite.showDocSwitcher");
+      const showSummaryCounts = this.kernel.prefs.get("inspector.wordCite.showSummaryCounts");
+      const showGroupSynergy = this.kernel.prefs.get("inspector.wordCite.showGroupSynergy");
+      const showCollectionLink = this.kernel.prefs.get("inspector.wordCite.showCollectionLink");
+      const idSet = new Set(st.lastItemIDs);
+      const matchedGroup = showGroupSynergy && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
       st.lastGroup = matchedGroup;
-      st.setSectionSummary?.(this.buildSectionSummary(zh, snap, st.lastItemIDs));
+      st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : "");
       const stats = this.buildStats(zh, snap, st.lastItemIDs);
-      const meta = this.buildMetaText(zh, items);
+      const meta = buildWordCiteMetaText(zh, items);
       const vm = {
+        showDocSwitcher,
+        showSummaryCounts,
         docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
         docTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Click to switch active Word doc (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
         isMultiSession: sessionCount >= 2,
@@ -4050,21 +3987,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         metaText: meta,
         metaTitle: meta,
         insertLabel: st.lastItemIDs.length > 1 ? zh ? `合并插入 ${st.lastItemIDs.length} 篇引文到 Word` : `Insert ${st.lastItemIDs.length} Citations in Word` : zh ? "插入引文到 Word 光标处" : "Insert Citation at Word Cursor",
-        insertDisabled: st.lastItemIDs.length === 0 || !this.isSectionEnabled(),
-        refreshDisabled: !this.isSectionEnabled(),
+        insertDisabled: Boolean(this.pendingRequest) || st.lastItemIDs.length === 0 || !this.isSectionEnabled(),
+        refreshDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
         refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
         groupButtonText: matchedGroup ? zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
         groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"` : "",
-        showCollectionButton: hasSession,
+        showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
         colButtonText: zh ? "已引清单" : "Cited List",
         colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
-        receiptText: this.receipt.text,
-        receiptTone: this.receipt.tone
+        receiptText: st === this.receiptOwner ? this.receipt.text : "",
+        receiptTone: st === this.receiptOwner ? this.receipt.tone : "none"
       };
       renderWordCitePanel(st, vm);
     }
     buildSectionSummary(zh, snap, ids) {
-      if (!snap?.activeSessionID) return zh ? "插入引文到 Word" : "Insert Citation in Word";
+      if (!snap?.activeSessionID) return "";
       const total = snap.totalCitedCount;
       if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
       const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
@@ -4110,13 +4047,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: "uncited" };
     }
-    buildMetaText(zh, items) {
-      if (!items.length) return zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation";
-      const info = getCachedPrimaryItemFields(items[0]);
-      const first = [info.creatorYear, info.title].filter(Boolean).join(" · ") || info.title;
-      if (items.length === 1) return first;
-      return zh ? `已选 ${items.length} 篇：${first}` : `${items.length} items: ${first}`;
-    }
     resolveTargetItems(win, item) {
       if (!item) return [];
       const reg = normalizeToRegularItem(item) || item;
@@ -4127,21 +4057,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         return deduplicateRegularItems(paneItems).items;
       }
       return deduplicateRegularItems([reg]).items;
-    }
-    formatInsertReceipt(res) {
-      const zh = isZhLocale();
-      const doc = res.documentName || "Word";
-      if (res.status === "inserted") return { tone: "ok", text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到「${doc}」` : `✓ Inserted ${res.itemCount} citation(s) into "${doc}"` };
-      if (res.status === "busy") return { tone: "warn", text: zh ? "⌛ Word 正在处理引文，请稍候再试" : "⌛ Word is busy updating citations, try again" };
-      if (res.status === "non-word") return { tone: "warn", text: zh ? "⚠ 当前激活文档不是受支持的 Word 文档" : "⚠ Active document is not a supported Word document" };
-      if (res.status === "cancelled") return { tone: "warn", text: zh ? "ⓘ 已取消插入引文" : "ⓘ Citation insertion cancelled" };
-      return { tone: "err", text: zh ? "✕ 插入失败：请先打开 Word 并确认插件连接正常" : "✕ Unable to insert: verify Word is open and connected" };
-    }
-    formatRefreshReceipt(res) {
-      const zh = isZhLocale();
-      const doc = res.documentName || "Word";
-      if (res.ok) return { tone: "ok", text: zh ? `↻ 已刷新「${doc}」并同步序号` : `↻ Refreshed "${doc}" citations` };
-      return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
     }
   };
 
@@ -4185,10 +4100,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             "inspector.pdfPreview.enable",
             "inspector.pdfFolder.enable",
             "inspector.wordCite.enable",
-            "modules.wordCite.enable",
-            "wordCite.dragCite.enable"
+            "modules.wordCite.enable"
           ],
           () => this.syncSections()
+        )
+      );
+      this.disposables.add(
+        this.kernel.prefs.observeKeys(
+          [
+            "inspector.wordCite.showDocSwitcher",
+            "inspector.wordCite.showSummaryCounts",
+            "inspector.wordCite.showGroupSynergy",
+            "inspector.wordCite.showCollectionLink",
+            "wordCite.collections.enable"
+          ],
+          () => this.wordCiteSection.refreshAll()
         )
       );
       this.disposables.add(
@@ -4220,6 +4146,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     async lookupQuery(query, libraryItems) {
       return this.lookupEngine.lookup(query, libraryItems);
     }
+    async refreshAllPreviews() {
+      await this.cslPreview.refreshAll();
+      this.wordCiteSection.refreshAll();
+    }
     stop() {
       if (!this.active) return;
       this.active = false;
@@ -4241,7 +4171,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       else this.pdfPreview.unregister();
       if (this.kernel.prefs.get("inspector.pdfFolder.enable")) this.pdfFolder.register();
       else this.pdfFolder.unregister();
-      if (this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable") && this.kernel.prefs.get("wordCite.dragCite.enable")) {
+      if (this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable")) {
         this.wordCiteSection.register();
       } else {
         this.wordCiteSection.unregister();
@@ -4409,102 +4339,23 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!cv) return () => {
     };
     const disposers = [];
-    const iconStates = /* @__PURE__ */ new Map();
     const resolvedURI = wordIconURI || WORD_COLLECTION_DATA_URI;
-    const doc = win.document;
-    let styleEl = doc?.getElementById?.("zbf-word-collection-style");
-    if (doc && !styleEl) {
-      styleEl = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-      styleEl.id = "zbf-word-collection-style";
-      styleEl.textContent = `.cell-icon.zbf-word-collection-icon::before, .cell-icon.zbf-word-collection-icon::after { display: none !important; content: none !important; } .cell-icon.zbf-word-collection-icon > svg:not(.zbf-word-svg) { display: none !important; }`;
-      (doc.head || doc.documentElement)?.appendChild(styleEl);
-      disposers.push(() => styleEl?.remove());
-    }
-    const restoreIcon = (node) => {
-      const st = iconStates.get(node);
-      if (!st) return;
-      iconStates.delete(node);
-      node.style.backgroundImage = st.bg;
-      node.style.backgroundSize = st.bgSize;
-      node.style.backgroundPosition = st.bgPos;
-      node.style.backgroundRepeat = st.bgRepeat;
-      node.classList?.remove("zbf-word-collection-icon");
-      node.classList?.toggle("icon-search", st.hadSearch);
-      node.classList?.toggle("icon-collection", st.hadCol);
-      node.classList?.toggle("icon-publications", st.hadPub);
-      if (typeof node.replaceChildren === "function") {
-        node.replaceChildren(...st.children);
-      }
-    };
-    const applyWordIcon = (iconNode) => {
-      if (!iconStates.has(iconNode)) {
-        iconStates.set(iconNode, {
-          bg: iconNode.style?.backgroundImage || "",
-          bgSize: iconNode.style?.backgroundSize || "",
-          bgPos: iconNode.style?.backgroundPosition || "",
-          bgRepeat: iconNode.style?.backgroundRepeat || "",
-          hadSearch: iconNode.classList?.contains("icon-search") === true,
-          hadCol: iconNode.classList?.contains("icon-collection") === true,
-          hadPub: iconNode.classList?.contains("icon-publications") === true,
-          children: Array.from(iconNode.childNodes || [])
-        });
-      }
-      iconNode.classList?.remove("icon-search", "icon-collection", "icon-css");
-      iconNode.classList?.add("icon-publications", "zbf-word-collection-icon");
-      iconNode.style.backgroundImage = `url("${resolvedURI}")`;
-      iconNode.style.backgroundSize = "16px 16px";
-      iconNode.style.backgroundPosition = "center";
-      iconNode.style.backgroundRepeat = "no-repeat";
-      const ownerDoc = iconNode.ownerDocument;
-      const Parser = ownerDoc?.defaultView?.DOMParser || globalThis.DOMParser;
-      if (ownerDoc && Parser && typeof iconNode.replaceChildren === "function") {
-        try {
-          const parsed = new Parser().parseFromString(WORD_COLLECTION_SVG, "image/svg+xml");
-          if (parsed?.documentElement) {
-            const svgEl = ownerDoc.importNode(parsed.documentElement, true);
-            svgEl.classList?.add("zbf-word-svg");
-            iconNode.replaceChildren(svgEl);
-          }
-        } catch {
-        }
-      }
-    };
     const isCiteRow = (row) => Boolean((row?.isCollection?.() || row?.type === "collection") && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
-    const syncLiveRowIcons = () => {
-      if (!doc?.querySelectorAll) return;
-      const rows = cv._rows || [];
-      const rowNodes = Array.from(doc.querySelectorAll("#zotero-collections-tree .virtualized-table-body .row, #zotero-collections-tree .row"));
-      for (const rowEl of rowNodes) {
-        const iconNode = rowEl.querySelector?.(".cell-icon");
-        if (!iconNode) continue;
-        const label = (rowEl.querySelector?.(".cell-text, .label")?.textContent || rowEl.textContent || "").trim();
-        const matchedCite = rows.some((r) => isCiteRow(r) && String(r?.ref?.name || "").trim() === label) || label && (getActiveNames?.().has(label) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(label));
-        if (matchedCite) applyWordIcon(iconNode);
-        else if (iconStates.has(iconNode)) restoreIcon(iconNode);
-      }
+    const createWordIcon = () => {
+      const icon = win.document.createElementNS("http://www.w3.org/1999/xhtml", "img");
+      icon.src = resolvedURI;
+      icon.alt = "";
+      icon.width = 16;
+      icon.height = 16;
+      return icon;
     };
-    if (typeof cv.renderItem === "function") {
-      disposers.push(
-        runtime.patch(cv, "renderItem", "collectionsView", (orig) => function(...args) {
-          const [index, , oldDiv] = args;
-          const prevIcon = oldDiv?.querySelector?.(".cell-icon");
-          if (prevIcon && iconStates.has(prevIcon)) restoreIcon(prevIcon);
-          const div = orig.apply(this, args);
-          try {
-            const row = this.getRow?.(index) ?? this._rows?.[index];
-            const iconNode = div?.querySelector?.(".cell-icon");
-            if (isCiteRow(row) && iconNode) {
-              applyWordIcon(iconNode);
-            } else if (iconNode && iconStates.has(iconNode)) {
-              restoreIcon(iconNode);
-            }
-          } catch {
-          }
-          return div;
-        })
-      );
+    if (typeof cv._getIcon === "function") {
+      disposers.push(runtime.patch(cv, "_getIcon", "collectionsView", (orig) => function(...args) {
+        const index = args[0];
+        const row = this.getRow?.(index) ?? this._rows?.[index];
+        return isCiteRow(row) ? createWordIcon() : orig.apply(this, args);
+      }));
     }
-    syncLiveRowIcons();
     if (typeof cv._expandRow === "function") {
       disposers.push(
         runtime.patch(cv, "_expandRow", "collectionsView", (orig) => async function(...args) {
@@ -4558,19 +4409,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       );
     }
     return () => {
-      for (const node of iconStates.keys()) {
-        try {
-          restoreIcon(node);
-        } catch {
-        }
-      }
-      iconStates.clear();
       for (const fn of disposers.reverse()) {
         try {
           fn();
         } catch {
         }
       }
+      cv.tree?.invalidate?.();
     };
   }
 
@@ -4674,9 +4519,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         } catch {
         }
       }
-      const cv = targetWin?.ZoteroPane?.collectionsView;
+      const pane = targetWin?.ZoteroPane;
+      const cv = pane?.collectionsView;
       if (typeof cv?.selectCollection === "function") {
-        void cv.selectCollection(col.id);
+        void Promise.resolve(cv.selectCollection(col.id)).catch(() => {
+        });
+        return true;
+      }
+      if (typeof pane?.selectCollection === "function") {
+        void Promise.resolve(pane.selectCollection(col.id)).catch(() => {
+        });
         return true;
       }
       return false;
@@ -4930,8 +4782,92 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/domains/word-cite/word-command.ts
+  var commandInFlight = false;
+  async function runWordCommand(kernel, command, run) {
+    const host2 = globalThis.Zotero;
+    const integration = host2?.Integration;
+    const iface = integration?.Interface?.prototype;
+    if (host2?.isMac !== true && host2?.isWin === false) return "unavailable";
+    if (typeof integration?.execCommand !== "function" || typeof integration.getApplication !== "function" || typeof iface?.[command] !== "function") {
+      return "unavailable";
+    }
+    if (commandInFlight || integration.currentDoc) return "busy";
+    const isMac = host2.isMac === true;
+    const agent = isMac ? "MacWord16" : "WinWord";
+    const docId = isMac ? "/Applications/Microsoft Word.app/" : null;
+    const disposers = [];
+    let application;
+    let document2;
+    let result = "unavailable";
+    const isCancelled = (error) => {
+      const UserCancelled = host2.Exception?.UserCancelled;
+      return typeof UserCancelled === "function" && error instanceof UserCancelled;
+    };
+    commandInFlight = true;
+    try {
+      disposers.push(kernel.runtime.patch(
+        integration,
+        "getApplication",
+        "Word command",
+        (original) => function(...args) {
+          const app = Reflect.apply(original, this, args);
+          if (!application && args[0] === agent && args[1] === command && args[2] === docId) {
+            application = app;
+            if (!isMac && typeof app?.getDocument === "function" && typeof app.getActiveDocument === "function") {
+              disposers.push(kernel.runtime.patch(
+                app,
+                "getActiveDocument",
+                "WinWord adapter",
+                () => async () => app.getDocument("")
+              ));
+            }
+          }
+          return app;
+        }
+      ));
+      disposers.push(kernel.runtime.patch(
+        iface,
+        command,
+        "Word command",
+        (original) => async function(...args) {
+          const invoke = () => Reflect.apply(original, this, args);
+          if (!application || this._app !== application) return invoke();
+          document2 = this._doc;
+          try {
+            const value = await run(invoke, this._session);
+            result = "completed";
+            return value;
+          } catch (error) {
+            if (isCancelled(error)) result = "cancelled";
+            throw error;
+          }
+        }
+      ));
+      if (typeof integration._handleCommandError === "function") {
+        disposers.push(kernel.runtime.patch(
+          integration,
+          "_handleCommandError",
+          "Word command",
+          (original) => function(...args) {
+            if (document2 && args[0] === document2) result = "unavailable";
+            return Reflect.apply(original, this, args);
+          }
+        ));
+      }
+      await integration.execCommand(agent, command, docId, isMac ? 2 : 1);
+      return result;
+    } catch (error) {
+      if (isCancelled(error)) return "cancelled";
+      kernel.logger.error(`word-cite:${command}`, error);
+      return "unavailable";
+    } finally {
+      for (const dispose of disposers.reverse()) dispose();
+      commandInFlight = false;
+    }
+  }
+
   // src/domains/word-cite/word-inserter.ts
-  var insertInFlight = false;
   function resolveActiveSelectionForWord(win) {
     const zotero = globalThis.Zotero;
     const targetWin = win || zotero?.getMainWindow?.() || zotero?.getMainWindows?.()?.[0];
@@ -4948,50 +4884,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return candidate ? deduplicateRegularItems([candidate]).items : [];
   }
   async function insertItemsIntoWord(kernel, win32, rawItems, options = {}) {
-    if (insertInFlight) return "busy";
     const { items } = deduplicateRegularItems(rawItems);
-    const selectedIDs = [...new Set(items.map((item) => Number(item?.id || 0)).filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const selectedIDs = items.map((item) => Number(item.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
     if (!selectedIDs.length) return "unavailable";
     const host2 = globalThis.Zotero;
     const integration = host2?.Integration;
-    const origCite = integration?.Session?.prototype?.cite;
-    if (typeof origCite !== "function" || typeof integration?.execCommand !== "function") {
-      return "unavailable";
-    }
-    const isMac = host2?.isMac === true;
-    if (!isMac && options.verifyCursor && !win32.verifyDroppedWordTarget()) {
-      return "non-word";
-    }
-    insertInFlight = true;
-    const origGetApp = integration.getApplication;
-    let wrappedGetApp = null;
-    const patchedApps = /* @__PURE__ */ new Map();
-    const restoreApps = () => {
-      for (const [app, origFn] of patchedApps) {
-        try {
-          app.getActiveDocument = origFn;
-        } catch {
-        }
-      }
-      patchedApps.clear();
-    };
-    if (!isMac && typeof origGetApp === "function") {
-      wrappedGetApp = function(...args) {
-        const app = Reflect.apply(origGetApp, this, args);
-        if (args[0] === "WinWord" && typeof app?.getDocument === "function" && typeof app?.getActiveDocument === "function") {
-          if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
-          app.getActiveDocument = function() {
-            return this.getDocument("");
-          };
-        }
-        return app;
-      };
-      integration.getApplication = wrappedGetApp;
-    }
-    const patchedCite = async function(field) {
-      if (typeof this._insertCitingResult !== "function" || typeof this.addCitation !== "function" || typeof integration.CitationEditInterface !== "function") {
-        return Reflect.apply(origCite, this, arguments);
-      }
+    if (typeof integration?.CitationField !== "function" || typeof integration?.Citation !== "function" || typeof integration?.Field?.loadExisting !== "function") return "unavailable";
+    const verifyDrop = host2.isMac !== true && options.verifyCursor;
+    if (verifyDrop && !win32.verifyDroppedWordTarget()) return "non-word";
+    const insertCitation = async function(field) {
       let newField = false;
       let activeField = field;
       let citation;
@@ -5015,39 +4916,28 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           citation = new integration.Citation(activeField);
         }
         await citation.prepareForEditing();
-        let fieldIndexPromise;
-        let citationsByItemIDPromise;
-        if (!this.data?.prefs?.delayCitationUpdates || !Object.keys(this.citationsByItemID || {}).length || this._sessionUpToDate) {
-          fieldIndexPromise = this.getFields().then(async (fieldsList) => {
-            for (let i = 0, n = fieldsList.length; i < n; i++) {
-              if (await fieldsList[i].equals(activeField?._field)) {
-                activeField = new integration.CitationField(fieldsList[i]);
-                return i;
+        let fieldIndex = -1;
+        if (!this.data.prefs.delayCitationUpdates || !Object.keys(this.citationsByItemID).length) {
+          const findFieldIndex = this.getFields().then(async (fields) => {
+            for (const [index, candidate] of fields.entries()) {
+              if (await candidate.equals(activeField?._field)) {
+                activeField = new integration.CitationField(candidate);
+                return index;
               }
             }
-            return -1;
+            throw new Error("Could not locate the Word citation field");
           });
-          citationsByItemIDPromise = this.updateFromDocument(0).then(() => this.citationsByItemID);
-        } else {
-          fieldIndexPromise = Promise.resolve(-1);
-          citationsByItemIDPromise = Promise.resolve(this.citationsByItemID);
+          const [fieldResult, updateResult] = await Promise.allSettled([findFieldIndex, this.updateFromDocument(0)]);
+          if (fieldResult.status === "rejected") throw fieldResult.reason;
+          if (updateResult.status === "rejected") throw updateResult.reason;
+          fieldIndex = fieldResult.value;
         }
-        const io = new integration.CitationEditInterface(
-          citation,
-          Boolean(this.style?.opt?.sort_citations),
-          fieldIndexPromise,
-          citationsByItemIDPromise
-        );
+        const existingIDs = new Set(citation.citationItems.map((item) => Number(item.id)));
         for (const id of selectedIDs) {
-          if (!io.citation.citationItems.some((c) => Number(c.id) === id)) {
-            io.citation.citationItems.push({ id });
-          }
+          if (!existingIDs.has(id)) citation.citationItems.push({ id });
         }
-        if (!io.citation.citationItems.length) {
-          throw new host2.Exception.UserCancelled("inserting citation");
-        }
-        const [fieldIndex] = await Promise.all([fieldIndexPromise, citationsByItemIDPromise]);
-        const citations = await this._insertCitingResult(fieldIndex, activeField, io.citation);
+        const citations = await this._insertCitingResult(fieldIndex, activeField, citation);
+        if (!citations.length) throw new Error("Word returned no citation fields");
         let refreshedFields;
         if (!this.data?.prefs?.delayCitationUpdates) {
           if (citations.length !== 1) {
@@ -5066,11 +4956,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           await this.addCitation(idx, await citField.getNoteIndex(), cit);
           committed = true;
         }
-        committed = true;
-        try {
-          options.onCommitted?.(this);
-        } catch {
-        }
         return citations;
       } catch (error) {
         if (newField && !committed && typeof activeField?.delete === "function") {
@@ -5085,84 +4970,41 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         throw error;
       }
     };
-    integration.Session.prototype.cite = patchedCite;
+    let committedSession;
     try {
-      if (isMac) {
-        await integration.execCommand("MacWord16", "addEditCitation", "/Applications/Microsoft Word.app/", 2);
-      } else {
-        if (options.verifyCursor && !win32.verifyDroppedWordTarget()) {
-          return "non-word";
+      const result = await runWordCommand(kernel, "addEditCitation", async (invoke, session2) => {
+        if (typeof session2?.cite !== "function" || typeof session2._insertCitingResult !== "function" || typeof session2.addCitation !== "function") throw new Error("Word citation API unavailable");
+        let wroteCitation = false;
+        const dispose = kernel.runtime.patch(
+          session2,
+          "cite",
+          "Word session",
+          () => async (field) => {
+            const citations = await insertCitation.call(session2, field);
+            wroteCitation = true;
+            return citations;
+          }
+        );
+        try {
+          await invoke();
+          if (!wroteCitation) throw new Error("The Word command did not insert a citation");
+          committedSession = session2;
+        } finally {
+          dispose();
         }
-        await integration.execCommand("WinWord", "addEditCitation", null, 1);
-      }
-      return "inserted";
-    } catch (err) {
-      const name = String(err?.name || "");
-      if (name.includes("UserCancelled")) return "cancelled";
-      kernel.logger.error("word-cite:insert", err);
-      return "unavailable";
-    } finally {
-      win32.clearLastDroppedWordTarget();
-      restoreApps();
-      if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
-        integration.getApplication = origGetApp;
-      }
-      if (integration.Session.prototype.cite === patchedCite) {
-        integration.Session.prototype.cite = origCite;
-      }
-      insertInFlight = false;
-    }
-  }
-  async function refreshActiveWordDocument(kernel, options = {}) {
-    if (insertInFlight) return false;
-    const host2 = globalThis.Zotero;
-    const integration = host2?.Integration;
-    if (typeof integration?.execCommand !== "function") return false;
-    const isMac = host2?.isMac === true;
-    const origGetApp = integration.getApplication;
-    let wrappedGetApp = null;
-    const patchedApps = /* @__PURE__ */ new Map();
-    if (!isMac && typeof origGetApp === "function") {
-      wrappedGetApp = function(...args) {
-        const app = Reflect.apply(origGetApp, this, args);
-        if (args[0] === "WinWord" && typeof app?.getDocument === "function" && typeof app?.getActiveDocument === "function") {
-          if (!patchedApps.has(app)) patchedApps.set(app, app.getActiveDocument);
-          app.getActiveDocument = function() {
-            return this.getDocument("");
-          };
-        }
-        return app;
-      };
-      integration.getApplication = wrappedGetApp;
-    }
-    insertInFlight = true;
-    try {
-      if (isMac) {
-        await integration.execCommand("MacWord16", "refresh", "/Applications/Microsoft Word.app/", 2);
-      } else {
-        await integration.execCommand("WinWord", "refresh", null, 1);
-      }
+      });
+      if (result !== "completed") return result;
       try {
-        options.onCommitted?.();
+        options.onCommitted?.(committedSession);
       } catch {
       }
-      return true;
-    } catch (err) {
-      kernel.logger.error("word-cite:refresh", err);
-      return false;
+      return "inserted";
     } finally {
-      for (const [app, origFn] of patchedApps) {
-        try {
-          app.getActiveDocument = origFn;
-        } catch {
-        }
-      }
-      patchedApps.clear();
-      if (wrappedGetApp && integration.getApplication === wrappedGetApp) {
-        integration.getApplication = origGetApp;
-      }
-      insertInFlight = false;
+      if (verifyDrop) win32.clearLastDroppedWordTarget();
     }
+  }
+  async function refreshActiveWordDocument(kernel) {
+    return await runWordCommand(kernel, "refresh", async (invoke) => invoke()) === "completed";
   }
 
   // src/domains/word-cite/drag-cite-controller.ts
@@ -5252,7 +5094,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         const onShowing = () => {
           const selected = win.ZoteroPane?.getSelectedItems?.() || [];
           const valid = deduplicateRegularItems(selected).items;
-          mi.hidden = !this.kernel.prefs.get("wordCite.dragCite.enable");
+          mi.hidden = !this.kernel.prefs.get("wordCite.itemContextMenu.enable");
           if (!valid.length) mi.setAttribute("disabled", "true");
           else mi.removeAttribute("disabled");
         };
@@ -5298,13 +5140,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         onCommitted: this.onInserted
       });
     }
-    async insertItems(items) {
-      if (!this.kernel.prefs.get("wordCite.dragCite.enable")) return "unavailable";
+    async insertItems(items, onInserted) {
+      if (!this.kernel.prefs.get("modules.wordCite.enable")) return "unavailable";
       const result = await insertItemsIntoWord(this.kernel, this.win32, items, {
         verifyCursor: false,
-        onCommitted: this.onInserted
+        onCommitted: (session2) => {
+          this.onInserted?.(session2);
+          onInserted?.(session2?.sessionID || "");
+        }
       });
-      if (result === "unavailable") {
+      if (result === "unavailable" && !onInserted) {
         this.notifyHint("插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。");
       }
       return result;
@@ -5420,6 +5265,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (!this.activeSessionID) return null;
       return this.sessions.get(this.activeSessionID) ?? null;
     }
+    getSession(id) {
+      return this.sessions.get(id);
+    }
     getAllSessions() {
       return [...this.sessions.values()];
     }
@@ -5491,8 +5339,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
      * Only switches activeSessionID when the foreground Word title uniquely matches a single session.
      */
     syncForegroundActiveSession(overrideTitle) {
+      if (this.sessions.size <= 1) return false;
       const fgTitle = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim().toLowerCase();
-      if (!fgTitle || this.sessions.size === 0) return false;
+      if (!fgTitle) return false;
       const matches = [];
       for (const ses of this.sessions.values()) {
         const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
@@ -5741,7 +5590,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           activeIDs.add(sessionID);
           await this.ensureConsistentSnapshot(session2);
           const parsed = this.extractSessionCitations(session2);
-          const prevTracked = this.tracker.getAllSessions().find((s) => s.sessionID === sessionID);
+          const prevTracked = this.tracker.getSession(sessionID);
           if (!parsed.length && prevTracked && prevTracked.itemCitations.size > 0) {
             const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
             this.emptyStreakBySession.set(sessionID, streak);
@@ -5861,19 +5710,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     extractSessionCitations(session2) {
       const hostItems = globalThis.Zotero?.Items;
       const ordinalMap = /* @__PURE__ */ new Map();
-      const trashedIDs = /* @__PURE__ */ new Set();
+      const trashStatus = /* @__PURE__ */ new Map();
       let nextOrdinal = 1;
       const cleanText = (raw) => String(raw || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
       const isDeletedOrTrashed = (itemID) => {
-        if (trashedIDs.has(itemID)) return true;
+        const cached = trashStatus.get(itemID);
+        if (cached !== void 0) return cached;
         const zotItem = hostItems?.get?.(itemID);
-        if (!zotItem) return false;
-        const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
-        if (zotItem.deleted === true || inTrash) {
-          trashedIDs.add(itemID);
-          return true;
+        if (!zotItem) {
+          trashStatus.set(itemID, false);
+          return false;
         }
-        return false;
+        const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
+        const deleted = zotItem.deleted === true || inTrash;
+        trashStatus.set(itemID, deleted);
+        return deleted;
       };
       const recordHit = (itemID, shortText, explicitItemOrdinal, countOcc = false) => {
         if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
@@ -5997,7 +5848,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     scheduleNext() {
       if (!this.running) return;
-      const delay = this.idleRounds >= 5 ? 3e3 : 1200;
+      const delay = this.idleRounds >= 10 ? 5e3 : this.idleRounds >= 4 ? 3e3 : 1200;
       this.timer = setTimeout(() => {
         this.timer = null;
         if (!this.running) return;
@@ -6029,7 +5880,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.collections = new WordCitationCollectionManager(kernel);
       this.poller = new WordIntegrationPoller(kernel, this.tracker, services.win32);
       this.dragCite = new DragCiteController(kernel, services.win32, (session2) => {
-        void this.poller.notifyCommittedSession(session2);
+        void this.poller.notifyCommittedSession(session2).catch((err) => this.kernel.logger.error("word-cite:poll", err));
       });
       this.column = new CitationColumnController(kernel, this.tracker, this.collections);
     }
@@ -6040,13 +5891,26 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const items = resolveActiveSelectionForWord(win);
       if (items.length) await this.dragCite.insertItems(items);
     }
+    async resyncNow() {
+      if (!this.active) return false;
+      const ok = await this.poller.notifyCommittedSession();
+      this.tracker.emitCurrentSnapshot();
+      return ok;
+    }
     start() {
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
       void this.collections.purgeStaleCollections();
-      this.column.register();
+      if (this.kernel.prefs.get("wordCite.column.enable")) this.column.register();
       this.poller.start();
+      this.disposables.add(
+        this.kernel.prefs.observeKeys(["wordCite.column.enable"], () => {
+          if (!this.active) return;
+          if (this.kernel.prefs.get("wordCite.column.enable")) this.column.register();
+          else this.column.unregister();
+        })
+      );
       this.disposables.add(
         this.kernel.bus.on("citation:snapshot-updated", () => {
           this.scheduleTagSync();
@@ -6066,34 +5930,32 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         )
       );
       this.disposables.add(
-        this.kernel.bus.on("word:insert-items-request", ({ itemIDs, requestId }) => {
-          if (!this.active || !this.kernel.prefs.get("wordCite.dragCite.enable")) return;
-          const hostItems = globalThis.Zotero?.Items;
-          const items = itemIDs.map((id) => hostItems?.get?.(id) || { id, isRegularItem: () => true }).filter(Boolean);
-          if (!items.length) return;
-          void this.dragCite.insertItems(items).then((status) => {
-            const docName = this.tracker.getActiveSession()?.displayName || "";
-            this.kernel.bus.emit("word:insert-result", {
-              requestId,
-              status,
-              documentName: docName,
-              itemCount: items.length
+        this.kernel.bus.on("word:insert-items-request", async ({ itemIDs, requestId }) => {
+          if (!this.active) return;
+          let itemCount = 0;
+          let documentName = "";
+          let status = "unavailable";
+          try {
+            const hostItems = globalThis.Zotero?.Items;
+            const { items } = deduplicateRegularItems(itemIDs.map((id) => hostItems?.get?.(id)));
+            itemCount = items.length;
+            status = await this.dragCite.insertItems(items, (sessionID) => {
+              documentName = this.tracker.getAllSessions().find((session2) => session2.sessionID === sessionID)?.displayName || "";
             });
-          });
+          } catch (err) {
+            this.kernel.logger.error("word-cite:insert-request", err);
+          }
+          this.kernel.bus.emit("word:insert-result", { requestId, status, documentName, itemCount });
         })
       );
       this.disposables.add(
-        this.kernel.bus.on("word:refresh-request", ({ requestId }) => {
+        this.kernel.bus.on("word:refresh-request", async ({ requestId }) => {
           if (!this.active) return;
-          void refreshActiveWordDocument(this.kernel, {
-            onCommitted: () => {
-              void this.poller.notifyCommittedSession();
-            }
-          }).then(async (ok) => {
-            if (ok) await this.poller.notifyCommittedSession();
-            const docName = this.tracker.getActiveSession()?.displayName || "";
-            this.kernel.bus.emit("word:refresh-result", { requestId, ok, documentName: docName });
-          });
+          const ok = await refreshActiveWordDocument(this.kernel);
+          if (ok) {
+            void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error("word-cite:poll", err));
+          }
+          this.kernel.bus.emit("word:refresh-result", { requestId, ok, documentName: "" });
         })
       );
       this.disposables.add(
@@ -6154,6 +6016,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   var SpotlightLibraryIndex = class {
     entries = [];
     loaded = false;
+    revision = 0;
     loading = null;
     tabs;
     constructor(tabs) {
@@ -6161,11 +6024,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     warmUp(win) {
       if (this.loaded || this.loading) return;
-      this.loading = this.build(win).finally(() => {
+      const revision = this.revision;
+      this.loading = this.build(revision, win).finally(() => {
         this.loading = null;
+        if (revision !== this.revision && !win?.closed) this.warmUp(win);
       });
     }
     invalidate() {
+      this.revision++;
       this.loaded = false;
     }
     query(needle, win, openItemIDs, limit = 15, minLen = 2) {
@@ -6189,7 +6055,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       return out;
     }
-    async build(win) {
+    async build(revision, win) {
       const ZoteroObj = globalThis.Zotero;
       const itemsApi = ZoteroObj?.Items;
       if (typeof itemsApi?.getAll !== "function") return;
@@ -6200,11 +6066,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       for (const libraryID of libIDs) {
         try {
           const items = await itemsApi.getAll(libraryID, true, false, false);
+          if (revision !== this.revision) return;
           if (!Array.isArray(items)) continue;
           const libName = String(libsApi?.getName?.(libraryID) || "");
           for (let i = 0; i < items.length; i++) {
             if (i > 0 && i % 250 === 0 && win?.setTimeout) {
               await new Promise((r) => win.setTimeout(r, 0));
+              if (revision !== this.revision) return;
             }
             const item = items[i];
             if (!item?.isRegularItem?.() || item.deleted) continue;
@@ -6225,6 +6093,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         } catch {
         }
       }
+      if (revision !== this.revision) return;
       this.entries = next;
       this.loaded = true;
     }
@@ -7063,8 +6932,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8) return true;
       const payload = JSON.stringify({ format: "zotero-bridgeflow-workspace", version: 2, state }, null, 2);
-      if (payload === this.lastWrittenJson) return true;
       const run = async () => {
+        if (payload === this.lastWrittenJson) return true;
         try {
           await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
           const mainPath = this.getFilePath();
@@ -7075,7 +6944,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             } catch {
             }
           }
-          await ioUtils.writeUTF8(mainPath, payload);
+          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
           this.lastWrittenJson = payload;
           this.lastError = "";
           return true;
@@ -7739,6 +7608,25 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   }
 
   // src/domains/workspace/tab-projection.ts
+  var MAX_COLLECTION_CACHE = 400;
+  var collectionNameCache = /* @__PURE__ */ new Map();
+  function invalidateTabProjectionCache() {
+    collectionNameCache.clear();
+  }
+  function resolveCachedCollectionName(display) {
+    const id = Number(display?.id || 0);
+    const stamp = String(display?.dateModified || display?.version || "");
+    if (id > 0 && stamp) {
+      const hit = collectionNameCache.get(id);
+      if (hit && hit.stamp === stamp) return hit.name;
+    }
+    const name = resolvePrimaryCollectionName2(display);
+    if (id > 0 && stamp) {
+      if (collectionNameCache.size >= MAX_COLLECTION_CACHE) collectionNameCache.clear();
+      collectionNameCache.set(id, { stamp, name });
+    }
+    return name;
+  }
   function describe(key, itemID, type, fallbackTitle) {
     const item = itemID ? globalThis.Zotero?.Items?.get?.(itemID) : null;
     const display = normalizeToRegularItem(item) || item;
@@ -7754,7 +7642,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       filename: String(item?.attachmentFilename || ""),
       source: fields.source,
       creatorYear: fields.creatorYear,
-      collection: resolvePrimaryCollectionName2(display)
+      collection: resolveCachedCollectionName(display)
     };
   }
   function projectWorkspaceTabs(win, store, prefs) {
@@ -7869,7 +7757,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     citeItemsInWord(win, itemIDs) {
       const valid = [...new Set(itemIDs.filter((id) => Number.isInteger(id) && id > 0))];
-      if (!valid.length || !this.bus || !this.prefs.get("modules.wordCite.enable") || !this.prefs.get("wordCite.dragCite.enable")) {
+      if (!valid.length || !this.bus || !this.prefs.get("modules.wordCite.enable") || !this.prefs.get("wordCite.tabContextMenu.enable")) {
         return false;
       }
       this.bus.emit("word:insert-items-request", { itemIDs: valid, win });
@@ -8574,6 +8462,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     inlineEl = null;
     headingClickTimer = 0;
     lastSelectedID = "";
+    lastRenderKey = "";
     constructor(win, prefs, store, tabs, menus, hover, toolbar, onRefresh) {
       this.win = win;
       this.doc = win.document;
@@ -8614,12 +8503,17 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         this.inlineEl = inline;
       }
       this.inlineEl.removeAttribute("hidden");
-      this.inlineEl.textContent = "";
       const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
+      const compactMode = this.prefs.get("workspace.horizontalTabCompactMode");
+      const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(",");
+      const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join("|");
+      const renderKey = `${selectedID}|${compactMode}|${this.prefs.get("workspace.pinnedIconOnly")}|${this.store.state.collapsed.join(",")}|${gKey}|${tKey}`;
+      if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
+      this.lastRenderKey = renderKey;
+      this.inlineEl.textContent = "";
       const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
       const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
       this.pinnedStrip.render(this.inlineEl, pinnedTabs, selectedID);
-      const compactMode = this.prefs.get("workspace.horizontalTabCompactMode");
       const compactInactive = compactMode === "compact" || compactMode === "auto" && unpinned.length > 5;
       for (const group2 of this.store.state.groups) {
         const members = unpinned.filter((t) => t.groupId === group2.id);
@@ -9583,7 +9477,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           void this.tabs.copyTabCitation(this.win, tab.tabID);
         }, close, { icon: "copy" });
       }
-      if (tab.itemID > 0 && this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.dragCite.enable")) {
+      if (tab.itemID > 0 && this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.tabContextMenu.enable")) {
         addPopupButton(this.doc, pop, "插入引文到 Word 光标处", () => {
           this.tabs.citeItemsInWord(this.win, [tab.parentItemID || tab.itemID]);
         }, close, { icon: "word" });
@@ -9626,7 +9520,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         addPopupButton(this.doc, pop, "在文献库中定位", () => {
           void this.tabs.showInLibrary(this.win, tab.itemID, true);
         }, close, { icon: "locate" });
-        if (this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.dragCite.enable")) {
+        if (this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.tabContextMenu.enable")) {
           addPopupButton(this.doc, pop, "插入引文到 Word 光标处", () => {
             this.tabs.citeItemsInWord(this.win, [tab.parentItemID || tab.itemID]);
           }, close, { icon: "word" });
@@ -9697,8 +9591,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           void this.tabs.openGroupVirtuals(this.win, group2.id).then(() => this.onRefresh());
         }, close, { icon: "play", badge: String(virtualCount) });
       }
-      if (this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.dragCite.enable")) {
-        const groupItemIDs = this.tabs.buildTrackedTabs(this.win).filter((t) => t.groupId === group2.id && (t.parentItemID > 0 || t.itemID > 0)).map((t) => t.parentItemID || t.itemID);
+      if (this.prefs.get("modules.wordCite.enable") && this.prefs.get("wordCite.tabContextMenu.enable")) {
+        const groupItemIDs = [...new Set(
+          this.tabs.buildTrackedTabs(this.win).filter((t) => t.groupId === group2.id && (t.parentItemID > 0 || t.itemID > 0)).map((t) => t.parentItemID || t.itemID)
+        )];
         if (groupItemIDs.length > 0) {
           addPopupButton(this.doc, pop, "插入本组引文到 Word", () => {
             this.tabs.citeItemsInWord(this.win, groupItemIDs);
@@ -10325,6 +10221,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     selection = null;
     viewMode = "groups";
     searchTerm = "";
+    lastRenderKey = "";
     wordCiteMap = /* @__PURE__ */ new Map();
     constructor(win, prefs, store, tabs, menus, hover, popover, onToggleSpotlight, onRefresh) {
       this.win = win;
@@ -10461,12 +10358,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     renderList(snapshot) {
       if (!this.listEl || !this.selection) return;
-      this.listEl.textContent = "";
       const needle = this.searchTerm.trim().toLowerCase();
       const allTracked = snapshot ?? this.tabs.buildTrackedTabs(this.win);
+      const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
+      const badgeKey = [...this.wordCiteMap.entries()].map(([id, b]) => `${id}:${b.ordinal}`).join(",");
+      const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(",");
+      const tabKey = allTracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join("|");
+      const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(",")}|${this.prefs.get("workspace.verticalTabRowHeight")}|${this.prefs.get("workspace.verticalTabTitleMode")}|${this.prefs.get("workspace.verticalTabSubtitleMode")}|${this.prefs.get("workspace.enableBatchSelection")}|${groupKey}|${badgeKey}|${tabKey}`;
+      if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
+      this.lastRenderKey = renderKey;
+      const prevScroll = this.listEl.scrollTop;
+      this.listEl.textContent = "";
       const filtered = needle ? allTracked.filter((t) => `${t.title} ${t.shortTitle} ${t.creatorYear} ${t.collection} ${t.remark}`.toLowerCase().includes(needle)) : allTracked;
       this.selection.beginRender(filtered);
-      const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
       const rowDeps = {
         win: this.win,
         doc: this.doc,
@@ -10528,6 +10432,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       this.renderFooter(allTracked);
       this.selection.updateControls();
+      if (prevScroll > 0) this.listEl.scrollTop = prevScroll;
     }
     renderStatusView(filtered, rowDeps) {
       const cited = filtered.filter((t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID));
@@ -11444,7 +11349,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       }
     };
     onResize = () => {
-      this.scheduleRender(80);
+      this.scheduleRender(140);
     };
     constructor(win, prefs, store, tabs, spotlightEngine) {
       this.win = win;
@@ -11472,7 +11377,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     setCitationBadges(badges) {
       this.hoverCard?.setWordCitationBadges(badges);
       this.sidebar?.setWordCitationBadges(badges);
-      this.render();
+      this.scheduleRender(16);
     }
     openSpotlightWithQuery(initialQuery = "") {
       this.spotlightPanel?.open(initialQuery);
@@ -11533,7 +11438,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (!node) return false;
       const el = typeof node.closest === "function" ? node : node.parentElement;
       if (!el || typeof el.closest !== "function") return false;
-      return Boolean(el.closest("#zbf-inline, #zbf-toolbar-actions"));
+      return Boolean(el.closest("#zbf-inline, #zbf-toolbar-actions, #zbf-sidebar"));
     }
     scheduleRender(delayMs) {
       if (this.destroyed) return;
@@ -11590,7 +11495,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     pendingAutoGroup = /* @__PURE__ */ new Set();
     lastRollingAt = 0;
     viewedDirty = false;
-    refreshQueued = false;
+    refreshTimer = null;
     lastGroupFingerprint = "";
     constructor(kernel, services) {
       this.kernel = kernel;
@@ -11628,8 +11533,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
           if (type === "tab") {
             this.handleTabEvent(event, ids.map(String));
           } else if (event === "modify" || event === "add" || event === "delete") {
+            invalidateTabProjectionCache();
             if (type === "item") this.spotlight.invalidateLibraryIndex();
-            this.refreshAllWindows();
+            this.queueRefresh(32);
           }
         })
       );
@@ -11639,19 +11545,23 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.emitGroupSummaries(true);
       this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 6e4);
       this.readingTimer = setInterval(() => {
-        let updated = false;
         for (const win of this.windows.keys()) {
           if (this.tabs.trackReadingProgress(win, 15)) {
             this.viewedDirty = true;
-            updated = true;
           }
         }
-        if (updated) this.refreshAllWindows();
+        if (this.viewedDirty && this.kernel.prefs.get("workspace.verticalTabSubtitleMode") === "lastViewed") {
+          this.queueRefresh(50);
+        }
       }, 15e3);
     }
     stop() {
       if (!this.active) return;
       this.active = false;
+      if (this.refreshTimer !== null) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+      }
       if (this.maintenanceTimer !== null) {
         clearInterval(this.maintenanceTimer);
         this.maintenanceTimer = null;
@@ -11693,13 +11603,12 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       ui.destroy();
       this.windows.delete(win);
     }
-    queueRefresh() {
-      if (this.refreshQueued) return;
-      this.refreshQueued = true;
-      Promise.resolve().then(() => {
-        this.refreshQueued = false;
+    queueRefresh(delayMs = 16) {
+      if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+      this.refreshTimer = setTimeout(() => {
+        this.refreshTimer = null;
         if (this.active) this.refreshAllWindows();
-      });
+      }, delayMs);
     }
     refreshAllWindows() {
       for (const ui of this.windows.values()) {
@@ -11708,6 +11617,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.emitGroupSummaries();
     }
     emitGroupSummaries(force = false) {
+      if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === "") return;
       const tabParentByKey = /* @__PURE__ */ new Map();
       for (const win of this.windows.keys()) {
         for (const tab of this.tabs.buildTrackedTabs(win)) {
@@ -12157,10 +12067,24 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "inspector.wordCite.enable": { defaultValue: true },
     "inspector.wordCite.position": {
       defaultValue: "zotero-editpane-related",
-      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+      enumValues: [
+        "zotero-item-pane-header",
+        "zotero-editpane-item-box",
+        "zotero-editpane-abstract",
+        "zotero-editpane-attachments",
+        "zotero-editpane-notes",
+        "zotero-editpane-related"
+      ]
     },
+    "inspector.wordCite.showDocSwitcher": { defaultValue: true },
+    "inspector.wordCite.showSummaryCounts": { defaultValue: true },
+    "inspector.wordCite.showGroupSynergy": { defaultValue: true },
+    "inspector.wordCite.showCollectionLink": { defaultValue: true },
     // === Domain C: Word Citation Tracking & Governance ===
+    "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
+    "wordCite.itemContextMenu.enable": { defaultValue: true },
+    "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },
     "wordCite.citationTags.text": { defaultValue: "/Citations" },
@@ -12744,6 +12668,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   var CslFormattingEngine = class {
     cache = /* @__PURE__ */ new Map();
     bytes = 0;
+    styleInitialization;
     limit;
     byteLimit;
     ttlMs;
@@ -12814,15 +12739,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     async formatItems(items, options = {}) {
       const host2 = globalThis.Zotero;
       if (host2?.Styles?.init) {
-        await Promise.race([
-          host2.Styles.init(),
-          new Promise((resolve) => setTimeout(resolve, 1e4))
-        ]);
+        this.styleInitialization ??= this.initializeStyles(host2.Styles);
+        await this.styleInitialization;
       }
       const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
       const asCitation = Boolean(options.asCitation);
       if (!items.length) return { html: "", text: "", styleID };
-      const key = this.buildCacheKey(items, styleID, asCitation);
+      const locale = typeof format === "string" ? "" : format.locale || "";
+      const key = JSON.stringify([this.buildCacheKey(items, styleID, asCitation), locale]);
       const cached = this.getCached(key);
       if (cached) return cached;
       let html = "";
@@ -12841,6 +12765,25 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       const result = { html, text: text2, styleID };
       this.setCached(key, result, items.map((it) => Number(it.id || 0)).filter((n) => n > 0));
       return result;
+    }
+    async initializeStyles(styles) {
+      let timer;
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => styles.init()),
+          new Promise((resolve) => {
+            timer = setTimeout(() => {
+              this.styleInitialization = void 0;
+              resolve();
+            }, 1e4);
+          })
+        ]);
+      } catch (error) {
+        this.styleInitialization = void 0;
+        throw error;
+      } finally {
+        if (timer !== void 0) clearTimeout(timer);
+      }
     }
     invalidateItems(itemIDs) {
       const target = new Set(itemIDs);

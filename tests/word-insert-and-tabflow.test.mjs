@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { normalizeWordTitleForMatch, Win32BridgeService } from '../src/services/win32-bridge.ts';
-import { insertItemsIntoWord } from '../src/domains/word-cite/word-inserter.ts';
+import { insertItemsIntoWord, refreshActiveWordDocument } from '../src/domains/word-cite/word-inserter.ts';
 import { WordSessionTracker } from '../src/domains/word-cite/session-tracker.ts';
 import { WordIntegrationPoller } from '../src/domains/word-cite/word-poller.ts';
 import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
@@ -28,6 +28,12 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	const deletedFields = [];
 	let activeDocArg = 'UNSET';
 	let throwOnAddCitation = false;
+	let skipCommand = false;
+	let cancelCommand = false;
+	let throwOnWrite = false;
+	let throwOnSetDocumentData = false;
+	let hostWrites = 0;
+	class Cancelled extends Error {}
 
 	class MockSession {
 		constructor() {
@@ -36,15 +42,14 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 			this.style = { opt: { sort_citations: true } };
 		}
 		async addField() {
-			return {
-				type: 0,
-				_field: { tag: 'raw' },
+			this.rawField = {
 				async getNoteIndex() { return 0; },
-				async equals() { return false; },
+				async equals(other) { return this === other; },
 				async delete() { deletedFields.push('deleted'); },
 			};
+			return this.rawField;
 		}
-		async getFields() { return []; }
+		async getFields() { return this.rawField ? [this.rawField] : []; }
 		async updateFromDocument() {}
 		async _insertCitingResult(fieldIndex, field, citation) {
 			return [{ fieldIndex, field, citationItems: citation.citationItems }];
@@ -56,6 +61,22 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 		async cite() { return 'ORIG'; }
 	}
 
+	class MockInterface {
+		constructor(app, doc, session) {
+			this._app = app;
+			this._doc = doc;
+			this._session = session;
+		}
+		async addEditCitation() {
+			if (cancelCommand) throw new Cancelled();
+			await this._session.cite(null);
+			if (throwOnWrite) throw new Error('Simulated document write failure');
+			hostWrites++;
+		}
+		async refresh() { hostWrites++; }
+	}
+
+	const origCommand = MockInterface.prototype.addEditCitation;
 	const origCite = MockSession.prototype.cite;
 	const origGetActive = () => 'ORIG_ACTIVE';
 	const appObj = {
@@ -65,23 +86,29 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 
 	globalThis.Zotero = {
 		isMac: false,
-		isWin: false,
+		isWin: true,
 		Integration: {
-			Session: MockSession,
+			Interface: MockInterface,
 			CitationField: class { constructor(f) { this._field = f; } async getNoteIndex() { return 0; } async delete() { return this._field?.delete?.(); } },
 			Citation: class { constructor(f) { this.field = f; this.citationItems = []; } async prepareForEditing() {} },
-			CitationEditInterface: class { constructor(c) { this.citation = c; } },
 			Field: { loadExisting: async (f) => f },
 			getApplication: (agent) => (agent === 'WinWord' ? appObj : null),
-			execCommand: async (agent, cmd) => {
-				if (agent === 'WinWord' && cmd === 'addEditCitation') {
-					globalThis.Zotero.Integration.getApplication(agent).getActiveDocument();
-					const session = new MockSession();
-					await session.cite(null);
+			async execCommand(agent, cmd, docId) {
+				if (skipCommand) return;
+				let doc;
+				const session = new MockSession();
+				try {
+					const app = this.getApplication(agent, cmd, docId);
+					doc = await app.getActiveDocument();
+					await new MockInterface(app, doc, session)[cmd]();
+					if (throwOnSetDocumentData) throw new Error('Simulated document metadata failure');
+				} catch (error) {
+					if (!(error instanceof Cancelled)) await this._handleCommandError(doc, session, error);
 				}
 			},
+			async _handleCommandError() { /* Zotero handles command errors without rejecting */ },
 		},
-		Exception: { Alert: Error, UserCancelled: Error },
+		Exception: { Alert: Error, UserCancelled: Cancelled },
 	};
 
 	const makeRegularItem = (id) => ({
@@ -96,7 +123,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 		kernel,
 		win32,
 		[makeRegularItem(101), makeRegularItem(102), makeRegularItem(101)],
-		{ verifyCursor: false, onCommitted: () => { onCommittedCalls++; } },
+		{ verifyCursor: false, onCommitted: () => { assert.equal(hostWrites, 1); onCommittedCalls++; } },
 	);
 
 	assert.equal(res, 'inserted');
@@ -113,6 +140,31 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	assert.equal(deletedFields.length, 1);
 	assert.equal(MockSession.prototype.cite, origCite);
 	assert.equal(appObj.getActiveDocument, origGetActive);
+
+	assert.equal(MockInterface.prototype.addEditCitation, origCommand);
+	assert.equal(kernel.runtime.pendingPatchCount, 0);
+
+	throwOnAddCitation = false;
+	throwOnWrite = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	throwOnWrite = false;
+	throwOnSetDocumentData = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	throwOnSetDocumentData = false;
+	cancelCommand = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'cancelled');
+	cancelCommand = false;
+	skipCommand = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	assert.equal(await refreshActiveWordDocument(kernel), false);
+	skipCommand = false;
+	globalThis.Zotero.Integration.currentDoc = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'busy');
+	globalThis.Zotero.Integration.currentDoc = false;
+	const refreshing = refreshActiveWordDocument(kernel);
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'busy');
+	assert.equal(await refreshing, true);
+	assert.equal(kernel.runtime.pendingPatchCount, 0);
 
 	delete globalThis.Zotero;
 });

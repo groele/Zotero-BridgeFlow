@@ -13,6 +13,7 @@ interface LibraryEntry {
 export class SpotlightLibraryIndex {
 	private entries: LibraryEntry[] = [];
 	private loaded = false;
+	private revision = 0;
 	private loading: Promise<void> | null = null;
 	private readonly tabs: WorkspaceTabController;
 
@@ -22,12 +23,15 @@ export class SpotlightLibraryIndex {
 
 	warmUp(win?: Window): void {
 		if (this.loaded || this.loading) return;
-		this.loading = this.build(win).finally(() => {
+		const revision = this.revision;
+		this.loading = this.build(revision, win).finally(() => {
 			this.loading = null;
+			if (revision !== this.revision && !win?.closed) this.warmUp(win);
 		});
 	}
 
 	invalidate(): void {
+		this.revision++;
 		this.loaded = false;
 	}
 
@@ -54,7 +58,7 @@ export class SpotlightLibraryIndex {
 		return out;
 	}
 
-	private async build(win?: Window): Promise<void> {
+	private async build(revision: number, win?: Window): Promise<void> {
 		const ZoteroObj = (globalThis as any).Zotero;
 		const itemsApi = ZoteroObj?.Items;
 		if (typeof itemsApi?.getAll !== 'function') return;
@@ -69,11 +73,13 @@ export class SpotlightLibraryIndex {
 		for (const libraryID of libIDs) {
 			try {
 				const items = await itemsApi.getAll(libraryID, true, false, false);
+				if (revision !== this.revision) return;
 				if (!Array.isArray(items)) continue;
 				const libName = String(libsApi?.getName?.(libraryID) || '');
 				for (let i = 0; i < items.length; i++) {
 					if (i > 0 && i % 250 === 0 && win?.setTimeout) {
 						await new Promise<void>((r) => win.setTimeout(r, 0));
+						if (revision !== this.revision) return;
 					}
 					const item = items[i];
 					if (!item?.isRegularItem?.() || item.deleted) continue;
@@ -93,6 +99,7 @@ export class SpotlightLibraryIndex {
 				}
 			} catch { /* ignore individual library failure */ }
 		}
+		if (revision !== this.revision) return;
 		this.entries = next;
 		this.loaded = true;
 	}

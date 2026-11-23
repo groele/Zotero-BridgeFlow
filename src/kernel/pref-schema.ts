@@ -118,11 +118,21 @@ export const PREF_SCHEMA = {
 	'inspector.wordCite.enable': { defaultValue: true },
 	'inspector.wordCite.position': {
 		defaultValue: 'zotero-editpane-related',
-		enumValues: ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'],
+		enumValues: [
+			'zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-abstract',
+			'zotero-editpane-attachments', 'zotero-editpane-notes', 'zotero-editpane-related',
+		],
 	},
+	'inspector.wordCite.showDocSwitcher': { defaultValue: true },
+	'inspector.wordCite.showSummaryCounts': { defaultValue: true },
+	'inspector.wordCite.showGroupSynergy': { defaultValue: true },
+	'inspector.wordCite.showCollectionLink': { defaultValue: true },
 
 	// === Domain C: Word Citation Tracking & Governance ===
+	'wordCite.column.enable': { defaultValue: true },
 	'wordCite.dragCite.enable': { defaultValue: true },
+	'wordCite.itemContextMenu.enable': { defaultValue: true },
+	'wordCite.tabContextMenu.enable': { defaultValue: true },
 	'wordCite.collections.enable': { defaultValue: true },
 	'wordCite.citationTags.enable': { defaultValue: true },
 	'wordCite.citationTags.text': { defaultValue: '/Citations' },

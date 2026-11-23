@@ -80,7 +80,7 @@ export class SpotlightFusionBridge implements BridgeModule {
 					}
 
 					// 3. One-click insert current selected paper into active Word cursor
-					if (this.wordCite.isActive() && this.kernel.prefs.get('wordCite.dragCite.enable')) {
+					if (this.wordCite.isActive()) {
 						const insertLabel = '插入当前文献到 Word 光标处';
 						if (!term || insertLabel.toLowerCase().includes(term) || 'word'.includes(term) || 'cite'.includes(term)) {
 							out.push({

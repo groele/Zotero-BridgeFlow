@@ -112,6 +112,10 @@ export class WordSessionTracker {
 		return this.sessions.get(this.activeSessionID) ?? null;
 	}
 
+	getSession(id: string): WordSessionRecord | undefined {
+		return this.sessions.get(id);
+	}
+
 	getAllSessions(): readonly WordSessionRecord[] {
 		return [...this.sessions.values()];
 	}
@@ -195,8 +199,9 @@ export class WordSessionTracker {
 	 * Only switches activeSessionID when the foreground Word title uniquely matches a single session.
 	 */
 	syncForegroundActiveSession(overrideTitle?: string): boolean {
+		if (this.sessions.size <= 1) return false;
 		const fgTitle = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim().toLowerCase();
-		if (!fgTitle || this.sessions.size === 0) return false;
+		if (!fgTitle) return false;
 		const matches: string[] = [];
 		for (const ses of this.sessions.values()) {
 			const base = extractDocumentBaseName(ses.documentPath).toLowerCase();

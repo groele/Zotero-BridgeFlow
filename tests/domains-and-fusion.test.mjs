@@ -1,10 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BridgeFlowApp } from '../src/index.ts';
+import { PREF_PREFIX, PREF_SCHEMA } from '../src/kernel/pref-schema.ts';
 import { disambiguateDocumentNames } from '../src/domains/word-cite/session-tracker.ts';
 
 function createMemoryPrefs(initial = {}) {
-	const store = new Map(Object.entries(initial));
+	const store = new Map(Object.entries(initial).map(([k, v]) => [k.startsWith('extensions.') ? k : PREF_PREFIX + k, v]));
 	const observers = new Map();
 	let nextId = 1;
 	return {
@@ -332,6 +335,7 @@ function createMockDocument(win) {
 		defaultView: win,
 		head: null,
 		documentElement: null,
+		createElementNS(_ns, tag) { return doc.createElement(tag); },
 		createElement(tag) {
 			const node = createMockElement(tag, doc);
 			let _id = '';
@@ -357,10 +361,8 @@ function createMockDocument(win) {
 }
 
 test('WordSessionTracker tracks occurrences, totalCitedCount, sessions and manual session switch', () => {
-	const app = new BridgeFlowApp(
-		{ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' },
-		createMemoryPrefs().adapter,
-	);
+	const app = new BridgeFlowApp({ prefAdapter: createMemoryPrefs().adapter });
+	app.init({ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' });
 	const snapshots = [];
 	app.kernel.bus.on('citation:snapshot-updated', (s) => snapshots.push(s));
 
@@ -412,14 +414,14 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 		},
 	};
 
-	const app = new BridgeFlowApp(
-		{ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' },
-		createMemoryPrefs({
+	const app = new BridgeFlowApp({
+		prefAdapter: createMemoryPrefs({
 			'inspector.wordCite.enable': true,
 			'modules.wordCite.enable': true,
 			'wordCite.dragCite.enable': true,
 		}).adapter,
-	);
+	});
+	app.init({ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' });
 	const inserts = [];
 	const refreshes = [];
 	const switches = [];
@@ -483,11 +485,34 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	assert.equal(collapsible.open, true);
 	assert.equal(inserts.length, 0);
 
+	const otherDoc = createMockDocument({ ZoteroPane: { getSelectedItems: () => [item201] } });
+	const otherBody = otherDoc.createElement('div');
+	registered.onInit({ doc: otherDoc, body: otherBody, item: item201 });
+	const otherReceipt = otherBody.children[0].children[4];
+
+	// The host may isolate panel events from document-level delegation.
+	doc.dispatchEvent = () => true;
 	insertBtn.click();
 	assert.deepEqual(inserts.at(-1)?.itemIDs, [201]);
+	assert.equal(insertBtn.disabled, true);
+	assert.equal(refreshBtn.disabled, true);
+	assert.equal(groupBtn.disabled, true);
+	assert.match(receipt.textContent, /正在插入/);
+	assert.equal(otherReceipt.hidden, true);
+	insertBtn.click();
+	assert.equal(inserts.length, 1);
+	app.kernel.bus.emit('word:insert-result', { requestId: 'stale', status: 'inserted', documentName: '', itemCount: 1 });
+	assert.equal(insertBtn.disabled, true);
+	app.kernel.bus.emit('word:insert-result', { requestId: inserts[0].requestId, status: 'inserted', documentName: 'de.docx', itemCount: 1 });
+	assert.match(receipt.textContent, /✓ 已插入/);
+	assert.equal(otherReceipt.hidden, true);
+	assert.equal(insertBtn.disabled, false);
 
 	groupBtn.click();
 	assert.deepEqual(inserts.at(-1)?.itemIDs, [201, 202, 203]);
+	app.kernel.bus.emit('word:insert-result', { requestId: inserts[1].requestId, status: 'unavailable', documentName: '', itemCount: 3 });
+	assert.match(receipt.textContent, /插入失败/);
+	assert.equal(insertBtn.disabled, false);
 
 	refreshBtn.click();
 	assert.equal(refreshes.length, 1);
@@ -498,10 +523,73 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	colBtn.click();
 	assert.equal(colSelects.at(-1)?.sessionID, 'doc-a');
 
-	app.kernel.bus.emit('word:insert-result', { status: 'inserted', documentName: 'de.docx', itemCount: 1 });
-	assert.ok(receipt.textContent.includes('✓ 已插入'));
+	app.kernel.bus.emit('word:refresh-result', { requestId: refreshes[0].requestId, ok: true, documentName: 'de.docx' });
+	assert.match(receipt.textContent, /已刷新/);
+
+	// Plan C UI switches hide/show sub-elements dynamically
+	app.kernel.prefs.set('inspector.wordCite.showDocSwitcher', false);
+	app.kernel.prefs.set('inspector.wordCite.showSummaryCounts', false);
+	app.kernel.prefs.set('inspector.wordCite.showGroupSynergy', false);
+	app.kernel.prefs.set('inspector.wordCite.showCollectionLink', false);
+	app.inspector.wordCiteSection.refreshAll();
+	assert.equal(docBtn.hidden, true);
+	assert.equal(statsEl.hidden, true);
+	assert.equal(row1.hidden, true);
+	assert.equal(groupBtn.hidden, true);
+	assert.equal(colBtn.hidden, true);
+	assert.equal(synergy.hidden, true);
+	assert.equal(latestSummary, '');
 
 	app.inspector.wordCiteSection.unregister();
 	delete globalThis.Zotero;
 });
 
+test('WordCite switches: dragCite=false still allows Plan C & menus; column.enable dynamically toggles Citation column', async () => {
+	const registeredCols = [];
+	const unregisteredKeys = [];
+	globalThis.Zotero = {
+		locale: 'zh-CN',
+		ItemTreeManager: {
+			registerColumns(desc) { registeredCols.push(desc.dataKey); return 'col-key-1'; },
+			unregisterColumns(keys) { unregisteredKeys.push(...keys); },
+		},
+		getMainWindows: () => [],
+	};
+	const app = new BridgeFlowApp({
+		prefAdapter: createMemoryPrefs({
+			'wordCite.dragCite.enable': false,
+			'wordCite.column.enable': true,
+			'wordCite.itemContextMenu.enable': true,
+			'wordCite.tabContextMenu.enable': true,
+			'inspector.wordCite.enable': true,
+		}).adapter,
+	});
+	app.init({ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' });
+	await app.start();
+
+	assert.deepEqual(registeredCols, ['bridgeflowCitation']);
+	assert.equal(app.workspace.tabs.citeItemsInWord({}, [201]), true, 'tabContextMenu should still work when dragCite is false');
+	assert.equal(await app.wordCite.dragCite.handleDropEnd([{ id: 201 }]), 'unavailable', 'drag-drop should stay disabled');
+
+	app.kernel.prefs.set('wordCite.column.enable', false);
+	assert.deepEqual(unregisteredKeys, ['col-key-1']);
+	app.kernel.prefs.set('wordCite.column.enable', true);
+	assert.equal(registeredCols.length, 2);
+
+	app.shutdown();
+	delete globalThis.Zotero;
+});
+
+test('Preferences completeness: every user-facing PREF_SCHEMA key is exposed in prefs.xhtml and vice versa', () => {
+	const xhtml = fs.readFileSync(path.resolve(process.cwd(), 'prefs.xhtml'), 'utf8');
+	const exposed = new Set();
+	for (const m of xhtml.matchAll(/preference="extensions\.zotero\.bridgeflow\.([^"]+)"/g)) exposed.add(m[1]);
+	for (const m of xhtml.matchAll(/data-zbf-pref="([^"]+)"/g)) exposed.add(m[1]);
+
+	const runtimeOnly = new Set(['workspace.document', 'workspace.verticalSidebarCollapsed']);
+	const missingFromUI = Object.keys(PREF_SCHEMA).filter((k) => !runtimeOnly.has(k) && !exposed.has(k));
+	const unknownInUI = [...exposed].filter((k) => !(k in PREF_SCHEMA) && !k.startsWith(PREF_PREFIX));
+
+	assert.deepEqual(missingFromUI, [], `Prefs missing from prefs.xhtml: ${missingFromUI.join(', ')}`);
+	assert.deepEqual(unknownInUI, [], `Unknown prefs in prefs.xhtml: ${unknownInUI.join(', ')}`);
+});

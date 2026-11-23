@@ -29,6 +29,7 @@ interface ResolvedQuickCopyFormat {
 export class CslFormattingEngine {
 	private readonly cache = new Map<string, CacheEntry>();
 	private bytes = 0;
+	private styleInitialization?: Promise<void>;
 	private readonly limit: number;
 	private readonly byteLimit: number;
 	private readonly ttlMs: number;
@@ -107,17 +108,16 @@ export class CslFormattingEngine {
 	): Promise<CslFormatResult> {
 		const host = (globalThis as any).Zotero;
 		if (host?.Styles?.init) {
-			await Promise.race([
-				host.Styles.init(),
-				new Promise<void>((resolve) => setTimeout(resolve, 10_000)),
-			]);
+			this.styleInitialization ??= this.initializeStyles(host.Styles);
+			await this.styleInitialization;
 		}
 
 		const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
 		const asCitation = Boolean(options.asCitation);
 		if (!items.length) return { html: '', text: '', styleID };
 
-		const key = this.buildCacheKey(items, styleID, asCitation);
+		const locale = typeof format === 'string' ? '' : format.locale || '';
+		const key = JSON.stringify([this.buildCacheKey(items, styleID, asCitation), locale]);
 		const cached = this.getCached(key);
 		if (cached) return cached;
 
@@ -138,6 +138,23 @@ export class CslFormattingEngine {
 		const result: CslFormatResult = { html, text, styleID };
 		this.setCached(key, result, items.map((it) => Number(it.id || 0)).filter((n) => n > 0));
 		return result;
+	}
+
+	private async initializeStyles(styles: { init(): Promise<unknown> }): Promise<void> {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.resolve().then(() => styles.init()),
+				new Promise<void>((resolve) => {
+					timer = setTimeout(() => { this.styleInitialization = undefined; resolve(); }, 10_000);
+				}),
+			]);
+		} catch (error) {
+			this.styleInitialization = undefined;
+			throw error;
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 	}
 
 	invalidateItems(itemIDs: Iterable<number>): void {

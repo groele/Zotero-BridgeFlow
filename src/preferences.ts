@@ -1,5 +1,11 @@
 import { PREF_PREFIX, PREF_SCHEMA, type PrefKey } from './kernel/pref-schema.ts';
 import { UnifiedPrefService } from './kernel/pref-service.ts';
+import {
+	bindPreferenceActions,
+	setStatusFeedback,
+	syncMenulistLabels,
+	updatePreferenceDependencies,
+} from './prefs-helpers.ts';
 
 declare const document: Document | undefined;
 declare const window: Window | undefined;
@@ -20,75 +26,6 @@ function extractPrefKey(el: Element): PrefKey | null {
 	const full = el.getAttribute('preference') || el.getAttribute('data-preference') || '';
 	const shortKey = full.startsWith(PREF_PREFIX) ? full.slice(PREF_PREFIX.length) : '';
 	return shortKey in PREF_SCHEMA ? (shortKey as PrefKey) : null;
-}
-
-function setSubtreeDisabled(el: Element | null, disabled: boolean): void {
-	if (!el) return;
-	el.setAttribute('data-disabled', disabled ? 'true' : 'false');
-	el.querySelectorAll('checkbox, menulist, input, button').forEach((ctrl: Element) => {
-		try { (ctrl as any).disabled = disabled; } catch { /* ignore */ }
-		if (disabled) ctrl.setAttribute('disabled', 'true');
-		else ctrl.removeAttribute('disabled');
-	});
-}
-
-function syncMenulistLabels(doc: Document): void {
-	doc.querySelectorAll('#zotero-prefpane-zotero-bridgeflow menulist').forEach((ml: Element) => {
-		const hostMl = ml as any;
-		const val = String(hostMl.value ?? ml.getAttribute('value') ?? '');
-		const items = Array.from(ml.querySelectorAll('menuitem')) as Element[];
-		const matched = items.find((it) => it.getAttribute('value') === val) || hostMl.selectedItem || items[0];
-		if (matched) {
-			try { hostMl.selectedItem = matched; } catch { /* ignore */ }
-			const lbl = matched.getAttribute('label') || (matched.textContent || '').trim();
-			if (lbl) ml.setAttribute('label', lbl);
-		}
-	});
-}
-
-function updateDependencies(doc: Document, prefs: UnifiedPrefService): void {
-	prefs.invalidate();
-	const wsOn = Boolean(prefs.get('modules.workspace.enable'));
-	const insOn = Boolean(prefs.get('modules.inspector.enable'));
-	const wcOn = Boolean(prefs.get('modules.wordCite.enable'));
-
-	setSubtreeDisabled(doc.getElementById('zbf-group-workspace'), !wsOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-sidebar'), !wsOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-inspector'), !insOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-pdf'), !insOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-wordcite'), !wcOn);
-
-	setSubtreeDisabled(doc.getElementById('zbf-sub-hcompact'), !wsOn || !prefs.get('workspace.enableHorizontalGroups'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-compactTop'), !wsOn || !prefs.get('workspace.enableHorizontalGroups') || !prefs.get('workspace.enableVerticalSidebar'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-batch'), !wsOn || !prefs.get('workspace.enableVerticalSidebar'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pinnedIcon'), !wsOn || !prefs.get('workspace.enablePinnedTabs'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-multicol'), !wsOn || prefs.get('workspace.newTabMode') !== 'collection');
-	setSubtreeDisabled(doc.getElementById('zbf-sub-rolling'), !wsOn || !prefs.get('workspace.enableSessions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-sleep-cfg'), !wsOn || !prefs.get('workspace.enableTabSleep'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-stale-days'), !wsOn || !prefs.get('workspace.enableStaleSuggestions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-remark-mode'), !wsOn || !prefs.get('workspace.enableTabRemarks'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-tabmenu'), !wsOn || !prefs.get('workspace.enableTabContextMenu'));
-
-	const cslOn = insOn && Boolean(prefs.get('inspector.cslPreview.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-csl'), !cslOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-csl-layout'), !cslOn);
-	const lookupOn = insOn && Boolean(prefs.get('inspector.lookup.enable'));
-	const historyOn = lookupOn && Boolean(prefs.get('inspector.lookup.historyEnable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-history'), !lookupOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-quota'), !historyOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-preview'), !insOn || !prefs.get('inspector.pdfPreview.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-folder'), !insOn || !prefs.get('inspector.pdfFolder.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-word-cite-pos'), !wcOn || !insOn || !prefs.get('wordCite.dragCite.enable') || !prefs.get('inspector.wordCite.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-wc-tag-text'), !wcOn || !prefs.get('wordCite.citationTags.enable'));
-
-	syncMenulistLabels(doc);
-}
-
-function setStatusFeedback(doc: Document, l10nId: string, fallbackText: string): void {
-	const statusEl = doc.getElementById('zbf-prefs-status');
-	if (!statusEl) return;
-	statusEl.setAttribute('data-l10n-id', l10nId);
-	statusEl.textContent = fallbackText;
 }
 
 function bindTabs(pane: Element): void {
@@ -118,14 +55,6 @@ function bindTabs(pane: Element): void {
 			if (id) activate(id);
 		});
 	});
-}
-
-function bindActionBtn(el: Element | null, handler: () => void): void {
-	if (!el) return;
-	let lastAt = 0;
-	const run = () => { const now = Date.now(); if (now - lastAt < 120) return; lastAt = now; handler(); };
-	el.addEventListener('command', run);
-	el.addEventListener('click', run);
 }
 
 async function populateCslStyles(doc: Document, prefs: UnifiedPrefService): Promise<void> {
@@ -225,20 +154,19 @@ const BridgeFlowPreferences = {
 				const cacheDirInput = doc.getElementById('zbf-input-cachedir') as HTMLInputElement | null;
 				const defaultDir = (globalThis as any).Zotero?.zoterobridgeflow?.services?.history?.getDirectoryPath?.() || '';
 				if (cacheDirInput && defaultDir) cacheDirInput.placeholder = defaultDir;
-				updateDependencies(doc, prefs);
+				updatePreferenceDependencies(doc, prefs);
 			} catch { cleanup(); }
 		};
 
 		for (const cb of checkboxes) {
 			const key = extractPrefKey(cb);
 			if (!key) continue;
-			const onToggle = () => {
+			cb.addEventListener('command', () => {
 				const next = Boolean((cb as any).checked ?? cb.hasAttribute('checked'));
 				prefs.set(key, next as never);
-				updateDependencies(doc, prefs);
+				updatePreferenceDependencies(doc, prefs);
 				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
-			};
-			cb.addEventListener('command', onToggle);
+			});
 		}
 
 		for (const ml of menulists) {
@@ -248,7 +176,7 @@ const BridgeFlowPreferences = {
 				const hostMl = ml as any;
 				const val = String(hostMl.selectedItem?.getAttribute?.('value') ?? hostMl.value ?? '');
 				prefs.set(key, val as never);
-				updateDependencies(doc, prefs);
+				updatePreferenceDependencies(doc, prefs);
 				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
 			};
 			ml.addEventListener('command', onSelect);
@@ -261,56 +189,14 @@ const BridgeFlowPreferences = {
 			const commitInput = () => {
 				const raw = input.type === 'number' ? Number(input.value) : input.value.trim();
 				input.value = String(prefs.set(key, raw as never));
-				updateDependencies(doc, prefs);
+				updatePreferenceDependencies(doc, prefs);
 				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
 			};
 			input.addEventListener('change', commitInput);
 			input.addEventListener('keydown', (ev: KeyboardEvent) => { if (ev.key === 'Enter') commitInput(); });
 		}
 
-		bindActionBtn(doc.getElementById('zbf-clear-cache'), () => {
-			const app = (globalThis as any).Zotero?.zoterobridgeflow;
-			app?.kernel?.bus?.emit('inspector:clear-cache', { target: 'all' });
-			setStatusFeedback(doc, 'zbf-prefs-status-cache-cleared', '✓ 已清空全部引文与反查缓存');
-		});
-
-		bindActionBtn(doc.getElementById('zbf-clear-workspace-state'), () => {
-			prefs.set('workspace.document', '');
-			const app = (globalThis as any).Zotero?.zoterobridgeflow;
-			app?.workspace?.store?.load?.();
-			app?.workspace?.refreshAllWindows?.();
-			setStatusFeedback(doc, 'zbf-prefs-status-ws-cleared', '✓ 已清除工作区分组与会话数据');
-		});
-
-		bindActionBtn(doc.getElementById('zbf-reset-defaults'), () => {
-			prefs.resetAllDefaults();
-			syncAll();
-			targetWin?.setTimeout?.(() => syncMenulistLabels(doc), 0);
-			setStatusFeedback(doc, 'zbf-prefs-status-reset', '✓ 已恢复全部默认设置');
-		});
-
-		bindActionBtn(doc.getElementById('zbf-btn-default-cachedir'), () => {
-			prefs.set('inspector.lookup.cacheDirectory', '');
-			syncAll();
-			setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
-		});
-
-		bindActionBtn(doc.getElementById('zbf-btn-browse-cachedir'), async () => {
-			try {
-				const cu = (targetWin as any)?.ChromeUtils || (globalThis as any).ChromeUtils;
-				if (cu?.importESModule && targetWin) {
-					const mod = cu.importESModule('chrome://zotero/content/modules/filePicker.mjs');
-					const picker = new mod.FilePicker();
-					picker.init(targetWin, 'BridgeFlow Cache Directory', picker.modeGetFolder);
-					if (await picker.show() === picker.returnOK && picker.file) {
-						prefs.set('inspector.lookup.cacheDirectory', String(picker.file));
-						syncAll();
-						setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
-					}
-				}
-			} catch { /* ignore */ }
-		});
-
+		bindPreferenceActions(doc, targetWin, prefs, syncAll);
 		void populateCslStyles(doc, prefs);
 		(doc as { l10n?: { ready?: Promise<unknown> } }).l10n?.ready?.then?.(() => { if (!disposed) syncMenulistLabels(doc); });
 

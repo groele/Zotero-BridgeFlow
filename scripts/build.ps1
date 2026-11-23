@@ -36,21 +36,24 @@ $resolvedOutput = [IO.Path]::GetFullPath($OutputPath)
 if (-not $VerifyOnly) {
     $distDir = Split-Path -Parent $resolvedOutput
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-    Get-ChildItem -LiteralPath $distDir -Filter 'Zotero-BridgeFlow-*.xpi' -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -ne $resolvedOutput } |
-        Remove-Item -Force
     Add-Type -AssemblyName System.IO.Compression
-    $stream = [IO.File]::Open($resolvedOutput, [IO.FileMode]::Create)
-    $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
+    $temporaryOutput = Join-Path $distDir ([IO.Path]::GetRandomFileName())
     try {
-        foreach ($entry in $entries) {
-            $zipEntry = $archive.CreateEntry($entry.Name, [IO.Compression.CompressionLevel]::Optimal)
-            $zipEntry.LastWriteTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
-            $inputStream = [IO.File]::OpenRead($entry.Source)
-            $outputStream = $zipEntry.Open()
-            try { $inputStream.CopyTo($outputStream) } finally { $inputStream.Dispose(); $outputStream.Dispose() }
-        }
-    } finally { $archive.Dispose(); $stream.Dispose() }
+        $stream = [IO.File]::Open($temporaryOutput, [IO.FileMode]::CreateNew)
+        $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($entry in $entries) {
+                $zipEntry = $archive.CreateEntry($entry.Name, [IO.Compression.CompressionLevel]::Optimal)
+                $zipEntry.LastWriteTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+                $inputStream = [IO.File]::OpenRead($entry.Source)
+                $outputStream = $zipEntry.Open()
+                try { $inputStream.CopyTo($outputStream) } finally { $inputStream.Dispose(); $outputStream.Dispose() }
+            }
+        } finally { $archive.Dispose(); $stream.Dispose() }
+        [IO.File]::Move($temporaryOutput, $resolvedOutput, $true)
+    } finally {
+        if ([IO.File]::Exists($temporaryOutput)) { [IO.File]::Delete($temporaryOutput) }
+    }
 }
 $hash = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash
 $hash512 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA512).Hash

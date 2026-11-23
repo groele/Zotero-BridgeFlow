@@ -5,13 +5,13 @@ import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { ensurePdfPreviewStyles, removePdfPreviewStyles } from './pdf-preview-styles.ts';
 import {
-	applyPreviewLayoutMode, applyStatusMessage, bindPreviewSidenavClick, type CompareState,
+	PreviewFocus, applyPreviewLayoutMode, applyStatusMessage, bindPreviewSidenavClick, type CompareState,
 	createCompareBar, createToolBtn as toolBtn, createXhtmlEl as el, ensureSectionConnected,
 	evictDistantPageCanvases, openPageJumpInput, syncCompareBar,
 } from './pdf-preview-ui.ts';
 import { openPdfInReader, pickCompareAttachment } from './pdf-renderer.ts';
 import {
-	computeOwnerAttachmentSignature, disposePreviewDocument, invalidateVisibleSlots, jumpToPreviewPage,
+	nearestPreviewPage, computeOwnerAttachmentSignature, disposePreviewDocument, invalidateVisibleSlots, jumpToPreviewPage,
 	loadAttachmentPreviewDoc, loadItemPreviewAttachments, syncPreviewControls, type PreviewState,
 } from './pdf-viewport-manager.ts';
 
@@ -25,6 +25,7 @@ type SectionInitProps = SectionUpdate & { doc?: Document };
 export class PdfPreviewSectionController {
 	private unregisterFn: Disposable | null = null;
 	private prefSub: Disposable | null = null;
+	private focus = new PreviewFocus();
 	private readonly states = new Map<HTMLElement, PreviewState>();
 	private readonly listeners = new Map<HTMLElement, AbortController>();
 	private readonly kernel: PluginKernel;
@@ -74,10 +75,9 @@ export class PdfPreviewSectionController {
 					const showBadge = this.kernel.prefs.get('inspector.pdfPreview.showPageBadge');
 					const defaultZoom = Math.round(this.kernel.prefs.get('inspector.pdfPreview.defaultZoom')) / 100;
 					for (const st of this.states.values()) {
-						st.fullActive = isFull;
+						if (changedKey === 'inspector.pdfPreview.mode' || changedKey === 'inspector.pdfPreview.enable') this.focus.set(st, isFull);
 						st.root.setAttribute('data-show-badge', showBadge ? 'true' : 'false');
 						if (changedKey === 'inspector.pdfPreview.defaultZoom') st.zoom = defaultZoom;
-						applyPreviewLayoutMode(st.body, st.root, st.customSection, isFull);
 						syncPreviewControls(st);
 						invalidateVisibleSlots(st, this.onRenderError);
 					}
@@ -106,6 +106,7 @@ export class PdfPreviewSectionController {
 		for (const controller of this.listeners.values()) controller.abort();
 		this.listeners.clear();
 		this.states.clear();
+		this.focus = new PreviewFocus();
 		this.unregisterFn?.();
 		this.unregisterFn = null;
 	}
@@ -126,7 +127,7 @@ export class PdfPreviewSectionController {
 		setEnabled?.(this.isSectionEnabled(tabType));
 		(win as any).MozXULElement?.insertFTLIfNeeded?.('zotero-bridgeflow.ftl');
 		ensurePdfPreviewStyles(doc);
-		this.listeners.get(body)?.abort();
+		if (this.states.has(body)) this.onDestroy(body);
 		const controller = new (win as Window & typeof globalThis).AbortController();
 		this.listeners.set(body, controller);
 		body.textContent = '';
@@ -170,7 +171,7 @@ export class PdfPreviewSectionController {
 			}
 			syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
 			if (chosen && chosen.attachment !== state.attachment) {
-				void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+				void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
 			}
 		});
 		toolbar.append(navGroup, zoomGroup, attSelect, compareUI.bar);
@@ -186,7 +187,7 @@ export class PdfPreviewSectionController {
 			doc, win, body, root, customSection, collapsible, setSectionSummary,
 			item: null, ownerID: 0, attIdsKey: '', attachment: null, attachments: [], pageByAttachment: new Map<number, number>(),
 			pdfDoc: null, loading: false, generation: 0,
-			fullActive: false,
+			fullActive: this.focus.isActive(body),
 			zoom: Math.round(this.kernel.prefs.get('inspector.pdfPreview.defaultZoom')) / 100,
 			currentPage: 0, numPages: 0, lastWidth: 0, resizeTimer: null, resizeObserver: null,
 			slots: [], observer: null, statusEl, pageLabel, zoomLabel, prevBtn, nextBtn, openBtn, attSelect, viewportEl, compare, compareUI,
@@ -194,12 +195,16 @@ export class PdfPreviewSectionController {
 		root.setAttribute('data-show-badge', this.kernel.prefs.get('inspector.pdfPreview.showPageBadge') ? 'true' : 'false');
 		this.states.set(body, state);
 		ensureSectionConnected(body, root, customSection, collapsible);
+		if (state.fullActive && state.collapsible) (state.collapsible as Element & { open: boolean }).open = true;
 		applyPreviewLayoutMode(body, root, customSection, state.fullActive);
 		bindPreviewSidenavClick(
 			doc,
 			controller.signal,
-			() => this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full',
-			(active) => { state.fullActive = active; applyPreviewLayoutMode(state.body, state.root, state.customSection, active); },
+			body,
+			(active) => {
+				this.focus.set(state, active);
+				if (!active) this.services.panePositions.observeAndQueue(body);
+			},
 		);
 		this.bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal);
 		this.setupResizeObserver(state);
@@ -219,8 +224,8 @@ export class PdfPreviewSectionController {
 		zoomInBtn.addEventListener('click', () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
 		state.zoomLabel.addEventListener('click', () => this.setZoom(state, 1), opts);
 		modeBtn.addEventListener('click', () => {
-			state.fullActive = !state.fullActive;
-			applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
+			this.focus.set(state, !state.fullActive);
+			if (!state.fullActive) this.services.panePositions.observeAndQueue(state.body);
 			invalidateVisibleSlots(state, this.onRenderError);
 		}, opts);
 		state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
@@ -233,7 +238,7 @@ export class PdfPreviewSectionController {
 			state.attSelect.value = String(chosen.id);
 			syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
 			if (chosen.attachment !== state.attachment) {
-				void loadAttachmentPreviewDoc(state, chosen.attachment, this.isDblClickOpen, this.onRenderError);
+				void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
 			}
 		};
 		state.attSelect.addEventListener('change', () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
@@ -313,6 +318,11 @@ export class PdfPreviewSectionController {
 		const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
 		state.compare.tabType = nextTabType;
 		state.attIdsKey = nextAttIdsKey;
+		if ((state.collapsible as { open?: boolean } | null)?.open === false && !state.fullActive) {
+			if (itemChanged || state.loading) disposePreviewDocument(state, true);
+			state.item = item ?? null;
+			return enabled;
+		}
 		if (!itemChanged && item && (state.pdfDoc || state.loading)) return true;
 		const nextOwnerID = isAtt ? Number(item?.parentID || item?.parentItemID || item?.parentItem?.id || 0) : Number(item?.id || 0);
 		const sameOwner = nextOwnerID > 0 && nextOwnerID === state.ownerID;
@@ -321,7 +331,7 @@ export class PdfPreviewSectionController {
 		state.compare.currentAttachmentID = 0;
 		syncCompareBar(state.compareUI, state.compare, [], 0);
 		state.item = item ?? null;
-		void loadItemPreviewAttachments(state, state.item, this.isDblClickOpen, this.onRenderError);
+		void loadItemPreviewAttachments(state, state.item, this.onRenderError);
 		return enabled;
 	}
 
@@ -336,12 +346,7 @@ export class PdfPreviewSectionController {
 	private updateCurrentPageFromScroll(state: PreviewState): void {
 		if (!state.slots.length) return;
 		const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
-		let best = 1;
-		let bestDist = Infinity;
-		for (const slot of state.slots) {
-			const dist = Math.abs(slot.card.offsetTop - top);
-			if (dist < bestDist) { bestDist = dist; best = slot.pageNumber; }
-		}
+		const best = nearestPreviewPage(state.slots, top);
 		if (best !== state.currentPage) {
 			state.currentPage = best;
 			const attID = Number(state.attachment?.id) || 0;

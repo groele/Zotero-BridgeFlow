@@ -95,7 +95,7 @@ export class WordIntegrationPoller {
 				await this.ensureConsistentSnapshot(session);
 
 				const parsed = this.extractSessionCitations(session);
-				const prevTracked = this.tracker.getAllSessions().find((s) => s.sessionID === sessionID);
+				const prevTracked = this.tracker.getSession(sessionID);
 
 				if (!parsed.length && prevTracked && prevTracked.itemCitations.size > 0) {
 					const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
@@ -200,19 +200,21 @@ export class WordIntegrationPoller {
 	private extractSessionCitations(session: any): Array<{ itemID: number; ordinal: number; shortText: string; occurrences: number }> {
 		const hostItems = (globalThis as any).Zotero?.Items;
 		const ordinalMap = new Map<number, { ordinal: number; occurrences: number; labels: string[] }>();
-		const trashedIDs = new Set<number>();
+		const trashStatus = new Map<number, boolean>();
 		let nextOrdinal = 1;
 
 		const cleanText = (raw: unknown): string =>
 			String(raw || '').replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
 
 		const isDeletedOrTrashed = (itemID: number): boolean => {
-			if (trashedIDs.has(itemID)) return true;
+			const cached = trashStatus.get(itemID);
+			if (cached !== undefined) return cached;
 			const zotItem = hostItems?.get?.(itemID);
-			if (!zotItem) return false;
+			if (!zotItem) { trashStatus.set(itemID, false); return false; }
 			const inTrash = typeof zotItem.inTrash === 'function' ? zotItem.inTrash() === true : zotItem.inTrash === true;
-			if (zotItem.deleted === true || inTrash) { trashedIDs.add(itemID); return true; }
-			return false;
+			const deleted = zotItem.deleted === true || inTrash;
+			trashStatus.set(itemID, deleted);
+			return deleted;
 		};
 
 		const recordHit = (itemID: number, shortText: unknown, explicitItemOrdinal?: number, countOcc = false) => {
@@ -345,7 +347,7 @@ export class WordIntegrationPoller {
 
 	private scheduleNext(): void {
 		if (!this.running) return;
-		const delay = this.idleRounds >= 5 ? 3000 : 1200;
+		const delay = this.idleRounds >= 10 ? 5000 : this.idleRounds >= 4 ? 3000 : 1200;
 		this.timer = setTimeout(() => {
 			this.timer = null;
 			if (!this.running) return;

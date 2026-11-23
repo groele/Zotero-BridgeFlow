@@ -165,7 +165,7 @@ export class CitationLookupSectionController {
 				resolveItem,
 				onLocate: (id: number) => this.locateItem(id),
 				onOpenPdf: (target: any) => this.openItemPdf(target),
-				onCiteWord: this.kernel.prefs.get('modules.wordCite.enable') && this.kernel.prefs.get('wordCite.dragCite.enable')
+				onCiteWord: this.kernel.prefs.get('modules.wordCite.enable') && this.kernel.prefs.get('wordCite.tabContextMenu.enable')
 					? (id: number) => {
 						this.kernel.bus.emit('word:insert-items-request', { itemIDs: [id], win: doc.defaultView || undefined });
 						return true;

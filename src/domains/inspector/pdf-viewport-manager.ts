@@ -3,7 +3,7 @@ import {
 	ensureSectionConnected, evictDistantPageCanvases, syncCompareBar,
 } from './pdf-preview-ui.ts';
 import {
-	openPdfDocumentFromFile, openPdfInReader, pickCompareAttachment, renderPageToCanvas,
+	openPdfDocumentFromFile, pickCompareAttachment, renderPageToCanvas,
 	resolveAllPdfAttachments, resolveAttachmentPath, resolveSameItemPdfContext,
 	type PdfAttachmentEntry, type PdfDocumentProxy,
 } from './pdf-renderer.ts';
@@ -173,7 +173,6 @@ export function jumpToPreviewPage(state: PreviewState, pageNumber: number, onErr
 export async function loadAttachmentPreviewDoc(
 	state: PreviewState,
 	att: any,
-	isDblClickOpenEnabled: () => boolean,
 	onError: (err: unknown) => void,
 ): Promise<void> {
 	disposePreviewDocument(state, false);
@@ -206,7 +205,7 @@ export async function loadAttachmentPreviewDoc(
 		ensureSectionConnected(state.body, state.root, state.customSection, state.collapsible);
 		if (!state.numPages) { applyStatusMessage(state.statusEl, 'zbf-pdf-preview-unavailable'); return; }
 		applyStatusMessage(state.statusEl, '');
-		buildSlots(state, gen, isDblClickOpenEnabled, onError);
+		buildSlots(state, gen, onError);
 		if (state.currentPage > 1) {
 			jumpToPreviewPage(state, state.currentPage, onError);
 		} else {
@@ -225,7 +224,7 @@ export function computeOwnerAttachmentSignature(item: any): string {
 	if (!item) return '';
 	const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === 'attachment');
 	const ownerRef = (isAtt && item.parentItem) ? item.parentItem : item;
-	const ids: number[] = Array.isArray(ownerRef?.getAttachments?.()) ? ownerRef.getAttachments() : [];
+	const ids: number[] = ownerRef?.getAttachments?.() ?? [];
 	if (!ids.length) return `${Number(item.id) || 0}:${item.getField?.('title') || ''}:${item.attachmentFilename || ''}`;
 	const hostItems = (globalThis as any).Zotero?.Items;
 	return ids.map((id) => {
@@ -237,7 +236,6 @@ export function computeOwnerAttachmentSignature(item: any): string {
 export async function loadItemPreviewAttachments(
 	state: PreviewState,
 	item: any,
-	isDblClickOpenEnabled: () => boolean,
 	onError: (err: unknown) => void,
 ): Promise<void> {
 	disposePreviewDocument(state, true);
@@ -246,7 +244,17 @@ export async function loadItemPreviewAttachments(
 	state.loading = true;
 	applyStatusMessage(state.statusEl, 'zbf-pdf-preview-loading');
 	const isReader = state.compare.tabType === 'reader';
-	const ctx = await resolveSameItemPdfContext(item, state.win);
+	let ctx;
+	try {
+		ctx = await resolveSameItemPdfContext(item, state.win);
+	} catch (error) {
+		if (state.generation === gen) {
+			state.loading = false;
+			applyStatusMessage(state.statusEl, 'zbf-pdf-preview-error');
+			onError(error);
+		}
+		return;
+	}
 	if (state.generation !== gen) return;
 	const entries = ctx.entries;
 	state.ownerID = ctx.ownerID;
@@ -273,13 +281,12 @@ export async function loadItemPreviewAttachments(
 		applyStatusMessage(state.statusEl, 'zbf-pdf-preview-unavailable');
 		return;
 	}
-	await loadAttachmentPreviewDoc(state, chosen.attachment, isDblClickOpenEnabled, onError);
+	await loadAttachmentPreviewDoc(state, chosen.attachment, onError);
 }
 
 function buildSlots(
 	state: PreviewState,
 	gen: number,
-	isDblClickOpenEnabled: () => boolean,
 	onError: (err: unknown) => void,
 ): void {
 	state.viewportEl.textContent = '';
@@ -295,13 +302,6 @@ function buildSlots(
 		const badge = el(state.doc, 'span');
 		badge.className = 'ztf-pdf-page-badge';
 		badge.textContent = String(p);
-		card.addEventListener('dblclick', (e: MouseEvent) => {
-			if (state.attachment && isDblClickOpenEnabled()) {
-				e.preventDefault?.();
-				e.stopPropagation?.();
-				void openPdfInReader(state.attachment, state.win, p);
-			}
-		});
 		card.append(canvas, badge);
 		frag.append(card);
 		state.slots.push({ pageNumber: p, card, canvas, renderedZoom: null, rendering: false, renderToken: 0, lastHeight: 0 });
@@ -309,17 +309,34 @@ function buildSlots(
 	state.viewportEl.append(frag);
 	const Observer = (state.win as Window & typeof globalThis).IntersectionObserver;
 	if (Observer) {
+		const slotByCard = new Map<Element, PageSlot>(state.slots.map((s) => [s.card, s]));
 		state.observer = new Observer((entries) => {
 			if (state.generation !== gen) return;
 			for (const entry of entries) {
 				if (entry.isIntersecting) {
-					const slot = state.slots.find((s) => s.card === entry.target);
-					if (slot) void renderPageSlot(state, slot, gen, onError);
+					const slot = slotByCard.get(entry.target);
+					if (slot) {
+						void renderPageSlot(state, slot, gen, onError);
+						evictDistantPageCanvases(state.slots, slot.pageNumber, 6);
+					}
 				}
 			}
-		}, { root: state.viewportEl, rootMargin: '320px 0px', threshold: 0.01 });
+		}, { root: state.viewportEl, rootMargin: '220px 0px', threshold: 0.01 });
 		for (const slot of state.slots) state.observer.observe(slot.card);
 	}
 	if (state.slots[0]) void renderPageSlot(state, state.slots[0], gen, onError);
 	if (state.slots[1]) void renderPageSlot(state, state.slots[1], gen, onError);
+}
+
+/** Cards are laid out in page order. Prefer the earlier page at an exact midpoint. */
+export function nearestPreviewPage(slots: readonly PageSlot[], top: number): number {
+	let low = 0;
+	let high = slots.length - 1;
+	while (low < high) {
+		const mid = Math.floor((low + high) / 2);
+		if (slots[mid].card.offsetTop < top) low = mid + 1;
+		else high = mid;
+	}
+	if (low > 0 && top - slots[low - 1].card.offsetTop <= slots[low].card.offsetTop - top) low--;
+	return slots[low].pageNumber;
 }

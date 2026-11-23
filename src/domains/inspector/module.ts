@@ -55,9 +55,21 @@ export class InspectorDomainModule implements DomainModule {
 					'inspector.pdfFolder.enable',
 					'inspector.wordCite.enable',
 					'modules.wordCite.enable',
-					'wordCite.dragCite.enable',
 				],
 				() => this.syncSections(),
+			),
+		);
+
+		this.disposables.add(
+			this.kernel.prefs.observeKeys(
+				[
+					'inspector.wordCite.showDocSwitcher',
+					'inspector.wordCite.showSummaryCounts',
+					'inspector.wordCite.showGroupSynergy',
+					'inspector.wordCite.showCollectionLink',
+					'wordCite.collections.enable',
+				],
+				() => this.wordCiteSection.refreshAll(),
 			),
 		);
 
@@ -91,6 +103,11 @@ export class InspectorDomainModule implements DomainModule {
 		return this.lookupEngine.lookup(query, libraryItems);
 	}
 
+	async refreshAllPreviews(): Promise<void> {
+		await this.cslPreview.refreshAll();
+		this.wordCiteSection.refreshAll();
+	}
+
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
@@ -118,8 +135,7 @@ export class InspectorDomainModule implements DomainModule {
 		else this.pdfFolder.unregister();
 
 		if (this.kernel.prefs.get('inspector.wordCite.enable')
-			&& this.kernel.prefs.get('modules.wordCite.enable')
-			&& this.kernel.prefs.get('wordCite.dragCite.enable')) {
+			&& this.kernel.prefs.get('modules.wordCite.enable')) {
 			this.wordCiteSection.register();
 		} else {
 			this.wordCiteSection.unregister();

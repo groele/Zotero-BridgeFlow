@@ -329,7 +329,7 @@ export async function renderPageToCanvas(
 export async function openPdfInReader(att: any, win?: Window | null, pageNumber?: number): Promise<boolean> {
 	if (!att?.id) return false;
 	const zotero = (globalThis as any).Zotero;
-	const location = typeof pageNumber === 'number' && pageNumber > 1 ? { pageIndex: pageNumber - 1 } : undefined;
+	const location = typeof pageNumber === 'number' && pageNumber >= 1 ? { pageIndex: pageNumber - 1 } : undefined;
 	try {
 		if (zotero?.Reader?.open) {
 			try {

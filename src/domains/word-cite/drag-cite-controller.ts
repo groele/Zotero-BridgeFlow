@@ -105,7 +105,7 @@ export class DragCiteController {
 			const onShowing = () => {
 				const selected = (win as any).ZoteroPane?.getSelectedItems?.() || [];
 				const valid = deduplicateRegularItems(selected).items;
-				mi.hidden = !this.kernel.prefs.get('wordCite.dragCite.enable');
+				mi.hidden = !this.kernel.prefs.get('wordCite.itemContextMenu.enable');
 				if (!valid.length) mi.setAttribute('disabled', 'true');
 				else mi.removeAttribute('disabled');
 			};
@@ -152,13 +152,16 @@ export class DragCiteController {
 		});
 	}
 
-	async insertItems(items: readonly any[]): Promise<WordInsertResult> {
-		if (!this.kernel.prefs.get('wordCite.dragCite.enable')) return 'unavailable';
+	async insertItems(items: readonly any[], onInserted?: (sessionID: string) => void): Promise<WordInsertResult> {
+		if (!this.kernel.prefs.get('modules.wordCite.enable')) return 'unavailable';
 		const result = await insertItemsIntoWord(this.kernel, this.win32, items, {
 			verifyCursor: false,
-			onCommitted: this.onInserted,
+			onCommitted: (session) => {
+				this.onInserted?.(session);
+				onInserted?.((session as { sessionID?: string } | undefined)?.sessionID || '');
+			},
 		});
-		if (result === 'unavailable') {
+		if (result === 'unavailable' && !onInserted) {
 			this.notifyHint('插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。');
 		}
 		return result;

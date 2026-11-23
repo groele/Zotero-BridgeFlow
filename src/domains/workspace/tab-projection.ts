@@ -11,6 +11,28 @@ interface NativeTab {
 	data?: { itemID?: number };
 }
 
+const MAX_COLLECTION_CACHE = 400;
+const collectionNameCache = new Map<number, { stamp: string; name: string }>();
+
+export function invalidateTabProjectionCache(): void {
+	collectionNameCache.clear();
+}
+
+function resolveCachedCollectionName(display: any): string {
+	const id = Number(display?.id || 0);
+	const stamp = String(display?.dateModified || display?.version || '');
+	if (id > 0 && stamp) {
+		const hit = collectionNameCache.get(id);
+		if (hit && hit.stamp === stamp) return hit.name;
+	}
+	const name = resolvePrimaryCollectionName(display);
+	if (id > 0 && stamp) {
+		if (collectionNameCache.size >= MAX_COLLECTION_CACHE) collectionNameCache.clear();
+		collectionNameCache.set(id, { stamp, name });
+	}
+	return name;
+}
+
 function describe(key: string, itemID: number, type: string, fallbackTitle: string): VirtualMemberMeta {
 	const item = itemID ? (globalThis as any).Zotero?.Items?.get?.(itemID) : null;
 	const display = normalizeToRegularItem(item) || item;
@@ -22,7 +44,7 @@ function describe(key: string, itemID: number, type: string, fallbackTitle: stri
 		filename: String(item?.attachmentFilename || ''),
 		source: fields.source,
 		creatorYear: fields.creatorYear,
-		collection: resolvePrimaryCollectionName(display),
+		collection: resolveCachedCollectionName(display),
 	};
 }
 

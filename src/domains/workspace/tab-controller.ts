@@ -49,7 +49,7 @@ export class WorkspaceTabController {
 
 	citeItemsInWord(win: Window, itemIDs: readonly number[]): boolean {
 		const valid = [...new Set(itemIDs.filter((id) => Number.isInteger(id) && id > 0))];
-		if (!valid.length || !this.bus || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.dragCite.enable')) {
+		if (!valid.length || !this.bus || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.tabContextMenu.enable')) {
 			return false;
 		}
 		this.bus.emit('word:insert-items-request', { itemIDs: valid, win });

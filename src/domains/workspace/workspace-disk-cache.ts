@@ -55,9 +55,9 @@ export class WorkspaceDiskCache {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8) return true;
 		const payload = JSON.stringify({ format: 'zotero-bridgeflow-workspace', version: 2, state }, null, 2);
-		if (payload === this.lastWrittenJson) return true;
 
 		const run = async (): Promise<boolean> => {
+			if (payload === this.lastWrittenJson) return true;
 			try {
 				await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
 				const mainPath = this.getFilePath();
@@ -65,7 +65,7 @@ export class WorkspaceDiskCache {
 				if (this.lastWrittenJson) {
 					try { await ioUtils.writeUTF8(bakPath, this.lastWrittenJson); } catch { /* ignore backup error */ }
 				}
-				await ioUtils.writeUTF8(mainPath, payload);
+				await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + '.tmp' });
 				this.lastWrittenJson = payload;
 				this.lastError = '';
 				return true;

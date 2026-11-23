@@ -193,105 +193,28 @@ export function patchCollectionsViewForWindow(
 	const cv = (win as any)?.ZoteroPane?.collectionsView;
 	if (!cv) return () => {};
 	const disposers: Disposable[] = [];
-	const iconStates = new Map<HTMLElement, { bg: string; bgSize: string; bgPos: string; bgRepeat: string; hadSearch: boolean; hadCol: boolean; hadPub: boolean; children: Node[] }>();
 	const resolvedURI = wordIconURI || WORD_COLLECTION_DATA_URI;
-	const doc = win.document;
-	let styleEl = doc?.getElementById?.('zbf-word-collection-style') as HTMLStyleElement | null;
-	if (doc && !styleEl) {
-		styleEl = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style') as HTMLStyleElement;
-		styleEl.id = 'zbf-word-collection-style';
-		styleEl.textContent = `.cell-icon.zbf-word-collection-icon::before, .cell-icon.zbf-word-collection-icon::after { display: none !important; content: none !important; } .cell-icon.zbf-word-collection-icon > svg:not(.zbf-word-svg) { display: none !important; }`;
-		(doc.head || doc.documentElement)?.appendChild(styleEl);
-		disposers.push(() => styleEl?.remove());
-	}
-
-	const restoreIcon = (node: HTMLElement) => {
-		const st = iconStates.get(node);
-		if (!st) return;
-		iconStates.delete(node);
-		node.style.backgroundImage = st.bg;
-		node.style.backgroundSize = st.bgSize;
-		node.style.backgroundPosition = st.bgPos;
-		node.style.backgroundRepeat = st.bgRepeat;
-		node.classList?.remove('zbf-word-collection-icon');
-		node.classList?.toggle('icon-search', st.hadSearch);
-		node.classList?.toggle('icon-collection', st.hadCol);
-		node.classList?.toggle('icon-publications', st.hadPub);
-		if (typeof node.replaceChildren === 'function') {
-			node.replaceChildren(...st.children);
-		}
-	};
-
-	const applyWordIcon = (iconNode: HTMLElement) => {
-		if (!iconStates.has(iconNode)) {
-			iconStates.set(iconNode, {
-				bg: iconNode.style?.backgroundImage || '', bgSize: iconNode.style?.backgroundSize || '',
-				bgPos: iconNode.style?.backgroundPosition || '', bgRepeat: iconNode.style?.backgroundRepeat || '',
-				hadSearch: iconNode.classList?.contains('icon-search') === true,
-				hadCol: iconNode.classList?.contains('icon-collection') === true,
-				hadPub: iconNode.classList?.contains('icon-publications') === true,
-				children: Array.from(iconNode.childNodes || []),
-			});
-		}
-		iconNode.classList?.remove('icon-search', 'icon-collection', 'icon-css');
-		iconNode.classList?.add('icon-publications', 'zbf-word-collection-icon');
-		iconNode.style.backgroundImage = `url("${resolvedURI}")`;
-		iconNode.style.backgroundSize = '16px 16px';
-		iconNode.style.backgroundPosition = 'center';
-		iconNode.style.backgroundRepeat = 'no-repeat';
-		const ownerDoc = iconNode.ownerDocument;
-		const Parser = (ownerDoc?.defaultView as any)?.DOMParser || (globalThis as any).DOMParser;
-		if (ownerDoc && Parser && typeof iconNode.replaceChildren === 'function') {
-			try {
-				const parsed = new Parser().parseFromString(WORD_COLLECTION_SVG, 'image/svg+xml');
-				if (parsed?.documentElement) {
-					const svgEl = ownerDoc.importNode(parsed.documentElement, true) as Element;
-					svgEl.classList?.add('zbf-word-svg');
-					iconNode.replaceChildren(svgEl);
-				}
-			} catch { /* fallback to backgroundImage */ }
-		}
-	};
-
 	const isCiteRow = (row: any): boolean =>
 		Boolean((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
 
-	const syncLiveRowIcons = (): void => {
-		if (!doc?.querySelectorAll) return;
-		const rows: any[] = cv._rows || [];
-		const rowNodes = Array.from(doc.querySelectorAll('#zotero-collections-tree .virtualized-table-body .row, #zotero-collections-tree .row')) as HTMLElement[];
-		for (const rowEl of rowNodes) {
-			const iconNode = rowEl.querySelector?.('.cell-icon') as HTMLElement | null;
-			if (!iconNode) continue;
-			const label = (rowEl.querySelector?.('.cell-text, .label')?.textContent || rowEl.textContent || '').trim();
-			const matchedCite = rows.some((r) => isCiteRow(r) && String(r?.ref?.name || '').trim() === label)
-				|| (label && (getActiveNames?.().has(label) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(label)));
-			if (matchedCite) applyWordIcon(iconNode);
-			else if (iconStates.has(iconNode)) restoreIcon(iconNode);
-		}
+	const createWordIcon = (): HTMLImageElement => {
+		const icon = win.document.createElementNS('http://www.w3.org/1999/xhtml', 'img') as HTMLImageElement;
+		icon.src = resolvedURI;
+		icon.alt = '';
+		icon.width = 16;
+		icon.height = 16;
+		return icon;
 	};
 
-	if (typeof cv.renderItem === 'function') {
-		disposers.push(
-			runtime.patch(cv, 'renderItem', 'collectionsView', (orig) => function (this: any, ...args: unknown[]) {
-				const [index, , oldDiv] = args as [number, unknown, HTMLElement | null];
-				const prevIcon = oldDiv?.querySelector?.('.cell-icon') as HTMLElement | null;
-				if (prevIcon && iconStates.has(prevIcon)) restoreIcon(prevIcon);
-				const div = orig.apply(this, args) as HTMLElement | null;
-				try {
-					const row = this.getRow?.(index) ?? this._rows?.[index];
-					const iconNode = div?.querySelector?.('.cell-icon') as HTMLElement | null;
-					if (isCiteRow(row) && iconNode) {
-						applyWordIcon(iconNode);
-					} else if (iconNode && iconStates.has(iconNode)) {
-						restoreIcon(iconNode);
-					}
-				} catch { /* ignore */ }
-				return div;
-			}),
-		);
+	// Zotero's virtual table captures renderItem at mount time. Its captured
+	// renderer still looks up _getIcon on the collection view for every row.
+	if (typeof cv._getIcon === 'function') {
+		disposers.push(runtime.patch(cv, '_getIcon', 'collectionsView', (orig) => function (this: any, ...args: unknown[]) {
+			const index = args[0] as number;
+			const row = this.getRow?.(index) ?? this._rows?.[index];
+			return isCiteRow(row) ? createWordIcon() : orig.apply(this, args);
+		}));
 	}
-	syncLiveRowIcons();
 
 	if (typeof cv._expandRow === 'function') {
 		disposers.push(
@@ -348,12 +271,9 @@ export function patchCollectionsViewForWindow(
 	}
 
 	return () => {
-		for (const node of iconStates.keys()) {
-			try { restoreIcon(node); } catch { /* ignore */ }
-		}
-		iconStates.clear();
 		for (const fn of disposers.reverse()) {
 			try { fn(); } catch { /* ignore */ }
 		}
+		cv.tree?.invalidate?.();
 	};
 }

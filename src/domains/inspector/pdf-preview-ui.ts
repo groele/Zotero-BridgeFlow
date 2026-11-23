@@ -82,32 +82,34 @@ export function applyStatusMessage(statusEl: HTMLDivElement, l10nId: string): vo
 }
 
 export function ensureSectionConnected(
-	body: HTMLElement, root: HTMLElement, savedSection?: Element | null, savedCollapsible?: Element | null,
+	body: HTMLElement, root: HTMLElement, _savedSection?: Element | null, savedCollapsible?: Element | null,
 ): SectionOwner | null {
 	if (!body.contains(root)) body.replaceChildren(root);
-	let owner = (body.closest?.('collapsible-section') ||
-		(body.parentElement?.localName === 'collapsible-section' ? body.parentElement : null)) as SectionOwner | null;
-	if (!owner) {
-		const doc = body.ownerDocument;
-		let hostSection = (body.closest?.('item-pane-custom-section') || savedSection || null) as any;
-		if ((!hostSection || hostSection.isConnected === false) && doc?.querySelectorAll) {
-			const candidates = Array.from(doc.querySelectorAll('item-pane-custom-section[data-pane*="bridgeflow-pdf-preview"]')) as any[];
-			hostSection = candidates.find((c) => c._body === body) || candidates.find((c) => !c.querySelector('[data-type="body"]')) || hostSection;
-		}
-		const liveCollapsible = (hostSection?.querySelector?.('collapsible-section') ||
-			(savedCollapsible?.isConnected ? savedCollapsible : null)) as SectionOwner | null;
-		if (liveCollapsible) {
-			const existingBody = liveCollapsible.querySelector?.('[data-type="body"]') as HTMLElement | null;
-			if (!existingBody) liveCollapsible.append(body);
-			else if (existingBody !== body) { existingBody.replaceWith(body); if (hostSection) hostSection._body = body; }
-			owner = liveCollapsible;
-		}
-	}
+	const owner = (body.closest?.('collapsible-section') ||
+		(savedCollapsible?.contains(body) ? savedCollapsible : null)) as SectionOwner | null;
 	if (!owner) return null;
 	owner.removeAttribute?.('empty');
-	if ('empty' in owner) owner.empty = false;
 	(owner as HTMLElement).style?.setProperty?.('--open-height', 'auto');
 	return owner;
+}
+
+export class PreviewFocus {
+	private readonly owners = new WeakSet<Element>();
+
+	isActive(body: HTMLElement): boolean {
+		const owner = body.closest('item-details');
+		return !!owner && this.owners.has(owner);
+	}
+
+	set(state: { body: HTMLElement; root: HTMLElement; customSection: Element | null; fullActive: boolean }, active: boolean): void {
+		const owner = state.body.closest('item-details');
+		if (owner) {
+			if (active) this.owners.add(owner);
+			else this.owners.delete(owner);
+		}
+		state.fullActive = active;
+		applyPreviewLayoutMode(state.body, state.root, state.customSection, active);
+	}
 }
 
 export function applyPreviewLayoutMode(
@@ -130,40 +132,38 @@ export function applyPreviewLayoutMode(
 	if (fullActive) {
 		hostSection.setAttribute('data-ztf-pdf-full-section', 'true');
 		stack?.setAttribute('data-ztf-pdf-full-stack', 'true');
-		for (const child of Array.from(stack?.parentElement?.children || [])) {
-			const tag = (child.localName || child.tagName || '').toLowerCase();
-			if (child !== stack && tag !== 'item-pane-sidenav' && !child.querySelector?.('item-pane-sidenav')) {
-				child.setAttribute('data-ztf-pdf-full-hidden', 'true');
-			}
-		}
+
 	} else {
 		hostSection.removeAttribute('data-ztf-pdf-full-section');
-		stack?.removeAttribute('data-ztf-pdf-full-stack');
-		body.ownerDocument?.querySelectorAll?.('[data-ztf-pdf-full-hidden]').forEach((el: Element) => el.removeAttribute('data-ztf-pdf-full-hidden'));
+		if (!stack?.querySelector('[data-ztf-pdf-full-section]')) stack?.removeAttribute('data-ztf-pdf-full-stack');
+
 	}
 }
 
 export function bindPreviewSidenavClick(
-	doc: Document, signal: AbortSignal, isFullMode: () => boolean, onFullModeChange: (active: boolean) => void,
+	doc: Document, signal: AbortSignal, body: HTMLElement, onFullModeChange: (active: boolean) => void,
 ): void {
-	if (typeof doc.addEventListener !== 'function') return;
 	doc.addEventListener('click', (event: Event) => {
-		if ((event as MouseEvent).button !== 0) return;
-		const btn = (event.target as Element | null)?.closest?.('item-pane-sidenav .btn[data-pane]') as HTMLElement | null;
-		const paneID = btn?.getAttribute?.('data-pane') || '';
-		if (!btn || btn.hasAttribute?.('disabled')) return;
-		if (!paneID.includes('bridgeflow-pdf-preview')) { onFullModeChange(false); return; }
-		onFullModeChange(isFullMode());
-		const sidenav = btn.closest?.('item-pane-sidenav') as (Element & { container?: any }) | null;
-		const container = sidenav?.container;
-		const section = (container?.getEnabledPane?.(paneID) || doc.querySelector?.(`item-pane-custom-section[data-pane="${paneID}"]`)) as HTMLElement | null;
-		const collapsible = section?.querySelector?.('collapsible-section') as SectionOwner | null;
-		if (collapsible) {
-			collapsible.removeAttribute?.('empty');
-			collapsible.open = true;
-			(collapsible as HTMLElement).style?.setProperty?.('--open-height', 'auto');
+		const mouse = event as MouseEvent;
+		if (mouse.button !== 0 || mouse.detail > 1) return;
+		const selector = 'item-pane-sidenav .btn[data-pane]';
+		const btn = (event.composedPath?.().find(node => (node as Element)?.matches?.(selector))
+			|| (event.target as Element | null)?.closest?.(selector)) as HTMLElement | undefined;
+		if (!btn || btn.hasAttribute('disabled')) return;
+		const container = (btn.closest('item-pane-sidenav') as (Element & { container?: Element }) | null)?.container;
+		if (!container?.contains(body)) return;
+		const section = body.closest('item-pane-custom-section');
+		if (!section) return;
+		const selected = btn.getAttribute('data-pane') === section.getAttribute('data-pane');
+		if (selected) {
+			const collapsible = body.closest('collapsible-section') as SectionOwner | null;
+			if (collapsible && !collapsible.open) {
+				collapsible.removeAttribute('empty');
+				collapsible.open = true;
+			}
 		}
-		if (container?.scrollToPane) void container.scrollToPane(paneID, 'smooth');
+		// Zotero owns scrolling, sidebar expansion and double-click pinning.
+		onFullModeChange(selected);
 	}, { capture: true, signal });
 }
 

@@ -13,6 +13,7 @@ import { normalizeToRegularItem } from '../../services/item-resolution.ts';
 import { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
 import { WorkspaceStateStore } from './state-store.ts';
 import { WorkspaceTabController } from './tab-controller.ts';
+import { invalidateTabProjectionCache } from './tab-projection.ts';
 import { WorkspaceWindowUI } from './workspace-ui.ts';
 
 const WATCHED_WORKSPACE_PREFS = [
@@ -60,7 +61,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	private pendingAutoGroup = new Set<string>();
 	private lastRollingAt = 0;
 	private viewedDirty = false;
-	private refreshQueued = false;
+	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastGroupFingerprint = '';
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
@@ -105,8 +106,9 @@ export class WorkspaceDomainModule implements DomainModule {
 				if (type === 'tab') {
 					this.handleTabEvent(event, ids.map(String));
 				} else if (event === 'modify' || event === 'add' || event === 'delete') {
+					invalidateTabProjectionCache();
 					if (type === 'item') this.spotlight.invalidateLibraryIndex();
-					this.refreshAllWindows();
+					this.queueRefresh(32);
 				}
 			}),
 		);
@@ -118,20 +120,24 @@ export class WorkspaceDomainModule implements DomainModule {
 
 		this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 60_000);
 		this.readingTimer = setInterval(() => {
-			let updated = false;
 			for (const win of this.windows.keys()) {
 				if (this.tabs.trackReadingProgress(win, 15)) {
 					this.viewedDirty = true;
-					updated = true;
 				}
 			}
-			if (updated) this.refreshAllWindows();
+			if (this.viewedDirty && this.kernel.prefs.get('workspace.verticalTabSubtitleMode') === 'lastViewed') {
+				this.queueRefresh(50);
+			}
 		}, 15_000);
 	}
 
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		if (this.refreshTimer !== null) {
+			clearTimeout(this.refreshTimer);
+			this.refreshTimer = null;
+		}
 		if (this.maintenanceTimer !== null) {
 			clearInterval(this.maintenanceTimer);
 			this.maintenanceTimer = null;
@@ -173,13 +179,12 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.windows.delete(win);
 	}
 
-	private queueRefresh(): void {
-		if (this.refreshQueued) return;
-		this.refreshQueued = true;
-		Promise.resolve().then(() => {
-			this.refreshQueued = false;
+	private queueRefresh(delayMs = 16): void {
+		if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = null;
 			if (this.active) this.refreshAllWindows();
-		});
+		}, delayMs);
 	}
 
 	refreshAllWindows(): void {
@@ -190,6 +195,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	private emitGroupSummaries(force = false): void {
+		if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === '') return;
 		const tabParentByKey = new Map<string, number>();
 		for (const win of this.windows.keys()) {
 			for (const tab of this.tabs.buildTrackedTabs(win)) {

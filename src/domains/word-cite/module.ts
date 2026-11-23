@@ -1,6 +1,7 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
+import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { WordCitationCollectionManager } from './citation-collections.ts';
 import { CitationColumnController } from './citation-column.ts';
@@ -33,7 +34,7 @@ export class WordCiteDomainModule implements DomainModule {
 		this.collections = new WordCitationCollectionManager(kernel);
 		this.poller = new WordIntegrationPoller(kernel, this.tracker, services.win32);
 		this.dragCite = new DragCiteController(kernel, services.win32, (session) => {
-			void this.poller.notifyCommittedSession(session);
+			void this.poller.notifyCommittedSession(session).catch((err) => this.kernel.logger.error('word-cite:poll', err));
 		});
 		this.column = new CitationColumnController(kernel, this.tracker, this.collections);
 	}
@@ -47,13 +48,28 @@ export class WordCiteDomainModule implements DomainModule {
 		if (items.length) await this.dragCite.insertItems(items);
 	}
 
+	async resyncNow(): Promise<boolean> {
+		if (!this.active) return false;
+		const ok = await this.poller.notifyCommittedSession();
+		this.tracker.emitCurrentSnapshot();
+		return ok;
+	}
+
 	start(): void {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
 		void this.collections.purgeStaleCollections();
-		this.column.register();
+		if (this.kernel.prefs.get('wordCite.column.enable')) this.column.register();
 		this.poller.start();
+
+		this.disposables.add(
+			this.kernel.prefs.observeKeys(['wordCite.column.enable'], () => {
+				if (!this.active) return;
+				if (this.kernel.prefs.get('wordCite.column.enable')) this.column.register();
+				else this.column.unregister();
+			}),
+		);
 
 		this.disposables.add(
 			this.kernel.bus.on('citation:snapshot-updated', () => {
@@ -77,35 +93,33 @@ export class WordCiteDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('word:insert-items-request', ({ itemIDs, requestId }) => {
-				if (!this.active || !this.kernel.prefs.get('wordCite.dragCite.enable')) return;
-				const hostItems = (globalThis as any).Zotero?.Items;
-				const items = itemIDs
-					.map((id) => hostItems?.get?.(id) || { id, isRegularItem: () => true })
-					.filter(Boolean);
-				if (!items.length) return;
-				void this.dragCite.insertItems(items).then((status) => {
-					const docName = this.tracker.getActiveSession()?.displayName || '';
-					this.kernel.bus.emit('word:insert-result', {
-						requestId,
-						status,
-						documentName: docName,
-						itemCount: items.length,
+			this.kernel.bus.on('word:insert-items-request', async ({ itemIDs, requestId }) => {
+				if (!this.active) return;
+				let itemCount = 0;
+				let documentName = '';
+				let status: Awaited<ReturnType<DragCiteController['insertItems']>> = 'unavailable';
+				try {
+					const hostItems = (globalThis as any).Zotero?.Items;
+					const { items } = deduplicateRegularItems(itemIDs.map((id) => hostItems?.get?.(id)));
+					itemCount = items.length;
+					status = await this.dragCite.insertItems(items, (sessionID) => {
+						documentName = this.tracker.getAllSessions().find((session) => session.sessionID === sessionID)?.displayName || '';
 					});
-				});
+				} catch (err) {
+					this.kernel.logger.error('word-cite:insert-request', err);
+				}
+				this.kernel.bus.emit('word:insert-result', { requestId, status, documentName, itemCount });
 			}),
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('word:refresh-request', ({ requestId }) => {
+			this.kernel.bus.on('word:refresh-request', async ({ requestId }) => {
 				if (!this.active) return;
-				void refreshActiveWordDocument(this.kernel, {
-					onCommitted: () => { void this.poller.notifyCommittedSession(); },
-				}).then(async (ok) => {
-					if (ok) await this.poller.notifyCommittedSession();
-					const docName = this.tracker.getActiveSession()?.displayName || '';
-					this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: docName });
-				});
+				const ok = await refreshActiveWordDocument(this.kernel);
+				if (ok) {
+					void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error('word-cite:poll', err));
+				}
+				this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: '' });
 			}),
 		);
 

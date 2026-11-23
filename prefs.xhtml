@@ -8,7 +8,7 @@
 		<html:div class="zbf-title-row">
 			<html:div class="zbf-title-left">
 				<html:h1 data-l10n-id="zbf-prefs-title"></html:h1>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.1.4"}'>v0.1.4</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.2.0"}'>v0.2.0</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"></html:span>
 		</html:div>
@@ -98,8 +98,15 @@
 
 				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableVerticalSidebar" native="true" data-l10n-id="zbf-pref-ws-vertical"/>
-					<html:div id="zbf-sub-batch" class="zbf-sub-stack">
+					<html:div id="zbf-sub-vsidebar-cfg" class="zbf-sub-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableBatchSelection" native="true" data-l10n-id="zbf-pref-ws-batch"/>
+						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ws-sidebar-width" control="zbf-num-vsidewidth"></label>
+							<html:div class="zbf-actions">
+								<html:input id="zbf-num-vsidewidth" class="zbf-num-input" type="number" min="200" max="440" value="276" data-zbf-pref="workspace.verticalSidebarWidth"/>
+								<button id="zbf-btn-ws-reset-width" native="true" data-l10n-id="zbf-btn-ws-reset-width"/>
+							</html:div>
+						</html:div>
 					</html:div>
 				</html:div>
 
@@ -170,6 +177,14 @@
 					</html:div>
 				</html:div>
 			</html:div>
+
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-ws-actions"></html:h2>
+				<html:div class="zbf-actions">
+					<button id="zbf-btn-ws-save-session" native="true" data-l10n-id="zbf-btn-ws-save-session"/>
+					<button id="zbf-btn-ws-open-spotlight" native="true" data-l10n-id="zbf-btn-ws-open-spotlight"/>
+				</html:div>
+			</html:div>
 		</html:div>
 	</html:section>
 
@@ -202,7 +217,7 @@
 					<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSpotlight" native="true" data-l10n-id="zbf-pref-ws-spotlight"/>
 				</html:div>
 
-				<html:div class="zbf-item-group">
+				<html:div id="zbf-sub-vsidebar-typo" class="zbf-item-group">
 					<html:div class="zbf-inline-field">
 						<label data-l10n-id="zbf-pref-ws-title-mode" control="zbf-sel-titlemode"></label>
 						<menulist id="zbf-sel-titlemode" native="true" preference="extensions.zotero.bridgeflow.workspace.verticalTabTitleMode">
@@ -225,9 +240,6 @@
 							</menupopup>
 						</menulist>
 					</html:div>
-				</html:div>
-
-				<html:div class="zbf-item-group">
 					<html:div class="zbf-field-grid-2">
 						<html:div class="zbf-field-card">
 							<label data-l10n-id="zbf-pref-ws-row-height" control="zbf-num-rowh"></label>
@@ -317,6 +329,9 @@
 							<html:input id="zbf-num-maxitems" class="zbf-num-input" type="number" min="1" max="500" value="100" data-zbf-pref="inspector.cslPreview.maxPreviewItems"/>
 						</html:div>
 					</html:div>
+					<html:div class="zbf-actions">
+						<button id="zbf-btn-csl-refresh" native="true" data-l10n-id="zbf-btn-csl-refresh"/>
+					</html:div>
 				</html:div>
 			</html:div>
 
@@ -390,6 +405,9 @@
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.doubleClickOpen" native="true" data-l10n-id="zbf-pref-ins-pdf-dbl"/>
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.pdfPreview.showPageBadge" native="true" data-l10n-id="zbf-pref-ins-pdf-badge"/>
+						<html:div class="zbf-actions">
+							<button id="zbf-btn-pdf-reset-zoom" native="true" data-l10n-id="zbf-btn-pdf-reset-zoom"/>
+						</html:div>
 					</html:div>
 				</html:div>
 			</html:div>
@@ -435,25 +453,55 @@
 			<html:div class="zbf-card">
 				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-sync"></html:h2>
 				<html:div class="zbf-item-group">
+					<checkbox preference="extensions.zotero.bridgeflow.wordCite.column.enable" native="true" data-l10n-id="zbf-pref-wc-column"/>
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.dragCite.enable" native="true" data-l10n-id="zbf-pref-wc-drag"/>
-					<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.enable" native="true" data-l10n-id="zbf-pref-ins-word-cite"/>
-					<html:div id="zbf-sub-word-cite-pos" class="zbf-sub-row">
-						<label data-l10n-id="zbf-pref-ins-word-position" control="zbf-sel-word-pos"></label>
-						<menulist id="zbf-sel-word-pos" native="true" preference="extensions.zotero.bridgeflow.inspector.wordCite.position">
-							<menupopup>
-								<menuitem value="zotero-item-pane-header" data-l10n-id="zbf-opt-pos-top"/>
-								<menuitem value="zotero-editpane-item-box" data-l10n-id="zbf-opt-pos-info"/>
-								<menuitem value="zotero-editpane-related" data-l10n-id="zbf-opt-pos-bottom"/>
-							</menupopup>
-						</menulist>
-					</html:div>
+					<checkbox preference="extensions.zotero.bridgeflow.wordCite.itemContextMenu.enable" native="true" data-l10n-id="zbf-pref-wc-item-menu"/>
+					<checkbox preference="extensions.zotero.bridgeflow.wordCite.tabContextMenu.enable" native="true" data-l10n-id="zbf-pref-wc-tab-menu"/>
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.collections.enable" native="true" data-l10n-id="zbf-pref-wc-collections"/>
 				</html:div>
+			</html:div>
+
+			<html:div id="zbf-sub-word-panel-card" class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-panel"></html:h2>
+				<html:div class="zbf-item-group">
+					<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.enable" native="true" data-l10n-id="zbf-pref-ins-word-cite"/>
+					<html:div id="zbf-sub-word-panel" class="zbf-sub-stack">
+						<html:div class="zbf-inline-field">
+							<label data-l10n-id="zbf-pref-ins-word-position" control="zbf-sel-word-pos"></label>
+							<menulist id="zbf-sel-word-pos" native="true" preference="extensions.zotero.bridgeflow.inspector.wordCite.position">
+								<menupopup>
+									<menuitem value="zotero-item-pane-header" data-l10n-id="zbf-opt-pos-top"/>
+									<menuitem value="zotero-editpane-item-box" data-l10n-id="zbf-opt-pos-info"/>
+									<menuitem value="zotero-editpane-abstract" data-l10n-id="zbf-opt-pos-abstract"/>
+									<menuitem value="zotero-editpane-attachments" data-l10n-id="zbf-opt-pos-attachments"/>
+									<menuitem value="zotero-editpane-notes" data-l10n-id="zbf-opt-pos-notes"/>
+									<menuitem value="zotero-editpane-related" data-l10n-id="zbf-opt-pos-bottom"/>
+								</menupopup>
+							</menulist>
+						</html:div>
+						<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showDocSwitcher" native="true" data-l10n-id="zbf-pref-wc-panel-doc"/>
+						<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showSummaryCounts" native="true" data-l10n-id="zbf-pref-wc-panel-counts"/>
+						<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showGroupSynergy" native="true" data-l10n-id="zbf-pref-wc-panel-group"/>
+						<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showCollectionLink" native="true" data-l10n-id="zbf-pref-wc-panel-col"/>
+					</html:div>
+				</html:div>
+			</html:div>
+
+			<html:div class="zbf-card">
+				<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-tags-ops"></html:h2>
 				<html:div class="zbf-item-group">
 					<checkbox preference="extensions.zotero.bridgeflow.wordCite.citationTags.enable" native="true" data-l10n-id="zbf-pref-wc-tags"/>
 					<html:div id="zbf-sub-wc-tag-text" class="zbf-sub-row">
 						<label data-l10n-id="zbf-pref-wc-tag-text" control="zbf-input-tag-text"></label>
 						<html:input id="zbf-input-tag-text" class="zbf-text-input" type="text" value="/Citations" data-zbf-pref="wordCite.citationTags.text"/>
+					</html:div>
+				</html:div>
+				<html:div class="zbf-item-group">
+					<html:div class="zbf-actions">
+						<button id="zbf-btn-word-resync" native="true" data-l10n-id="zbf-btn-word-resync"/>
+						<button id="zbf-btn-word-refresh" native="true" data-l10n-id="zbf-btn-word-refresh"/>
+						<button id="zbf-btn-word-purge-cols" native="true" data-l10n-id="zbf-btn-word-purge-cols"/>
+						<button id="zbf-btn-word-clear-tags" native="true" data-l10n-id="zbf-btn-word-clear-tags"/>
 					</html:div>
 				</html:div>
 			</html:div>

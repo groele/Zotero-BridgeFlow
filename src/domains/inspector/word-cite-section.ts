@@ -1,22 +1,22 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type {
-	CitationSnapshotPayload,
-	WordInsertResultPayload,
-	WordRefreshResultPayload,
-	WorkspaceGroupSummary,
-} from '../../kernel/types.ts';
-import { deduplicateRegularItems, getCachedPrimaryItemFields, normalizeToRegularItem } from '../../services/item-resolution.ts';
+import type { CitationSnapshotPayload, WorkspaceGroupSummary } from '../../kernel/types.ts';
+import { deduplicateRegularItems, normalizeToRegularItem } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
-import { createWordCiteBodyState, renderWordCitePanel, type WordCiteBodyState, type WordCiteViewModel } from './word-cite-panel-ui.ts';
+import {
+	buildWordCiteMetaText,
+	createWordCiteBodyState,
+	formatInsertReceipt,
+	formatPendingReceipt,
+	formatRefreshReceipt,
+	renderWordCitePanel,
+	type ReceiptState,
+	type WordCiteBodyState,
+	type WordCiteViewModel,
+} from './word-cite-panel-ui.ts';
 
 const WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
-
-interface ReceiptState {
-	text: string;
-	tone: 'ok' | 'warn' | 'err' | 'none';
-}
 
 function isZhLocale(): boolean {
 	return String((globalThis as any).Zotero?.locale || 'zh-CN').toLowerCase().startsWith('zh');
@@ -27,13 +27,15 @@ export class WordCiteSectionController {
 	private readonly services: ServiceContainer;
 	private readonly disposables = new DisposableStack();
 	private readonly states = new Map<HTMLElement, WordCiteBodyState>();
-	private readonly bodyListeners = new Map<HTMLElement, AbortController>();
+	private readonly buttonListeners = new Map<HTMLElement, AbortController>();
 	private readonly docListeners = new Map<Document, AbortController>();
 	private unregisterFn: (() => void) | null = null;
 	private snapshot: CitationSnapshotPayload | null = null;
 	private groups: readonly WorkspaceGroupSummary[] = [];
+	private receiptOwner?: WordCiteBodyState;
 	private receipt: ReceiptState = { text: '', tone: 'none' };
 	private requestSeq = 0;
+	private pendingRequest: string | undefined;
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -52,11 +54,15 @@ export class WordCiteSectionController {
 			this.renderAllBodies();
 		}));
 		this.disposables.add(this.kernel.bus.on('word:insert-result', (res) => {
-			this.receipt = this.formatInsertReceipt(res);
+			if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+			this.pendingRequest = undefined;
+			this.receipt = formatInsertReceipt(res, isZhLocale());
 			this.renderAllBodies();
 		}));
 		this.disposables.add(this.kernel.bus.on('word:refresh-result', (res) => {
-			this.receipt = this.formatRefreshReceipt(res);
+			if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+			this.pendingRequest = undefined;
+			this.receipt = formatRefreshReceipt(res, isZhLocale());
 			this.renderAllBodies();
 		}));
 
@@ -74,7 +80,7 @@ export class WordCiteSectionController {
 				this.onDestroy(doc || body.ownerDocument, body);
 			},
 			onItemChange: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
-				this.receipt = { text: '', tone: 'none' };
+				if (this.states.get(body) === this.receiptOwner && !this.pendingRequest) this.receipt = { text: '', tone: 'none' };
 				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
 				return this.isSectionEnabled() && Boolean(item);
@@ -82,6 +88,11 @@ export class WordCiteSectionController {
 			onRender: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
 				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
+			},
+			onToggle: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
+				this.updateState(body, item, setEnabled, setSectionSummary);
+				this.kernel.bus.emit('word:snapshot-query', { requester: 'inspector' });
+				this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
 			},
 		});
 		this.unregisterFn = reg.dispose;
@@ -95,31 +106,46 @@ export class WordCiteSectionController {
 		this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
 	}
 
+	refreshAll(): void {
+		this.renderAllBodies();
+	}
+
 	unregister(): void {
 		this.services.panePositions.setTarget('word-cite', null);
 		this.disposables.disposeAll();
-		for (const c of this.bodyListeners.values()) c.abort();
-		this.bodyListeners.clear();
+		for (const c of this.buttonListeners.values()) c.abort();
+		this.buttonListeners.clear();
 		for (const c of this.docListeners.values()) c.abort();
 		this.docListeners.clear();
 		this.unregisterFn?.();
 		this.unregisterFn = null;
 		this.states.clear();
+		this.receiptOwner = undefined;
+		this.pendingRequest = undefined;
+		this.receipt = { text: '', tone: 'none' };
 	}
 
-	citeItemsInWord(itemIDs: readonly number[], win?: Window): boolean {
+	citeItemsInWord(itemIDs: readonly number[], win?: Window, owner?: WordCiteBodyState): boolean {
 		const valid = [...new Set(itemIDs.filter((id) => Number.isSafeInteger(id) && id > 0))];
-		if (!valid.length || !this.isSectionEnabled()) return false;
-		const requestId = `wc-${++this.requestSeq}`;
+		if (!valid.length || !this.isSectionEnabled() || this.pendingRequest) return false;
+		const requestId = this.beginRequest('insert', owner);
 		this.kernel.bus.emit('word:insert-items-request', { itemIDs: valid, win, requestId });
 		return true;
+	}
+
+	private beginRequest(kind: 'insert' | 'refresh', owner?: WordCiteBodyState): string {
+		const requestId = `word-${++this.requestSeq}`;
+		this.pendingRequest = requestId;
+		this.receiptOwner = owner;
+		this.receipt = formatPendingReceipt(kind, isZhLocale());
+		this.renderAllBodies();
+		return requestId;
 	}
 
 	private isSectionEnabled(): boolean {
 		return Boolean(
 			this.kernel.prefs.get('inspector.wordCite.enable')
-			&& this.kernel.prefs.get('modules.wordCite.enable')
-			&& this.kernel.prefs.get('wordCite.dragCite.enable'),
+			&& this.kernel.prefs.get('modules.wordCite.enable'),
 		);
 	}
 
@@ -130,51 +156,53 @@ export class WordCiteSectionController {
 		st.setSectionSummary = setSectionSummary;
 		this.states.set(body, st);
 
-		const ac = new AbortController();
-		this.bodyListeners.set(body, ac);
-		const { signal } = ac;
-
-		st.insertBtn.addEventListener('click', () => {
-			if (st.lastItemIDs.length) this.citeItemsInWord(st.lastItemIDs, doc.defaultView || undefined);
-		}, { signal });
-		st.refreshBtn.addEventListener('click', () => {
-			const requestId = `wr-${++this.requestSeq}`;
-			this.kernel.bus.emit('word:refresh-request', { requestId, win: doc.defaultView || undefined });
-		}, { signal });
-		st.docBtn.addEventListener('click', () => this.cycleWordSession(), { signal });
-		st.groupBtn.addEventListener('click', () => {
-			if (st.lastGroup?.itemIDs.length) this.citeItemsInWord(st.lastGroup.itemIDs, doc.defaultView || undefined);
-		}, { signal });
-		st.colBtn.addEventListener('click', () => {
-			this.kernel.bus.emit('word:select-collection-request', {
-				sessionID: this.snapshot?.activeSessionID || undefined,
-				win: doc.defaultView || undefined,
-			});
-		}, { signal });
-
-		this.bindDocumentSidenav(doc);
+		const win = body.ownerDocument.defaultView;
+		const controller = new (win?.AbortController ?? AbortController)();
+		this.buttonListeners.set(body, controller);
+		const click = (button: HTMLButtonElement, action: () => void) => {
+			button.addEventListener('click', () => {
+				if (!button.disabled && !button.hidden) action();
+			}, { signal: controller.signal });
+		};
+		click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? undefined, st));
+		click(st.refreshBtn, () => this.kernel.bus.emit('word:refresh-request', {
+			requestId: this.beginRequest('refresh', st), win: win ?? undefined,
+		}));
+		click(st.docBtn, () => this.cycleWordSession());
+		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
+		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', {
+			sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined,
+		}));
+		this.bindDocumentEvents(doc);
 		this.updateState(body, item, setEnabled, setSectionSummary);
 	}
 
-	private bindDocumentSidenav(doc: Document): void {
+	private bindDocumentEvents(doc: Document): void {
 		if (this.docListeners.has(doc)) return;
-		const ac = new AbortController();
+		const ac = new (doc.defaultView?.AbortController ?? AbortController)();
 		this.docListeners.set(doc, ac);
 		doc.addEventListener('click', (event: Event) => {
+			const me = event as MouseEvent;
+			if (typeof me.button === 'number' && me.button !== 0) return;
 			const target = event.target as Element | null;
-			if (!target?.closest?.(WORD_CITE_ICON)) return;
-			for (const st of this.states.values()) {
-				if (st.root.ownerDocument !== doc) continue;
-				const collapsible = st.root.closest?.('collapsible-section') as (Element & { open?: boolean }) | null;
-				if (collapsible && !collapsible.open) collapsible.open = true;
-				this.renderBodyState(st);
+			const path = (event as { composedPath?: () => EventTarget[] }).composedPath?.();
+			const hitIcon = path?.some((n) => (n as Element)?.matches?.(WORD_CITE_ICON)) ?? Boolean(target?.closest?.(WORD_CITE_ICON));
+			if (hitIcon) {
+				for (const st of this.states.values()) {
+					if (st.root.ownerDocument !== doc) continue;
+					const collapsible = st.root.closest?.('collapsible-section') as (Element & { open?: boolean }) | null;
+					if (collapsible && !collapsible.open) collapsible.open = true;
+					this.renderBodyState(st);
+				}
+				return;
 			}
-		}, { signal: ac.signal });
+		}, { capture: true, signal: ac.signal });
 	}
 
 	private onDestroy(doc: Document | null, body: HTMLElement): void {
-		this.bodyListeners.get(body)?.abort();
-		this.bodyListeners.delete(body);
+		this.buttonListeners.get(body)?.abort();
+		this.buttonListeners.delete(body);
+		if (this.states.get(body) === this.receiptOwner) this.receiptOwner = undefined;
 		this.states.delete(body);
 		body.textContent = '';
 		if (doc && ![...this.states.keys()].some((b) => b.ownerDocument === doc)) {
@@ -212,17 +240,25 @@ export class WordCiteSectionController {
 		const zh = isZhLocale();
 		const snap = this.snapshot;
 		const hasSession = Boolean(snap?.activeSessionID);
-		const total = snap?.totalCitedCount ?? 0;
 		const sessionCount = snap?.sessions?.length ?? 0;
-		const primaryId = st.lastItemIDs[0] || 0;
-		const matchedGroup = primaryId ? this.groups.find((g) => g.itemIDs.includes(primaryId) && g.itemIDs.length >= 2) ?? null : null;
+		const showDocSwitcher = this.kernel.prefs.get('inspector.wordCite.showDocSwitcher');
+		const showSummaryCounts = this.kernel.prefs.get('inspector.wordCite.showSummaryCounts');
+		const showGroupSynergy = this.kernel.prefs.get('inspector.wordCite.showGroupSynergy');
+		const showCollectionLink = this.kernel.prefs.get('inspector.wordCite.showCollectionLink');
+
+		const idSet = new Set(st.lastItemIDs);
+		const matchedGroup = showGroupSynergy && idSet.size > 0
+			? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null
+			: null;
 		st.lastGroup = matchedGroup;
 
-		st.setSectionSummary?.(this.buildSectionSummary(zh, snap, st.lastItemIDs));
+		st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : '');
 		const stats = this.buildStats(zh, snap, st.lastItemIDs);
-		const meta = this.buildMetaText(zh, items);
+		const meta = buildWordCiteMetaText(zh, items);
 
 		const vm: WordCiteViewModel = {
+			showDocSwitcher,
+			showSummaryCounts,
 			docName: hasSession ? (snap!.activeDocumentName || 'Word') : (zh ? '未连接 Word' : 'No Word session'),
 			docTitle: sessionCount >= 2
 				? (zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Click to switch active Word doc (${sessionCount} open)`)
@@ -237,8 +273,8 @@ export class WordCiteSectionController {
 			insertLabel: st.lastItemIDs.length > 1
 				? (zh ? `合并插入 ${st.lastItemIDs.length} 篇引文到 Word` : `Insert ${st.lastItemIDs.length} Citations in Word`)
 				: (zh ? '插入引文到 Word 光标处' : 'Insert Citation at Word Cursor'),
-			insertDisabled: st.lastItemIDs.length === 0 || !this.isSectionEnabled(),
-			refreshDisabled: !this.isSectionEnabled(),
+			insertDisabled: Boolean(this.pendingRequest) || st.lastItemIDs.length === 0 || !this.isSectionEnabled(),
+			refreshDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
 			refreshTitle: zh ? '刷新当前 Word 文档引文与编号' : 'Refresh Word document & sync ordinals',
 			groupButtonText: matchedGroup
 				? (zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})`)
@@ -246,17 +282,17 @@ export class WordCiteSectionController {
 			groupButtonTitle: matchedGroup
 				? (zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"`)
 				: '',
-			showCollectionButton: hasSession,
+			showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get('wordCite.collections.enable')),
 			colButtonText: zh ? '已引清单' : 'Cited List',
 			colButtonTitle: zh ? '在左侧目录树定位当前文档的已引用文献合集' : 'Reveal temporary Word collection in library tree',
-			receiptText: this.receipt.text,
-			receiptTone: this.receipt.tone,
+			receiptText: st === this.receiptOwner ? this.receipt.text : '',
+			receiptTone: st === this.receiptOwner ? this.receipt.tone : 'none',
 		};
 		renderWordCitePanel(st, vm);
 	}
 
 	private buildSectionSummary(zh: boolean, snap: CitationSnapshotPayload | null, ids: readonly number[]): string {
-		if (!snap?.activeSessionID) return zh ? '插入引文到 Word' : 'Insert Citation in Word';
+		if (!snap?.activeSessionID) return '';
 		const total = snap.totalCitedCount;
 		if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
 		const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : undefined;
@@ -304,14 +340,6 @@ export class WordCiteSectionController {
 		return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: 'uncited' };
 	}
 
-	private buildMetaText(zh: boolean, items: readonly any[]): string {
-		if (!items.length) return zh ? '请选择文献条目以插入 Word 引文' : 'Select an item to insert a Word citation';
-		const info = getCachedPrimaryItemFields(items[0]);
-		const first = [info.creatorYear, info.title].filter(Boolean).join(' · ') || info.title;
-		if (items.length === 1) return first;
-		return zh ? `已选 ${items.length} 篇：${first}` : `${items.length} items: ${first}`;
-	}
-
 	private resolveTargetItems(win: Window | null, item: any): any[] {
 		if (!item) return [];
 		const reg = normalizeToRegularItem(item) || item;
@@ -322,22 +350,5 @@ export class WordCiteSectionController {
 			return deduplicateRegularItems(paneItems).items;
 		}
 		return deduplicateRegularItems([reg]).items;
-	}
-
-	private formatInsertReceipt(res: WordInsertResultPayload): ReceiptState {
-		const zh = isZhLocale();
-		const doc = res.documentName || 'Word';
-		if (res.status === 'inserted') return { tone: 'ok', text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到「${doc}」` : `✓ Inserted ${res.itemCount} citation(s) into "${doc}"` };
-		if (res.status === 'busy') return { tone: 'warn', text: zh ? '⌛ Word 正在处理引文，请稍候再试' : '⌛ Word is busy updating citations, try again' };
-		if (res.status === 'non-word') return { tone: 'warn', text: zh ? '⚠ 当前激活文档不是受支持的 Word 文档' : '⚠ Active document is not a supported Word document' };
-		if (res.status === 'cancelled') return { tone: 'warn', text: zh ? 'ⓘ 已取消插入引文' : 'ⓘ Citation insertion cancelled' };
-		return { tone: 'err', text: zh ? '✕ 插入失败：请先打开 Word 并确认插件连接正常' : '✕ Unable to insert: verify Word is open and connected' };
-	}
-
-	private formatRefreshReceipt(res: WordRefreshResultPayload): ReceiptState {
-		const zh = isZhLocale();
-		const doc = res.documentName || 'Word';
-		if (res.ok) return { tone: 'ok', text: zh ? `↻ 已刷新「${doc}」并同步序号` : `↻ Refreshed "${doc}" citations` };
-		return { tone: 'warn', text: zh ? '⚠ 未检测到可刷新的活动 Word 文档' : '⚠ No active Word document to refresh' };
 	}
 }

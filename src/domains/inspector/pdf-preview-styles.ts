@@ -10,6 +10,7 @@ export const PREVIEW_CSS = `
 .ztf-pdf-toolbar {
 	display: flex; align-items: center; justify-content: space-between;
 	gap: 4px; flex-wrap: wrap; min-block-size: 24px; padding: 0 1px 4px;
+	min-inline-size: 0; max-inline-size: 100%; overflow: hidden;
 	background: transparent;
 	border-bottom: 1px solid var(--fill-quinary, color-mix(in srgb, currentColor 7%, transparent));
 }
@@ -115,12 +116,14 @@ export const PREVIEW_CSS = `
 .ztf-pdf-viewport {
 	position: relative; display: flex; flex-direction: column; align-items: stretch;
 	gap: 8px; max-block-size: clamp(240px, 38vh, 420px);
+	min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box;
 	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
 	scrollbar-width: thin; outline: none;
 	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
 }
 .ztf-pdf-page-card {
 	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
+	min-inline-size: 0; max-inline-size: 100%;
 	inline-size: 100%; box-sizing: border-box; background: #fff;
 	border-radius: 5px; border: 1px solid light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.18));
 	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden; cursor: pointer;
@@ -143,7 +146,8 @@ export const PREVIEW_CSS = `
 }
 .ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
 .ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
-[data-ztf-pdf-full-hidden="true"], [data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"]::before { display: none !important; }
 [data-ztf-pdf-full-stack="true"] {
 	display: flex !important; flex-direction: column !important;
 	block-size: 100% !important; max-block-size: 100% !important; overflow: hidden !important;

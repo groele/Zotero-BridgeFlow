@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.1.4 - Preferences controller. */
+/* Zotero BridgeFlow v0.2.0 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -110,10 +110,24 @@
     "inspector.wordCite.enable": { defaultValue: true },
     "inspector.wordCite.position": {
       defaultValue: "zotero-editpane-related",
-      enumValues: ["zotero-item-pane-header", "zotero-editpane-item-box", "zotero-editpane-related"]
+      enumValues: [
+        "zotero-item-pane-header",
+        "zotero-editpane-item-box",
+        "zotero-editpane-abstract",
+        "zotero-editpane-attachments",
+        "zotero-editpane-notes",
+        "zotero-editpane-related"
+      ]
     },
+    "inspector.wordCite.showDocSwitcher": { defaultValue: true },
+    "inspector.wordCite.showSummaryCounts": { defaultValue: true },
+    "inspector.wordCite.showGroupSynergy": { defaultValue: true },
+    "inspector.wordCite.showCollectionLink": { defaultValue: true },
     // === Domain C: Word Citation Tracking & Governance ===
+    "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
+    "wordCite.itemContextMenu.enable": { defaultValue: true },
+    "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },
     "wordCite.citationTags.text": { defaultValue: "/Citations" },
@@ -259,21 +273,7 @@
     }
   };
 
-  // src/preferences.ts
-  var initializedPanes = /* @__PURE__ */ new WeakSet();
-  function resolveDoc(win) {
-    return win?.document || (typeof document !== "undefined" && document ? document : globalThis.document ?? null);
-  }
-  function resolveWin(doc, win) {
-    return win || doc?.defaultView || (typeof window !== "undefined" && window ? window : globalThis.window ?? null);
-  }
-  function extractPrefKey(el) {
-    const direct = el.getAttribute("data-zbf-pref");
-    if (direct && direct in PREF_SCHEMA) return direct;
-    const full = el.getAttribute("preference") || el.getAttribute("data-preference") || "";
-    const shortKey = full.startsWith(PREF_PREFIX) ? full.slice(PREF_PREFIX.length) : "";
-    return shortKey in PREF_SCHEMA ? shortKey : null;
-  }
+  // src/prefs-helpers.ts
   function setSubtreeDisabled(el, disabled) {
     if (!el) return;
     el.setAttribute("data-disabled", disabled ? "true" : "false");
@@ -302,19 +302,27 @@
       }
     });
   }
-  function updateDependencies(doc, prefs) {
+  function setStatusFeedback(doc, l10nId, fallbackText) {
+    const statusEl = doc.getElementById("zbf-prefs-status");
+    if (!statusEl) return;
+    statusEl.setAttribute("data-l10n-id", l10nId);
+    statusEl.textContent = fallbackText;
+  }
+  function updatePreferenceDependencies(doc, prefs) {
     prefs.invalidate();
     const wsOn = Boolean(prefs.get("modules.workspace.enable"));
     const insOn = Boolean(prefs.get("modules.inspector.enable"));
     const wcOn = Boolean(prefs.get("modules.wordCite.enable"));
+    const vSideOn = wsOn && Boolean(prefs.get("workspace.enableVerticalSidebar"));
     setSubtreeDisabled(doc.getElementById("zbf-group-workspace"), !wsOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-sidebar"), !wsOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
     setSubtreeDisabled(doc.getElementById("zbf-sub-hcompact"), !wsOn || !prefs.get("workspace.enableHorizontalGroups"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-compactTop"), !wsOn || !prefs.get("workspace.enableHorizontalGroups") || !prefs.get("workspace.enableVerticalSidebar"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-batch"), !wsOn || !prefs.get("workspace.enableVerticalSidebar"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-compactTop"), !vSideOn || !prefs.get("workspace.enableHorizontalGroups"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-cfg"), !vSideOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-typo"), !vSideOn);
     setSubtreeDisabled(doc.getElementById("zbf-sub-pinnedIcon"), !wsOn || !prefs.get("workspace.enablePinnedTabs"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-multicol"), !wsOn || prefs.get("workspace.newTabMode") !== "collection");
     setSubtreeDisabled(doc.getElementById("zbf-sub-rolling"), !wsOn || !prefs.get("workspace.enableSessions"));
@@ -331,15 +339,126 @@
     setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-quota"), !historyOn);
     setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-preview"), !insOn || !prefs.get("inspector.pdfPreview.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-folder"), !insOn || !prefs.get("inspector.pdfFolder.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-word-cite-pos"), !wcOn || !insOn || !prefs.get("wordCite.dragCite.enable") || !prefs.get("inspector.wordCite.enable"));
+    const wordPanelCard = doc.getElementById("zbf-sub-word-panel-card");
+    setSubtreeDisabled(wordPanelCard, !wcOn || !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-word-panel"), !wcOn || !insOn || !prefs.get("inspector.wordCite.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-wc-tag-text"), !wcOn || !prefs.get("wordCite.citationTags.enable"));
     syncMenulistLabels(doc);
   }
-  function setStatusFeedback(doc, l10nId, fallbackText) {
-    const statusEl = doc.getElementById("zbf-prefs-status");
-    if (!statusEl) return;
-    statusEl.setAttribute("data-l10n-id", l10nId);
-    statusEl.textContent = fallbackText;
+  function bindActionBtn(el, handler) {
+    if (!el) return;
+    let lastAt = 0;
+    const run = () => {
+      const now = Date.now();
+      if (now - lastAt < 120) return;
+      lastAt = now;
+      handler();
+    };
+    el.addEventListener("command", run);
+    el.addEventListener("click", run);
+  }
+  function bindPreferenceActions(doc, targetWin, prefs, syncAll) {
+    const getApp = () => globalThis.Zotero?.zoterobridgeflow;
+    const getMainWin = () => globalThis.Zotero?.getMainWindow?.() || targetWin;
+    bindActionBtn(doc.getElementById("zbf-clear-cache"), () => {
+      getApp()?.kernel?.bus?.emit("inspector:clear-cache", { target: "all" });
+      setStatusFeedback(doc, "zbf-prefs-status-cache-cleared", "✓ 已清空全部引文与反查缓存");
+    });
+    bindActionBtn(doc.getElementById("zbf-clear-workspace-state"), () => {
+      prefs.set("workspace.document", "");
+      const app = getApp();
+      app?.workspace?.store?.load?.();
+      app?.workspace?.refreshAllWindows?.();
+      setStatusFeedback(doc, "zbf-prefs-status-ws-cleared", "✓ 已清除工作区分组与会话数据");
+    });
+    bindActionBtn(doc.getElementById("zbf-reset-defaults"), () => {
+      prefs.resetAllDefaults();
+      syncAll();
+      targetWin?.setTimeout?.(() => syncMenulistLabels(doc), 0);
+      setStatusFeedback(doc, "zbf-prefs-status-reset", "✓ 已恢复全部默认设置");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-ws-save-session"), () => {
+      const app = getApp();
+      const mw = getMainWin();
+      const openKeys = app?.workspace?.tabs?.openKeys?.(mw) || [];
+      app?.workspace?.store?.saveSession?.(`Snapshot ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { openKeys });
+      app?.workspace?.refreshAllWindows?.();
+      setStatusFeedback(doc, "zbf-prefs-status-ws-snapshot", "✓ 已保存当前工作区快照");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-ws-reset-width"), () => {
+      prefs.set("workspace.verticalSidebarWidth", 276);
+      prefs.set("workspace.verticalSidebarCollapsed", false);
+      syncAll();
+      getApp()?.workspace?.refreshAllWindows?.();
+      setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-ws-open-spotlight"), () => {
+      getApp()?.kernel?.bus?.emit("inspector:lookup-clipboard", { win: getMainWin() || void 0 });
+      setStatusFeedback(doc, "zbf-prefs-status-spotlight", "✓ 已在主窗口唤起 Spotlight 面板");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-csl-refresh"), () => {
+      void getApp()?.inspector?.refreshAllPreviews?.();
+      setStatusFeedback(doc, "zbf-prefs-status-csl-refreshed", "✓ 已刷新侧栏 CSL 预览与协同面板");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-pdf-reset-zoom"), () => {
+      prefs.set("inspector.pdfPreview.defaultZoom", 100);
+      prefs.set("inspector.pdfPreview.mode", "section");
+      syncAll();
+      setStatusFeedback(doc, "zbf-prefs-status-pdf-reset", "✓ 已恢复 PDF 默认缩放与分栏高度");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-default-cachedir"), () => {
+      prefs.set("inspector.lookup.cacheDirectory", "");
+      syncAll();
+      setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-browse-cachedir"), async () => {
+      try {
+        const cu = targetWin?.ChromeUtils || globalThis.ChromeUtils;
+        if (cu?.importESModule && targetWin) {
+          const mod = cu.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+          const picker = new mod.FilePicker();
+          picker.init(targetWin, "BridgeFlow Cache Directory", picker.modeGetFolder);
+          if (await picker.show() === picker.returnOK && picker.file) {
+            prefs.set("inspector.lookup.cacheDirectory", String(picker.file));
+            syncAll();
+            setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          }
+        }
+      } catch {
+      }
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-word-resync"), () => {
+      void getApp()?.wordCite?.resyncNow?.();
+      setStatusFeedback(doc, "zbf-prefs-status-word-resynced", "✓ 已触发 Word 引用状态同步");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-word-refresh"), () => {
+      getApp()?.kernel?.bus?.emit("word:refresh-request", { win: getMainWin() || void 0 });
+      setStatusFeedback(doc, "zbf-prefs-status-word-refreshed", "✓ 已向活动 Word 文档发送刷新指令");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-word-purge-cols"), () => {
+      void getApp()?.wordCite?.collections?.purgeStaleCollections?.();
+      setStatusFeedback(doc, "zbf-prefs-status-word-purged", "✓ 已清理过期 Word 临时分类");
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-word-clear-tags"), () => {
+      void getApp()?.wordCite?.tagGovernance?.syncCitedItems?.(/* @__PURE__ */ new Set());
+      setStatusFeedback(doc, "zbf-prefs-status-word-tags-cleared", "✓ 已清理全部插件托管引用标签");
+    });
+  }
+
+  // src/preferences.ts
+  var initializedPanes = /* @__PURE__ */ new WeakSet();
+  function resolveDoc(win) {
+    return win?.document || (typeof document !== "undefined" && document ? document : globalThis.document ?? null);
+  }
+  function resolveWin(doc, win) {
+    return win || doc?.defaultView || (typeof window !== "undefined" && window ? window : globalThis.window ?? null);
+  }
+  function extractPrefKey(el) {
+    const direct = el.getAttribute("data-zbf-pref");
+    if (direct && direct in PREF_SCHEMA) return direct;
+    const full = el.getAttribute("preference") || el.getAttribute("data-preference") || "";
+    const shortKey = full.startsWith(PREF_PREFIX) ? full.slice(PREF_PREFIX.length) : "";
+    return shortKey in PREF_SCHEMA ? shortKey : null;
   }
   function bindTabs(pane) {
     const tabBtns = Array.from(pane.querySelectorAll(".zbf-tab-btn"));
@@ -372,18 +491,6 @@
         if (id) activate(id);
       });
     });
-  }
-  function bindActionBtn(el, handler) {
-    if (!el) return;
-    let lastAt = 0;
-    const run = () => {
-      const now = Date.now();
-      if (now - lastAt < 120) return;
-      lastAt = now;
-      handler();
-    };
-    el.addEventListener("command", run);
-    el.addEventListener("click", run);
   }
   async function populateCslStyles(doc, prefs) {
     const hostZotero = doc.defaultView?.Zotero || globalThis.Zotero;
@@ -429,8 +536,8 @@
       bindTabs(pane);
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.1.4" }));
-        versionEl.textContent = `v${"0.1.4"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.2.0" }));
+        versionEl.textContent = `v${"0.2.0"}`;
       }
       const checkboxes = Array.from(pane.querySelectorAll("checkbox[preference]"));
       const menulists = Array.from(pane.querySelectorAll("menulist[preference]"));
@@ -488,7 +595,7 @@
           const cacheDirInput = doc.getElementById("zbf-input-cachedir");
           const defaultDir = globalThis.Zotero?.zoterobridgeflow?.services?.history?.getDirectoryPath?.() || "";
           if (cacheDirInput && defaultDir) cacheDirInput.placeholder = defaultDir;
-          updateDependencies(doc, prefs);
+          updatePreferenceDependencies(doc, prefs);
         } catch {
           cleanup();
         }
@@ -496,13 +603,12 @@
       for (const cb of checkboxes) {
         const key = extractPrefKey(cb);
         if (!key) continue;
-        const onToggle = () => {
+        cb.addEventListener("command", () => {
           const next = Boolean(cb.checked ?? cb.hasAttribute("checked"));
           prefs.set(key, next);
-          updateDependencies(doc, prefs);
+          updatePreferenceDependencies(doc, prefs);
           setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
-        };
-        cb.addEventListener("command", onToggle);
+        });
       }
       for (const ml of menulists) {
         const key = extractPrefKey(ml);
@@ -511,7 +617,7 @@
           const hostMl = ml;
           const val = String(hostMl.selectedItem?.getAttribute?.("value") ?? hostMl.value ?? "");
           prefs.set(key, val);
-          updateDependencies(doc, prefs);
+          updatePreferenceDependencies(doc, prefs);
           setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
         };
         ml.addEventListener("command", onSelect);
@@ -523,7 +629,7 @@
         const commitInput = () => {
           const raw = input.type === "number" ? Number(input.value) : input.value.trim();
           input.value = String(prefs.set(key, raw));
-          updateDependencies(doc, prefs);
+          updatePreferenceDependencies(doc, prefs);
           setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
         };
         input.addEventListener("change", commitInput);
@@ -531,45 +637,7 @@
           if (ev.key === "Enter") commitInput();
         });
       }
-      bindActionBtn(doc.getElementById("zbf-clear-cache"), () => {
-        const app = globalThis.Zotero?.zoterobridgeflow;
-        app?.kernel?.bus?.emit("inspector:clear-cache", { target: "all" });
-        setStatusFeedback(doc, "zbf-prefs-status-cache-cleared", "✓ 已清空全部引文与反查缓存");
-      });
-      bindActionBtn(doc.getElementById("zbf-clear-workspace-state"), () => {
-        prefs.set("workspace.document", "");
-        const app = globalThis.Zotero?.zoterobridgeflow;
-        app?.workspace?.store?.load?.();
-        app?.workspace?.refreshAllWindows?.();
-        setStatusFeedback(doc, "zbf-prefs-status-ws-cleared", "✓ 已清除工作区分组与会话数据");
-      });
-      bindActionBtn(doc.getElementById("zbf-reset-defaults"), () => {
-        prefs.resetAllDefaults();
-        syncAll();
-        targetWin?.setTimeout?.(() => syncMenulistLabels(doc), 0);
-        setStatusFeedback(doc, "zbf-prefs-status-reset", "✓ 已恢复全部默认设置");
-      });
-      bindActionBtn(doc.getElementById("zbf-btn-default-cachedir"), () => {
-        prefs.set("inspector.lookup.cacheDirectory", "");
-        syncAll();
-        setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
-      });
-      bindActionBtn(doc.getElementById("zbf-btn-browse-cachedir"), async () => {
-        try {
-          const cu = targetWin?.ChromeUtils || globalThis.ChromeUtils;
-          if (cu?.importESModule && targetWin) {
-            const mod = cu.importESModule("chrome://zotero/content/modules/filePicker.mjs");
-            const picker = new mod.FilePicker();
-            picker.init(targetWin, "BridgeFlow Cache Directory", picker.modeGetFolder);
-            if (await picker.show() === picker.returnOK && picker.file) {
-              prefs.set("inspector.lookup.cacheDirectory", String(picker.file));
-              syncAll();
-              setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
-            }
-          }
-        } catch {
-        }
-      });
+      bindPreferenceActions(doc, targetWin, prefs, syncAll);
       void populateCslStyles(doc, prefs);
       doc.l10n?.ready?.then?.(() => {
         if (!disposed) syncMenulistLabels(doc);

@@ -5,8 +5,16 @@ import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { resolveAllPdfAttachments, type PdfAttachmentEntry } from './pdf-renderer.ts';
 
+export function displayAttachmentName(raw: string): string {
+	return raw.replace(/(?:%[a-f\d]{2})+/gi, (encoded) => {
+		try { return decodeURIComponent(encoded); } catch { return encoded; }
+	});
+}
+
 interface FolderPaneState {
 	body: HTMLElement;
+	controller: AbortController;
+	refreshRevision: number;
 	item: any | null;
 	selectedAttachment: any | null;
 	entries: PdfAttachmentEntry[];
@@ -18,12 +26,10 @@ interface FolderPaneState {
 
 type ItemPaneSidenav = Element & { container?: { item?: any } };
 const FOLDER_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-pdf-folder-sidenav"]';
-const FOLDER_ACTION = `${FOLDER_ICON}, button.ztf-pdf-folder-action`;
-const RECENT_LAUNCH_INTERVAL_MS = 500;
 
 function folderActionTarget(event: Event): Element | undefined {
 	return event.composedPath?.().find((node): node is Element =>
-		(node as Element).matches?.(FOLDER_ACTION) === true,
+		(node as Element).matches?.(FOLDER_ICON) === true,
 	);
 }
 
@@ -32,7 +38,7 @@ export class PdfFolderSectionController {
 	private readonly states = new Map<HTMLElement, FolderPaneState>();
 	private readonly listeners = new Map<Document, AbortController>();
 	private readonly openingFolders = new WeakSet<Window>();
-	private readonly lastLaunched = new Map<string, number>();
+
 	private readonly kernel: PluginKernel;
 	private readonly services: ServiceContainer;
 
@@ -84,7 +90,7 @@ export class PdfFolderSectionController {
 
 	unregister(): void {
 		this.services.panePositions.setTarget('pdf-folder', null);
-		this.lastLaunched.clear();
+		for (const state of this.states.values()) state.controller.abort();
 		for (const controller of this.listeners.values()) controller.abort();
 		this.listeners.clear();
 		this.unregisterFn?.();
@@ -112,7 +118,7 @@ export class PdfFolderSectionController {
 		selectEl.style.cssText = 'display:none;min-inline-size:0;inline-size:100%;block-size:22px;padding:0 6px;border-radius:4px;border:1px solid color-mix(in srgb,currentColor 22%,transparent);background:transparent;color:inherit;font:500 11px/1.2 system-ui,sans-serif;cursor:pointer;';
 
 		const meta = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
-		meta.style.cssText = 'opacity:0.75;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+		meta.style.cssText = 'display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;';
 
 		const btn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
 		btn.type = 'button';
@@ -122,13 +128,19 @@ export class PdfFolderSectionController {
 		btn.style.cssText = 'justify-self:start;min-inline-size:0;max-inline-size:100%;box-sizing:border-box;padding:5px 10px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);background:transparent;color:inherit;font:inherit;white-space:normal;overflow-wrap:anywhere;text-align:start;cursor:pointer;';
 		btn.disabled = true;
 
-		const st: FolderPaneState = { body, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta, setSectionSummary };
+		this.states.get(body)?.controller.abort();
+		const panelController = new win.AbortController();
+		const st: FolderPaneState = { body, controller: panelController, refreshRevision: 0, item: null, selectedAttachment: null, entries: [], selectEl, btn, meta, setSectionSummary };
+		btn.addEventListener('click', () => {
+			if (!btn.disabled) this.openFolder(st.selectedAttachment, win);
+		}, { signal: panelController.signal });
 		selectEl.addEventListener('change', () => {
 			const hit = st.entries.find((e) => String(e.id) === selectEl.value);
 			if (hit) {
 				st.selectedAttachment = hit.attachment;
-				st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || '附件文件');
+				st.meta.textContent = displayAttachmentName(String(hit.attachment?.attachmentFilename || hit.title || '附件文件'));
 				st.meta.title = st.meta.textContent;
+				st.setSectionSummary?.(st.entries.length > 1 ? `${st.entries.length} · ${st.meta.textContent}` : st.meta.textContent);
 				try {
 					const CustomEv = (win as any)?.CustomEvent || CustomEvent;
 					doc.dispatchEvent?.(new CustomEv('zbf:pdf-folder-attachment-selected', {
@@ -136,7 +148,7 @@ export class PdfFolderSectionController {
 					}));
 				} catch { /* ignore */ }
 			}
-		}, { signal: controller.signal });
+		}, { signal: panelController.signal });
 		doc.addEventListener('zbf:pdf-attachment-selected', ((ev: CustomEvent) => {
 			const attID = Number(ev?.detail?.attachmentID || 0);
 			if (!attID || !st.entries.length) return;
@@ -144,10 +156,10 @@ export class PdfFolderSectionController {
 			if (hit && st.selectedAttachment !== hit.attachment) {
 				st.selectedAttachment = hit.attachment;
 				st.selectEl.value = String(hit.id);
-				st.meta.textContent = String(hit.attachment?.attachmentFilename || hit.title || '附件文件');
+				st.meta.textContent = displayAttachmentName(String(hit.attachment?.attachmentFilename || hit.title || '附件文件'));
 				st.meta.title = st.meta.textContent;
 			}
-		}) as EventListener, { signal: controller.signal });
+		}) as EventListener, { signal: panelController.signal });
 
 		wrap.append(selectEl, meta, btn);
 		body.append(wrap);
@@ -177,19 +189,22 @@ export class PdfFolderSectionController {
 			if (!this.kernel.prefs.get('inspector.pdfFolder.enable')) return;
 
 			const sidenav = target.closest('item-pane-sidenav') as ItemPaneSidenav | null;
-			const stHit = [...this.states.values()].find((state) => state.btn === target && !state.btn.disabled);
-			const stByDoc = [...this.states.values()].find((s) => s.body.ownerDocument === doc && (s.selectedAttachment || s.item));
-			const item = sidenav
-				? (stByDoc?.selectedAttachment ?? sidenav.container?.item ?? stByDoc?.item ?? (win as any).ZoteroPane?.getSelectedItems?.()?.[0])
-				: (stHit?.selectedAttachment ?? stHit?.item);
-			if (item && !signal.aborted && !this.openingFolders.has(win)) {
-				this.openingFolders.add(win);
-				void this.revealAttachmentFolder(item, win).finally(() => this.openingFolders.delete(win));
-			}
+			const item = sidenav?.container?.item ?? (win as any).ZoteroPane?.getSelectedItems?.()?.[0];
+			const state = [...this.states.values()].find((s) => s.body.ownerDocument === doc && s.item === item);
+			this.openFolder(state?.selectedAttachment ?? item, win);
 		}, options);
 	}
 
+	private openFolder(item: any, win: Window): void {
+		if (!item || this.openingFolders.has(win) || !this.kernel.prefs.get('inspector.pdfFolder.enable')) return;
+		this.openingFolders.add(win);
+		void this.revealAttachmentFolder(item, win)
+			.catch((error) => this.kernel.logger.error('pdf-folder', error))
+			.finally(() => this.openingFolders.delete(win));
+	}
+
 	private onDestroy(doc: Document | null, body: HTMLElement): void {
+		this.states.get(body)?.controller.abort();
 		this.states.delete(body);
 		if (!doc || [...this.states.keys()].some((other) => other.ownerDocument === doc)) return;
 		this.listeners.get(doc)?.abort();
@@ -202,12 +217,17 @@ export class PdfFolderSectionController {
 		const st = this.states.get(body);
 		if (!st) return;
 		if (setSectionSummary) st.setSectionSummary = setSectionSummary;
-		st.setSectionSummary?.('打开 PDF 文件夹');
+		if (!enabled) st.setSectionSummary?.('');
+		const previousID = st.item === item ? st.selectedAttachment?.id : null;
 		st.item = enabled ? item : null;
-		void this.refreshMeta(st);
+		const revision = ++st.refreshRevision;
+		st.btn.disabled = true;
+		void Promise.resolve().then(() => {
+			if (this.states.get(body) === st && revision === st.refreshRevision) void this.refreshMeta(st, revision, previousID);
+		});
 	}
 
-	private async refreshMeta(st: FolderPaneState): Promise<void> {
+	private async refreshMeta(st: FolderPaneState, revision: number, previousID: unknown): Promise<void> {
 		const item = st.item;
 		st.btn.disabled = true;
 		st.btn.style.opacity = '0.5';
@@ -221,7 +241,7 @@ export class PdfFolderSectionController {
 		if (!item) return;
 		const entries = await resolveAllPdfAttachments(item).catch(() => []);
 		const att = entries[0]?.attachment || await this.resolveFileAttachment(item).catch(() => null);
-		if (this.states.get(st.body) !== st || st.item !== item) return;
+		if (this.states.get(st.body) !== st || st.refreshRevision !== revision) return;
 		if (!att) {
 			st.meta.setAttribute('data-l10n-id', 'zbf-pdf-folder-unavailable');
 			st.meta.textContent = '当前条目没有文件附件';
@@ -233,24 +253,25 @@ export class PdfFolderSectionController {
 			entries.forEach((entry, idx) => {
 				const opt = doc.createElementNS('http://www.w3.org/1999/xhtml', 'option') as HTMLOptionElement;
 				opt.value = String(entry.id);
-				const compact = entry.shortLabel || entry.title;
+				const compact = displayAttachmentName(entry.shortLabel || entry.title);
 				opt.textContent = `${idx + 1}. ${compact}`;
-				opt.title = `${idx + 1}. ${entry.fullTitle || entry.title}`;
+				opt.title = `${idx + 1}. ${displayAttachmentName(entry.fullTitle || entry.title)}`;
 				st.selectEl.append(opt);
 			});
 			const directID = Number(item?.id) || 0;
-			const initial = entries.find((e) => e.id === directID) || entries[0];
+			const initial = entries.find((e) => e.id === previousID) || entries.find((e) => e.id === directID) || entries[0];
 			const initIdx = Math.max(0, entries.findIndex((e) => e.id === initial.id));
 			st.selectedAttachment = initial.attachment;
 			st.selectEl.value = String(initial.id);
-			st.selectEl.title = `${initIdx + 1}. ${initial.fullTitle || initial.title}`;
+			st.selectEl.title = `${initIdx + 1}. ${displayAttachmentName(initial.fullTitle || initial.title)}`;
 			st.selectEl.style.display = 'block';
 		} else {
 			st.selectedAttachment = att;
 		}
 		const activeAtt = st.selectedAttachment || att;
-		st.meta.textContent = String(activeAtt.attachmentFilename || activeAtt.getField?.('title') || '附件文件');
+		st.meta.textContent = displayAttachmentName(String(activeAtt.attachmentFilename || activeAtt.getField?.('title') || '附件文件'));
 		st.meta.title = st.meta.textContent;
+		st.setSectionSummary?.(st.entries.length > 1 ? `${st.entries.length} · ${st.meta.textContent}` : st.meta.textContent);
 		st.btn.disabled = false;
 		st.btn.style.opacity = '1';
 	}

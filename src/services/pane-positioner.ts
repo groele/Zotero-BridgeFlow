@@ -1,7 +1,15 @@
-export type PanePositionValue =
-	| 'zotero-item-pane-header'
-	| 'zotero-editpane-item-box'
-	| 'zotero-editpane-related';
+const PANE_POSITION_ANCHORS = {
+	'zotero-item-pane-header': null,
+	'zotero-editpane-item-box': 'info',
+	'zotero-editpane-abstract': 'abstract',
+	'zotero-editpane-attachments': 'attachments',
+	'zotero-editpane-notes': 'notes',
+	'zotero-editpane-related': null,
+} as const;
+
+export type PanePositionValue = keyof typeof PANE_POSITION_ANCHORS;
+
+const PANE_POSITIONS = Object.keys(PANE_POSITION_ANCHORS) as PanePositionValue[];
 
 export interface PositionOwner extends Element {
 	getPanes(): HTMLElement[];
@@ -22,10 +30,9 @@ interface TargetSpec {
 }
 
 export function normalizePanePosition(raw: unknown, fallback: PanePositionValue = 'zotero-item-pane-header'): PanePositionValue {
-	if (raw === 'zotero-item-pane-header' || raw === 'zotero-editpane-item-box' || raw === 'zotero-editpane-related') {
-		return raw;
-	}
-	return fallback;
+	return typeof raw === 'string' && Object.hasOwn(PANE_POSITION_ANCHORS, raw)
+		? raw as PanePositionValue
+		: fallback;
 }
 
 /**
@@ -101,85 +108,52 @@ export class ItemPanePositionCoordinator {
 	}
 
 	private async applyAll(owner: PositionOwner): Promise<void> {
-		if (owner.skipRender) return;
-		const groups: Record<PanePositionValue, TargetSpec[]> = {
-			'zotero-item-pane-header': [],
-			'zotero-editpane-item-box': [],
-			'zotero-editpane-related': [],
-		};
-
-		const independent = [...this.targets.values()].filter((s) => !s.anchorAfterSectionID);
-		const anchored = [...this.targets.values()].filter((s) => Boolean(s.anchorAfterSectionID));
-
-		for (const spec of independent) {
-			groups[spec.getPosition()].push(spec);
+		// Reordering restores Zotero's previous scroll position. Defer it while the
+		// user is viewing a full-height PDF, including queued work from item render.
+		if (owner.skipRender || owner.querySelector?.('[data-ztf-pdf-full-section]')) return;
+		const paneIDs = this.getPaneIDs(owner);
+		const targets = Array.from(this.targets.values()).filter(spec => paneIDs.includes(spec.sectionID));
+		if (!targets.length) return;
+		const managed = new Set(targets.map(spec => spec.sectionID));
+		const desired = paneIDs.filter(id => !managed.has(id));
+		const native = [...desired];
+		const groups = new Map(PANE_POSITIONS.map(position => [position, [] as string[]]));
+		for (const spec of targets.filter(spec => !spec.anchorAfterSectionID)) {
+			groups.get(spec.getPosition())!.push(spec.sectionID);
 		}
-		for (const spec of anchored) {
-			const pos = spec.getPosition();
-			const list = groups[pos];
-			const anchorIdx = list.findIndex((item) => item.sectionID === spec.anchorAfterSectionID);
-			if (anchorIdx >= 0) list.splice(anchorIdx + 1, 0, spec);
-			else list.push(spec);
+		for (const spec of targets.filter(spec => spec.anchorAfterSectionID)) {
+			const group = groups.get(spec.getPosition())!;
+			const anchor = group.indexOf(spec.anchorAfterSectionID!);
+			group.splice(anchor < 0 ? group.length : anchor + 1, 0, spec.sectionID);
 		}
 
-		for (const position of ['zotero-item-pane-header', 'zotero-editpane-item-box', 'zotero-editpane-related'] as const) {
-			await this.alignGroup(owner, position, groups[position]);
+		for (const position of PANE_POSITIONS) {
+			const group = groups.get(position)!;
+			if (!group.length) continue;
+			const anchor = PANE_POSITION_ANCHORS[position];
+			const nativeIndex = anchor ? native.indexOf(anchor) : -1;
+			const nextNative = native[nativeIndex + 1];
+			const index = position === 'zotero-editpane-related' || nextNative === undefined
+				? desired.length
+				: desired.indexOf(nextNative);
+			desired.splice(index, 0, ...group);
+		}
+
+		// Work backward so the next pane in the desired order is already placed.
+		for (let index = desired.length - 1; index >= 0; index--) {
+			const id = desired[index];
+			if (!managed.has(id)) continue;
+			const next = desired[index + 1];
+			const current = this.getPaneIDs(owner);
+			const currentIndex = current.indexOf(id);
+			const targetIndex = next === undefined ? current.length : current.indexOf(next);
+			if (currentIndex < 0 || targetIndex < 0 || currentIndex + 1 === targetIndex) continue;
+			await this.reorderPane(owner, id, next, targetIndex);
 		}
 	}
 
-	private async alignGroup(owner: PositionOwner, position: PanePositionValue, group: readonly TargetSpec[]): Promise<void> {
-		const presentIDs = group
-			.map((s) => s.sectionID)
-			.filter((id) => owner.getPanes().some((p) => p.dataset.pane === id));
-		if (!presentIDs.length) return;
-
-		const panes = owner.getPanes();
-		const startIdx = this.computeGroupStartIndex(panes, position, presentIDs.length);
-		const slice = panes.slice(startIdx, startIdx + presentIDs.length).map((p) => p.dataset.pane);
-		if (slice.length === presentIDs.length && presentIDs.every((id, idx) => slice[idx] === id)) {
-			return;
-		}
-
-		await this.moveSectionToPosition(owner, presentIDs[0], position);
-		for (let i = 1; i < presentIDs.length; i++) {
-			await this.moveSectionAfter(owner, presentIDs[i], presentIDs[i - 1]);
-		}
-	}
-
-	private computeGroupStartIndex(panes: HTMLElement[], position: PanePositionValue, groupSize: number): number {
-		if (position === 'zotero-item-pane-header') return 0;
-		if (position === 'zotero-editpane-related') return Math.max(0, panes.length - groupSize);
-		const info = panes.findIndex((p) => p.dataset.pane === 'info');
-		return info < 0 ? 0 : info + 1;
-	}
-
-	private async moveSectionToPosition(owner: PositionOwner, sectionID: string, position: PanePositionValue): Promise<void> {
-		const panes = owner.getPanes();
-		const current = panes.findIndex((p) => p.dataset.pane === sectionID);
-		if (current < 0) return;
-
-		let targetIdx = 0;
-		if (position === 'zotero-editpane-related') {
-			targetIdx = panes.length;
-		} else if (position === 'zotero-editpane-item-box') {
-			const info = panes.findIndex((p) => p.dataset.pane === 'info');
-			targetIdx = info < 0 ? 0 : info + 1;
-		}
-		if (current === targetIdx || current === targetIdx - 1) return;
-
-		const targetPaneID = panes[targetIdx]?.dataset.pane;
-		await this.reorderPane(owner, sectionID, targetPaneID, targetIdx);
-	}
-
-	private async moveSectionAfter(owner: PositionOwner, sectionID: string, anchorSectionID: string): Promise<void> {
-		const panes = owner.getPanes();
-		const anchorIdx = panes.findIndex((p) => p.dataset.pane === anchorSectionID);
-		const currentIdx = panes.findIndex((p) => p.dataset.pane === sectionID);
-		if (anchorIdx < 0 || currentIdx < 0 || currentIdx === anchorIdx + 1) return;
-
-		const desiredPaneIndex = currentIdx < anchorIdx ? anchorIdx : anchorIdx + 1;
-		const targetPaneID = panes[anchorIdx + 1]?.dataset.pane;
-		await this.reorderPane(owner, sectionID, targetPaneID, desiredPaneIndex);
+	private getPaneIDs(owner: PositionOwner): string[] {
+		return owner.getPanes().flatMap(pane => pane.dataset.pane ? [pane.dataset.pane] : []);
 	}
 
 	private async reorderPane(owner: PositionOwner, sectionID: string, targetPaneID: string | undefined, fallbackIdx: number): Promise<void> {

@@ -125,7 +125,7 @@ export class WorkspaceTabContextMenu {
 				void this.tabs.copyTabCitation(this.win, tab.tabID);
 			}, close, { icon: 'copy' });
 		}
-		if (tab.itemID > 0 && this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.dragCite.enable')) {
+		if (tab.itemID > 0 && this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.tabContextMenu.enable')) {
 			addPopupButton(this.doc, pop, '插入引文到 Word 光标处', () => {
 				this.tabs.citeItemsInWord(this.win, [tab.parentItemID || tab.itemID]);
 			}, close, { icon: 'word' });
@@ -173,7 +173,7 @@ export class WorkspaceTabContextMenu {
 			addPopupButton(this.doc, pop, '在文献库中定位', () => {
 				void this.tabs.showInLibrary(this.win, tab.itemID, true);
 			}, close, { icon: 'locate' });
-			if (this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.dragCite.enable')) {
+			if (this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.tabContextMenu.enable')) {
 				addPopupButton(this.doc, pop, '插入引文到 Word 光标处', () => {
 					this.tabs.citeItemsInWord(this.win, [tab.parentItemID || tab.itemID]);
 				}, close, { icon: 'word' });
@@ -253,10 +253,12 @@ export class WorkspaceTabContextMenu {
 			}, close, { icon: 'play', badge: String(virtualCount) });
 		}
 
-		if (this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.dragCite.enable')) {
-			const groupItemIDs = this.tabs.buildTrackedTabs(this.win)
-				.filter((t) => t.groupId === group.id && (t.parentItemID > 0 || t.itemID > 0))
-				.map((t) => t.parentItemID || t.itemID);
+		if (this.prefs.get('modules.wordCite.enable') && this.prefs.get('wordCite.tabContextMenu.enable')) {
+			const groupItemIDs = [...new Set(
+				this.tabs.buildTrackedTabs(this.win)
+					.filter((t) => t.groupId === group.id && (t.parentItemID > 0 || t.itemID > 0))
+					.map((t) => t.parentItemID || t.itemID),
+			)];
 			if (groupItemIDs.length > 0) {
 				addPopupButton(this.doc, pop, '插入本组引文到 Word', () => {
 					this.tabs.citeItemsInWord(this.win, groupItemIDs);
