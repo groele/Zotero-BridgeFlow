@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.2.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.2.1 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -5068,8 +5068,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           }
         );
         disposers.push(unpatch);
-        const doc2 = win.document;
-        if (doc2?.addEventListener) {
+        const doc = win.document;
+        if (doc?.addEventListener) {
           const onDragEnd = (ev) => {
             const items = this.activeDragItems;
             const startedAt = this.activeDragStartedAt;
@@ -5081,35 +5081,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
             if (startedAt > 0 && Date.now() - startedAt > 6e4) return;
             void this.handleDropEnd(items);
           };
-          doc2.addEventListener("dragend", onDragEnd, true);
-          disposers.push(() => doc2.removeEventListener("dragend", onDragEnd, true));
+          doc.addEventListener("dragend", onDragEnd, true);
+          disposers.push(() => doc.removeEventListener("dragend", onDragEnd, true));
         }
-      }
-      const doc = win.document;
-      const itemMenu = doc?.getElementById?.("zotero-itemmenu");
-      if (doc && itemMenu) {
-        const mi = doc.createXULElement ? doc.createXULElement("menuitem") : doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", "menuitem");
-        mi.id = "zbf-item-insert-word-cite";
-        mi.setAttribute("label", "BridgeFlow：插入引文到 Word 当前光标");
-        const onShowing = () => {
-          const selected = win.ZoteroPane?.getSelectedItems?.() || [];
-          const valid = deduplicateRegularItems(selected).items;
-          mi.hidden = !this.kernel.prefs.get("wordCite.itemContextMenu.enable");
-          if (!valid.length) mi.setAttribute("disabled", "true");
-          else mi.removeAttribute("disabled");
-        };
-        const onCommand = () => {
-          const selected = win.ZoteroPane?.getSelectedItems?.() || [];
-          void this.insertItems(selected);
-        };
-        itemMenu.addEventListener("popupshowing", onShowing);
-        mi.addEventListener("command", onCommand);
-        itemMenu.appendChild(mi);
-        disposers.push(() => {
-          itemMenu.removeEventListener("popupshowing", onShowing);
-          mi.removeEventListener("command", onCommand);
-          mi.remove();
-        });
       }
       this.windowDisposers.set(win, () => {
         for (const fn of disposers.reverse()) {
@@ -9047,96 +9021,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
   };
 
-  // src/domains/workspace/item-context-menu.ts
-  var ItemContextMenuController = class {
-    itemMenuEl = null;
-    entryEl = null;
-    subPopup = null;
-    win;
-    doc;
-    prefs;
-    store;
-    tabs;
-    onRefresh;
-    constructor(win, doc, prefs, store, tabs, onRefresh) {
-      this.win = win;
-      this.doc = doc;
-      this.prefs = prefs;
-      this.store = store;
-      this.tabs = tabs;
-      this.onRefresh = onRefresh;
-    }
-    attach() {
-      const itemMenu = this.doc?.getElementById?.("zotero-itemmenu");
-      if (!itemMenu || this.itemMenuEl) return;
-      const menu = this.xul("menu");
-      menu.id = "zbf-item-open-group";
-      menu.setAttribute("label", "BridgeFlow：打开并分组");
-      const sub = this.xul("menupopup");
-      menu.append(sub);
-      itemMenu.append(menu);
-      itemMenu.addEventListener("popupshowing", this.onMenuShowing);
-      sub.addEventListener("popupshowing", this.onSubShowing);
-      this.itemMenuEl = itemMenu;
-      this.entryEl = menu;
-      this.subPopup = sub;
-    }
-    dispose() {
-      this.itemMenuEl?.removeEventListener("popupshowing", this.onMenuShowing);
-      this.subPopup?.removeEventListener("popupshowing", this.onSubShowing);
-      this.entryEl?.remove();
-      this.itemMenuEl = null;
-      this.entryEl = null;
-      this.subPopup = null;
-    }
-    onMenuShowing = () => {
-      const enabled = this.prefs.get("workspace.enableItemContextMenu");
-      const selected = this.win.ZoteroPane?.getSelectedItems?.() || [];
-      if (this.entryEl) {
-        this.entryEl.hidden = !enabled;
-        if (!selected.length) this.entryEl.setAttribute("disabled", "true");
-        else this.entryEl.removeAttribute("disabled");
-      }
-    };
-    onSubShowing = () => {
-      if (!this.subPopup) return;
-      this.subPopup.textContent = "";
-      const selected = this.win.ZoteroPane?.getSelectedItems?.() || [];
-      this.addItem(this.subPopup, "+ 打开到新分组…", () => {
-        const fallback = String(selected[0]?.getField?.("title") || "新分组").slice(0, 30);
-        openTextPromptModal(this.win, "打开到新分组", "输入分组名称...", fallback, (name) => {
-          const g = this.store.createGroup(name || fallback);
-          void this.openIntoGroup(selected, g.id);
-        });
-      });
-      if (this.store.state.groups.length) this.subPopup.append(this.xul("menuseparator"));
-      for (const g of this.store.state.groups) {
-        this.addItem(this.subPopup, g.name, () => {
-          void this.openIntoGroup(selected, g.id);
-        });
-      }
-    };
-    async openIntoGroup(items, groupId) {
-      for (const it of items) {
-        const best = typeof it.getBestAttachment === "function" ? await it.getBestAttachment().catch(() => null) : null;
-        const targetID = Number(best?.id || it.id || 0);
-        if (!targetID) continue;
-        await this.tabs.focusOrOpenItem(this.win, { itemID: it.id, attachmentID: targetID, preferExistingTab: true });
-        this.store.assignToGroup(`item:${targetID}`, groupId);
-      }
-      this.onRefresh();
-    }
-    xul(tag) {
-      return this.doc.createXULElement ? this.doc.createXULElement(tag) : this.doc.createElementNS("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul", tag);
-    }
-    addItem(popup, label, action) {
-      const mi = this.xul("menuitem");
-      mi.setAttribute("label", label);
-      mi.addEventListener("command", action);
-      popup.append(mi);
-    }
-  };
-
   // src/domains/workspace/spotlight-panel.ts
   var WorkspaceSpotlightPanel = class {
     win;
@@ -11325,7 +11209,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     styleEl = null;
     hoverCard = null;
     tabMenu = null;
-    itemMenu = null;
     popover = null;
     toolbar = null;
     horizontal = null;
@@ -11364,11 +11247,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.popover = new WorkspacePopover(win, prefs, store, tabs, refresh);
       this.spotlightPanel = new WorkspaceSpotlightPanel(win, spotlightEngine);
       this.tabMenu = new WorkspaceTabContextMenu(win, prefs, store, tabs, refresh, this.hoverCard);
-      this.itemMenu = new ItemContextMenuController(win, this.doc, prefs, store, tabs, refresh);
       this.toolbar = new WorkspaceToolbarActions(win, prefs, store, tabs, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
       this.horizontal = new WorkspaceHorizontalBar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.toolbar, refresh);
       this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
-      this.itemMenu.attach();
       this.attachObservers();
       this.doc.addEventListener("keydown", this.onKeydown, { capture: true, signal: this.lifetime.signal });
       this.win.addEventListener("resize", this.onResize, { signal: this.lifetime.signal });
@@ -11404,7 +11285,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.horizontal?.destroy();
       this.sidebar?.destroy();
       this.tabMenu?.destroy();
-      this.itemMenu?.dispose();
       this.popover?.destroy();
       this.hoverCard?.destroy();
       this.spotlightPanel?.destroy();
@@ -12019,7 +11899,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "workspace.enableStaleSuggestions": { defaultValue: true },
     "workspace.staleSuggestDays": { defaultValue: 7, min: 1, max: 3650 },
     "workspace.enableTabContextMenu": { defaultValue: true },
-    "workspace.enableItemContextMenu": { defaultValue: true },
     "workspace.enableCopyReference": { defaultValue: true },
     "workspace.enableShowInFilesystem": { defaultValue: true },
     "workspace.enableReloadTab": { defaultValue: true },
@@ -12083,7 +11962,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     // === Domain C: Word Citation Tracking & Governance ===
     "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
-    "wordCite.itemContextMenu.enable": { defaultValue: true },
     "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },

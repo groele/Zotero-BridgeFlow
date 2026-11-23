@@ -4,7 +4,6 @@ import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import { WorkspaceHorizontalBar } from './horizontal-bar.ts';
 import { WorkspaceToolbarActions } from './horizontal-toolbar.ts';
 import { WorkspaceHoverCard } from './hover-card.ts';
-import { ItemContextMenuController } from './item-context-menu.ts';
 import type { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
 import { WorkspaceSpotlightPanel } from './spotlight-panel.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
@@ -22,7 +21,6 @@ export class WorkspaceWindowUI {
 	private styleEl: HTMLStyleElement | null = null;
 	private readonly hoverCard: WorkspaceHoverCard | null = null;
 	private readonly tabMenu: WorkspaceTabContextMenu | null = null;
-	private readonly itemMenu: ItemContextMenuController | null = null;
 	private readonly popover: WorkspacePopover | null = null;
 	private readonly toolbar: WorkspaceToolbarActions | null = null;
 	private readonly horizontal: WorkspaceHorizontalBar | null = null;
@@ -72,12 +70,10 @@ export class WorkspaceWindowUI {
 		this.popover = new WorkspacePopover(win, prefs, store, tabs, refresh);
 		this.spotlightPanel = new WorkspaceSpotlightPanel(win, spotlightEngine);
 		this.tabMenu = new WorkspaceTabContextMenu(win, prefs, store, tabs, refresh, this.hoverCard);
-		this.itemMenu = new ItemContextMenuController(win, this.doc, prefs, store, tabs, refresh);
 		this.toolbar = new WorkspaceToolbarActions(win, prefs, store, tabs, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
 		this.horizontal = new WorkspaceHorizontalBar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.toolbar, refresh);
 		this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
 
-		this.itemMenu.attach();
 		this.attachObservers();
 		this.doc.addEventListener('keydown', this.onKeydown, { capture: true, signal: this.lifetime.signal });
 		this.win.addEventListener('resize', this.onResize, { signal: this.lifetime.signal });
@@ -115,7 +111,6 @@ export class WorkspaceWindowUI {
 		this.horizontal?.destroy();
 		this.sidebar?.destroy();
 		this.tabMenu?.destroy();
-		this.itemMenu?.dispose();
 		this.popover?.destroy();
 		this.hoverCard?.destroy();
 		this.spotlightPanel?.destroy();

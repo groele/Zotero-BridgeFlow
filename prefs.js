@@ -37,7 +37,6 @@ pref("extensions.zotero.bridgeflow.workspace.activeReaderBudget", 0);
 pref("extensions.zotero.bridgeflow.workspace.enableStaleSuggestions", true);
 pref("extensions.zotero.bridgeflow.workspace.staleSuggestDays", 7);
 pref("extensions.zotero.bridgeflow.workspace.enableTabContextMenu", true);
-pref("extensions.zotero.bridgeflow.workspace.enableItemContextMenu", true);
 pref("extensions.zotero.bridgeflow.workspace.enableCopyReference", true);
 pref("extensions.zotero.bridgeflow.workspace.enableShowInFilesystem", true);
 pref("extensions.zotero.bridgeflow.workspace.enableReloadTab", true);

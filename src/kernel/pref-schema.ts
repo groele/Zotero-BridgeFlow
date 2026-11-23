@@ -69,7 +69,6 @@ export const PREF_SCHEMA = {
 	'workspace.enableStaleSuggestions': { defaultValue: true },
 	'workspace.staleSuggestDays': { defaultValue: 7, min: 1, max: 3650 },
 	'workspace.enableTabContextMenu': { defaultValue: true },
-	'workspace.enableItemContextMenu': { defaultValue: true },
 	'workspace.enableCopyReference': { defaultValue: true },
 	'workspace.enableShowInFilesystem': { defaultValue: true },
 	'workspace.enableReloadTab': { defaultValue: true },
@@ -131,7 +130,6 @@ export const PREF_SCHEMA = {
 	// === Domain C: Word Citation Tracking & Governance ===
 	'wordCite.column.enable': { defaultValue: true },
 	'wordCite.dragCite.enable': { defaultValue: true },
-	'wordCite.itemContextMenu.enable': { defaultValue: true },
 	'wordCite.tabContextMenu.enable': { defaultValue: true },
 	'wordCite.collections.enable': { defaultValue: true },
 	'wordCite.citationTags.enable': { defaultValue: true },

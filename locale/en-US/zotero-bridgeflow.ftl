@@ -171,8 +171,6 @@ zbf-pref-ws-showfs =
     .label = Menu: Reveal Attachment in Folder
 zbf-pref-ws-reload =
     .label = Menu: Reload Tab
-zbf-pref-ws-itemmenu =
-    .label = Library context menu "BridgeFlow: Open & Group"
 
 zbf-banner-csl-title = Right-Hand Live CSL Preview & Compact Reverse Lookup
 zbf-banner-csl-desc = Preview and copy formatted citations in the item pane, or paste compact citations / DOIs to locate local library items instantly.
@@ -256,8 +254,6 @@ zbf-pref-wc-column =
     .label = Show native "Citation" ordinal column in library item tree
 zbf-pref-wc-drag =
     .label = Enable Windows native drag-and-drop to insert Word citations
-zbf-pref-wc-item-menu =
-    .label = Show "Insert Citation at Word Cursor" in library item context menu
 zbf-pref-wc-tab-menu =
     .label = Show "Insert in Word" in tab/group context menus & lookup cards
 zbf-pref-wc-collections =

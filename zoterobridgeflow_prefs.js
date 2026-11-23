@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.2.0 - Preferences controller. */
+/* Zotero BridgeFlow v0.2.1 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -62,7 +62,6 @@
     "workspace.enableStaleSuggestions": { defaultValue: true },
     "workspace.staleSuggestDays": { defaultValue: 7, min: 1, max: 3650 },
     "workspace.enableTabContextMenu": { defaultValue: true },
-    "workspace.enableItemContextMenu": { defaultValue: true },
     "workspace.enableCopyReference": { defaultValue: true },
     "workspace.enableShowInFilesystem": { defaultValue: true },
     "workspace.enableReloadTab": { defaultValue: true },
@@ -126,7 +125,6 @@
     // === Domain C: Word Citation Tracking & Governance ===
     "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
-    "wordCite.itemContextMenu.enable": { defaultValue: true },
     "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },
@@ -536,8 +534,8 @@
       bindTabs(pane);
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.2.0" }));
-        versionEl.textContent = `v${"0.2.0"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.2.1" }));
+        versionEl.textContent = `v${"0.2.1"}`;
       }
       const checkboxes = Array.from(pane.querySelectorAll("checkbox[preference]"));
       const menulists = Array.from(pane.querySelectorAll("menulist[preference]"));

@@ -559,7 +559,6 @@ test('WordCite switches: dragCite=false still allows Plan C & menus; column.enab
 		prefAdapter: createMemoryPrefs({
 			'wordCite.dragCite.enable': false,
 			'wordCite.column.enable': true,
-			'wordCite.itemContextMenu.enable': true,
 			'wordCite.tabContextMenu.enable': true,
 			'inspector.wordCite.enable': true,
 		}).adapter,

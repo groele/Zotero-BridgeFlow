@@ -171,8 +171,6 @@ zbf-pref-ws-showfs =
     .label = 右键菜单：在文件管理器中定位附件
 zbf-pref-ws-reload =
     .label = 右键菜单：重新加载标签页
-zbf-pref-ws-itemmenu =
-    .label = 文献库列表右键「BridgeFlow：打开并分组」
 
 zbf-banner-csl-title = 右侧栏实时 CSL 引文预览与反向逆查
 zbf-banner-csl-desc = 在右侧条目详情栏即时预览并复制格式化引文；从 Word/PPT 粘贴简写引文或 DOI 即可秒级定位原文献。
@@ -256,8 +254,6 @@ zbf-pref-wc-column =
     .label = 在文献库列表显示原生「引用」序数列
 zbf-pref-wc-drag =
     .label = 启用 Windows 原生拖拽直接插入可编辑 Word 引文域
-zbf-pref-wc-item-menu =
-    .label = 在文献条目右键菜单显示「插入引文到 Word 当前光标」
 zbf-pref-wc-tab-menu =
     .label = 在标签页 / 分组右键与反查结果卡片显示「插入引文到 Word」
 zbf-pref-wc-collections =

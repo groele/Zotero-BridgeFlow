@@ -6,8 +6,8 @@ import { insertItemsIntoWord, type WordInsertResult } from './word-inserter.ts';
 
 /**
  * Word citation inserter:
- * 1. Native drag-to-Word from Zotero itemsView (preserving `zotero/item` while stripping HTML/plain text).
- * 2. Right-click item menu action "插入引文到当前 Word 光标" for click-to-cite workflow.
+ * Native drag-to-Word from Zotero itemsView (preserving `zotero/item` while stripping HTML/plain text)
+ * and programmatic item insertion via `insertItems`.
  */
 export class DragCiteController {
 	private readonly windowDisposers = new Map<Window, Disposable>();
@@ -91,36 +91,6 @@ export class DragCiteController {
 				doc.addEventListener('dragend', onDragEnd, true);
 				disposers.push(() => doc.removeEventListener('dragend', onDragEnd, true));
 			}
-		}
-
-		// Also add right-click context menu entry "插入引文到 Word 当前光标处"
-		const doc = win.document;
-		const itemMenu = doc?.getElementById?.('zotero-itemmenu');
-		if (doc && itemMenu) {
-			const mi = (doc as any).createXULElement
-				? (doc as any).createXULElement('menuitem')
-				: doc.createElementNS('http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul', 'menuitem');
-			mi.id = 'zbf-item-insert-word-cite';
-			mi.setAttribute('label', 'BridgeFlow：插入引文到 Word 当前光标');
-			const onShowing = () => {
-				const selected = (win as any).ZoteroPane?.getSelectedItems?.() || [];
-				const valid = deduplicateRegularItems(selected).items;
-				mi.hidden = !this.kernel.prefs.get('wordCite.itemContextMenu.enable');
-				if (!valid.length) mi.setAttribute('disabled', 'true');
-				else mi.removeAttribute('disabled');
-			};
-			const onCommand = () => {
-				const selected = (win as any).ZoteroPane?.getSelectedItems?.() || [];
-				void this.insertItems(selected);
-			};
-			itemMenu.addEventListener('popupshowing', onShowing);
-			mi.addEventListener('command', onCommand);
-			itemMenu.appendChild(mi);
-			disposers.push(() => {
-				itemMenu.removeEventListener('popupshowing', onShowing);
-				mi.removeEventListener('command', onCommand);
-				mi.remove();
-			});
 		}
 
 		this.windowDisposers.set(win, () => {
