@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.5.13 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -389,8 +389,8 @@
           this.workspace.refreshAllWindows();
         }
       });
-      this.disposeStoreListener = this.workspace.store.onChange(() => {
-        if (!this.active) return;
+      this.disposeStoreListener = this.workspace.store.onChange((change) => {
+        if (!this.active || change === "session") return;
         this.syncChangedRemarksToExtra();
         this.visualNotes.refreshLibraryViews();
       });
@@ -444,7 +444,7 @@
   function isRegularValidItem(item) {
     if (isItemTrashedOrDeleted(item)) return false;
     if (typeof item.isRegularItem === "function") return Boolean(item.isRegularItem());
-    return item.itemType !== "attachment" && item.itemType !== "note" && item.itemType !== "annotation";
+    return !item.isAttachment?.() && item.itemType !== "attachment" && item.itemType !== "note" && item.itemType !== "annotation";
   }
   function normalizeToRegularItem(item) {
     if (isItemTrashedOrDeleted(item)) return null;
@@ -546,7 +546,7 @@
     const best = typeof target?.getBestAttachment === "function" ? await target.getBestAttachment().catch(() => null) : null;
     const bestID = Number(best?.id || 0);
     pushIfPdf(best);
-    if (typeof target?.getAttachments === "function") {
+    if (isRegularValidItem(target) && typeof target?.getAttachments === "function") {
       const ids = target.getAttachments() || [];
       for (const id of ids) {
         const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
@@ -3971,8 +3971,67 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
   }
   function formatPendingReceipt(kind, zh) {
-    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
+    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在还原/反向导入缺失引文…" : "Recovering missing citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
     return { tone: "warn", text: text2 };
+  }
+  function formatRecoverReceipt(res, zh) {
+    if (res.error) return { tone: "err", text: res.error };
+    const { restoredCount, importedCount, skippedCount, collectionName } = res;
+    if (!restoredCount && !importedCount) {
+      return { tone: "warn", text: zh ? "⚠ 未能恢复或导入缺失引文" : "⚠ No orphan citations could be recovered" };
+    }
+    const parts = [];
+    if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（刷新 Word 即自动重连）` : `Restored ${restoredCount} from Trash`);
+    if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}（请在 Word 中替换旧引用）` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ""} (re-link in Word)`);
+    if (skippedCount > 0) parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
+    return { tone: "ok", text: `✓ ${parts.join(zh ? "；" : "; ")}` };
+  }
+  function buildOrphanBannerModel(orphans, zh) {
+    if (!orphans?.length) return { title: "", listText: "", buttonLabel: "" };
+    const trashed = orphans.filter((o) => o.kind === "trashed").length;
+    const missing = orphans.length - trashed;
+    const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ");
+    const moreOrd = orphans.length > 4 ? zh ? " 等" : "…" : "";
+    const title = zh ? `⚠ 检测到 ${orphans.length} 篇断链/缺失引文（${ordinals}${moreOrd}）` : `⚠ ${orphans.length} missing/trashed citation(s) (${ordinals}${moreOrd})`;
+    const listText = orphans.slice(0, 4).map((o) => {
+      const tag = o.kind === "trashed" ? zh ? "回收站" : "Trash" : zh ? "本地缺失" : "Missing";
+      return `[${o.ordinal}] ${o.title} (${tag})`;
+    }).join("\n") + (orphans.length > 4 ? zh ? `
+…另有 ${orphans.length - 4} 篇` : `
+…and ${orphans.length - 4} more` : "");
+    const buttonLabel = trashed > 0 && missing === 0 ? zh ? `一键从回收站还原 (${trashed})` : `Restore from Trash (${trashed})` : trashed === 0 ? zh ? `一键反向导入 Zotero (${missing})` : `Import to Zotero (${missing})` : zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`;
+    return { title, listText, buttonLabel };
+  }
+  function buildWordCiteSectionSummary(zh, snap, ids) {
+    if (!snap?.activeSessionID) return "";
+    const total = snap.totalCitedCount;
+    if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
+    const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
+    if (badge) return zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`;
+    return zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`;
+  }
+  function buildWordCiteStats(zh, snap, ids) {
+    if (!snap?.activeSessionID) {
+      return { text: zh ? "请先打开 Word" : "Open Word first", title: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected", state: "none" };
+    }
+    const total = snap.totalCitedCount;
+    if (ids.length === 1) {
+      const b = snap.byItemID.get(ids[0]);
+      if (b) {
+        const occ = b.occurrences ?? 1;
+        return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: "cited" };
+      }
+      return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: "uncited" };
+    }
+    if (ids.length > 1) {
+      const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
+      if (cited.length) {
+        const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
+        return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: "cited" };
+      }
+      return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet", state: "uncited" };
+    }
+    return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: "uncited" };
   }
   function buildWordCiteMetaText(zh, items) {
     if (!items.length) return zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation";
@@ -4028,9 +4087,15 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.12); color: #15803d; }
 .zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.12); color: #b45309; }
 .zbf-wc-receipt.is-err { background: rgba(220,38,38,0.12); color: #b91c1c; }
+.zbf-wc-orphan-box { display: grid; gap: 4px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.35); background: rgba(217,119,6,0.08); font-size: 11px; }
+.zbf-wc-orphan-title { font-weight: 600; color: #b45309; }
+.zbf-wc-orphan-list { white-space: pre-line; line-height: 1.45; opacity: 0.9; max-height: 76px; overflow-y: auto; }
+.zbf-wc-orphan-btn { box-sizing: border-box; padding: 4px 8px; border-radius: 5px; border: 1px solid rgba(217,119,6,0.45); background: rgba(217,119,6,0.14); color: inherit; font-size: 11px; font-weight: 600; cursor: pointer; text-align: center; }
+.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.22); }
+.zbf-wc-orphan-btn:disabled { opacity: 0.5; cursor: default; }
 @media (prefers-color-scheme: dark) {
 	.zbf-wc-stats.is-cited, .zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-receipt.is-warn { color: #fbbf24; }
+	.zbf-wc-receipt.is-warn, .zbf-wc-orphan-title { color: #fbbf24; }
 	.zbf-wc-receipt.is-err { color: #f87171; }
 	.zbf-wc-link { color: #60a5fa; }
 }`;
@@ -4069,10 +4134,17 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const colBtn = el("button", "zbf-wc-link zbf-wc-col-link zbf-word-col-action");
     colBtn.type = "button";
     synergyEl.append(groupBtn, colBtn);
+    const orphanBox = el("div", "zbf-wc-orphan-box");
+    orphanBox.hidden = true;
+    const orphanTitle = el("div", "zbf-wc-orphan-title");
+    const orphanList = el("div", "zbf-wc-orphan-list");
+    const orphanBtn = el("button", "zbf-wc-orphan-btn");
+    orphanBtn.type = "button";
+    orphanBox.append(orphanTitle, orphanList, orphanBtn);
     const receiptEl = el("div", "zbf-wc-receipt");
     receiptEl.hidden = true;
     receiptEl.setAttribute("role", "status");
-    root.append(row1, metaEl, actions, synergyEl, receiptEl);
+    root.append(row1, metaEl, actions, synergyEl, receiptEl, orphanBox);
     body.appendChild(root);
     return {
       root,
@@ -4088,6 +4160,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       synergyEl,
       groupBtn,
       colBtn,
+      orphanBox,
+      orphanTitle,
+      orphanList,
+      orphanBtn,
       receiptEl,
       activeItem: null,
       lastItemIDs: [],
@@ -4122,6 +4198,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     st.colBtn.textContent = vm.colButtonText;
     st.colBtn.title = vm.colButtonTitle;
     st.synergyEl.hidden = st.groupBtn.hidden && st.colBtn.hidden;
+    st.orphanBox.hidden = !vm.orphanTitle;
+    st.orphanTitle.textContent = vm.orphanTitle;
+    st.orphanList.textContent = vm.orphanListText;
+    st.orphanBtn.textContent = vm.orphanButtonLabel;
+    st.orphanBtn.disabled = vm.orphanDisabled;
     st.receiptEl.hidden = vm.receiptTone === "none" || !vm.receiptText;
     st.receiptEl.textContent = vm.receiptText;
     st.receiptEl.classList.remove("is-ok", "is-warn", "is-err");
@@ -4175,6 +4256,13 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         this.clearPendingTimer();
         this.pendingRequest = void 0;
         this.receipt = formatRefreshReceipt(res, isZhLocale());
+        this.renderAllBodies();
+      }));
+      this.disposables.add(this.kernel.bus.on("word:recover-orphans-result", (res) => {
+        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+        this.clearPendingTimer();
+        this.pendingRequest = void 0;
+        this.receipt = formatRecoverReceipt(res, isZhLocale());
         this.renderAllBodies();
       }));
       const icon = `${this.kernel.info.rootURI}assets/word-cite.svg`;
@@ -4293,6 +4381,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         sessionID: this.snapshot?.activeSessionID || void 0,
         win: win ?? void 0
       }));
+      click(st.orphanBtn, () => this.kernel.bus.emit("word:recover-orphans-request", {
+        sessionID: this.snapshot?.activeSessionID || void 0,
+        requestId: this.beginRequest("recover", st),
+        win: win ?? void 0
+      }));
       this.bindDocumentEvents(doc);
       this.updateState(body, item, setEnabled, setSectionSummary);
     }
@@ -4363,9 +4456,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const matchedGroup = showGroupSynergy && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
       st.lastGroup = matchedGroup;
       const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
-      st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : "");
-      const stats = this.buildStats(zh, snap, st.lastItemIDs);
+      st.setSectionSummary?.(showSummaryCounts ? buildWordCiteSectionSummary(zh, snap, st.lastItemIDs) : "");
+      const stats = buildWordCiteStats(zh, snap, st.lastItemIDs);
       const meta = buildWordCiteMetaText(zh, items);
+      const orphanBanner = buildOrphanBannerModel(snap?.orphans, zh);
       const vm = {
         showDocSwitcher,
         showSummaryCounts,
@@ -4387,41 +4481,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
         colButtonText: zh ? "已引清单" : "Cited List",
         colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
+        orphanTitle: orphanBanner.title,
+        orphanListText: orphanBanner.listText,
+        orphanButtonLabel: orphanBanner.buttonLabel,
+        orphanDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
         receiptText: st === this.receiptOwner ? this.receipt.text : "",
         receiptTone: st === this.receiptOwner ? this.receipt.tone : "none"
       };
       renderWordCitePanel(st, vm);
-    }
-    buildSectionSummary(zh, snap, ids) {
-      if (!snap?.activeSessionID) return "";
-      const total = snap.totalCitedCount;
-      if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
-      const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
-      if (badge) return zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`;
-      return zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`;
-    }
-    buildStats(zh, snap, ids) {
-      if (!snap?.activeSessionID) {
-        return { text: zh ? "请先打开 Word" : "Open Word first", title: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected", state: "none" };
-      }
-      const total = snap.totalCitedCount;
-      if (ids.length === 1) {
-        const b = snap.byItemID.get(ids[0]);
-        if (b) {
-          const occ = b.occurrences ?? 1;
-          return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: "cited" };
-        }
-        return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: "uncited" };
-      }
-      if (ids.length > 1) {
-        const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
-        if (cited.length) {
-          const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
-          return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: "cited" };
-        }
-        return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet", state: "uncited" };
-      }
-      return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: "uncited" };
     }
     resolveTargetItems(win, item) {
       if (!item) return [];
@@ -5757,7 +5824,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       };
       const attachments = [];
       if (canHaveAnnotations(rawItem)) attachments.push(rawItem);
-      const attIDs = typeof rawItem.getAttachments === "function" ? rawItem.getAttachments() || [] : [];
+      const attIDs = isRegularValidItem(rawItem) && typeof rawItem.getAttachments === "function" ? rawItem.getAttachments() || [] : [];
       for (const aid of attIDs) {
         const att = hostItems?.get?.(aid);
         if (canHaveAnnotations(att)) attachments.push(att);
@@ -8013,7 +8080,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const parentCached = dataSource.getRemark(parentID);
       if (parentCached) return parentCached;
     }
-    const attIDs = typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
+    const attIDs = dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
     if (dataSource) {
       for (const attID of attIDs) {
         const attCached = dataSource.getRemark(attID);
@@ -8747,7 +8814,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   }
   function resolvePrimaryPdfAttachmentID(item) {
     try {
-      const attIDs = typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
+      const attIDs = isRegularValidItem(item) && typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
       const hostItems = globalThis.Zotero?.Items;
       for (const rawId of attIDs) {
         const id = Number(rawId) || 0;
@@ -10184,10 +10251,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (enabled) refresh();
       if (external.some((r) => r.type === "childList")) onChildListChanged?.();
     }) : null;
-    observer?.observe(itemsPane, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "id"] });
     return {
       setEnabled(next) {
         if (!active) return;
+        if (next) observer?.observe(itemsPane, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "id"] });
+        else observer?.disconnect();
         enabled = next;
         refresh();
         if (!next) {
@@ -11025,8 +11093,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     attachWindow(win) {
       if (!win?.document || this.states.has(win)) return;
-      const adapter = createZoteroPaneGalleryAdapter(win);
-      const initialSel = adapter.getSelectedIDs();
       const st = {
         win,
         open: false,
@@ -11035,8 +11101,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         groupBy: this.defaultGroupBy(),
         sortField: "dateModified",
         query: "",
-        selectedIDs: new Set(initialSel),
-        anchorItemID: initialSel[0] || 0,
+        selectedIDs: /* @__PURE__ */ new Set(),
+        anchorItemID: 0,
         readingSelection: { itemID: 0 },
         columnOrders: /* @__PURE__ */ new Map(),
         measurements: /* @__PURE__ */ new Map(),
@@ -11047,23 +11113,25 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         layout: null,
         viewportDispose: null,
         visibilityGuard: null,
-        paneAdapter: adapter,
-        cleanupListeners: []
+        paneAdapter: null
       };
       this.states.set(win, st);
       this.syncWindow(st);
-      st.cleanupListeners.push(
-        adapter.onRefresh(() => {
-          if (st.open && !st.win.closed) this.renderPanel(st);
-        }),
-        adapter.onSelection(() => {
-          if (!st.open || st.contentTab !== "items") return;
-          const nextIDs = adapter.getSelectedIDs();
-          st.selectedIDs = new Set(nextIDs);
-          if (nextIDs.length) st.anchorItemID = nextIDs[nextIDs.length - 1];
-          this.syncSelectionAttributes(st);
-        })
-      );
+    }
+    bindGallery(st) {
+      if (st.paneAdapter) return;
+      const adapter = createZoteroPaneGalleryAdapter(st.win);
+      st.paneAdapter = adapter;
+      adapter.onRefresh(() => {
+        if (st.open && !st.win.closed) this.renderPanel(st);
+      });
+      adapter.onSelection(() => {
+        if (!st.open || st.contentTab !== "items") return;
+        const ids = adapter.getSelectedIDs();
+        st.selectedIDs = new Set(ids);
+        if (ids.length) st.anchorItemID = ids[ids.length - 1];
+        this.syncSelectionAttributes(st);
+      });
     }
     syncSelectionAttributes(st) {
       if (!st.panel) return;
@@ -11102,10 +11170,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.setGalleryOpen(st, false);
       st.visibilityGuard?.destroy();
       st.visibilityGuard = null;
-      st.paneAdapter?.destroy();
-      st.paneAdapter = null;
-      for (const fn of st.cleanupListeners) fn();
-      st.cleanupListeners.length = 0;
       st.tbGroup?.remove();
       st.panel?.remove();
       this.states.delete(win);
@@ -11168,13 +11232,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (!doc) return;
       st.open = nextOpen;
       st.btnGallery?.setAttribute("aria-pressed", String(nextOpen));
-      const itemsPane = doc.getElementById("zotero-items-pane");
-      if (!itemsPane) return;
       if (!nextOpen) {
+        st.paneAdapter?.destroy();
+        st.paneAdapter = null;
         this.disposeViewport(st);
         st.visibilityGuard?.setEnabled(false);
         return;
       }
+      const itemsPane = doc.getElementById("zotero-items-pane");
+      if (!itemsPane) return;
+      this.bindGallery(st);
       if (!st.panel || !st.panel.isConnected) {
         doc.getElementById("zbf-gallery-panel")?.remove();
         st.visibilityGuard?.destroy();
@@ -11188,6 +11255,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         });
       }
       st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
+      st.anchorItemID = [...st.selectedIDs].at(-1) || 0;
       st.visibilityGuard?.setEnabled(true);
       this.renderPanel(st);
     }
@@ -11717,8 +11785,11 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       for (const w of wins) closeVisualColumnPopover(w?.document);
       flushUnregisterColumns(this.registeredKeys);
     }
-    refreshColumns() {
+    clearCache() {
       this.annSummaryCache.clear();
+    }
+    refreshColumns() {
+      this.clearCache();
       if (!this.activeReadTime && !this.activeAnnotations || !this.registeredKeys.size) return;
       try {
         globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -11732,7 +11803,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
         const direct = this.dataSource.getReadingProgress(id);
         if (direct) return direct;
       }
-      const attIDs = typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
+      const attIDs = isRegularValidItem(item) && typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
       let best;
       for (const attID of attIDs) {
         const prog = this.dataSource.getReadingProgress(attID);
@@ -11938,8 +12009,11 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       for (const w of wins) closeStatusPickerPopover(w?.document);
       unregisterAllSafe(this.registeredKeys);
     }
-    refreshColumns() {
+    clearCache() {
       clearStatusRatingCaches();
+    }
+    refreshColumns() {
+      this.clearCache();
       if (!this.activeStatus && !this.activeRating || !this.registeredKeys.size) return;
       try {
         globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -12338,7 +12412,9 @@ ${summary}` : summary;
     refreshWindows() {
       for (const win of this.windows) {
         try {
-          win?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+          const view = win?.ZoteroPane?.itemsView;
+          view?.invalidateRowCache?.(true);
+          view?.tree?.invalidate?.();
         } catch {
         }
       }
@@ -12638,9 +12714,8 @@ ${summary}` : summary;
         clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
       }
-      this.readingColumns.refreshColumns();
-      this.statusRatingColumns.refreshColumns();
-      this.remarkColumn.refresh();
+      this.readingColumns.clearCache();
+      this.statusRatingColumns.clearCache();
       this.infoBriefNote.refresh();
       this.titleHeatmap.refreshWindows();
       this.galleryBoard.refreshWindows();
@@ -13062,6 +13137,9 @@ ${summary}` : summary;
         if (col?.key === collectionKey) return sid;
       }
       return null;
+    }
+    getSessionCollection(sessionID) {
+      return this.sessionCollections.get(sessionID) ?? null;
     }
     selectSessionCollection(win, sessionID) {
       const targetID = sessionID || this.sessionCollections.keys().next().value;
@@ -13725,6 +13803,152 @@ ${summary}` : summary;
     }
   };
 
+  // src/domains/word-cite/orphan-recovery.ts
+  var CSL_TO_ZOTERO_TYPE = {
+    "article-journal": "journalArticle",
+    "article-magazine": "magazineArticle",
+    "article-newspaper": "newspaperArticle",
+    "paper-conference": "conferencePaper",
+    book: "book",
+    chapter: "bookSection",
+    thesis: "thesis",
+    report: "report",
+    webpage: "webpage",
+    patent: "patent",
+    manuscript: "manuscript",
+    software: "computerProgram",
+    dataset: "dataset",
+    article: "preprint",
+    document: "document"
+  };
+  function mapCslCreators(itemData) {
+    const creators = [];
+    const pushRole = (list, creatorType) => {
+      if (!Array.isArray(list)) return;
+      for (const entry of list) {
+        if (!entry || typeof entry !== "object") continue;
+        const rec = entry;
+        const literal2 = String(rec.literal || "").trim();
+        if (literal2) {
+          creators.push({ lastName: literal2, creatorType, fieldMode: 1 });
+          continue;
+        }
+        const family = String(rec.family || "").trim();
+        const given = String(rec.given || "").trim();
+        if (family || given) {
+          creators.push({
+            lastName: family || given,
+            ...family && given ? { firstName: given } : {},
+            creatorType
+          });
+        }
+      }
+    };
+    pushRole(itemData.author, "author");
+    pushRole(itemData.editor, "editor");
+    pushRole(itemData.translator, "translator");
+    return creators;
+  }
+  function formatCslIssuedDate(itemData) {
+    const issued = itemData.issued;
+    if (!issued || typeof issued !== "object") return "";
+    const parts = Array.isArray(issued["date-parts"]) && Array.isArray(issued["date-parts"][0]) ? issued["date-parts"][0].map((v) => String(v ?? "").trim()).filter(Boolean) : [];
+    if (parts.length > 0) return parts.join("-");
+    return String(issued.literal || issued.raw || "").trim();
+  }
+  function setFieldIfPresent(item, field, value) {
+    if (typeof item?.setField !== "function") return;
+    const text2 = String(value ?? "").trim();
+    if (!text2) return;
+    try {
+      item.setField(field, text2);
+    } catch {
+    }
+  }
+  async function importOrphanFromMetadata(orphan, libraryID, targetCollectionID) {
+    const ZoteroObj = globalThis.Zotero;
+    const ItemCtor = ZoteroObj?.Item;
+    if (typeof ItemCtor !== "function") return false;
+    const data = orphan.itemData || {};
+    const rawType = String(data.type || "article-journal").trim();
+    const itemType = CSL_TO_ZOTERO_TYPE[rawType] || "journalArticle";
+    const item = new ItemCtor(itemType);
+    item.libraryID = libraryID;
+    setFieldIfPresent(item, "title", data.title || orphan.title);
+    setFieldIfPresent(item, "publicationTitle", data["container-title"]);
+    setFieldIfPresent(item, "volume", data.volume);
+    setFieldIfPresent(item, "issue", data.issue);
+    setFieldIfPresent(item, "pages", data.page);
+    setFieldIfPresent(item, "DOI", data.DOI);
+    setFieldIfPresent(item, "ISBN", data.ISBN);
+    setFieldIfPresent(item, "ISSN", data.ISSN);
+    setFieldIfPresent(item, "url", data.URL);
+    setFieldIfPresent(item, "publisher", data.publisher);
+    setFieldIfPresent(item, "place", data["publisher-place"]);
+    setFieldIfPresent(item, "abstractNote", data.abstract);
+    setFieldIfPresent(item, "date", formatCslIssuedDate(data));
+    const creators = mapCslCreators(data);
+    if (creators.length > 0 && typeof item.setCreators === "function") {
+      try {
+        item.setCreators(creators);
+      } catch {
+      }
+    }
+    if (targetCollectionID && typeof item.addToCollection === "function") {
+      try {
+        item.addToCollection(targetCollectionID);
+      } catch {
+      }
+    }
+    if (typeof item.saveTx === "function") {
+      await item.saveTx();
+      return true;
+    }
+    return false;
+  }
+  async function recoverOrphanCitations(orphans, options) {
+    const ZoteroObj = globalThis.Zotero;
+    const hostItems = ZoteroObj?.Items;
+    const libraryID = Number(ZoteroObj?.Libraries?.userLibraryID ?? 1);
+    const keyFilter = options?.keys?.length ? new Set(options.keys) : null;
+    const targets = keyFilter ? orphans.filter((o) => keyFilter.has(o.key)) : orphans;
+    let restoredCount = 0;
+    let importedCount = 0;
+    let skippedCount = 0;
+    for (const orphan of targets) {
+      try {
+        if (orphan.kind === "trashed" && orphan.itemID) {
+          const existing = typeof hostItems?.getAsync === "function" ? await hostItems.getAsync(orphan.itemID) : hostItems?.get?.(orphan.itemID);
+          if (existing) {
+            existing.deleted = false;
+            if (options?.targetCollectionID && typeof existing.addToCollection === "function") {
+              try {
+                existing.addToCollection(options.targetCollectionID);
+              } catch {
+              }
+            }
+            if (typeof existing.saveTx === "function") {
+              await existing.saveTx();
+              restoredCount += 1;
+              continue;
+            }
+          }
+        }
+        const ok = await importOrphanFromMetadata(orphan, libraryID, options?.targetCollectionID);
+        if (ok) importedCount += 1;
+        else skippedCount += 1;
+      } catch {
+        skippedCount += 1;
+      }
+    }
+    return {
+      restoredCount,
+      importedCount,
+      skippedCount,
+      ...options?.collectionName ? { collectionName: options.collectionName } : {}
+    };
+  }
+
   // src/domains/word-cite/session-tracker.ts
   function extractDocumentBaseName(rawPath) {
     let cleaned = String(rawPath || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
@@ -13873,7 +14097,8 @@ ${summary}` : summary;
           sessionID: raw.sessionID,
           documentPath: raw.documentPath,
           displayName: names.get(raw.sessionID) || extractDocumentBaseName(raw.documentPath),
-          itemCitations: map
+          itemCitations: map,
+          orphans: raw.orphans ? [...raw.orphans] : []
         });
       }
       if (this.activeSessionID && !this.sessions.has(this.activeSessionID)) {
@@ -13931,7 +14156,8 @@ ${summary}` : summary;
       const parts = [`active=${this.activeSessionID || ""}`];
       for (const ses of this.sessions.values()) {
         const items = [...ses.itemCitations.entries()].sort((a, b) => a[0] - b[0]).map(([id, c]) => `${id}:${c.ordinal}:${c.occurrences ?? 1}:${c.shortText}`).join(",");
-        parts.push(`${ses.sessionID}|${ses.displayName}|${items}`);
+        const orphans = ses.orphans.map((o) => `${o.key}:${o.kind}:${o.ordinal}:${o.shortText}`).join(",");
+        parts.push(`${ses.sessionID}|${ses.displayName}|${items}|${orphans}`);
       }
       return parts.join(";");
     }
@@ -13958,7 +14184,8 @@ ${summary}` : summary;
           sessionID: ses.sessionID,
           documentName: ses.displayName,
           totalCitedCount: map.size,
-          byItemID: map
+          byItemID: map,
+          orphans: ses.orphans
         });
       }
       const payload = {
@@ -13967,7 +14194,8 @@ ${summary}` : summary;
         byItemID: activeByItemID,
         citedItemIDs,
         totalCitedCount: activeByItemID.size,
-        sessions
+        sessions,
+        orphans: active?.orphans ?? []
       };
       this.bus.emit("citation:snapshot-updated", payload);
     }
@@ -14076,8 +14304,150 @@ ${summary}` : summary;
     }
   };
 
-  // src/domains/word-cite/word-poller.ts
+  // src/domains/word-cite/orphan-extraction.ts
   var VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
+  function cleanCitationText(raw) {
+    return String(raw || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function formatCslAuthorYear(itemData) {
+    if (!itemData) return "";
+    const authors = Array.isArray(itemData.author) ? itemData.author : Array.isArray(itemData.editor) ? itemData.editor : [];
+    const first = authors[0];
+    const name = String(first?.family || first?.literal || first?.given || "").trim();
+    const issued = itemData.issued;
+    const yearPart = issued?.["date-parts"]?.[0]?.[0] ?? issued?.literal ?? issued?.raw ?? "";
+    const year = String(yearPart || "").match(/\d{4}/)?.[0] || "";
+    return [name, year].filter(Boolean).join(", ");
+  }
+  function buildOrphanKey(itemID, uris, itemData, fallbackText) {
+    if (Number.isSafeInteger(itemID) && itemID > 0) return `id:${itemID}`;
+    if (uris.length > 0) return `uri:${uris[0]}`;
+    const cslId = itemData?.id !== void 0 ? String(itemData.id).trim() : "";
+    if (cslId) return `csl:${cslId}`;
+    const title = String(itemData?.title || "").trim();
+    if (title) return `title:${title.toLowerCase()}`;
+    return `raw:${fallbackText || "unknown"}`;
+  }
+  function buildOrphanMetadata(ci, zotItem, itemID, shortText, ordinal, kind) {
+    const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
+    const uris = Array.isArray(ci?.uris) ? ci.uris.map((u) => String(u || "").trim()).filter(Boolean) : [];
+    const itemTitle = typeof zotItem?.getField === "function" ? String(zotItem.getField("title") || "").trim() : "";
+    const dataTitle = String(rawData?.title || rawData?.["container-title"] || "").trim();
+    const title = itemTitle || dataTitle || (shortText ? `Citation ${shortText}` : `#${ordinal}`);
+    const authorYear = formatCslAuthorYear(rawData);
+    const key = buildOrphanKey(itemID, uris, rawData, `${ordinal}:${shortText}`);
+    return {
+      key,
+      kind,
+      ordinal,
+      shortText,
+      title,
+      ...authorYear ? { authorYear } : {},
+      ...Number.isSafeInteger(itemID) && itemID > 0 ? { itemID } : {},
+      ...uris.length ? { uris } : {},
+      ...rawData ? { itemData: rawData } : {}
+    };
+  }
+  function extractSessionCitationsWithOrphans(session2) {
+    const hostItems = globalThis.Zotero?.Items;
+    const hasItemLookup = typeof hostItems?.get === "function";
+    const ordinalMap = /* @__PURE__ */ new Map();
+    const orphanMap = /* @__PURE__ */ new Map();
+    const orphanItemIDs = /* @__PURE__ */ new Set();
+    const statusCache2 = /* @__PURE__ */ new Map();
+    let nextOrdinal = 1;
+    const inspectItemStatus = (itemID) => {
+      if (!Number.isSafeInteger(itemID) || itemID <= 0) return { status: "missing", zotItem: null };
+      if (!hasItemLookup) return { status: "valid", zotItem: null };
+      const cached = statusCache2.get(itemID);
+      if (cached !== void 0) return cached;
+      const zotItem = hostItems.get(itemID);
+      if (!zotItem) {
+        const res2 = { status: "missing", zotItem: null };
+        statusCache2.set(itemID, res2);
+        return res2;
+      }
+      const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
+      const trashed = zotItem.deleted === true || inTrash;
+      const res = { status: trashed ? "trashed" : "valid", zotItem };
+      statusCache2.set(itemID, res);
+      return res;
+    };
+    const recordValidHit = (itemID, shortText, explicitItemOrdinal, countOcc = false) => {
+      if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
+      if (orphanItemIDs.has(itemID)) return;
+      const { status } = inspectItemStatus(itemID);
+      if (status !== "valid") return;
+      const label = cleanCitationText(shortText);
+      let existing = ordinalMap.get(itemID);
+      if (!existing) {
+        const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
+        nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
+        existing = { ordinal: assigned, occurrences: 0, labels: [] };
+        ordinalMap.set(itemID, existing);
+      }
+      if (countOcc) existing.occurrences += 1;
+      else if (existing.occurrences === 0) existing.occurrences = 1;
+      if (label && !existing.labels.includes(label)) {
+        existing.labels.push(label);
+      }
+    };
+    const recordOrphanHit = (ci, zotItem, itemID, kind, shortText, explicitOrdinal) => {
+      const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
+      const uris = Array.isArray(ci?.uris) ? ci.uris.map((u) => String(u || "").trim()).filter(Boolean) : [];
+      const key = buildOrphanKey(itemID, uris, rawData, shortText || String(nextOrdinal));
+      if (Number.isSafeInteger(itemID) && itemID > 0) orphanItemIDs.add(itemID);
+      if (orphanMap.has(key)) return;
+      const assigned = explicitOrdinal && explicitOrdinal > 0 ? explicitOrdinal : nextOrdinal;
+      nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
+      orphanMap.set(key, buildOrphanMetadata(ci, zotItem, itemID, shortText, assigned, kind));
+    };
+    const byIndex = session2?.citationsByIndex;
+    if (byIndex && typeof byIndex === "object") {
+      const sortedKeys = Object.keys(byIndex).filter((k) => VALID_INDEX_KEY_RE.test(k)).sort((a, b) => Number(a) - Number(b));
+      for (const key of sortedKeys) {
+        const cit = byIndex[key];
+        const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
+        const shortText = cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? "";
+        const cleanedShort = cleanCitationText(shortText);
+        for (const ci of cItems) {
+          if (!ci || typeof ci !== "object") continue;
+          const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
+          const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
+          const expOrd = explicitOrdinal > 0 ? explicitOrdinal : void 0;
+          const { status, zotItem } = inspectItemStatus(itemID);
+          if (status === "valid") {
+            recordValidHit(itemID, cleanedShort, expOrd, true);
+          } else {
+            recordOrphanHit(ci, zotItem, itemID, status, cleanedShort, expOrd);
+          }
+        }
+      }
+    }
+    const byItem = session2?.citationsByItemID;
+    if (byItem && typeof byItem === "object") {
+      for (const [rawID, list] of Object.entries(byItem)) {
+        const itemID = Number(rawID);
+        const entries = Array.isArray(list) ? list : [list];
+        for (const entry of entries) {
+          if (!entry) continue;
+          const shortText = entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? "";
+          recordValidHit(itemID, shortText);
+        }
+      }
+    }
+    return {
+      citations: [...ordinalMap.entries()].map(([itemID, info]) => ({
+        itemID,
+        ordinal: info.ordinal,
+        shortText: info.labels.join(", "),
+        occurrences: info.occurrences
+      })),
+      orphans: [...orphanMap.values()]
+    };
+  }
+
+  // src/domains/word-cite/word-poller.ts
   var WordIntegrationPoller = class {
     timer = null;
     viewRefreshTimer = null;
@@ -14158,9 +14528,9 @@ ${summary}` : summary;
           const sessionID = String(rawID);
           activeIDs.add(sessionID);
           await this.ensureConsistentSnapshot(session2);
-          const parsed = this.extractSessionCitations(session2);
+          const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session2);
           const prevTracked = this.tracker.getSession(sessionID);
-          if (!parsed.length && prevTracked && prevTracked.itemCitations.size > 0) {
+          if (!parsed.length && !orphans.length && prevTracked && prevTracked.itemCitations.size > 0) {
             const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
             this.emptyStreakBySession.set(sessionID, streak);
             if (streak < 2) {
@@ -14172,15 +14542,16 @@ ${summary}` : summary;
                   ordinal: info.ordinal,
                   shortText: info.shortText,
                   occurrences: info.occurrences
-                }))
+                })),
+                orphans: prevTracked.orphans
               });
               continue;
             }
-          } else if (parsed.length > 0) {
+          } else if (parsed.length > 0 || orphans.length > 0) {
             this.emptyStreakBySession.delete(sessionID);
           }
           const docPath = this.resolveSessionDocumentPath(sessionID, session2, entries.length);
-          rawSessions.push({ sessionID, documentPath: docPath, citations: parsed });
+          rawSessions.push({ sessionID, documentPath: docPath, citations: parsed, orphans });
         }
         for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
         for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
@@ -14274,70 +14645,8 @@ ${summary}` : summary;
       }
       return cached || sessionID;
     }
-    // Extracts unique valid cited items in exact order of appearance across citationsByIndex (1, 2, 3, 4...).
     extractSessionCitations(session2) {
-      const hostItems = globalThis.Zotero?.Items;
-      const ordinalMap = /* @__PURE__ */ new Map();
-      const trashStatus = /* @__PURE__ */ new Map();
-      let nextOrdinal = 1;
-      const cleanText = (raw) => String(raw || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
-      const isDeletedOrTrashed = (itemID) => {
-        const cached = trashStatus.get(itemID);
-        if (cached !== void 0) return cached;
-        const zotItem = hostItems?.get?.(itemID);
-        if (!zotItem) {
-          trashStatus.set(itemID, false);
-          return false;
-        }
-        const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
-        const deleted = zotItem.deleted === true || inTrash;
-        trashStatus.set(itemID, deleted);
-        return deleted;
-      };
-      const recordHit = (itemID, shortText, explicitItemOrdinal, countOcc = false) => {
-        if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
-        if (isDeletedOrTrashed(itemID)) return;
-        const label = cleanText(shortText);
-        let existing = ordinalMap.get(itemID);
-        if (!existing) {
-          const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
-          nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-          existing = { ordinal: assigned, occurrences: 0, labels: [] };
-          ordinalMap.set(itemID, existing);
-        }
-        if (countOcc) existing.occurrences += 1;
-        else if (existing.occurrences === 0) existing.occurrences = 1;
-        if (label && !existing.labels.includes(label)) {
-          existing.labels.push(label);
-        }
-      };
-      const byIndex = session2.citationsByIndex;
-      if (byIndex && typeof byIndex === "object") {
-        const sortedKeys = Object.keys(byIndex).filter((k) => VALID_INDEX_KEY_RE.test(k)).sort((a, b) => Number(a) - Number(b));
-        for (const key of sortedKeys) {
-          const cit = byIndex[key];
-          const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
-          const shortText = cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? "";
-          for (const ci of cItems) {
-            const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
-            const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
-            recordHit(itemID, shortText, explicitOrdinal > 0 ? explicitOrdinal : void 0, true);
-          }
-        }
-      }
-      const byItem = session2.citationsByItemID;
-      if (byItem && typeof byItem === "object") {
-        for (const [rawID, list] of Object.entries(byItem)) {
-          const itemID = Number(rawID);
-          const entries = Array.isArray(list) ? list : [list];
-          for (const entry of entries) {
-            if (!entry) continue;
-            const shortText = entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? "";
-            recordHit(itemID, shortText);
-          }
-        }
-      }
-      return [...ordinalMap.entries()].map(([itemID, info]) => ({ itemID, ordinal: info.ordinal, shortText: info.labels.join(", "), occurrences: info.occurrences }));
+      return extractSessionCitationsWithOrphans(session2).citations;
     }
     scheduleItemsViewRefresh() {
       if (this.viewRefreshTimer !== null) return;
@@ -14541,6 +14850,31 @@ ${summary}` : summary;
           if (!this.active) return;
           const sid = sessionID || this.tracker.getActiveSession()?.sessionID || null;
           this.collections.selectSessionCollection(win, sid);
+        })
+      );
+      this.disposables.add(
+        this.kernel.bus.on("word:recover-orphans-request", async ({ sessionID, keys: keys2, requestId }) => {
+          if (!this.active) return;
+          const targetSession = (sessionID ? this.tracker.getSession(sessionID) : void 0) || this.tracker.getActiveSession();
+          if (!targetSession || !targetSession.orphans.length) {
+            this.kernel.bus.emit("word:recover-orphans-result", {
+              requestId,
+              restoredCount: 0,
+              importedCount: 0,
+              skippedCount: 0
+            });
+            return;
+          }
+          const col = this.collections.getSessionCollection(targetSession.sessionID);
+          const result = await recoverOrphanCitations(targetSession.orphans, {
+            targetCollectionID: typeof col?.id === "number" ? col.id : void 0,
+            collectionName: col?.name ? String(col.name) : targetSession.displayName,
+            keys: keys2
+          });
+          if (result.restoredCount > 0 || result.importedCount > 0) {
+            await this.resyncNow().catch((err) => this.kernel.logger.error("word-cite:recover-resync", err));
+          }
+          this.kernel.bus.emit("word:recover-orphans-result", { ...result, requestId });
         })
       );
     }
@@ -16059,7 +16393,7 @@ ${summary}` : summary;
     async initDiskCache() {
       return hydrateWorkspaceDiskCaches(this);
     }
-    save(immediateDisk = false) {
+    save(immediateDisk = false, change = "data") {
       if (!this.readOnlyGuard) {
         const layoutOnly = pickWorkspaceLayoutState(this.state);
         const serialized = JSON.stringify(layoutOnly);
@@ -16069,7 +16403,7 @@ ${summary}` : summary;
         }
         this.diskCache.scheduleSave(layoutOnly, immediateDisk, serialized);
       }
-      this.emitChange();
+      this.emitChange(change);
     }
     saveReadingProgress(immediateDisk = false) {
       this.readingCache.scheduleSave(this.state, immediateDisk);
@@ -16079,10 +16413,10 @@ ${summary}` : summary;
       this.notesCache.scheduleSave(this.state, immediateDisk);
       this.emitChange();
     }
-    emitChange() {
+    emitChange(change = "data") {
       for (const fn of this.listeners) {
         try {
-          fn();
+          fn(change);
         } catch {
         }
       }
@@ -16274,7 +16608,7 @@ ${summary}` : summary;
     }
     saveSession(name, options = {}) {
       const session2 = saveWorkspaceSessionRecord(this.state, name, options);
-      this.save(true);
+      this.save(true, "session");
       return session2;
     }
     exportJson() {

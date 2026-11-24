@@ -1,5 +1,5 @@
 import type { TypedEventBus } from '../../kernel/event-bus.ts';
-import type { CitationBadgeInfo, CitationSessionSummary, CitationSnapshotPayload } from '../../kernel/types.ts';
+import type { CitationBadgeInfo, CitationSessionSummary, CitationSnapshotPayload, OrphanCitationInfo } from '../../kernel/types.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
 
 export interface WordSessionRecord {
@@ -7,6 +7,7 @@ export interface WordSessionRecord {
 	readonly documentPath: string;
 	readonly displayName: string;
 	readonly itemCitations: ReadonlyMap<number, { ordinal: number; shortText: string; occurrences?: number }>;
+	readonly orphans: readonly OrphanCitationInfo[];
 }
 
 export function extractDocumentBaseName(rawPath: string): string {
@@ -156,6 +157,7 @@ export class WordSessionTracker {
 		sessionID: string;
 		documentPath: string;
 		citations: ReadonlyArray<{ itemID: number; ordinal: number; shortText: string; occurrences?: number }>;
+		orphans?: readonly OrphanCitationInfo[];
 	}[]): boolean {
 		const names = disambiguateDocumentNames(
 			rawSessions.map((s) => ({ sessionID: s.sessionID, path: s.documentPath })),
@@ -175,6 +177,7 @@ export class WordSessionTracker {
 				documentPath: raw.documentPath,
 				displayName: names.get(raw.sessionID) || extractDocumentBaseName(raw.documentPath),
 				itemCitations: map,
+				orphans: raw.orphans ? [...raw.orphans] : [],
 			});
 		}
 
@@ -243,7 +246,8 @@ export class WordSessionTracker {
 				.sort((a, b) => a[0] - b[0])
 				.map(([id, c]) => `${id}:${c.ordinal}:${c.occurrences ?? 1}:${c.shortText}`)
 				.join(',');
-			parts.push(`${ses.sessionID}|${ses.displayName}|${items}`);
+			const orphans = ses.orphans.map((o) => `${o.key}:${o.kind}:${o.ordinal}:${o.shortText}`).join(',');
+			parts.push(`${ses.sessionID}|${ses.displayName}|${items}|${orphans}`);
 		}
 		return parts.join(';');
 	}
@@ -273,6 +277,7 @@ export class WordSessionTracker {
 				documentName: ses.displayName,
 				totalCitedCount: map.size,
 				byItemID: map,
+				orphans: ses.orphans,
 			});
 		}
 
@@ -283,6 +288,7 @@ export class WordSessionTracker {
 			citedItemIDs,
 			totalCitedCount: activeByItemID.size,
 			sessions,
+			orphans: active?.orphans ?? [],
 		};
 		this.bus.emit('citation:snapshot-updated', payload);
 	}

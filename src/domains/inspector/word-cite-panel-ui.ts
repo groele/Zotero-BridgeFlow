@@ -1,5 +1,5 @@
 import { getCachedPrimaryItemFields } from '../../services/item-resolution.ts';
-import type { WordInsertResultPayload, WordRefreshResultPayload, WorkspaceGroupSummary } from '../../kernel/types.ts';
+import type { CitationSnapshotPayload, OrphanCitationInfo, WordInsertResultPayload, WordRecoverOrphansResultPayload, WordRefreshResultPayload, WorkspaceGroupSummary } from '../../kernel/types.ts';
 
 export interface ReceiptState {
 	text: string;
@@ -21,10 +21,78 @@ export function formatRefreshReceipt(res: WordRefreshResultPayload, zh: boolean)
 	return { tone: 'warn', text: zh ? '⚠ 未检测到可刷新的活动 Word 文档' : '⚠ No active Word document to refresh' };
 }
 
-export function formatPendingReceipt(kind: 'insert' | 'refresh', zh: boolean): ReceiptState {
+export function formatPendingReceipt(kind: 'insert' | 'refresh' | 'recover', zh: boolean): ReceiptState {
 	const text = kind === 'insert' ? (zh ? '正在插入 Word 引文…' : 'Inserting Word citations…')
+		: kind === 'recover' ? (zh ? '正在还原/反向导入缺失引文…' : 'Recovering missing citations…')
 		: (zh ? '正在刷新 Word 引文…' : 'Refreshing Word citations…');
 	return { tone: 'warn', text };
+}
+
+export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: boolean): ReceiptState {
+	if (res.error) return { tone: 'err', text: res.error };
+	const { restoredCount, importedCount, skippedCount, collectionName } = res;
+	if (!restoredCount && !importedCount) {
+		return { tone: 'warn', text: zh ? '⚠ 未能恢复或导入缺失引文' : '⚠ No orphan citations could be recovered' };
+	}
+	const parts: string[] = [];
+	if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（刷新 Word 即自动重连）` : `Restored ${restoredCount} from Trash`);
+	if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ''}（请在 Word 中替换旧引用）` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ''} (re-link in Word)`);
+	if (skippedCount > 0) parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
+	return { tone: 'ok', text: `✓ ${parts.join(zh ? '；' : '; ')}` };
+}
+
+export function buildOrphanBannerModel(orphans: readonly OrphanCitationInfo[] | undefined, zh: boolean): { title: string; listText: string; buttonLabel: string } {
+	if (!orphans?.length) return { title: '', listText: '', buttonLabel: '' };
+	const trashed = orphans.filter((o) => o.kind === 'trashed').length;
+	const missing = orphans.length - trashed;
+	const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ');
+	const moreOrd = orphans.length > 4 ? (zh ? ' 等' : '…') : '';
+	const title = zh
+		? `⚠ 检测到 ${orphans.length} 篇断链/缺失引文（${ordinals}${moreOrd}）`
+		: `⚠ ${orphans.length} missing/trashed citation(s) (${ordinals}${moreOrd})`;
+	const listText = orphans.slice(0, 4).map((o) => {
+		const tag = o.kind === 'trashed' ? (zh ? '回收站' : 'Trash') : (zh ? '本地缺失' : 'Missing');
+		return `[${o.ordinal}] ${o.title} (${tag})`;
+	}).join('\n') + (orphans.length > 4 ? (zh ? `\n…另有 ${orphans.length - 4} 篇` : `\n…and ${orphans.length - 4} more`) : '');
+	const buttonLabel = trashed > 0 && missing === 0
+		? (zh ? `一键从回收站还原 (${trashed})` : `Restore from Trash (${trashed})`)
+		: trashed === 0
+			? (zh ? `一键反向导入 Zotero (${missing})` : `Import to Zotero (${missing})`)
+			: (zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`);
+	return { title, listText, buttonLabel };
+}
+
+export function buildWordCiteSectionSummary(zh: boolean, snap: CitationSnapshotPayload | null, ids: readonly number[]): string {
+	if (!snap?.activeSessionID) return '';
+	const total = snap.totalCitedCount;
+	if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
+	const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : undefined;
+	if (badge) return zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`;
+	return zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`;
+}
+
+export function buildWordCiteStats(zh: boolean, snap: CitationSnapshotPayload | null, ids: readonly number[]): { text: string; title: string; state: 'cited' | 'uncited' | 'none' } {
+	if (!snap?.activeSessionID) {
+		return { text: zh ? '请先打开 Word' : 'Open Word first', title: zh ? '暂未检测到活动 Word 文档会话' : 'No active Word session detected', state: 'none' };
+	}
+	const total = snap.totalCitedCount;
+	if (ids.length === 1) {
+		const b = snap.byItemID.get(ids[0]);
+		if (b) {
+			const occ = b.occurrences ?? 1;
+			return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ''}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: 'cited' };
+		}
+		return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: 'uncited' };
+	}
+	if (ids.length > 1) {
+		const cited = ids.map((id) => snap.byItemID.get(id)).filter((b): b is NonNullable<typeof b> => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
+		if (cited.length) {
+			const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(', ')}${cited.length > 3 ? '…' : ''}]`;
+			return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: 'cited' };
+		}
+		return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? '当前选中文献均尚未在 Word 中引用' : 'None of the selected items are cited yet', state: 'uncited' };
+	}
+	return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: 'uncited' };
 }
 
 export function buildWordCiteMetaText(zh: boolean, items: readonly any[]): string {
@@ -49,6 +117,10 @@ export interface WordCiteBodyState {
 	synergyEl: HTMLElement;
 	groupBtn: HTMLButtonElement;
 	colBtn: HTMLButtonElement;
+	orphanBox: HTMLElement;
+	orphanTitle: HTMLElement;
+	orphanList: HTMLElement;
+	orphanBtn: HTMLButtonElement;
 	receiptEl: HTMLElement;
 	activeItem: any;
 	lastItemIDs: number[];
@@ -77,6 +149,10 @@ export interface WordCiteViewModel {
 	showCollectionButton: boolean;
 	colButtonText: string;
 	colButtonTitle: string;
+	orphanTitle: string;
+	orphanListText: string;
+	orphanButtonLabel: string;
+	orphanDisabled: boolean;
 	receiptText: string;
 	receiptTone: 'ok' | 'warn' | 'err' | 'none';
 }
@@ -132,9 +208,15 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.12); color: #15803d; }
 .zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.12); color: #b45309; }
 .zbf-wc-receipt.is-err { background: rgba(220,38,38,0.12); color: #b91c1c; }
+.zbf-wc-orphan-box { display: grid; gap: 4px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.35); background: rgba(217,119,6,0.08); font-size: 11px; }
+.zbf-wc-orphan-title { font-weight: 600; color: #b45309; }
+.zbf-wc-orphan-list { white-space: pre-line; line-height: 1.45; opacity: 0.9; max-height: 76px; overflow-y: auto; }
+.zbf-wc-orphan-btn { box-sizing: border-box; padding: 4px 8px; border-radius: 5px; border: 1px solid rgba(217,119,6,0.45); background: rgba(217,119,6,0.14); color: inherit; font-size: 11px; font-weight: 600; cursor: pointer; text-align: center; }
+.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.22); }
+.zbf-wc-orphan-btn:disabled { opacity: 0.5; cursor: default; }
 @media (prefers-color-scheme: dark) {
 	.zbf-wc-stats.is-cited, .zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-receipt.is-warn { color: #fbbf24; }
+	.zbf-wc-receipt.is-warn, .zbf-wc-orphan-title { color: #fbbf24; }
 	.zbf-wc-receipt.is-err { color: #f87171; }
 	.zbf-wc-link { color: #60a5fa; }
 }`;
@@ -179,16 +261,24 @@ export function createWordCiteBodyState(doc: Document, body: HTMLElement): WordC
 	colBtn.type = 'button';
 	synergyEl.append(groupBtn, colBtn);
 
+	const orphanBox = el('div', 'zbf-wc-orphan-box');
+	orphanBox.hidden = true;
+	const orphanTitle = el('div', 'zbf-wc-orphan-title');
+	const orphanList = el('div', 'zbf-wc-orphan-list');
+	const orphanBtn = el('button', 'zbf-wc-orphan-btn');
+	orphanBtn.type = 'button';
+	orphanBox.append(orphanTitle, orphanList, orphanBtn);
+
 	const receiptEl = el('div', 'zbf-wc-receipt');
 	receiptEl.hidden = true;
 	receiptEl.setAttribute('role', 'status');
 
-	root.append(row1, metaEl, actions, synergyEl, receiptEl);
+	root.append(row1, metaEl, actions, synergyEl, receiptEl, orphanBox);
 	body.appendChild(root);
 
 	return {
 		root, row1, docBtn, docDot, docName, docSwap, statsEl, metaEl,
-		insertBtn, refreshBtn, synergyEl, groupBtn, colBtn, receiptEl,
+		insertBtn, refreshBtn, synergyEl, groupBtn, colBtn, orphanBox, orphanTitle, orphanList, orphanBtn, receiptEl,
 		activeItem: null, lastItemIDs: [], lastGroup: null,
 	};
 }
@@ -225,6 +315,12 @@ export function renderWordCitePanel(st: WordCiteBodyState, vm: WordCiteViewModel
 	st.colBtn.textContent = vm.colButtonText;
 	st.colBtn.title = vm.colButtonTitle;
 	st.synergyEl.hidden = st.groupBtn.hidden && st.colBtn.hidden;
+
+	st.orphanBox.hidden = !vm.orphanTitle;
+	st.orphanTitle.textContent = vm.orphanTitle;
+	st.orphanList.textContent = vm.orphanListText;
+	st.orphanBtn.textContent = vm.orphanButtonLabel;
+	st.orphanBtn.disabled = vm.orphanDisabled;
 
 	st.receiptEl.hidden = vm.receiptTone === 'none' || !vm.receiptText;
 	st.receiptEl.textContent = vm.receiptText;

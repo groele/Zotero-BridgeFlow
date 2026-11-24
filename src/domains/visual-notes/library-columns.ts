@@ -1,3 +1,4 @@
+import { isRegularValidItem } from '../../services/item-resolution.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import { collectItemAnnotations, parseColorSemantics } from '../../services/annotation-utils.ts';
 import { formatReadingProgress, type TabReadingProgress } from '../../services/reading-stats.ts';
@@ -168,8 +169,12 @@ export class ReadingColumnsController {
 		flushUnregisterColumns(this.registeredKeys);
 	}
 
-	refreshColumns(): void {
+	clearCache(): void {
 		this.annSummaryCache.clear();
+	}
+
+	refreshColumns(): void {
+		this.clearCache();
 		if ((!this.activeReadTime && !this.activeAnnotations) || !this.registeredKeys.size) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -183,7 +188,7 @@ export class ReadingColumnsController {
 			const direct = this.dataSource.getReadingProgress(id);
 			if (direct) return direct;
 		}
-		const attIDs: number[] = typeof item.getAttachments === 'function' ? (item.getAttachments() || []) : [];
+		const attIDs: number[] = isRegularValidItem(item) && typeof item.getAttachments === 'function' ? (item.getAttachments() || []) : [];
 		let best: TabReadingProgress | undefined;
 		for (const attID of attIDs) {
 			const prog = this.dataSource.getReadingProgress(attID);

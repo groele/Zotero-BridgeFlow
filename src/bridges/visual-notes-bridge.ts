@@ -37,8 +37,8 @@ export class VisualNotesBridge implements BridgeModule {
 			},
 		});
 
-		this.disposeStoreListener = this.workspace.store.onChange(() => {
-			if (!this.active) return;
+		this.disposeStoreListener = this.workspace.store.onChange((change) => {
+			if (!this.active || change === 'session') return;
 			this.syncChangedRemarksToExtra();
 			this.visualNotes.refreshLibraryViews();
 		});

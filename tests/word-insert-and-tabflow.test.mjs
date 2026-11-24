@@ -275,7 +275,7 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 		citationsByIndex: {
 			10: { citationItems: [{ id: 505 }, { id: 502 }], properties: { plainCitation: '2, 5' } },
 			0: { citationItems: [{ id: 501 }, { id: 502 }, { id: 503 }, { id: 504 }], properties: { plainCitation: '1–4' } },
-			1: { citationItems: [{ id: 599 }], properties: { plainCitation: 'trashed' } }, // trashed item -> ignored
+			1: { citationItems: [{ id: 599 }], properties: { plainCitation: 'trashed' } }, // trashed item -> reserved ordinal 5, excluded from valid map
 		},
 		citationsByItemID: {},
 	};
@@ -295,7 +295,7 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 	assert.equal(tracker.getCitationDisplayForItem(502), '[2] 1–4, 2, 5');
 	assert.equal(tracker.getCitationDisplayForItem(503), '[3] 1–4');
 	assert.equal(tracker.getCitationDisplayForItem(504), '[4] 1–4');
-	assert.equal(tracker.getCitationDisplayForItem(505), '[5] 2, 5');
+	assert.equal(tracker.getCitationDisplayForItem(505), '[6] 2, 5');
 
 	// Single transient empty snapshot must preserve prior citations
 	mockSession.citationsByIndex = {};

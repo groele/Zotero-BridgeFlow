@@ -6,6 +6,7 @@ import type { ServiceContainer } from '../../services/service-container.ts';
 import { WordCitationCollectionManager } from './citation-collections.ts';
 import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
+import { recoverOrphanCitations } from './orphan-recovery.ts';
 import { WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
 import { refreshActiveWordDocument, resolveActiveSelectionForWord } from './word-inserter.ts';
@@ -143,6 +144,32 @@ export class WordCiteDomainModule implements DomainModule {
 				if (!this.active) return;
 				const sid = sessionID || this.tracker.getActiveSession()?.sessionID || null;
 				this.collections.selectSessionCollection(win, sid);
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.bus.on('word:recover-orphans-request', async ({ sessionID, keys, requestId }) => {
+				if (!this.active) return;
+				const targetSession = (sessionID ? this.tracker.getSession(sessionID) : undefined) || this.tracker.getActiveSession();
+				if (!targetSession || !targetSession.orphans.length) {
+					this.kernel.bus.emit('word:recover-orphans-result', {
+						requestId,
+						restoredCount: 0,
+						importedCount: 0,
+						skippedCount: 0,
+					});
+					return;
+				}
+				const col = this.collections.getSessionCollection(targetSession.sessionID);
+				const result = await recoverOrphanCitations(targetSession.orphans, {
+					targetCollectionID: typeof col?.id === 'number' ? col.id : undefined,
+					collectionName: col?.name ? String(col.name) : targetSession.displayName,
+					keys,
+				});
+				if (result.restoredCount > 0 || result.importedCount > 0) {
+					await this.resyncNow().catch((err) => this.kernel.logger.error('word-cite:recover-resync', err));
+				}
+				this.kernel.bus.emit('word:recover-orphans-result', { ...result, requestId });
 			}),
 		);
 	}

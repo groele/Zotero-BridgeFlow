@@ -1,3 +1,4 @@
+import { isRegularValidItem } from './item-resolution.ts';
 export const DEFAULT_ANNOTATION_COLORS: Readonly<Record<string, string>> = {
 	'#ffd400': 'Context',
 	'#ff6666': 'Method',
@@ -252,7 +253,7 @@ export function collectItemAnnotations(
 		};
 		const attachments: any[] = [];
 		if (canHaveAnnotations(rawItem)) attachments.push(rawItem);
-		const attIDs: number[] = typeof rawItem.getAttachments === 'function' ? (rawItem.getAttachments() || []) : [];
+		const attIDs: number[] = isRegularValidItem(rawItem) && typeof rawItem.getAttachments === 'function' ? (rawItem.getAttachments() || []) : [];
 		for (const aid of attIDs) {
 			const att = hostItems?.get?.(aid);
 			if (canHaveAnnotations(att)) attachments.push(att);

@@ -274,7 +274,9 @@ export class TitleHeatmapController {
 	refreshWindows(): void {
 		for (const win of this.windows) {
 			try {
-				(win as any)?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+				const view = (win as any)?.ZoteroPane?.itemsView;
+				view?.invalidateRowCache?.(true);
+				view?.tree?.invalidate?.();
 			} catch { /* ignore */ }
 		}
 	}

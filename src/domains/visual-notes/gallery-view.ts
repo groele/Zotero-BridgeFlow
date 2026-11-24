@@ -22,7 +22,7 @@ interface WindowGalleryState {
 	tbGroup: HTMLElement | null; btnGallery: HTMLButtonElement | null; btnHub: HTMLButtonElement | null;
 	panel: HTMLElement | null; layout: GalleryVirtualLayoutController | null; viewportDispose: (() => void) | null;
 	visibilityGuard: ReturnType<typeof createGalleryVisibilityGuard> | null;
-	paneAdapter: ZoteroPaneGalleryAdapter | null; cleanupListeners: Array<() => void>;
+	paneAdapter: ZoteroPaneGalleryAdapter | null;
 }
 
 export class GalleryBoardController {
@@ -65,30 +65,31 @@ export class GalleryBoardController {
 
 	attachWindow(win: Window): void {
 		if (!win?.document || this.states.has(win)) return;
-		const adapter = createZoteroPaneGalleryAdapter(win);
-		const initialSel = adapter.getSelectedIDs();
 		const st: WindowGalleryState = {
 			win, open: false, contentTab: 'items', mode: this.defaultMode(), groupBy: this.defaultGroupBy(),
-			sortField: 'dateModified', query: '', selectedIDs: new Set(initialSel), anchorItemID: initialSel[0] || 0,
+			sortField: 'dateModified', query: '', selectedIDs: new Set(), anchorItemID: 0,
 			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(),
 			tbGroup: null, btnGallery: null, btnHub: null, panel: null, layout: null,
-			viewportDispose: null, visibilityGuard: null, paneAdapter: adapter, cleanupListeners: [],
+			viewportDispose: null, visibilityGuard: null, paneAdapter: null,
 		};
 		this.states.set(win, st);
 		this.syncWindow(st);
+	}
 
-		st.cleanupListeners.push(
-			adapter.onRefresh(() => {
-				if (st.open && !(st.win as any).closed) this.renderPanel(st);
-			}),
-			adapter.onSelection(() => {
-				if (!st.open || st.contentTab !== 'items') return;
-				const nextIDs = adapter.getSelectedIDs();
-				st.selectedIDs = new Set(nextIDs);
-				if (nextIDs.length) st.anchorItemID = nextIDs[nextIDs.length - 1];
-				this.syncSelectionAttributes(st);
-			}),
-		);
+	private bindGallery(st: WindowGalleryState): void {
+		if (st.paneAdapter) return;
+		const adapter = createZoteroPaneGalleryAdapter(st.win);
+		st.paneAdapter = adapter;
+		adapter.onRefresh(() => {
+			if (st.open && !st.win.closed) this.renderPanel(st);
+		});
+		adapter.onSelection(() => {
+			if (!st.open || st.contentTab !== 'items') return;
+			const ids = adapter.getSelectedIDs();
+			st.selectedIDs = new Set(ids);
+			if (ids.length) st.anchorItemID = ids[ids.length - 1];
+			this.syncSelectionAttributes(st);
+		});
 	}
 
 	private syncSelectionAttributes(st: WindowGalleryState): void {
@@ -128,10 +129,6 @@ export class GalleryBoardController {
 		this.setGalleryOpen(st, false);
 		st.visibilityGuard?.destroy();
 		st.visibilityGuard = null;
-		st.paneAdapter?.destroy();
-		st.paneAdapter = null;
-		for (const fn of st.cleanupListeners) fn();
-		st.cleanupListeners.length = 0;
 		st.tbGroup?.remove();
 		st.panel?.remove();
 		this.states.delete(win);
@@ -197,15 +194,18 @@ export class GalleryBoardController {
 		if (!doc) return;
 		st.open = nextOpen;
 		st.btnGallery?.setAttribute('aria-pressed', String(nextOpen));
-		const itemsPane = doc.getElementById('zotero-items-pane') as HTMLElement | null;
-		if (!itemsPane) return;
 
 		if (!nextOpen) {
+			st.paneAdapter?.destroy();
+			st.paneAdapter = null;
 			this.disposeViewport(st);
 			st.visibilityGuard?.setEnabled(false);
 			return;
 		}
 
+		const itemsPane = doc.getElementById('zotero-items-pane') as HTMLElement | null;
+		if (!itemsPane) return;
+		this.bindGallery(st);
 		if (!st.panel || !st.panel.isConnected) {
 			doc.getElementById('zbf-gallery-panel')?.remove();
 			st.visibilityGuard?.destroy();
@@ -219,6 +219,7 @@ export class GalleryBoardController {
 			});
 		}
 		st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
+		st.anchorItemID = [...st.selectedIDs].at(-1) || 0;
 		st.visibilityGuard?.setEnabled(true);
 		this.renderPanel(st);
 	}

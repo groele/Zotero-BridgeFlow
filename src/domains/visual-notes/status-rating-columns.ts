@@ -107,8 +107,12 @@ export class StatusRatingColumnsController {
 		unregisterAllSafe(this.registeredKeys);
 	}
 
-	refreshColumns(): void {
+	clearCache(): void {
 		clearStatusRatingCaches();
+	}
+
+	refreshColumns(): void {
+		this.clearCache();
 		if ((!this.activeStatus && !this.activeRating) || !this.registeredKeys.size) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();

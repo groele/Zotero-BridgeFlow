@@ -1,8 +1,8 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
+import type { OrphanCitationInfo } from '../../kernel/types.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
+import { extractSessionCitationsWithOrphans } from './orphan-extraction.ts';
 import { extractDocumentBaseName, type WordSessionTracker } from './session-tracker.ts';
-
-const VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
 
 /**
  * Polls Zotero.Integration.sessions with idle backoff and hooks getSession/execCommand:
@@ -85,6 +85,7 @@ export class WordIntegrationPoller {
 				sessionID: string;
 				documentPath: string;
 				citations: Array<{ itemID: number; ordinal: number; shortText: string; occurrences?: number }>;
+				orphans?: readonly OrphanCitationInfo[];
 			}> = [];
 
 			for (const [rawID, session] of entries) {
@@ -96,10 +97,10 @@ export class WordIntegrationPoller {
 
 				await this.ensureConsistentSnapshot(session);
 
-				const parsed = this.extractSessionCitations(session);
+				const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session);
 				const prevTracked = this.tracker.getSession(sessionID);
 
-				if (!parsed.length && prevTracked && prevTracked.itemCitations.size > 0) {
+				if (!parsed.length && !orphans.length && prevTracked && prevTracked.itemCitations.size > 0) {
 					const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
 					this.emptyStreakBySession.set(sessionID, streak);
 					if (streak < 2) {
@@ -112,15 +113,16 @@ export class WordIntegrationPoller {
 								shortText: info.shortText,
 								occurrences: info.occurrences,
 							})),
+							orphans: prevTracked.orphans,
 						});
 						continue;
 					}
-				} else if (parsed.length > 0) {
+				} else if (parsed.length > 0 || orphans.length > 0) {
 					this.emptyStreakBySession.delete(sessionID);
 				}
 
 				const docPath = this.resolveSessionDocumentPath(sessionID, session, entries.length);
-				rawSessions.push({ sessionID, documentPath: docPath, citations: parsed });
+				rawSessions.push({ sessionID, documentPath: docPath, citations: parsed, orphans });
 			}
 
 			for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
@@ -200,78 +202,8 @@ export class WordIntegrationPoller {
 		return cached || sessionID;
 	}
 
-	// Extracts unique valid cited items in exact order of appearance across citationsByIndex (1, 2, 3, 4...).
-	private extractSessionCitations(session: any): Array<{ itemID: number; ordinal: number; shortText: string; occurrences: number }> {
-		const hostItems = (globalThis as any).Zotero?.Items;
-		const ordinalMap = new Map<number, { ordinal: number; occurrences: number; labels: string[] }>();
-		const trashStatus = new Map<number, boolean>();
-		let nextOrdinal = 1;
-
-		const cleanText = (raw: unknown): string =>
-			String(raw || '').replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
-
-		const isDeletedOrTrashed = (itemID: number): boolean => {
-			const cached = trashStatus.get(itemID);
-			if (cached !== undefined) return cached;
-			const zotItem = hostItems?.get?.(itemID);
-			if (!zotItem) { trashStatus.set(itemID, false); return false; }
-			const inTrash = typeof zotItem.inTrash === 'function' ? zotItem.inTrash() === true : zotItem.inTrash === true;
-			const deleted = zotItem.deleted === true || inTrash;
-			trashStatus.set(itemID, deleted);
-			return deleted;
-		};
-
-		const recordHit = (itemID: number, shortText: unknown, explicitItemOrdinal?: number, countOcc = false) => {
-			if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
-			if (isDeletedOrTrashed(itemID)) return;
-
-			const label = cleanText(shortText);
-			let existing = ordinalMap.get(itemID);
-			if (!existing) {
-				const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
-				nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-				existing = { ordinal: assigned, occurrences: 0, labels: [] };
-				ordinalMap.set(itemID, existing);
-			}
-			if (countOcc) existing.occurrences += 1;
-			else if (existing.occurrences === 0) existing.occurrences = 1;
-			if (label && !existing.labels.includes(label)) {
-				existing.labels.push(label);
-			}
-		};
-
-		const byIndex = session.citationsByIndex;
-		if (byIndex && typeof byIndex === 'object') {
-			const sortedKeys = Object.keys(byIndex)
-				.filter((k) => VALID_INDEX_KEY_RE.test(k))
-				.sort((a, b) => Number(a) - Number(b));
-
-			for (const key of sortedKeys) {
-				const cit = byIndex[key];
-				const cItems: any[] = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
-				const shortText = cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? '';
-				for (const ci of cItems) {
-					const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
-					const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
-					recordHit(itemID, shortText, explicitOrdinal > 0 ? explicitOrdinal : undefined, true);
-				}
-			}
-		}
-
-		const byItem = session.citationsByItemID;
-		if (byItem && typeof byItem === 'object') {
-			for (const [rawID, list] of Object.entries(byItem)) {
-				const itemID = Number(rawID);
-				const entries = Array.isArray(list) ? list : [list];
-				for (const entry of entries) {
-					if (!entry) continue;
-					const shortText = entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? '';
-					recordHit(itemID, shortText);
-				}
-			}
-		}
-
-		return [...ordinalMap.entries()].map(([itemID, info]) => ({ itemID, ordinal: info.ordinal, shortText: info.labels.join(', '), occurrences: info.occurrences }));
+	private extractSessionCitations(session: any) {
+		return extractSessionCitationsWithOrphans(session).citations;
 	}
 
 	private scheduleItemsViewRefresh(): void {

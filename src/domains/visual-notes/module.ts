@@ -245,9 +245,8 @@ export class VisualNotesDomainModule implements DomainModule {
 			clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
 		}
-		this.readingColumns.refreshColumns();
-		this.statusRatingColumns.refreshColumns();
-		this.remarkColumn.refresh();
+		this.readingColumns.clearCache();
+		this.statusRatingColumns.clearCache();
 		this.infoBriefNote.refresh();
 		this.titleHeatmap.refreshWindows();
 		this.galleryBoard.refreshWindows();

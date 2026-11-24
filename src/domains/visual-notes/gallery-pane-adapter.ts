@@ -258,11 +258,12 @@ export function createGalleryVisibilityGuard(
 		if (enabled) refresh();
 		if (external.some((r) => r.type === 'childList')) onChildListChanged?.();
 	}) : null;
-	observer?.observe(itemsPane, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'id'] });
 
 	return {
 		setEnabled(next: boolean) {
 			if (!active) return;
+			if (next) observer?.observe(itemsPane, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'id'] });
+			else observer?.disconnect();
 			enabled = next;
 			refresh();
 			if (!next) {

@@ -6,6 +6,18 @@ export interface PluginInfo {
 	rootURI: string;
 }
 
+export interface OrphanCitationInfo {
+	readonly key: string;
+	readonly kind: 'trashed' | 'missing';
+	readonly ordinal: number;
+	readonly shortText: string;
+	readonly title: string;
+	readonly authorYear?: string;
+	readonly itemID?: number;
+	readonly uris?: readonly string[];
+	readonly itemData?: Record<string, unknown>;
+}
+
 export interface CitationBadgeInfo {
 	itemID: number;
 	ordinal: number;
@@ -20,6 +32,7 @@ export interface CitationSessionSummary {
 	readonly documentName: string;
 	readonly totalCitedCount: number;
 	readonly byItemID: ReadonlyMap<number, CitationBadgeInfo>;
+	readonly orphans?: readonly OrphanCitationInfo[];
 }
 
 export interface CitationSnapshotPayload {
@@ -29,6 +42,7 @@ export interface CitationSnapshotPayload {
 	readonly citedItemIDs: readonly number[];
 	readonly totalCitedCount: number;
 	readonly sessions?: readonly CitationSessionSummary[];
+	readonly orphans?: readonly OrphanCitationInfo[];
 }
 
 export interface WorkspaceGroupSummary {
@@ -100,6 +114,15 @@ export interface WordRefreshResultPayload {
 	readonly documentName: string;
 }
 
+export interface WordRecoverOrphansResultPayload {
+	readonly requestId?: string;
+	readonly restoredCount: number;
+	readonly importedCount: number;
+	readonly skippedCount: number;
+	readonly collectionName?: string;
+	readonly error?: string;
+}
+
 export interface BridgeFlowEventMap {
 	'prefs:changed': { readonly key: string; readonly value: unknown };
 	'notifier:event': NotifierEventPayload;
@@ -123,6 +146,8 @@ export interface BridgeFlowEventMap {
 	'word:snapshot-query': { readonly requester?: string };
 	'word:switch-session-request': { readonly sessionID: string };
 	'word:select-collection-request': { readonly sessionID?: string; readonly win?: Window };
+	'word:recover-orphans-request': { readonly sessionID?: string; readonly keys?: readonly string[]; readonly requestId?: string; readonly win?: Window };
+	'word:recover-orphans-result': WordRecoverOrphansResultPayload;
 	'inspector:lookup-clipboard': { readonly win?: Window };
 	'inspector:clear-cache': { readonly target: 'memory' | 'disk' | 'all' };
 }

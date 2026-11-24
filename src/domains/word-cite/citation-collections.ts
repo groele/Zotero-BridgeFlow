@@ -109,6 +109,10 @@ export class WordCitationCollectionManager {
 		return null;
 	}
 
+	getSessionCollection(sessionID: string): { id?: number; name?: string } | null {
+		return this.sessionCollections.get(sessionID) ?? null;
+	}
+
 	selectSessionCollection(win?: Window | null, sessionID?: string | null): boolean {
 		const targetID = sessionID || this.sessionCollections.keys().next().value;
 		const col = targetID ? this.sessionCollections.get(targetID) : null;

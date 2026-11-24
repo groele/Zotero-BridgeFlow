@@ -25,6 +25,8 @@ import {
 	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
+type StoreChange = 'data' | 'session';
+
 const createEmptyState = (): WorkspaceState => ({
 	version: 2, groups: [], collapsed: [], pinnedKeys: [], sleepingKeys: [],
 	remarks: {}, remarkModes: {}, lastViewedAt: {}, readingProgress: {},
@@ -38,7 +40,7 @@ export class WorkspaceStateStore {
 	public readonly notesCache: BriefNotesDiskCache;
 	public readOnlyGuard = false;
 	private readonly prefs: UnifiedPrefService;
-	private readonly listeners = new Set<() => void>();
+	private readonly listeners = new Set<(change: StoreChange) => void>();
 
 	constructor(prefs: UnifiedPrefService) {
 		this.prefs = prefs;
@@ -73,14 +75,14 @@ export class WorkspaceStateStore {
 		return hydrateWorkspaceDiskCaches(this);
 	}
 
-	save(immediateDisk = false): void {
+	save(immediateDisk = false, change: StoreChange = 'data'): void {
 		if (!this.readOnlyGuard) {
 			const layoutOnly = pickWorkspaceLayoutState(this.state);
 			const serialized = JSON.stringify(layoutOnly);
 			try { this.prefs.set('workspace.document', serialized); } catch { /* ignore */ }
 			this.diskCache.scheduleSave(layoutOnly, immediateDisk, serialized);
 		}
-		this.emitChange();
+		this.emitChange(change);
 	}
 
 	saveReadingProgress(immediateDisk = false): void {
@@ -93,13 +95,13 @@ export class WorkspaceStateStore {
 		this.emitChange();
 	}
 
-	private emitChange(): void {
+	private emitChange(change: StoreChange = 'data'): void {
 		for (const fn of this.listeners) {
-			try { fn(); } catch { /* ignore */ }
+			try { fn(change); } catch { /* ignore */ }
 		}
 	}
 
-	onChange(listener: () => void): () => void {
+	onChange(listener: (change: StoreChange) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
@@ -301,7 +303,7 @@ export class WorkspaceStateStore {
 
 	saveSession(name: string, options: { groupId?: string; openKeys?: string[]; isTemplate?: boolean; rolling?: boolean; kind?: WorkspaceSession['kind'] } = {}): WorkspaceSession {
 		const session = saveWorkspaceSessionRecord(this.state, name, options);
-		this.save(true);
+		this.save(true, 'session');
 		return session;
 	}
 

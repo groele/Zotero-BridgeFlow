@@ -1,3 +1,4 @@
+import { isRegularValidItem } from '../../services/item-resolution.ts';
 import type { TabReadingProgress } from '../../services/reading-stats.ts';
 import { getItemBriefNote, syncItemRemarkToExtra } from '../../services/item-remark-sync.ts';
 
@@ -25,7 +26,7 @@ export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDa
 		const parentCached = dataSource.getRemark(parentID);
 		if (parentCached) return parentCached;
 	}
-	const attIDs: number[] = typeof item.getAttachments === 'function' ? (item.getAttachments() || []) : [];
+	const attIDs: number[] = dataSource && isRegularValidItem(item) && typeof item.getAttachments === 'function' ? (item.getAttachments() || []) : [];
 	if (dataSource) {
 		for (const attID of attIDs) {
 			const attCached = dataSource.getRemark(attID);

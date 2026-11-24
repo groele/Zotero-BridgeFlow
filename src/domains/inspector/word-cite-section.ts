@@ -5,10 +5,14 @@ import { deduplicateRegularItems, normalizeToRegularItem } from '../../services/
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import {
+	buildOrphanBannerModel,
 	buildWordCiteMetaText,
+	buildWordCiteSectionSummary,
+	buildWordCiteStats,
 	createWordCiteBodyState,
 	formatInsertReceipt,
 	formatPendingReceipt,
+	formatRecoverReceipt,
 	formatRefreshReceipt,
 	renderWordCitePanel,
 	type ReceiptState,
@@ -66,6 +70,12 @@ export class WordCiteSectionController {
 			this.clearPendingTimer();
 			this.pendingRequest = undefined;
 			this.receipt = formatRefreshReceipt(res, isZhLocale());
+			this.renderAllBodies();
+		}));
+		this.disposables.add(this.kernel.bus.on('word:recover-orphans-result', (res) => {
+			if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+			this.clearPendingTimer(); this.pendingRequest = undefined;
+			this.receipt = formatRecoverReceipt(res, isZhLocale());
 			this.renderAllBodies();
 		}));
 
@@ -139,7 +149,7 @@ export class WordCiteSectionController {
 
 	private clearPendingTimer(): void { if (this.pendingTimer !== null) { clearTimeout(this.pendingTimer); this.pendingTimer = null; } }
 
-	private beginRequest(kind: 'insert' | 'refresh', owner?: WordCiteBodyState): string {
+	private beginRequest(kind: 'insert' | 'refresh' | 'recover', owner?: WordCiteBodyState): string {
 		this.clearPendingTimer();
 		const requestId = `word-${++this.requestSeq}`;
 		this.pendingRequest = requestId;
@@ -185,6 +195,9 @@ export class WordCiteSectionController {
 		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
 		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', {
 			sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined,
+		}));
+		click(st.orphanBtn, () => this.kernel.bus.emit('word:recover-orphans-request', {
+			sessionID: this.snapshot?.activeSessionID || undefined, requestId: this.beginRequest('recover', st), win: win ?? undefined,
 		}));
 		this.bindDocumentEvents(doc);
 		this.updateState(body, item, setEnabled, setSectionSummary);
@@ -268,10 +281,11 @@ export class WordCiteSectionController {
 			? matchedGroup.itemIDs.filter((id) => !snap!.byItemID.has(id)).length
 			: 0;
 
-		st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : '');
-		const stats = this.buildStats(zh, snap, st.lastItemIDs);
+		st.setSectionSummary?.(showSummaryCounts ? buildWordCiteSectionSummary(zh, snap, st.lastItemIDs) : '');
+		const stats = buildWordCiteStats(zh, snap, st.lastItemIDs);
 		const meta = buildWordCiteMetaText(zh, items);
 
+		const orphanBanner = buildOrphanBannerModel(snap?.orphans, zh);
 		const vm: WordCiteViewModel = {
 			showDocSwitcher,
 			showSummaryCounts,
@@ -303,43 +317,12 @@ export class WordCiteSectionController {
 			showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get('wordCite.collections.enable')),
 			colButtonText: zh ? '已引清单' : 'Cited List',
 			colButtonTitle: zh ? '在左侧目录树定位当前文档的已引用文献合集' : 'Reveal temporary Word collection in library tree',
+			orphanTitle: orphanBanner.title, orphanListText: orphanBanner.listText, orphanButtonLabel: orphanBanner.buttonLabel,
+			orphanDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
 			receiptText: st === this.receiptOwner ? this.receipt.text : '',
 			receiptTone: st === this.receiptOwner ? this.receipt.tone : 'none',
 		};
 		renderWordCitePanel(st, vm);
-	}
-
-	private buildSectionSummary(zh: boolean, snap: CitationSnapshotPayload | null, ids: readonly number[]): string {
-		if (!snap?.activeSessionID) return '';
-		const total = snap.totalCitedCount;
-		if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
-		const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : undefined;
-		if (badge) return zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`;
-		return zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`;
-	}
-
-	private buildStats(zh: boolean, snap: CitationSnapshotPayload | null, ids: readonly number[]): { text: string; title: string; state: 'cited' | 'uncited' | 'none' } {
-		if (!snap?.activeSessionID) {
-			return { text: zh ? '请先打开 Word' : 'Open Word first', title: zh ? '暂未检测到活动 Word 文档会话' : 'No active Word session detected', state: 'none' };
-		}
-		const total = snap.totalCitedCount;
-		if (ids.length === 1) {
-			const b = snap.byItemID.get(ids[0]);
-			if (b) {
-				const occ = b.occurrences ?? 1;
-				return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ''}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: 'cited' };
-			}
-			return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: 'uncited' };
-		}
-		if (ids.length > 1) {
-			const cited = ids.map((id) => snap.byItemID.get(id)).filter((b): b is NonNullable<typeof b> => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
-			if (cited.length) {
-				const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(', ')}${cited.length > 3 ? '…' : ''}]`;
-				return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: 'cited' };
-			}
-			return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? '当前选中文献均尚未在 Word 中引用' : 'None of the selected items are cited yet', state: 'uncited' };
-		}
-		return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: 'uncited' };
 	}
 
 	private resolveTargetItems(win: Window | null, item: any): any[] {

@@ -18,7 +18,7 @@ export function isItemWritable(item: any): boolean {
 export function isRegularValidItem(item: any): boolean {
 	if (isItemTrashedOrDeleted(item)) return false;
 	if (typeof item.isRegularItem === 'function') return Boolean(item.isRegularItem());
-	return item.itemType !== 'attachment' && item.itemType !== 'note' && item.itemType !== 'annotation';
+	return !item.isAttachment?.() && item.itemType !== 'attachment' && item.itemType !== 'note' && item.itemType !== 'annotation';
 }
 
 export function normalizeToRegularItem(item: any): any | null {
@@ -127,7 +127,7 @@ export async function resolvePdfAttachments(item: any): Promise<ResolvedPdfAttac
 		: null;
 	const bestID = Number(best?.id || 0);
 	pushIfPdf(best);
-	if (typeof target?.getAttachments === 'function') {
+	if (isRegularValidItem(target) && typeof target?.getAttachments === 'function') {
 		const ids: number[] = target.getAttachments() || [];
 		for (const id of ids) {
 			const att = hostItems?.get?.(id) || (hostItems?.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);

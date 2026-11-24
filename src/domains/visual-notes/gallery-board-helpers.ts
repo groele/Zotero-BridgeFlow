@@ -1,3 +1,4 @@
+import { isRegularValidItem } from '../../services/item-resolution.ts';
 import {
 	getItemRating,
 	getItemStatus,
@@ -95,7 +96,7 @@ function formatCreatorLine(item: any, zh: boolean): string {
 
 function resolvePrimaryPdfAttachmentID(item: any): number {
 	try {
-		const attIDs: number[] = typeof item?.getAttachments === 'function' ? (item.getAttachments() || []) : [];
+		const attIDs: number[] = isRegularValidItem(item) && typeof item?.getAttachments === 'function' ? (item.getAttachments() || []) : [];
 		const hostItems = (globalThis as any).Zotero?.Items;
 		for (const rawId of attIDs) {
 			const id = Number(rawId) || 0;
