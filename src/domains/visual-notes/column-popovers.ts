@@ -18,6 +18,7 @@ import {
 	openItemPdfAtPage,
 	vcEl,
 } from './column-popover-styles.ts';
+import { renderRichTitleNodes } from './gallery-icons.ts';
 
 export {
 	VISUAL_COL_POPOVER_ID,
@@ -66,7 +67,7 @@ export function openReadingInsightsPopover(options: {
 	head.className = 'zbf-vc-head';
 	const titleEl = vcEl(doc, 'div');
 	titleEl.className = 'zbf-vc-title';
-	titleEl.textContent = titleStr;
+	renderRichTitleNodes(doc, titleEl, titleStr);
 	const badge = vcEl(doc, 'span');
 	badge.className = 'zbf-vc-badge';
 	badge.textContent = stage;
@@ -92,24 +93,44 @@ export function openReadingInsightsPopover(options: {
 	addMetric(zh ? '峰值停留' : 'Peak Page', peak ? `p.${peak.page} · ${formatSubMinuteDuration(peak.seconds)}` : '—');
 	pop.appendChild(metrics);
 
-	const totalPages = Math.max(Number(progress.totalPages || 0), peak?.page || 0, Number(progress.lastPage || 0));
-	const buckets = buildReadingHeatmapBuckets(progress, totalPages > 0 && totalPages <= 16 ? totalPages : 16);
+	const pageSecMap = progress.pageSeconds || {};
+	const maxRecordedPage = Math.max(0, ...Object.keys(pageSecMap).map(Number).filter((n) => Number.isFinite(n)));
+	const totalPages = Math.max(Number(progress.totalPages || 0), maxRecordedPage, Number(progress.lastPage || 0), 1);
+	const bucketCount = totalPages <= 16 ? totalPages : 16;
+	const buckets = buildReadingHeatmapBuckets(progress, bucketCount);
 	let closePop = () => {};
 	if (buckets.length) {
 		const bars = vcEl(doc, 'div');
 		bars.className = 'zbf-vc-heatbars';
 		buckets.forEach((ratio, idx) => {
-			const pageEst = Math.max(1, Math.round(((idx + 0.5) / buckets.length) * Math.max(1, totalPages)));
+			let bestPageInBin = 0;
+			let bestSecInBin = 0;
+			for (const [pk, pv] of Object.entries(pageSecMap)) {
+				const pNum = Number(pk);
+				const sec = Number(pv);
+				if (!Number.isFinite(pNum) || pNum <= 0) continue;
+				const bIdx = Math.min(bucketCount - 1, Math.max(0, Math.floor(((pNum - 1) / totalPages) * bucketCount)));
+				if (bIdx === idx && sec > bestSecInBin) {
+					bestPageInBin = pNum;
+					bestSecInBin = sec;
+				}
+			}
+			const targetPage = bestPageInBin > 0
+				? bestPageInBin
+				: Math.min(totalPages, Math.max(1, Math.floor((idx / bucketCount) * totalPages) + 1));
 			const bar = vcEl(doc, 'button');
 			bar.type = 'button';
 			bar.className = 'zbf-vc-hbar';
 			bar.style.height = `${Math.max(14, Math.round(ratio * 100))}%`;
 			bar.style.background = ratio > 0 ? heatColor : 'rgba(148,163,184,0.22)';
 			bar.style.opacity = ratio > 0 ? String((0.32 + ratio * 0.68).toFixed(2)) : '0.45';
-			bar.title = zh ? `点击跳转至约第 ${pageEst} 页` : `Jump near page ${pageEst}`;
+			const secTip = bestSecInBin > 0 ? ` · ${formatSubMinuteDuration(bestSecInBin)}` : '';
+			bar.title = zh ? `p.${targetPage}${secTip}（点击直跳 PDF 第 ${targetPage} 页）` : `p.${targetPage}${secTip} (click to jump)`;
 			bar.addEventListener('click', () => {
 				closePop();
-				openItemPdfAtPage(item, pageEst);
+				void openItemPdfAtPage(item, targetPage).then((ok) => {
+					if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+				});
 			});
 			bars.appendChild(bar);
 		});
@@ -129,9 +150,9 @@ export function openReadingInsightsPopover(options: {
 		: (zh ? '打开 PDF 阅读器' : 'Open PDF Reader');
 	resumeBtn.addEventListener('click', () => {
 		closePop();
-		if (progress.lastPage) openItemPdfAtPage(item, progress.lastPage);
-		else if (onOpenItem && item.id) onOpenItem(Number(item.id));
-		else openItemPdfAtPage(item);
+		void openItemPdfAtPage(item, progress.lastPage || undefined).then((ok) => {
+			if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+		});
 	});
 	actions.appendChild(resumeBtn);
 
@@ -142,7 +163,9 @@ export function openReadingInsightsPopover(options: {
 		peakBtn.textContent = zh ? `跳转峰值页 p.${peak.page}` : `Peak p.${peak.page}`;
 		peakBtn.addEventListener('click', () => {
 			closePop();
-			openItemPdfAtPage(item, peak.page);
+			void openItemPdfAtPage(item, peak.page).then((ok) => {
+				if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+			});
 		});
 		actions.appendChild(peakBtn);
 	}
@@ -181,7 +204,7 @@ export function openAnnotationBreakdownPopover(options: {
 	head.className = 'zbf-vc-head';
 	const titleEl = vcEl(doc, 'div');
 	titleEl.className = 'zbf-vc-title';
-	titleEl.textContent = titleStr;
+	renderRichTitleNodes(doc, titleEl, titleStr);
 	const badge = vcEl(doc, 'span');
 	badge.className = 'zbf-vc-badge';
 	badge.textContent = zh ? `共 ${collected.length} 条标注` : `${collected.length} annotations`;
@@ -245,7 +268,7 @@ export function openAnnotationBreakdownPopover(options: {
 		btn.title = zh ? '点击直跳该标注所在 PDF 位置' : 'Jump to annotation in PDF reader';
 		btn.addEventListener('click', () => {
 			closePop();
-			openItemPdfAtPage(item, Number(a.pageLabel) || undefined, a.annotationID);
+			void openItemPdfAtPage(item, Number(a.pageLabel) || undefined, a.annotationID);
 		});
 		snippets.appendChild(btn);
 	}

@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.5.12 - Preferences controller. */
+/* Zotero BridgeFlow v0.5.13 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -45,7 +45,10 @@
     "workspace.readingHeatmap.opacity": { defaultValue: 42, min: 10, max: 90 },
     "workspace.annotationColumn.enable": { defaultValue: true },
     "visualNotes.infoBriefNote.enable": { defaultValue: true },
+    "visualNotes.showTitleTagDots": { defaultValue: false },
     "visualNotes.statusColumn.enable": { defaultValue: true },
+    "visualNotes.statusSyncZoteroTagColor": { defaultValue: false },
+    "visualNotes.statusCustomColors": { defaultValue: "", resettable: false },
     "visualNotes.ratingColumn.enable": { defaultValue: true },
     "visualNotes.ratingStorage": {
       defaultValue: "cache",
@@ -648,27 +651,208 @@
     }
   }
 
+  // src/services/pdf-cover-queue.ts
+  function makeAbortController(win) {
+    const Ctor = globalThis.AbortController || win?.AbortController || globalThis.Zotero?.getMainWindow?.()?.AbortController;
+    if (typeof Ctor === "function") return new Ctor();
+    const listeners = /* @__PURE__ */ new Set();
+    const signal = {
+      aborted: false,
+      addEventListener(_type, fn) {
+        if (signal.aborted) fn();
+        else listeners.add(fn);
+      },
+      removeEventListener(_type, fn) {
+        listeners.delete(fn);
+      }
+    };
+    return {
+      signal,
+      abort() {
+        if (signal.aborted) return;
+        signal.aborted = true;
+        for (const fn of [...listeners]) {
+          listeners.delete(fn);
+          try {
+            fn();
+          } catch {
+          }
+        }
+      }
+    };
+  }
+  function createGalleryScrollIdle(quietMS = 280) {
+    let idleAt = 0;
+    let destroyed = false;
+    let paused = false;
+    let timer;
+    const waiting = /* @__PURE__ */ new Set();
+    const flush = () => {
+      timer = void 0;
+      if (paused || destroyed) return;
+      const rem = idleAt - Date.now();
+      if (rem > 0 && waiting.size) {
+        timer = setTimeout(flush, rem);
+        return;
+      }
+      for (const fn of [...waiting]) fn(true);
+    };
+    return {
+      touch() {
+        idleAt = Date.now() + quietMS;
+      },
+      setPaused(val) {
+        if (destroyed || paused === val) return;
+        paused = val;
+        if (paused) {
+          if (timer !== void 0) {
+            clearTimeout(timer);
+            timer = void 0;
+          }
+        } else {
+          idleAt = Date.now() + quietMS;
+          if (waiting.size) timer = setTimeout(flush, quietMS);
+        }
+      },
+      wait(signal) {
+        if (destroyed || signal.aborted) return Promise.reject(new Error("cancelled"));
+        if (!paused && Date.now() >= idleAt) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          const finish = (ready) => {
+            waiting.delete(finish);
+            signal.removeEventListener("abort", onAbort);
+            if (!waiting.size && timer !== void 0) {
+              clearTimeout(timer);
+              timer = void 0;
+            }
+            if (ready) resolve();
+            else reject(new Error("cancelled"));
+          };
+          const onAbort = () => finish(false);
+          waiting.add(finish);
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (!paused && timer === void 0) timer = setTimeout(flush, Math.max(0, idleAt - Date.now()));
+        });
+      },
+      destroy() {
+        destroyed = true;
+        if (timer !== void 0) {
+          clearTimeout(timer);
+          timer = void 0;
+        }
+        for (const fn of [...waiting]) fn(false);
+      }
+    };
+  }
+  function createGalleryWorkQueue(waitUntilIdle = async () => {
+  }, concurrency = 2) {
+    const pending = /* @__PURE__ */ new Set();
+    const waitingWaiters = /* @__PURE__ */ new Set();
+    const limit = Math.max(1, Math.floor(concurrency));
+    let running = 0;
+    const pickNext = () => {
+      let best;
+      let bestScore = -Infinity;
+      for (const job of pending) {
+        const score = job.priority();
+        if (!best || score > bestScore) {
+          best = job;
+          bestScore = score;
+        }
+      }
+      if (!best) return void 0;
+      pending.delete(best);
+      best.signal.removeEventListener("abort", best.abort);
+      if (best.signal.aborted) {
+        best.resolve(void 0);
+        return void 0;
+      }
+      return best;
+    };
+    const worker = async () => {
+      try {
+        while (pending.size) {
+          const ctrl = makeAbortController();
+          waitingWaiters.add(ctrl);
+          try {
+            await waitUntilIdle(ctrl.signal);
+          } catch {
+            if (ctrl.signal.aborted) continue;
+          } finally {
+            waitingWaiters.delete(ctrl);
+          }
+          if (ctrl.signal.aborted) continue;
+          const job = pickNext();
+          if (!job) continue;
+          try {
+            job.resolve(await job.run());
+          } catch (err) {
+            job.reject(err);
+          }
+        }
+      } finally {
+        running = Math.max(0, running - 1);
+      }
+    };
+    return (run, signal, priority = () => 0) => {
+      if (signal.aborted) return Promise.resolve(void 0);
+      return new Promise((resolve, reject) => {
+        const job = {
+          run,
+          signal,
+          priority,
+          resolve,
+          reject,
+          abort() {
+            pending.delete(job);
+            signal.removeEventListener("abort", job.abort);
+            resolve(void 0);
+            if (!pending.size) {
+              for (const c of waitingWaiters) c.abort();
+            }
+          }
+        };
+        pending.add(job);
+        signal.addEventListener("abort", job.abort, { once: true });
+        if (running < limit) {
+          running++;
+          void worker();
+        }
+      });
+    };
+  }
+
   // src/services/pdf-cover-service.ts
+  var MAX_COVER_BYTES = 4 * 1024 * 1024;
   var memCoverCache = /* @__PURE__ */ new Map();
+  var fingerprints = /* @__PURE__ */ new Map();
   var failedRetryAt = /* @__PURE__ */ new Map();
+  function getCoversDir(customDir = "") {
+    try {
+      const zotero = globalThis.Zotero;
+      const pathUtils = globalThis.PathUtils || zotero?.getMainWindow?.()?.PathUtils;
+      const base = String(customDir || "").trim() || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
+      return base && pathUtils?.join ? pathUtils.join(base, "covers") : null;
+    } catch {
+      return null;
+    }
+  }
+  var defaultScrollIdle = createGalleryScrollIdle(260);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
+  var ioQueue = createGalleryWorkQueue(async () => {
+  }, 2);
+  var activeJobs = /* @__PURE__ */ new Map();
   async function clearPdfCoverCache(customDir = "") {
     memCoverCache.clear();
     failedRetryAt.clear();
+    fingerprints.clear();
+    for (const job of activeJobs.values()) job.controller.abort();
+    activeJobs.clear();
     try {
-      const zotero = globalThis.Zotero;
-      const win = zotero?.getMainWindow?.();
-      const ioUtils = globalThis.IOUtils || win?.IOUtils;
-      const pathUtils = globalThis.PathUtils || win?.PathUtils;
-      if (!ioUtils?.remove || !pathUtils?.join) return true;
-      const dirs = /* @__PURE__ */ new Set();
-      const dataDir = String(zotero?.DataDirectory?.dir || "").trim();
-      if (dataDir) dirs.add(pathUtils.join(dataDir, "bridgeflow-cache", "covers"));
-      const custom = String(customDir || "").trim();
-      if (custom) dirs.add(pathUtils.join(custom, "covers"));
-      for (const dir of dirs) {
-        await ioUtils.remove(dir, { recursive: true, ignoreAbsent: true }).catch(() => {
-        });
-      }
+      const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+      const coversDir = getCoversDir(customDir);
+      if (!coversDir || !ioUtils?.remove) return false;
+      await ioUtils.remove(coversDir, { recursive: true, ignoreAbsent: true });
       return true;
     } catch {
       return false;
@@ -733,6 +917,7 @@
     setSubtreeDisabled(doc.getElementById("zbf-sub-rating-cfg"), !vnOn || !prefs.get("visualNotes.ratingColumn.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-gallery-cfg"), !vnOn || !prefs.get("visualNotes.gallery.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-hub-cfg"), !vnOn || !prefs.get("visualNotes.collectionHub.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-status-cfg"), !vnOn || !prefs.get("visualNotes.statusColumn.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
@@ -1056,8 +1241,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.5.12" }));
-        versionEl.textContent = `v${"0.5.12"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.5.13" }));
+        versionEl.textContent = `v${"0.5.13"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

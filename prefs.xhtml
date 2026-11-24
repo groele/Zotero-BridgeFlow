@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" src="chrome://zotero-bridgeflow/content/assets/bridgeflow.svg" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.5.12"}'>v0.5.12</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.5.13"}'>v0.5.13</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -256,7 +256,11 @@
 							</html:div>
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.annotationColumn.enable" native="true" data-l10n-id="zbf-pref-ws-ann-col"/>
+						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.showTitleTagDots" native="true" data-l10n-id="zbf-pref-vn-show-title-dots"/>
 						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.statusColumn.enable" native="true" data-l10n-id="zbf-pref-vn-status-col"/>
+						<html:div id="zbf-sub-status-cfg" class="zbf-sub-stack">
+							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.statusSyncZoteroTagColor" native="true" data-l10n-id="zbf-pref-vn-status-tag-dot"/>
+						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.ratingColumn.enable" native="true" data-l10n-id="zbf-pref-vn-rating-col"/>
 						<html:div id="zbf-sub-rating-cfg" class="zbf-sub-stack">
 							<html:div class="zbf-inline-field">

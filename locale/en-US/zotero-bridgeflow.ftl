@@ -457,8 +457,12 @@ zbf-btn-enable-mod = Enable Subsystem
 zbf-sec-ws-experience = Typography, Previews & Context Menu
 zbf-sec-word-adv-perf = Advanced Performance & Health Thresholds (expand)
 
+zbf-pref-vn-show-title-dots =
+    .label = Show colored tag dot markers before item titles (hide ● dots when off)
 zbf-pref-vn-status-col =
     .label = Enable Status column in library item tree (/status colored workflow)
+zbf-pref-vn-status-tag-dot =
+    .label = Sync status colors as Zotero colored tags (shows colored dot before titles)
 zbf-pref-vn-rating-col =
     .label = Enable Rating column in library item tree (1–5 star click rating)
 zbf-pref-vn-rating-storage = Star rating storage location

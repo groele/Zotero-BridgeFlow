@@ -25,13 +25,29 @@ export interface ReadingColumnCallbacks {
 
 function stopTreePointer(el: HTMLElement): void {
 	el.addEventListener('mousedown', (ev) => {
-		if (ev.button !== 0) return;
-		ev.stopPropagation();
-		ev.preventDefault();
+		if (ev.button === 0) ev.stopPropagation();
+	});
+	el.addEventListener('mouseup', (ev) => {
+		if (ev.button === 0) ev.stopPropagation();
 	});
 	el.addEventListener('dblclick', (ev) => {
 		ev.stopPropagation();
 		ev.preventDefault();
+	});
+}
+
+function bindInstantChipPress(el: HTMLElement, handler: () => void): void {
+	let lastPointerDownAt = 0;
+	el.addEventListener('mousedown', (ev) => {
+		if (ev.button !== 0) return;
+		ev.stopPropagation();
+		lastPointerDownAt = Date.now();
+		handler();
+	});
+	el.addEventListener('click', (ev) => {
+		ev.stopPropagation();
+		if (Date.now() - lastPointerDownAt < 450) return;
+		handler();
 	});
 }
 
@@ -48,7 +64,7 @@ export function buildReadTimeCell(opts: {
 	const { win, doc, item, prog, className, zh, heatColor, callbacks } = opts;
 	ensureVisualColumnStyles(doc);
 	const cell = vcEl(doc, 'span');
-	cell.className = `cell ${className || ''} zbf-read-cell`.trim();
+	cell.className = `cell ${className || ''} clickable zbf-read-cell`.trim();
 	if (!item || !prog || (!prog.readSeconds && !prog.lastPage)) return cell;
 
 	const fmt = formatReadingProgress(prog);
@@ -95,8 +111,7 @@ export function buildReadTimeCell(opts: {
 	if (peak) tipParts.push(zh ? `最常停留 p.${peak.page} (${formatSubMinuteDuration(peak.seconds)})` : `Peak p.${peak.page} (${formatSubMinuteDuration(peak.seconds)})`);
 	chip.title = `${tipParts.join(' · ')}\n${zh ? '点击查看页级停留热力柱并直跳 PDF 页码' : 'Click for page heatbar & quick PDF jump'}`;
 	stopTreePointer(chip);
-	chip.addEventListener('click', (ev) => {
-		ev.stopPropagation();
+	bindInstantChipPress(chip, () => {
 		if (!win) return;
 		closeStatusPickerPopover(win.document);
 		openReadingInsightsPopover({
@@ -127,7 +142,7 @@ export function buildAnnotationCell(opts: {
 	const { win, doc, item, summary, className, zh, semantics, callbacks } = opts;
 	ensureVisualColumnStyles(doc);
 	const cell = vcEl(doc, 'span');
-	cell.className = `cell ${className || ''} zbf-ann-cell`.trim();
+	cell.className = `cell ${className || ''} clickable zbf-ann-cell`.trim();
 	if (!item || !summary || !summary.total) return cell;
 
 	const fit = vcEl(doc, 'span');
@@ -166,8 +181,7 @@ export function buildAnnotationCell(opts: {
 	const detail = summary.buckets.map((b) => `${b.label} ${b.count}`).join(' · ');
 	chip.title = `${zh ? `共 ${summary.total} 条标注：` : `${summary.total} annotations: `}${detail}\n${zh ? '点击展开色彩分布、预览并跳转 PDF / 对比矩阵' : 'Click for breakdown, PDF jump & matrix'}`;
 	stopTreePointer(chip);
-	chip.addEventListener('click', (ev) => {
-		ev.stopPropagation();
+	bindInstantChipPress(chip, () => {
 		if (!win) return;
 		closeStatusPickerPopover(win.document);
 		const selected = ((win as any).ZoteroPane?.getSelectedItems?.() || [])

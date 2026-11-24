@@ -10,6 +10,8 @@ export interface TitleHeatmapOptions {
 
 const DEFAULT_RGB = '13, 148, 136';
 const HEATMAP_STYLE_ID = 'zbf-title-heatmap-style';
+export const TITLE_TAG_DOTS_STYLE_ID = 'zbf-title-tag-dots-style';
+export const TITLE_TAG_DOTS_HIDE_CSS = '#zotero-items-pane .cell.primary .colored-tag-swatches { display: none !important; }';
 const MAX_GRADIENT_CACHE = 5000;
 const heatmapGradientCache = new Map<string, string>();
 
@@ -219,12 +221,14 @@ export class TitleHeatmapController {
 	attachWindow(win: Window): void {
 		if (!win) return;
 		this.windows.add(win);
+		this.syncTitleTagDotsStyle(win);
 		if (!this.isEnabled() || this.disposers.has(win) || this.pollTimers.has(win)) return;
 		this.tryPatchWindow(win, 0);
 	}
 
 	detachWindow(win: Window): void {
 		this.windows.delete(win);
+		try { win.document?.getElementById?.(TITLE_TAG_DOTS_STYLE_ID)?.remove?.(); } catch { /* ignore */ }
 		this.clearWindowPatch(win);
 	}
 
@@ -232,6 +236,7 @@ export class TitleHeatmapController {
 		if (knownWindows) {
 			for (const win of knownWindows) this.windows.add(win);
 		}
+		for (const win of this.windows) this.syncTitleTagDotsStyle(win);
 		if (this.isEnabled()) {
 			for (const win of this.windows) {
 				if (!this.disposers.has(win) && !this.pollTimers.has(win)) {
@@ -246,6 +251,26 @@ export class TitleHeatmapController {
 		}
 	}
 
+	private syncTitleTagDotsStyle(win: Window): void {
+		const doc = win?.document;
+		if (!doc || typeof doc.createElementNS !== 'function') return;
+		const modOn = Boolean(this.kernel.prefs.get('modules.visualNotes.enable'));
+		const showDots = Boolean(this.kernel.prefs.get('visualNotes.showTitleTagDots'));
+		const existing = doc.getElementById?.(TITLE_TAG_DOTS_STYLE_ID);
+		if (!modOn || showDots) {
+			existing?.remove?.();
+			return;
+		}
+		if (!existing) {
+			const head = doc.head || doc.documentElement;
+			if (!head) return;
+			const style = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style') as HTMLStyleElement;
+			style.id = TITLE_TAG_DOTS_STYLE_ID;
+			style.textContent = TITLE_TAG_DOTS_HIDE_CSS;
+			head.appendChild(style);
+		}
+	}
+
 	refreshWindows(): void {
 		for (const win of this.windows) {
 			try {
@@ -256,6 +281,7 @@ export class TitleHeatmapController {
 
 	disposeAll(): void {
 		for (const win of [...this.windows]) {
+			try { win.document?.getElementById?.(TITLE_TAG_DOTS_STYLE_ID)?.remove?.(); } catch { /* ignore */ }
 			this.clearWindowPatch(win);
 		}
 		this.windows.clear();

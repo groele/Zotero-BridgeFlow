@@ -3,7 +3,7 @@ import type { UnifiedClipboardService } from '../../services/clipboard-service.t
 const MATRIX_STYLE_ID = 'zbf-matrix-modal-style';
 
 export const MATRIX_CSS = `
-.zbf-matrix-backdrop { position: fixed; inset: 0; z-index: 2147483646; background: rgba(15,23,42,0.48); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.zbf-matrix-backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; box-sizing: border-box; z-index: 2147483646; background: rgba(15,23,42,0.52); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .zbf-matrix-dialog { width: min(1040px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; background: light-dark(#ffffff, #1e293b); color: light-dark(#111827, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.24)); box-shadow: 0 20px 50px rgba(0,0,0,0.32); font: 12.5px/1.45 system-ui, "Microsoft YaHei UI", sans-serif; }
 .zbf-matrix-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .zbf-matrix-title { font-size: 15px; font-weight: 600; }
@@ -26,6 +26,7 @@ export const MATRIX_CSS = `
 .zbf-matrix-table th { position: sticky; top: 0; background: light-dark(#f8fafc, #0f172a); font-weight: 600; z-index: 1; }
 .zbf-matrix-table tbody tr:hover td { background: light-dark(rgba(15,23,42,0.015), rgba(255,255,255,0.02)); }
 .zbf-matrix-item-link { border: 0; padding: 0; background: transparent; color: light-dark(#2563eb, #60a5fa); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.zbf-matrix-item-link sub, .zbf-matrix-item-link sup { font-size: 0.74em; line-height: 0; }
 .zbf-matrix-item-link:hover { text-decoration: underline; }
 .zbf-matrix-ann { margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; border-left: 3px solid transparent; background: light-dark(rgba(15,23,42,0.03), rgba(255,255,255,0.04)); cursor: pointer; transition: background-color 0.12s ease; }
 .zbf-matrix-ann:hover { background: light-dark(rgba(37,99,235,0.09), rgba(96,165,250,0.15)); }

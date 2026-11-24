@@ -242,20 +242,46 @@ export function formatHubAnnotationBody(ann: CollectedAnnotation, preferCommentO
 	return `${page}${ann.comment || ann.text}`;
 }
 
-export function renderCollectionHubMarkdown(
-	heading: string,
+function mergeHubSynthesisEntries(
 	notes: readonly ItemNotesAggregate[],
 	annotations: readonly CollectedAnnotation[],
-	preferCommentOverQuote = false,
-): string {
+): { merged: ItemNotesAggregate[]; byItemAnn: Map<number, CollectedAnnotation[]> } {
 	const byItemAnn = new Map<number, CollectedAnnotation[]>();
 	for (const a of annotations) {
 		const arr = byItemAnn.get(a.itemID) || [];
 		arr.push(a);
 		byItemAnn.set(a.itemID, arr);
 	}
+	const seen = new Set<number>();
+	const merged: ItemNotesAggregate[] = [];
+	for (const n of notes) {
+		seen.add(n.itemID);
+		merged.push(n);
+	}
+	for (const [itemID, anns] of byItemAnn.entries()) {
+		if (seen.has(itemID) || !anns.length) continue;
+		seen.add(itemID);
+		merged.push({
+			item: null,
+			itemID,
+			title: anns[0].itemTitle || `#${itemID}`,
+			creatorYear: anns[0].creatorYear || '',
+			briefNote: '',
+			childNotes: [],
+		});
+	}
+	return { merged, byItemAnn };
+}
+
+export function renderCollectionHubMarkdown(
+	heading: string,
+	notes: readonly ItemNotesAggregate[],
+	annotations: readonly CollectedAnnotation[],
+	preferCommentOverQuote = false,
+): string {
+	const { merged, byItemAnn } = mergeHubSynthesisEntries(notes, annotations);
 	const lines: string[] = [`# ${heading}`, ''];
-	for (const entry of notes) {
+	for (const entry of merged) {
 		const anns = byItemAnn.get(entry.itemID) || [];
 		if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
 		lines.push(`## ${entry.title}${entry.creatorYear ? ` (${entry.creatorYear})` : ''}`);
@@ -286,14 +312,9 @@ export async function saveCollectionHubAsZoteroNote(options: {
 	const ZoteroObj = (globalThis as any).Zotero;
 	const ItemCtor = ZoteroObj?.Item;
 	if (typeof ItemCtor !== 'function') return null;
-	const byItemAnn = new Map<number, CollectedAnnotation[]>();
-	for (const a of options.annotations) {
-		const arr = byItemAnn.get(a.itemID) || [];
-		arr.push(a);
-		byItemAnn.set(a.itemID, arr);
-	}
+	const { merged, byItemAnn } = mergeHubSynthesisEntries(options.notes, options.annotations);
 	const sections: string[] = [`<h2>${escHtml(options.heading)}</h2>`];
-	for (const entry of options.notes) {
+	for (const entry of merged) {
 		const anns = byItemAnn.get(entry.itemID) || [];
 		if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
 		sections.push(`<h3>${escHtml(entry.title)}${entry.creatorYear ? ` <small>(${escHtml(entry.creatorYear)})</small>` : ''}</h3><ul>`);

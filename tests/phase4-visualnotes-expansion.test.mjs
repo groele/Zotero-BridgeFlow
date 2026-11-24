@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { StatusRatingColumnsController } from '../src/domains/visual-notes/status-rating-columns.ts';
 import {
 	captureBatchTargets,
+	clearNativeStatusTagDots,
 	clearStatusRatingCaches,
 	getItemRating,
 	getItemStatus,
@@ -13,6 +14,7 @@ import {
 	parseCustomStatusInput,
 	setItemRating,
 	setItemStatus,
+	syncNativeStatusTagDots,
 } from '../src/services/item-status-rating.ts';
 import {
 	ItemRatingsDiskCache,
@@ -22,9 +24,11 @@ import {
 	VISUAL_COLUMN_CSS,
 	findPeakReadingPage,
 	formatSubMinuteDuration,
+	openItemPdfAtPage,
 } from '../src/domains/visual-notes/column-popover-styles.ts';
+import { loadCustomStatusColors, serializeCustomStatusColors } from '../src/services/status-tag-colors.ts';
 import { STATUS_RATING_CSS } from '../src/domains/visual-notes/status-rating-popover.ts';
-import { formatTitleHeatmapTooltip } from '../src/domains/visual-notes/title-heatmap.ts';
+import { formatTitleHeatmapTooltip, TITLE_TAG_DOTS_HIDE_CSS } from '../src/domains/visual-notes/title-heatmap.ts';
 import {
 	collectHubAnnotations,
 	collectHubNotes,
@@ -47,7 +51,22 @@ import { GALLERY_BOARD_CSS } from '../src/domains/visual-notes/gallery-styles.ts
 import { closeHubPage, openHubPage } from '../src/domains/visual-notes/hub-page.ts';
 import { READING_LAYOUT_CSS } from '../src/domains/visual-notes/reading-layout.ts';
 import { parseEnabledAnnotationColors, serializeEnabledAnnotationColors } from '../src/services/annotation-utils.ts';
-import { COVER_RENDER_SPEC, clearPdfCoverCache } from '../src/services/pdf-cover-service.ts';
+import {
+	computeMasonryColumnCount,
+	GalleryHeightIndex,
+	moveGalleryKeys,
+} from '../src/domains/visual-notes/gallery-height-index.ts';
+import {
+	createGalleryVisibilityGuard,
+	sameGallerySourceSnapshot,
+} from '../src/domains/visual-notes/gallery-pane-adapter.ts';
+import {
+	COVER_RENDER_SPEC,
+	clearPdfCoverCache,
+	computeCoverCacheEvictions,
+	createGalleryScrollIdle,
+	createGalleryWorkQueue,
+} from '../src/services/pdf-cover-service.ts';
 
 function createFakeRegularItem({
 	id,
@@ -348,7 +367,7 @@ test('synchronous column registration survives sync and independent preference c
 test('Phase 4.5: Gallery cover frame sizing preserves portrait PDF ratio, smooth abstract fade, and kanban column linkage', () => {
 	assert.ok(COVER_RENDER_SPEC.targetWidth >= 480, 'PDF cover render width should stay sharp on wide cards');
 	assert.ok(COVER_RENDER_SPEC.aspectRatio >= 1.2, 'PDF cover crop ratio must be tall enough to prevent horizontal cropping in tall frames');
-	assert.equal(COVER_RENDER_SPEC.cacheVersion, 'v2');
+	assert.equal(COVER_RENDER_SPEC.cacheVersion, 'v3');
 	assert.match(GALLERY_BOARD_CSS, /aspect-ratio:\s*var\(--zbf-cover-aspect,\s*1\.95\)/);
 	assert.match(GALLERY_BOARD_CSS, /height:\s*var\(--zbf-cover-height,\s*auto\)/);
 	assert.match(GALLERY_BOARD_CSS, /\.zbf-gal-col\s*\{[^}]*var\(--zbf-card-width/);
@@ -506,8 +525,226 @@ test('Phase 4.8: Interactive visual columns — cumulative star hover CSS, selec
 	assert.match(VISUAL_COLUMN_CSS, /\.zbf-vc-heatbars/);
 	assert.match(VISUAL_COLUMN_CSS, /container-type:\s*inline-size/);
 	assert.match(VISUAL_COLUMN_CSS, /@container\s+zbf-cell\s*\(min-width:\s*164px\)/);
-	assert.match(STATUS_RATING_CSS, /@container\s+zbf-sr\s*\(min-width:\s*118px\)/);
+	assert.match(STATUS_RATING_CSS, /@container\s+zbf-sr\s*\(min-width:\s*96px\)/);
+	assert.ok(!STATUS_RATING_CSS.includes('.zbf-rating-score'), 'numeric 5/5 score must not be shown');
 	assert.match(VISUAL_COLUMN_CSS, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
 	assert.match(GALLERY_BOARD_CSS, /\.zbf-gal-rate-float\[data-hover="5"\]/);
+	assert.match(GALLERY_BOARD_CSS, /\.zbf-gal-masonry-col/);
+	assert.match(GALLERY_BOARD_CSS, /\.zbf-gal-virtual-spacer/);
+	assert.match(TITLE_TAG_DOTS_HIDE_CSS, /\.colored-tag-swatches\s*\{\s*display:\s*none\s*!important/);
 	assert.equal(typeof clearPdfCoverCache, 'function');
+});
+
+test('Phase 4.9: PDF page jump navigation, annotation-only Hub Markdown synthesis, and Zotero native status tag dot purge/toggle', async () => {
+	const prevZotero = globalThis.Zotero;
+	loadCustomStatusColors('');
+	try {
+		const navCalls = [];
+		let selectedTab = '';
+		const tagColorMap = new Map([
+			['/unread', { color: '#64748b', position: 0 }],
+			['/待复现', { color: '#7c3aed', position: 1 }],
+			['/Citations', { color: '#2563eb', position: 2 }],
+			['Important', { color: '#ef4444', position: 3 }],
+		]);
+		let invalidated = 0;
+
+		const annObj = { id: 8801, key: 'ANNKEY88' };
+		const pdfAtt = { id: 7701, deleted: false, isPDFAttachment: () => true };
+		const parentItem = {
+			id: 6601,
+			libraryID: 1,
+			isRegularItem: () => true,
+			getBestAttachment: async () => pdfAtt,
+			getAttachments: () => [7701],
+		};
+
+		globalThis.Zotero = {
+			Libraries: { userLibraryID: 1, getAll: () => [{ libraryID: 1 }] },
+			Items: {
+				get(id) {
+					if (id === 8801) return annObj;
+					if (id === 6601) return parentItem;
+					return undefined; // Simulate unloaded child attachment requiring async getBestAttachment()
+				},
+				async getAsync(id) {
+					if (id === 7701) return pdfAtt;
+					if (id === 6601) return parentItem;
+					return null;
+				},
+			},
+			Reader: {
+				async open(attID, loc, opts) {
+					navCalls.push({ stage: 'open', attID, loc, opts });
+					return {
+						tabID: 'reader-tab-7701',
+						async _waitForReader() { navCalls.push({ stage: 'ready' }); },
+						navigate(targetLoc) { navCalls.push({ stage: 'navigate', targetLoc }); },
+					};
+				},
+			},
+			Tags: {
+				getColors() { return tagColorMap; },
+				getColor(_libID, name) { return tagColorMap.get(name) || false; },
+				async setColor(_libID, name, color) {
+					if (!color) tagColorMap.delete(name);
+					else tagColorMap.set(name, { color, position: tagColorMap.size });
+				},
+			},
+			getMainWindow: () => ({
+				Zotero_Tabs: { select(id) { selectedTab = id; } },
+				ZoteroPane: { itemsView: { rowCount: 0, tree: { invalidate() { invalidated++; } } } },
+			}),
+			getMainWindows: () => [{
+				ZoteroPane: {
+					itemsView: {
+						rowCount: 1,
+						getRow: () => ({ ref: createFakeRegularItem({ id: 950, tags: ['/待复现'] }) }),
+						tree: { invalidate() { invalidated++; } },
+					},
+				},
+			}],
+		};
+
+		// 1. PDF jump converts 1-based pageNumber=3 -> 0-based pageIndex=2 and resolves annotation item.key
+		const jumped = await openItemPdfAtPage(parentItem, 3, 8801);
+		assert.equal(jumped, true);
+		assert.equal(selectedTab, 'reader-tab-7701');
+		assert.deepEqual(navCalls.map((c) => c.stage), ['open', 'ready', 'navigate']);
+		assert.deepEqual(navCalls[0].loc, { pageIndex: 2, annotationID: 'ANNKEY88' });
+		assert.deepEqual(navCalls[2].targetLoc, { pageIndex: 2, annotationID: 'ANNKEY88' });
+
+		// 2. Hub Markdown synthesis preserves annotations even when notes array is empty
+		const md = renderCollectionHubMarkdown('01_Triage', [], [{
+			annotationID: 8801,
+			itemID: 6601,
+			itemTitle: 'Giant trion modulation in monolayer MoS2',
+			creatorYear: 'Lin · 2025',
+			color: '#ffd400',
+			colorLabel: 'Finding',
+			text: 'Exciton binding energy reaches 320 meV.',
+			comment: '关键实验观测',
+			pageLabel: '3',
+			sortIndex: '00003|00000',
+			tags: [],
+		}]);
+		assert.match(md, /Giant trion modulation in monolayer MoS2/);
+		assert.match(md, /Exciton binding energy reaches 320 meV\./);
+		assert.match(md, /关键实验观测/);
+
+		// 3. Purging native status tag dots removes /unread & /待复现 from Zotero.Tags, backs up custom color, and preserves /Citations & Important
+		const purged = await clearNativeStatusTagDots('/Citations');
+		assert.equal(purged, 2);
+		assert.equal(tagColorMap.has('/unread'), false);
+		assert.equal(tagColorMap.has('/待复现'), false);
+		assert.equal(tagColorMap.has('/Citations'), true);
+		assert.equal(tagColorMap.has('Important'), true);
+		assert.ok(invalidated > 0);
+		assert.match(serializeCustomStatusColors(), /#7c3aed/);
+
+		const customItem = createFakeRegularItem({ id: 951, tags: ['/待复现'] });
+		assert.equal(getItemStatus(customItem, '/Citations')?.color, '#7c3aed');
+
+		// 4. Default setItemStatus does NOT register Zotero colored tag dot; opting in with syncZoteroTagColor=true does
+		const statusTarget = createFakeRegularItem({ id: 952, tags: [] });
+		await setItemStatus(statusTarget, '/精读', { color: '#0d9488', excludedTag: '/Citations', syncZoteroTagColor: false });
+		assert.equal(tagColorMap.has('/精读'), false);
+		await setItemStatus(statusTarget, '/精读', { color: '#0d9488', excludedTag: '/Citations', syncZoteroTagColor: true });
+		assert.equal(tagColorMap.get('/精读')?.color, '#0d9488');
+
+		// 5. Restoring status tag dots when user enables switch re-applies color for visible status tags
+		await clearNativeStatusTagDots('/Citations');
+		assert.equal(tagColorMap.has('/待复现'), false);
+		const restored = await syncNativeStatusTagDots(true, '/Citations');
+		assert.equal(restored, 1);
+		assert.equal(tagColorMap.get('/待复现')?.color, '#7c3aed');
+	} finally {
+		loadCustomStatusColors('');
+		clearStatusRatingCaches();
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('Phase 4.10: Gallery Fenwick virtualization, priority cover work queue, visibility guard, and 1-click rating without numeric score', async () => {
+	// 1. Fenwick GalleryHeightIndex prefix offsets, dynamic measurement, and binary search range
+	const idx = new GalleryHeightIndex(5, 200, 10);
+	assert.equal(idx.offset(0), 0);
+	assert.equal(idx.offset(2), 420);
+	assert.equal(idx.total, 5 * 210 - 10);
+	assert.equal(idx.measure(1, 300), true);
+	assert.equal(idx.offset(2), 520);
+	assert.deepEqual(idx.range(220, 600), [1, 3]);
+	assert.equal(computeMasonryColumnCount(960, 220, 12), 4);
+	assert.deepEqual(moveGalleryKeys(['a', 'b', 'c', 'd'], ['c'], 'a'), ['c', 'a', 'b', 'd']);
+
+	// 2. Priority cover queue executes highest viewport priority next & aborts cleanly
+	const idle = createGalleryScrollIdle(10);
+	const queue = createGalleryWorkQueue((s) => idle.wait(s), 1);
+	const executed = [];
+	const abortMid = new AbortController();
+	let releaseFirst;
+	const firstGate = new Promise((r) => { releaseFirst = r; });
+
+	const p1 = queue(async () => { executed.push('first'); await firstGate; return 1; }, new AbortController().signal, () => 1);
+	const pLow = queue(async () => { executed.push('low'); return 2; }, new AbortController().signal, () => 10);
+	const pCancelled = queue(async () => { executed.push('cancelled'); return 3; }, abortMid.signal, () => 999);
+	const pHigh = queue(async () => { executed.push('high'); return 4; }, new AbortController().signal, () => 500);
+	abortMid.abort();
+	releaseFirst();
+	const results = await Promise.all([p1, pLow, pCancelled, pHigh]);
+	assert.deepEqual(results, [1, 2, undefined, 4]);
+	assert.deepEqual(executed, ['high', 'low', 'first']);
+	idle.destroy();
+
+	// 3. Cover disk cache retention evicts legacy cover-v2-*.txt and stale .tmp files while keeping fresh JSON envelopes
+	const now = 1_700_000_000_000;
+	const evicted = computeCoverCacheEvictions([
+		{ path: '/covers/cover-v2-101.txt', size: 1000, modified: now, legacy: true },
+		{ path: '/covers/1-ABC-480.json.xyz.tmp', size: 500, modified: now - 48 * 3600 * 1000, temporary: true },
+		{ path: '/covers/1-ABC-480.json', size: 40_000, modified: now - 1000 },
+	], now);
+	assert.deepEqual(evicted.map((e) => e.path), ['/covers/cover-v2-101.txt', '/covers/1-ABC-480.json.xyz.tmp']);
+
+	// 4. Source snapshot equality & mutual-exclusion visibility guard
+	assert.equal(sameGallerySourceSnapshot({ context: 'c1', ids: [1, 2] }, { context: 'c1', ids: [1, 2] }), true);
+	assert.equal(sameGallerySourceSnapshot({ context: 'c1', ids: [1, 2] }, { context: 'c1', ids: [2, 1] }), false);
+
+	const makeStyle = () => {
+		const map = new Map();
+		return {
+			getPropertyValue: (k) => map.get(k)?.[0] || '',
+			getPropertyPriority: (k) => map.get(k)?.[1] || '',
+			setProperty: (k, v, p = '') => map.set(k, [v, p]),
+			removeProperty: (k) => map.delete(k),
+		};
+	};
+	const mkElem = (id) => {
+		const attrs = new Map();
+		return {
+			id,
+			style: makeStyle(),
+			children: [],
+			contains(other) { return other === this; },
+			querySelectorAll: () => [],
+			getAttribute: (k) => (attrs.has(k) ? attrs.get(k) : null),
+			setAttribute: (k, v) => attrs.set(k, String(v)),
+			removeAttribute: (k) => attrs.delete(k),
+		};
+	};
+	const treeNode = mkElem('zotero-items-tree');
+	const galPanel = mkElem('zbf-gallery-panel');
+	const itemsPane = mkElem('zotero-items-pane');
+	itemsPane.children = [galPanel, treeNode];
+	const guard = createGalleryVisibilityGuard({}, itemsPane, galPanel);
+	guard.setEnabled(true);
+	assert.equal(itemsPane.getAttribute('data-zbf-gallery'), 'true');
+	assert.equal(galPanel.style.getPropertyValue('display'), 'flex');
+	assert.equal(treeNode.style.getPropertyValue('visibility'), 'hidden');
+	assert.equal(treeNode.getAttribute('inert'), '');
+	guard.setEnabled(false);
+	assert.equal(itemsPane.getAttribute('data-zbf-gallery'), null);
+	assert.equal(galPanel.style.getPropertyValue('display'), 'none');
+	assert.equal(treeNode.style.getPropertyValue('visibility'), '');
+	assert.equal(treeNode.getAttribute('inert'), null);
+	guard.destroy();
 });

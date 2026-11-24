@@ -4,6 +4,7 @@ import type { CollectedAnnotation } from '../../services/annotation-utils.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
 import { formatHubAnnotationBody, type ItemNotesAggregate } from '../../services/collection-notes.ts';
 import { renderHighlightedSnippet, writeMatrixClipboard } from './annotation-matrix-ui.ts';
+import { openItemPdfAtPage } from './column-popover-styles.ts';
 import { readItemRemarkWithFallback, writeItemRemarkWithSync, type VisualNotesDataSource } from './data-source.ts';
 import { createGallerySvgIcon, renderRichTitleNodes, resolvePastelTagStyle } from './gallery-icons.ts';
 
@@ -111,7 +112,9 @@ export function renderHubAnnotationsList(opts: {
 		const titleSpan = hubEl(doc, 'span');
 		renderRichTitleNodes(doc, titleSpan, list[0].itemTitle);
 		itemBtn.appendChild(titleSpan);
-		itemBtn.addEventListener('click', () => opts.onOpenItem(itemID));
+		itemBtn.addEventListener('click', () => {
+			void openItemPdfAtPage({ id: itemID }).then((ok) => { if (!ok) opts.onOpenItem(itemID); });
+		});
 		const meta = hubEl(doc, 'span');
 		meta.className = 'zbf-notebook-meta';
 		meta.textContent = [list[0].creatorYear, zh ? `${list.length} 条标注` : `${list.length} notes`].filter(Boolean).join(' · ');
@@ -120,7 +123,9 @@ export function renderHubAnnotationsList(opts: {
 		openBtn.type = 'button';
 		openBtn.className = 'zbf-reading-open-pill';
 		openBtn.textContent = zh ? '打开文献' : 'Open';
-		openBtn.addEventListener('click', () => opts.onOpenItem(itemID));
+		openBtn.addEventListener('click', () => {
+			void openItemPdfAtPage({ id: itemID }).then((ok) => { if (!ok) opts.onOpenItem(itemID); });
+		});
 		head.append(headMain, openBtn);
 		card.appendChild(head);
 
@@ -158,7 +163,11 @@ export function renderHubAnnotationsList(opts: {
 			const jump = hubEl(doc, 'button');
 			jump.type = 'button';
 			jump.textContent = zh ? '跳至 PDF' : 'Open PDF';
-			jump.addEventListener('click', () => opts.onOpenItem(itemID));
+			jump.addEventListener('click', () => {
+				void openItemPdfAtPage({ id: itemID }, Number(ann.pageLabel) || undefined, ann.annotationID).then((ok) => {
+					if (!ok) opts.onOpenItem(itemID);
+				});
+			});
 			const copy = hubEl(doc, 'button');
 			copy.type = 'button';
 			const defaultCopyLabel = zh ? '复制' : 'Copy';

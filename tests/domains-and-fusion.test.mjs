@@ -597,7 +597,7 @@ test('Preferences completeness: every user-facing PREF_SCHEMA key is exposed in 
 	for (const m of xhtml.matchAll(/preference="extensions\.zotero\.bridgeflow\.([^"]+)"/g)) exposed.add(m[1]);
 	for (const m of xhtml.matchAll(/data-zbf-pref="([^"]+)"/g)) exposed.add(m[1]);
 
-	const runtimeOnly = new Set(['workspace.document', 'workspace.verticalSidebarCollapsed']);
+	const runtimeOnly = new Set(['workspace.document', 'workspace.verticalSidebarCollapsed', 'visualNotes.statusCustomColors']);
 	const missingFromUI = Object.keys(PREF_SCHEMA).filter((k) => !runtimeOnly.has(k) && !exposed.has(k));
 	const unknownInUI = [...exposed].filter((k) => !(k in PREF_SCHEMA) && !k.startsWith(PREF_PREFIX));
 

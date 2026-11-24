@@ -88,11 +88,7 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 		b.type = 'button';
 		b.className = 'zbf-notebook-seg-btn';
 		b.textContent = label;
-		b.addEventListener('click', () => {
-			activeScope = mode;
-			activeColor = '';
-			renderAll();
-		});
+		b.addEventListener('click', () => { activeScope = mode; activeColor = ''; renderAll(); });
 		scopeBtns.set(mode, b);
 		scopeSeg.appendChild(b);
 	}
@@ -141,14 +137,10 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 	};
 	togglesWrap.append(
 		makeCheck(zh ? '忽略图/表标注' : 'Ignore Fig/Table', ignoreFigTable, (v) => {
-			ignoreFigTable = v;
-			options.prefs.set('visualNotes.collectionHub.ignoreFigureTable', v);
-			renderAll();
+			ignoreFigTable = v; options.prefs.set('visualNotes.collectionHub.ignoreFigureTable', v); renderAll();
 		}),
 		makeCheck(zh ? '有评注时仅显示评注' : 'Prefer comment', preferComment, (v) => {
-			preferComment = v;
-			options.prefs.set('visualNotes.collectionHub.preferCommentOverQuote', v);
-			renderAll();
+			preferComment = v; options.prefs.set('visualNotes.collectionHub.preferCommentOverQuote', v); renderAll();
 		}),
 	);
 
@@ -284,35 +276,52 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 	foot.className = 'zbf-notebook-foot';
 	const actions = hubEl(doc, 'div');
 	actions.className = 'zbf-matrix-actions';
-	const addBtn = (lbl: string, primary: boolean, fn: () => void) => {
+	const flashBtn = (btn: HTMLButtonElement, tempText: string) => {
+		const orig = btn.dataset.origLabel || btn.textContent || '';
+		btn.dataset.origLabel = orig;
+		btn.textContent = tempText;
+		doc.defaultView?.setTimeout?.(() => {
+			if (btn.isConnected) btn.textContent = orig;
+		}, 1800);
+	};
+	const addBtn = (lbl: string, primary: boolean, fn: (btn: HTMLButtonElement) => void) => {
 		const b = hubEl(doc, 'button');
 		b.type = 'button';
 		b.className = primary ? 'zbf-matrix-btn primary' : 'zbf-matrix-btn';
 		b.textContent = lbl;
-		b.addEventListener('click', fn);
+		b.addEventListener('click', () => fn(b));
 		actions.appendChild(b);
 	};
 
 	addBtn(zh ? '打开文献对比矩阵' : 'Open Matrix View', false, () => {
+		computeCurrent();
 		const ids = latestScope.items.map((it) => Number(it.id)).filter((id) => id > 0);
-		const scopeName = latestScope.scopeTitle;
-		safeClose();
-		openAnnotationMatrixModal({ win: options.win, title: scopeName, itemIDs: ids, prefs: options.prefs, bus: options.bus, clipboard: options.clipboard });
+		openAnnotationMatrixModal({
+			win: options.win, title: latestScope.scopeTitle, itemIDs: ids,
+			prefs: options.prefs, bus: options.bus, clipboard: options.clipboard,
+		});
 	});
 
-	addBtn(zh ? '复制 Markdown 综述汇总' : 'Copy Markdown Synthesis', false, () => {
+	addBtn(zh ? '复制 Markdown 综述汇总' : 'Copy Markdown Synthesis', false, (btn) => {
 		const { annData, notesData } = computeCurrent();
+		if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
+			statusEl.textContent = zh ? '当前范围暂无可复制的笔记或标注' : 'Nothing to copy in current scope';
+			flashBtn(btn, zh ? '暂无内容' : 'Empty');
+			return;
+		}
 		const md = renderCollectionHubMarkdown(`${latestScope.scopeTitle} · 笔记与标注汇总`, notesData.entries, annData.annotations, preferComment);
-		statusEl.textContent = writeMatrixClipboard(md, options.clipboard)
-			? (zh ? '✓ 已复制 Markdown 综述草稿' : '✓ Copied Markdown synthesis') : '✕ Copy failed';
+		const ok = writeMatrixClipboard(md, options.clipboard);
+		statusEl.textContent = ok ? (zh ? `✓ 已复制 Markdown 综述（${md.length} 字）` : `✓ Copied Markdown (${md.length} chars)`) : '✕ Copy failed';
+		flashBtn(btn, ok ? (zh ? '✓ 已复制到剪贴板' : '✓ Copied!') : '✕ 失败');
 	});
 
 	let savingNote = false;
-	addBtn(zh ? '保存为当前分类 Zotero 笔记' : 'Save as Zotero Note', true, () => {
+	addBtn(zh ? '保存为当前分类 Zotero 笔记' : 'Save as Zotero Note', true, (btn) => {
 		if (savingNote) return;
 		const { annData, notesData } = computeCurrent();
 		if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
 			statusEl.textContent = zh ? '当前范围暂无可汇总的笔记或标注' : 'No notes or annotations to save';
+			flashBtn(btn, zh ? '暂无可保存内容' : 'Nothing to save');
 			return;
 		}
 		savingNote = true;
@@ -320,8 +329,16 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 		void saveCollectionHubAsZoteroNote({
 			heading: `${latestScope.scopeTitle} · 笔记与标注汇总`, notes: notesData.entries, annotations: annData.annotations,
 			preferCommentOverQuote: preferComment, libraryID: latestScope.libraryID, collectionID: latestScope.collectionID,
-		}).then((nid) => {
-			statusEl.textContent = nid ? (zh ? `✓ 已生成汇总笔记 (#${nid})` : `✓ Saved Zotero Note (#${nid})`) : '✕ Failed to save note';
+		}).then(async (nid) => {
+			if (!nid) { statusEl.textContent = '✕ Failed to save note'; return; }
+			statusEl.textContent = zh ? `✓ 已生成并打开汇总笔记 (#${nid})` : `✓ Saved & opened Note (#${nid})`;
+			flashBtn(btn, zh ? `✓ 已打开笔记 #${nid}` : `✓ Opened #${nid}`);
+			const zNotes = (globalThis as any).Zotero?.Notes;
+			if (typeof zNotes?.open === 'function') {
+				try { await zNotes.open(nid, undefined, { openInWindow: false }); return; } catch { /* fallback below */ }
+			}
+			(options.win as any).Zotero_Tabs?.select?.('zotero-pane');
+			await (options.win as any).ZoteroPane?.selectItem?.(nid);
 		}).catch(() => {
 			statusEl.textContent = zh ? '✕ 保存汇总笔记失败' : '✕ Failed to save note';
 		}).finally(() => { savingNote = false; });

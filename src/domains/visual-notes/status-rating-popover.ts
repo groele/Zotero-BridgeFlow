@@ -33,13 +33,9 @@ export function isStatusPickerOpenFor(doc: Document | null | undefined, itemID: 
 export const STATUS_RATING_CSS = `
 @keyframes zbfPopIn { from { opacity: 0; transform: translateY(-4px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .zbf-status-cell, .zbf-rating-cell { display: flex; align-items: center; height: 100%; min-width: 0; pointer-events: auto; user-select: none; overflow: hidden; }
-.zbf-sr-fit { display: flex; align-items: center; width: 100%; height: 100%; min-width: 0; gap: 6px; container-type: inline-size; container-name: zbf-sr; }
-.zbf-rating-score { display: none; margin-inline-start: auto; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; opacity: 0.65; white-space: nowrap; }
+.zbf-sr-fit { display: flex; align-items: center; width: 100%; height: 100%; min-width: 0; container-type: inline-size; container-name: zbf-sr; }
 @container zbf-sr (min-width: 96px) {
-  .zbf-rating-stars { font-size: 13.5px; gap: 2px; }
-}
-@container zbf-sr (min-width: 118px) {
-  .zbf-rating-score[data-has-score="1"] { display: inline; }
+  .zbf-rating-stars { font-size: 12.5px; gap: 2px; }
 }
 .zbf-status-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1.5px 8px; border-radius: 6px; border: 1px solid transparent; font-size: 11px; font-weight: 600; line-height: 1.4; cursor: pointer; background: rgba(100,116,139,0.12); color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: filter 0.14s ease, transform 0.12s ease, box-shadow 0.14s ease; }
 .zbf-status-pill:hover { filter: brightness(0.95); box-shadow: 0 1px 4px rgba(15,23,42,0.10); }
@@ -50,28 +46,26 @@ export const STATUS_RATING_CSS = `
 .row:hover .zbf-status-empty, .zbf-status-cell:hover .zbf-status-empty { opacity: 0.96; }
 .zbf-status-empty:hover { opacity: 1 !important; border-style: solid; border-color: light-dark(rgba(79,70,229,0.45), rgba(129,140,248,0.55)); background: light-dark(rgba(79,70,229,0.07), rgba(129,140,248,0.14)); color: inherit; }
 .virtualized-table:focus-within .row.selected .zbf-status-empty { color: rgba(255,255,255,0.90); border-color: rgba(255,255,255,0.48); }
-.zbf-rating-stars { display: inline-flex; align-items: center; gap: 0.5px; cursor: pointer; font-size: 12px; line-height: 1; padding: 1.5px 2px; border-radius: 6px; transition: opacity 0.14s ease, background-color 0.14s ease; }
-.zbf-rating-stars:hover { background: light-dark(rgba(245,158,11,0.08), rgba(251,191,36,0.12)); }
-.zbf-rating-stars[data-unrated="true"] { opacity: 0.76; }
-.row:hover .zbf-rating-stars[data-unrated="true"], .zbf-rating-cell:hover .zbf-rating-stars[data-unrated="true"] { opacity: 0.98; }
-.zbf-rating-star { padding: 0 0.5px; color: light-dark(rgba(100,116,139,0.42), rgba(148,163,184,0.38)); transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), color 0.12s ease, opacity 0.12s ease; }
-.zbf-rating-star[data-lit="true"] { color: #f59e0b; }
-.zbf-rating-stars[data-hover] .zbf-rating-star { color: light-dark(rgba(148,163,184,0.34), rgba(148,163,184,0.30)); }
+.zbf-rating-stars { display: inline-flex; align-items: center; gap: 1px; cursor: pointer; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif; font-size: 11px; line-height: 1; padding: 1px 0; border-radius: 6px; transition: opacity 0.14s ease; }
+.zbf-rating-stars[data-unrated="true"] { opacity: 0.88; }
+.row:hover .zbf-rating-stars[data-unrated="true"], .zbf-rating-cell:hover .zbf-rating-stars[data-unrated="true"] { opacity: 1; }
+.zbf-rating-star { display: inline-block; padding: 0 0.5px; filter: grayscale(1) opacity(0.24); transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), filter 0.12s ease, opacity 0.12s ease; }
+.zbf-rating-star[data-lit="true"] { filter: none; opacity: 1; }
+.zbf-rating-stars[data-hover] .zbf-rating-star { filter: grayscale(1) opacity(0.22); }
 .zbf-rating-stars[data-hover="1"] .zbf-rating-star:nth-child(-n+1),
 .zbf-rating-stars[data-hover="2"] .zbf-rating-star:nth-child(-n+2),
 .zbf-rating-stars[data-hover="3"] .zbf-rating-star:nth-child(-n+3),
 .zbf-rating-stars[data-hover="4"] .zbf-rating-star:nth-child(-n+4),
-.zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { color: #fbbf24; }
-.zbf-rating-stars[data-clear-hint="true"] .zbf-rating-star[data-lit="true"] { opacity: 0.55; }
-.zbf-rating-star:hover { transform: scale(1.24); }
-.virtualized-table:focus-within .row.selected .zbf-rating-stars:hover { background: rgba(255,255,255,0.16); }
-.virtualized-table:focus-within .row.selected .zbf-rating-star { color: rgba(255,255,255,0.40); }
-.virtualized-table:focus-within .row.selected .zbf-rating-star[data-lit="true"] { color: #fde047; }
+.zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { filter: drop-shadow(0 1px 2px rgba(245,158,11,0.36)); opacity: 1; }
+.zbf-rating-stars[data-clear-hint="true"] .zbf-rating-star[data-lit="true"] { opacity: 0.72; }
+.zbf-rating-star:hover { transform: scale(1.22); }
+.virtualized-table:focus-within .row.selected .zbf-rating-star { filter: grayscale(1) brightness(2.4) opacity(0.38); }
+.virtualized-table:focus-within .row.selected .zbf-rating-star[data-lit="true"] { filter: drop-shadow(0 1px 2px rgba(0,0,0,0.22)); opacity: 1; }
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="1"] .zbf-rating-star:nth-child(-n+1),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="2"] .zbf-rating-star:nth-child(-n+2),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="3"] .zbf-rating-star:nth-child(-n+3),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="4"] .zbf-rating-star:nth-child(-n+4),
-.virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { color: #fef08a; }
+.virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { filter: drop-shadow(0 1px 3px rgba(0,0,0,0.28)); opacity: 1; }
 .zbf-status-pop { position: fixed; z-index: 2147483645; width: 248px; padding: 8px; border-radius: 12px; background: light-dark(rgba(255,255,255,0.97), rgba(22,32,50,0.97)); backdrop-filter: blur(14px); color: light-dark(#0f172a, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.11), rgba(148,163,184,0.24)); box-shadow: 0 16px 40px rgba(15,23,42,0.19), 0 4px 12px rgba(15,23,42,0.08), inset 0 1px 0 light-dark(rgba(255,255,255,0.85), rgba(255,255,255,0.07)); font: 12px/1.4 system-ui, "Microsoft YaHei UI", sans-serif; display: flex; flex-direction: column; gap: 5px; transform-origin: top left; animation: zbfPopIn 0.15s cubic-bezier(0.22,1,0.36,1); }
 .zbf-status-pop-batch { padding: 4px 8px; border-radius: 7px; font-size: 11px; font-weight: 600; background: light-dark(rgba(79,70,229,0.09), rgba(129,140,248,0.18)); color: light-dark(#4338ca, #c7d2fe); }
 .zbf-status-pop-list { display: flex; flex-direction: column; gap: 2px; max-height: 224px; overflow-y: auto; }
@@ -121,9 +115,10 @@ export function openStatusPickerPopover(options: {
 	current: StatusOption | null;
 	zh: boolean;
 	excludedTag: string;
+	syncZoteroTagColor?: boolean;
 	onApplied: () => void;
 }): void {
-	const { win, anchor, clickedItem, current, zh, excludedTag, onApplied } = options;
+	const { win, anchor, clickedItem, current, zh, excludedTag, syncZoteroTagColor, onApplied } = options;
 	const doc = win.document;
 	if (!doc) return;
 	const clickedID = Number(clickedItem?.id || 0);
@@ -178,7 +173,7 @@ export function openStatusPickerPopover(options: {
 		void (async () => {
 			try {
 				for (const t of targets) {
-					try { await setItemStatus(t, tag, { color, excludedTag }); } catch { /* isolate per-item failure */ }
+					try { await setItemStatus(t, tag, { color, excludedTag, syncZoteroTagColor }); } catch { /* isolate per-item failure */ }
 				}
 			} finally {
 				onApplied();

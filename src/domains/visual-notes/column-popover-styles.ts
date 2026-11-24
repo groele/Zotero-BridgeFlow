@@ -141,35 +141,70 @@ export function findPeakReadingPage(progress?: TabReadingProgress): { page: numb
 	return bestPage > 0 ? { page: bestPage, seconds: bestSec } : null;
 }
 
-export function openItemPdfAtPage(item: any, pageNumber?: number, annotationID?: number): void {
+export async function openItemPdfAtPage(item: any, pageNumber?: number, annotationID?: number): Promise<boolean> {
 	const zotero = (globalThis as any).Zotero;
-	const reader = zotero?.Reader;
-	if (!reader?.open || !item) return;
+	const readerApi = zotero?.Reader;
+	if (!readerApi?.open || !item) return false;
+
+	let parentItem = item;
+	if (typeof parentItem.isRegularItem !== 'function' && parentItem.id && zotero?.Items) {
+		parentItem = zotero.Items.get?.(parentItem.id) || (await zotero.Items.getAsync?.(parentItem.id).catch(() => null)) || item;
+	}
+
 	let att: any = null;
-	if (item.isPDFAttachment?.() || item.isAttachment?.()) {
-		att = item;
-	} else if (typeof item.getAttachments === 'function') {
-		for (const aid of item.getAttachments() || []) {
-			const cand = zotero?.Items?.get?.(aid);
-			if (cand && !cand.deleted && (cand.isPDFAttachment?.() || cand.isFileAttachment?.())) {
-				att = cand;
-				break;
+	if (parentItem?.isPDFAttachment?.() || parentItem?.isFileAttachment?.()) {
+		att = parentItem;
+	} else {
+		try {
+			const best = await parentItem?.getBestAttachment?.();
+			if (best && !best.deleted && (best.isPDFAttachment?.() || best.isFileAttachment?.())) {
+				att = best;
+			}
+		} catch { /* fallback below */ }
+		if (!att && typeof parentItem?.getAttachments === 'function') {
+			for (const aid of parentItem.getAttachments() || []) {
+				const cand = zotero?.Items?.get?.(aid) || (await zotero?.Items?.getAsync?.(aid).catch(() => null));
+				if (cand && !cand.deleted && (cand.isPDFAttachment?.() || cand.isFileAttachment?.())) {
+					att = cand;
+					break;
+				}
 			}
 		}
 	}
-	if (!att?.id) return;
+	if (!att?.id) return false;
+
 	const location: Record<string, unknown> = {};
 	if (annotationID && annotationID > 0) {
-		const ann = zotero?.Items?.get?.(annotationID);
-		if (ann?.key) location.annotationKey = ann.key;
+		const ann = zotero?.Items?.get?.(annotationID) || (await zotero?.Items?.getAsync?.(annotationID).catch(() => null));
+		if (ann?.key) location.annotationID = ann.key;
 	}
-	if (!location.annotationKey && typeof pageNumber === 'number' && pageNumber >= 1) {
-		location.pageIndex = Math.floor(pageNumber) - 1;
+	if (typeof pageNumber === 'number' && Number.isFinite(pageNumber) && pageNumber >= 1) {
+		location.pageIndex = Math.max(0, Math.floor(pageNumber) - 1);
 	}
 	const locArg = Object.keys(location).length ? location : undefined;
-	void Promise.resolve(reader.open(att.id, locArg, { openInWindow: false })).catch(() => {
-		void Promise.resolve(reader.open(att.id)).catch(() => {});
-	});
+
+	try {
+		const opened = await readerApi.open(att.id, locArg, { openInWindow: false });
+		const instance = opened || readerApi._readers?.find?.((r: any) => Number(r?.itemID) === Number(att.id) && !r?._isTabClosed);
+		if (instance) {
+			if (instance.tabID) {
+				const targetWin = instance._window || zotero?.getMainWindow?.();
+				targetWin?.Zotero_Tabs?.select?.(instance.tabID, true);
+			}
+			if (locArg) {
+				await Promise.resolve(instance._initPromise ?? instance._waitForReader?.()).catch(() => {});
+				try { await instance.navigate?.(locArg); } catch { /* ignore */ }
+			}
+		}
+		return true;
+	} catch {
+		try {
+			await readerApi.open(att.id, undefined, { openInWindow: false });
+			return true;
+		} catch {
+			return false;
+		}
+	}
 }
 
 export function mountAnchoredPopover(win: Window, anchor: HTMLElement, pop: HTMLElement, key: string): () => void {

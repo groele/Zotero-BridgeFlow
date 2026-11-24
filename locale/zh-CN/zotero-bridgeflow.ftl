@@ -457,8 +457,12 @@ zbf-btn-enable-mod = 立即启用此子系统
 zbf-sec-ws-experience = 侧栏排版、悬停预览与快捷菜单
 zbf-sec-word-adv-perf = 高级性能阈值与健康检查参数（点击展开）
 
+zbf-pref-vn-show-title-dots =
+    .label = 在文献题名前显示彩色标签圆点标记（关闭后隐藏题名前 ● 彩色圆点）
 zbf-pref-vn-status-col =
     .label = 在主文献列表中启用「阅读状态」列（/前缀彩色状态流转）
+zbf-pref-vn-status-tag-dot =
+    .label = 将状态颜色同步为 Zotero 彩色标签（开启后题名前显示彩色圆点）
 zbf-pref-vn-rating-col =
     .label = 在主文献列表中启用「评级」列（1–5 星点击打分）
 zbf-pref-vn-rating-storage = 星级评价存储位置

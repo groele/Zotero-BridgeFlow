@@ -39,13 +39,29 @@ function unregisterAllSafe(registeredKeys: Set<string>): void {
 
 function guardPrimaryTreePointer(el: HTMLElement): void {
 	el.addEventListener('mousedown', (ev) => {
-		if (ev.button !== 0) return;
-		ev.stopPropagation();
-		ev.preventDefault();
+		if (ev.button === 0) ev.stopPropagation();
+	});
+	el.addEventListener('mouseup', (ev) => {
+		if (ev.button === 0) ev.stopPropagation();
 	});
 	el.addEventListener('dblclick', (ev) => {
 		ev.stopPropagation();
 		ev.preventDefault();
+	});
+}
+
+function bindInstantCellPress(el: HTMLElement, handler: (ev: MouseEvent) => void): void {
+	let lastPointerDownAt = 0;
+	el.addEventListener('mousedown', (ev) => {
+		if (ev.button !== 0) return;
+		ev.stopPropagation();
+		lastPointerDownAt = Date.now();
+		handler(ev);
+	});
+	el.addEventListener('click', (ev) => {
+		ev.stopPropagation();
+		if (Date.now() - lastPointerDownAt < 450) return;
+		handler(ev);
 	});
 }
 
@@ -137,7 +153,7 @@ export class StatusRatingColumnsController {
 				if (!doc) return {} as HTMLElement;
 				ensureStatusRatingStyle(doc);
 				const span = srHtmlEl(doc, 'span');
-				span.className = `cell ${column?.className || ''} zbf-status-cell`.trim();
+				span.className = `cell ${column?.className || ''} clickable zbf-status-cell`.trim();
 				if (!item || (typeof item.isRegularItem === 'function' && !item.isRegularItem())) return span;
 
 				const current = getItemStatus(item, this.excludedTag());
@@ -163,8 +179,7 @@ export class StatusRatingColumnsController {
 						: 'Set reading status (supports multi-select & keys 1–9)';
 				}
 				guardPrimaryTreePointer(trigger);
-				trigger.addEventListener('click', (ev) => {
-					ev.stopPropagation();
+				bindInstantCellPress(trigger, () => {
 					if (win) {
 						openStatusPickerPopover({
 							win,
@@ -173,6 +188,7 @@ export class StatusRatingColumnsController {
 							current,
 							zh,
 							excludedTag: this.excludedTag(),
+							syncZoteroTagColor: Boolean(this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')),
 							onApplied: this.notifyApplied,
 						});
 					}
@@ -200,7 +216,7 @@ export class StatusRatingColumnsController {
 				if (!doc) return {} as HTMLElement;
 				ensureStatusRatingStyle(doc);
 				const span = srHtmlEl(doc, 'span');
-				span.className = `cell ${column?.className || ''} zbf-rating-cell`.trim();
+				span.className = `cell ${column?.className || ''} clickable zbf-rating-cell`.trim();
 				if (!item || (typeof item.isRegularItem === 'function' && !item.isRegularItem())) return span;
 
 				let current = getItemRating(item, this.ratingStorage());
@@ -211,20 +227,11 @@ export class StatusRatingColumnsController {
 				wrap.setAttribute('role', 'radiogroup');
 				wrap.setAttribute('aria-label', zh ? '星级评价' : 'Star rating');
 				guardPrimaryTreePointer(wrap);
-				const score = srHtmlEl(doc, 'span');
-				score.className = 'zbf-rating-score';
 
 				const starEls: HTMLSpanElement[] = [];
 				const syncVisual = (val: number) => {
-					if (val === 0) {
-						wrap.setAttribute('data-unrated', 'true');
-						score.removeAttribute('data-has-score');
-						score.textContent = '';
-					} else {
-						wrap.removeAttribute('data-unrated');
-						score.setAttribute('data-has-score', '1');
-						score.textContent = `${val}/5`;
-					}
+					if (val === 0) wrap.setAttribute('data-unrated', 'true');
+					else wrap.removeAttribute('data-unrated');
 					starEls.forEach((s, idx) => {
 						const k = idx + 1;
 						if (k <= val) s.setAttribute('data-lit', 'true');
@@ -243,14 +250,13 @@ export class StatusRatingColumnsController {
 				for (let k = 1; k <= 5; k++) {
 					const star = srHtmlEl(doc, 'span');
 					star.className = 'zbf-rating-star';
-					star.textContent = '★';
+					star.textContent = '⭐';
 					star.addEventListener('mouseenter', () => {
 						wrap.setAttribute('data-hover', String(k));
 						if (current === k) wrap.setAttribute('data-clear-hint', 'true');
 						else wrap.removeAttribute('data-clear-hint');
 					});
-					star.addEventListener('click', (ev) => {
-						ev.stopPropagation();
+					bindInstantCellPress(star, () => {
 						const selected = (win as any)?.ZoteroPane?.getSelectedItems?.() || [];
 						const targets = captureBatchTargets(selected, item);
 						const next = current === k ? 0 : k;
@@ -273,7 +279,7 @@ export class StatusRatingColumnsController {
 					wrap.appendChild(star);
 				}
 				syncVisual(current);
-				fit.append(wrap, score);
+				fit.appendChild(wrap);
 				span.appendChild(fit);
 				return span;
 			},

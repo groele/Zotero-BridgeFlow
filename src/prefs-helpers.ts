@@ -58,6 +58,7 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-sub-rating-cfg'), !vnOn || !prefs.get('visualNotes.ratingColumn.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-gallery-cfg'), !vnOn || !prefs.get('visualNotes.gallery.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-hub-cfg'), !vnOn || !prefs.get('visualNotes.collectionHub.enable'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-status-cfg'), !vnOn || !prefs.get('visualNotes.statusColumn.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-group-inspector'), !insOn);
 	setSubtreeDisabled(doc.getElementById('zbf-group-pdf'), !insOn);
 	setSubtreeDisabled(doc.getElementById('zbf-group-wordcite'), !wcOn);

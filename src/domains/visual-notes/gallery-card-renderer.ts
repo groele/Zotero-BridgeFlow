@@ -144,18 +144,26 @@ export function renderGalleryCardElement(opts: {
 	showBrief: boolean;
 	ratingStorage: RatingStorageLocation;
 	draggable: boolean;
-	onSelect: (card: GalleryCardModel, el: HTMLElement) => void;
-	onOpenReader: (itemID: number) => void;
+	onSelect: (card: GalleryCardModel, el: HTMLElement, ev: MouseEvent) => void;
+	onContextMenu?: (card: GalleryCardModel, el: HTMLElement, ev: MouseEvent) => void;
+	onOpenReader: (card: GalleryCardModel, ev?: MouseEvent | KeyboardEvent) => void;
+	onNavigateKey?: (card: GalleryCardModel, key: string, ev: KeyboardEvent) => void;
 	onRated: () => void;
 }): HTMLElement {
 	const { doc, card } = opts;
 	const el = galEl(doc, 'div');
 	el.className = 'zbf-gal-card';
+	el.tabIndex = 0;
+	el.dataset.itemId = String(card.itemID);
 	if (opts.selected) el.setAttribute('data-selected', 'true');
 	if (opts.draggable) {
 		el.draggable = true;
 		el.addEventListener('dragstart', (ev) => {
+			el.setAttribute('data-dragging', 'true');
 			ev.dataTransfer?.setData('text/zbf-item-id', String(card.itemID));
+		});
+		el.addEventListener('dragend', () => {
+			el.removeAttribute('data-dragging');
 		});
 	}
 
@@ -221,7 +229,7 @@ export function renderGalleryCardElement(opts: {
 	for (let k = 1; k <= 5; k++) {
 		const s = galEl(doc, 'span');
 		s.className = 'zbf-gal-star';
-		s.textContent = '★';
+		s.textContent = '⭐';
 		s.addEventListener('mouseenter', () => {
 			rateFloat.setAttribute('data-hover', String(k));
 			if (currentRating === k) rateFloat.setAttribute('data-clear-hint', 'true');
@@ -304,7 +312,24 @@ export function renderGalleryCardElement(opts: {
 		el.appendChild(tagsRow);
 	}
 
-	el.addEventListener('click', () => opts.onSelect(card, el));
-	el.addEventListener('dblclick', () => opts.onOpenReader(card.itemID));
+	el.addEventListener('click', (ev) => opts.onSelect(card, el, ev));
+	el.addEventListener('dblclick', (ev) => opts.onOpenReader(card, ev));
+	el.addEventListener('contextmenu', (ev) => {
+		if (!opts.onContextMenu) return;
+		ev.preventDefault();
+		ev.stopPropagation();
+		opts.onContextMenu(card, el, ev);
+	});
+	el.addEventListener('keydown', (ev) => {
+		if (ev.key === 'Enter') {
+			ev.preventDefault();
+			opts.onOpenReader(card, ev);
+			return;
+		}
+		if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(ev.key)) {
+			ev.preventDefault();
+			opts.onNavigateKey?.(card, ev.key, ev);
+		}
+	});
 	return el;
 }

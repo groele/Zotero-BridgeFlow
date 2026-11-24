@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.5.12 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.5.13 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -4809,36 +4809,71 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return bestPage > 0 ? { page: bestPage, seconds: bestSec } : null;
   }
-  function openItemPdfAtPage(item, pageNumber, annotationID) {
+  async function openItemPdfAtPage(item, pageNumber, annotationID) {
     const zotero = globalThis.Zotero;
-    const reader = zotero?.Reader;
-    if (!reader?.open || !item) return;
+    const readerApi = zotero?.Reader;
+    if (!readerApi?.open || !item) return false;
+    let parentItem = item;
+    if (typeof parentItem.isRegularItem !== "function" && parentItem.id && zotero?.Items) {
+      parentItem = zotero.Items.get?.(parentItem.id) || await zotero.Items.getAsync?.(parentItem.id).catch(() => null) || item;
+    }
     let att = null;
-    if (item.isPDFAttachment?.() || item.isAttachment?.()) {
-      att = item;
-    } else if (typeof item.getAttachments === "function") {
-      for (const aid of item.getAttachments() || []) {
-        const cand = zotero?.Items?.get?.(aid);
-        if (cand && !cand.deleted && (cand.isPDFAttachment?.() || cand.isFileAttachment?.())) {
-          att = cand;
-          break;
+    if (parentItem?.isPDFAttachment?.() || parentItem?.isFileAttachment?.()) {
+      att = parentItem;
+    } else {
+      try {
+        const best = await parentItem?.getBestAttachment?.();
+        if (best && !best.deleted && (best.isPDFAttachment?.() || best.isFileAttachment?.())) {
+          att = best;
+        }
+      } catch {
+      }
+      if (!att && typeof parentItem?.getAttachments === "function") {
+        for (const aid of parentItem.getAttachments() || []) {
+          const cand = zotero?.Items?.get?.(aid) || await zotero?.Items?.getAsync?.(aid).catch(() => null);
+          if (cand && !cand.deleted && (cand.isPDFAttachment?.() || cand.isFileAttachment?.())) {
+            att = cand;
+            break;
+          }
         }
       }
     }
-    if (!att?.id) return;
+    if (!att?.id) return false;
     const location = {};
     if (annotationID && annotationID > 0) {
-      const ann = zotero?.Items?.get?.(annotationID);
-      if (ann?.key) location.annotationKey = ann.key;
+      const ann = zotero?.Items?.get?.(annotationID) || await zotero?.Items?.getAsync?.(annotationID).catch(() => null);
+      if (ann?.key) location.annotationID = ann.key;
     }
-    if (!location.annotationKey && typeof pageNumber === "number" && pageNumber >= 1) {
-      location.pageIndex = Math.floor(pageNumber) - 1;
+    if (typeof pageNumber === "number" && Number.isFinite(pageNumber) && pageNumber >= 1) {
+      location.pageIndex = Math.max(0, Math.floor(pageNumber) - 1);
     }
     const locArg = Object.keys(location).length ? location : void 0;
-    void Promise.resolve(reader.open(att.id, locArg, { openInWindow: false })).catch(() => {
-      void Promise.resolve(reader.open(att.id)).catch(() => {
-      });
-    });
+    try {
+      const opened = await readerApi.open(att.id, locArg, { openInWindow: false });
+      const instance = opened || readerApi._readers?.find?.((r) => Number(r?.itemID) === Number(att.id) && !r?._isTabClosed);
+      if (instance) {
+        if (instance.tabID) {
+          const targetWin = instance._window || zotero?.getMainWindow?.();
+          targetWin?.Zotero_Tabs?.select?.(instance.tabID, true);
+        }
+        if (locArg) {
+          await Promise.resolve(instance._initPromise ?? instance._waitForReader?.()).catch(() => {
+          });
+          try {
+            await instance.navigate?.(locArg);
+          } catch {
+          }
+        }
+      }
+      return true;
+    } catch {
+      try {
+        await readerApi.open(att.id, void 0, { openInWindow: false });
+        return true;
+      } catch {
+        return false;
+      }
+    }
   }
   function mountAnchoredPopover(win, anchor, pop, key) {
     const doc = win.document;
@@ -5101,10 +5136,142 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     activeRatingsCache = cache;
   }
 
+  // src/services/status-tag-colors.ts
+  var HEX_RE = /^#[\da-f]{6}$/i;
+  var customColors = /* @__PURE__ */ new Map();
+  var onChangedHook = null;
+  function normHex(raw) {
+    const s = String(raw || "").trim().toLowerCase();
+    if (HEX_RE.test(s)) return s;
+    if (/^#[\da-f]{3}$/i.test(s)) {
+      return `#${s[1]}${s[1]}${s[2]}${s[2]}${s[3]}${s[3]}`;
+    }
+    return "";
+  }
+  function bindCustomStatusColorPersistence(onChanged) {
+    onChangedHook = onChanged;
+  }
+  function loadCustomStatusColors(rawJson) {
+    customColors.clear();
+    const clean = String(rawJson || "").trim();
+    if (!clean) return;
+    try {
+      const parsed = JSON.parse(clean);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) {
+          const tag = String(k || "").trim().toLowerCase();
+          const hex = normHex(v);
+          if (tag.startsWith("/") && hex) customColors.set(tag, hex);
+        }
+      }
+    } catch {
+    }
+  }
+  function serializeCustomStatusColors() {
+    if (!customColors.size) return "";
+    return JSON.stringify(Object.fromEntries(customColors.entries()));
+  }
+  function getCustomStatusColor(tag) {
+    return customColors.get(String(tag || "").trim().toLowerCase()) || "";
+  }
+  function rememberCustomStatusColor(tag, color) {
+    const key = String(tag || "").trim().toLowerCase();
+    const hex = normHex(color);
+    if (!key.startsWith("/") || !hex) return;
+    if (customColors.get(key) === hex) return;
+    customColors.set(key, hex);
+    onChangedHook?.(serializeCustomStatusColors());
+  }
+  async function purgeZoteroStatusTagColors(isStatusTag, excludedTag = "/Citations") {
+    const zotero = globalThis.Zotero;
+    const zTags = zotero?.Tags;
+    if (typeof zTags?.getColors !== "function" || typeof zTags?.setColor !== "function") return 0;
+    const libs = zotero?.Libraries?.getAll?.() || [{ libraryID: Number(zotero?.Libraries?.userLibraryID || 1) }];
+    let removed = 0;
+    for (const lib of libs) {
+      const libID = Number(lib?.libraryID || 0);
+      if (!Number.isInteger(libID) || libID <= 0) continue;
+      let entries = [];
+      try {
+        const colors = zTags.getColors(libID);
+        if (colors instanceof Map || typeof colors?.entries === "function") {
+          entries = [...colors.entries()];
+        } else if (Array.isArray(colors)) {
+          entries = colors.map((c) => [String(c?.name || ""), c]);
+        }
+      } catch {
+        entries = [];
+      }
+      for (const [rawName, val] of entries) {
+        const name = String(rawName || "").trim();
+        if (!isStatusTag(name, excludedTag)) continue;
+        const hex = typeof val === "string" ? val : val?.color;
+        if (hex) rememberCustomStatusColor(name, hex);
+        try {
+          await zTags.setColor(libID, name, false);
+          removed++;
+        } catch {
+        }
+      }
+    }
+    if (removed > 0) {
+      for (const w of zotero?.getMainWindows?.() || []) {
+        try {
+          w?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+        } catch {
+        }
+      }
+    }
+    return removed;
+  }
+  async function restoreZoteroStatusTagColors(isStatusTag, resolveColor, excludedTag = "/Citations") {
+    const zotero = globalThis.Zotero;
+    const zTags = zotero?.Tags;
+    if (typeof zTags?.setColor !== "function") return 0;
+    const seenByLib = /* @__PURE__ */ new Map();
+    for (const w of zotero?.getMainWindows?.() || []) {
+      const view = w?.ZoteroPane?.itemsView;
+      const rows = Math.min(Number(view?.rowCount || 0), 500);
+      for (let i = 0; i < rows; i++) {
+        const item = view?.getRow?.(i)?.ref;
+        const libID = Number(item?.libraryID || 0);
+        if (!libID || typeof item?.getTags !== "function") continue;
+        for (const entry of item.getTags() || []) {
+          const t = String(entry?.tag || "").trim();
+          if (!isStatusTag(t, excludedTag)) continue;
+          if (!seenByLib.has(libID)) seenByLib.set(libID, /* @__PURE__ */ new Set());
+          seenByLib.get(libID).add(t);
+        }
+      }
+    }
+    let applied = 0;
+    for (const [libID, tags] of seenByLib.entries()) {
+      let usedSlots = Number(zTags.getColors?.(libID)?.size || 0);
+      for (const tag of tags) {
+        if (usedSlots >= 9) break;
+        if (zTags.getColor?.(libID, tag)) continue;
+        try {
+          await zTags.setColor(libID, tag, resolveColor(libID, tag));
+          usedSlots++;
+          applied++;
+        } catch {
+        }
+      }
+    }
+    if (applied > 0) {
+      for (const w of zotero?.getMainWindows?.() || []) {
+        try {
+          w?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+        } catch {
+        }
+      }
+    }
+    return applied;
+  }
+
   // src/services/item-status-rating.ts
   function normalizeRatingStorage(raw) {
-    if (raw === "extra" || raw === "tag") return raw;
-    return "cache";
+    return raw === "extra" || raw === "tag" ? raw : "cache";
   }
   var RATING_STAR = "⭐";
   var MAX_RATING2 = 5;
@@ -5150,15 +5317,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   function isStatusTagName(tagName, excludedTag = "/Citations") {
     const t = String(tagName || "").trim();
     if (!t.startsWith("/") || t.length < 2) return false;
-    if (excludedTag && t.toLowerCase() === excludedTag.trim().toLowerCase()) return false;
-    return true;
+    return !(excludedTag && t.toLowerCase() === excludedTag.trim().toLowerCase());
   }
   function normalizeHexColor(raw, fallback = "#2563eb") {
     const hex = String(raw || "").trim();
     if (/^#[\da-f]{6}$/i.test(hex)) return hex.toLowerCase();
-    if (/^#[\da-f]{3}$/i.test(hex)) {
-      return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
-    }
+    if (/^#[\da-f]{3}$/i.test(hex)) return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
     return fallback;
   }
   function parseCustomStatusInput(name, color, excludedTag = "/Citations") {
@@ -5166,11 +5330,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     if (!cleanLabel || /[\r\n]/.test(cleanLabel)) return null;
     const tag = `/${cleanLabel}`;
     if (!isStatusTagName(tag, excludedTag)) return null;
-    return {
-      tag,
-      label: cleanLabel,
-      color: normalizeHexColor(color, "#2563eb")
-    };
+    return { tag, label: cleanLabel, color: normalizeHexColor(color, "#2563eb") };
   }
   function hashTagColor(tag) {
     let h = 0;
@@ -5181,6 +5341,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     for (const p of [...DEFAULT_STATUS_PRESETS_ZH, ...DEFAULT_STATUS_PRESETS_EN]) {
       if (p.tag.toLowerCase() === tag.toLowerCase()) return p.color;
     }
+    const savedCustom = getCustomStatusColor(tag);
+    if (savedCustom) return savedCustom;
     try {
       const zTags = globalThis.Zotero?.Tags;
       const colorEntry = libraryID ? zTags?.getColor?.(libraryID, tag) : null;
@@ -5262,12 +5424,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         changed = true;
       }
       if (options?.color) {
-        try {
-          const zTags = globalThis.Zotero?.Tags;
-          if (item.libraryID && typeof zTags?.setColor === "function" && !zTags?.getColor?.(item.libraryID, statusTag)) {
-            await zTags.setColor(item.libraryID, statusTag, normalizeHexColor(options.color));
+        const cleanHex = normalizeHexColor(options.color);
+        rememberCustomStatusColor(statusTag, cleanHex);
+        if (options.syncZoteroTagColor) {
+          try {
+            const zTags = globalThis.Zotero?.Tags;
+            if (item.libraryID && typeof zTags?.setColor === "function" && !zTags?.getColor?.(item.libraryID, statusTag)) {
+              await zTags.setColor(item.libraryID, statusTag, cleanHex);
+            }
+          } catch {
           }
-        } catch {
         }
       }
     }
@@ -5277,16 +5443,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return changed;
   }
+  function syncNativeStatusTagDots(enable, excludedTag = "/Citations") {
+    statusCache.clear();
+    return enable ? restoreZoteroStatusTagColors(isStatusTagName, resolveStatusColor, excludedTag) : purgeZoteroStatusTagColors(isStatusTagName, excludedTag);
+  }
   function isStarRatingTag(tagName) {
     const chars = Array.from(String(tagName || "").trim());
-    if (chars.length >= 1 && chars.length <= MAX_RATING2 && chars.every((c) => c === RATING_STAR || c === "★")) {
-      return chars.length;
-    }
-    return 0;
+    return chars.length >= 1 && chars.length <= MAX_RATING2 && chars.every((c) => c === RATING_STAR || c === "★") ? chars.length : 0;
   }
   function parseExtraRating(extra) {
-    const lines = String(extra || "").split(/\r?\n/);
-    for (const line of lines) {
+    for (const line of String(extra || "").split(/\r?\n/)) {
       const m = EXTRA_RATING_RE.exec(line.trim());
       if (m) return Number(m[1]);
     }
@@ -5295,9 +5461,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   function writeExtraRating(extra, rating) {
     const kept = String(extra || "").split(/\r?\n/).filter((line) => !EXTRA_RATING_RE.test(line.trim()));
     while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
-    if (rating >= 1 && rating <= MAX_RATING2) {
-      kept.push(`Rating: ${rating}`);
-    }
+    if (rating >= 1 && rating <= MAX_RATING2) kept.push(`Rating: ${rating}`);
     return kept.join("\n");
   }
   function getItemRating(rawItem, preferredStorage = "cache") {
@@ -5632,6 +5796,169 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     return out;
   }
 
+  // src/domains/visual-notes/gallery-icons.ts
+  var SVG_NS2 = "http://www.w3.org/2000/svg";
+  var XHTML_NS3 = "http://www.w3.org/1999/xhtml";
+  function createToolbarArt(doc, kind) {
+    const svg = doc.createElementNS(SVG_NS2, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", "20");
+    svg.setAttribute("height", "20");
+    svg.setAttribute("aria-hidden", "true");
+    const shape = (fill, d) => {
+      const path = doc.createElementNS(SVG_NS2, "path");
+      path.setAttribute("fill", fill);
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    };
+    if (kind === "gallery") {
+      shape("#635BD9", "M3 4a2 2 0 0 1 2-2h7v13H5a2 2 0 0 1-2-2z");
+      shape("#169A99", "M14 5h5a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-5z");
+      shape("#818CF8", "M3 17h9v5H5a2 2 0 0 1-2-2z");
+      shape("#fff", "M5 5h5v1.4H5z M16 8h3v1.4h-3z");
+    } else {
+      shape("#635BD9", "M2 5q5-1.6 9.5 1v15Q7 18.7 2 20z");
+      shape("#169A99", "M13 6q4-2.5 9-1v15q-5-1.3-9 1z");
+      shape("#FABB56", "M16 3h3.5v9L18 10.5 16 12z");
+      shape("#fff", "M4.5 8q2.6-.3 4.6.8v1.3q-2.3-1-4.6-.8z M4.5 11q2.6-.3 4.6.8v1.3q-2.3-1-4.6-.8z");
+    }
+    return svg;
+  }
+  var ICON_PATHS = {
+    grid: [
+      "M3.5 3.5h4.2v4.2H3.5z",
+      "M10.3 3.5h4.2v4.2h-4.2z",
+      "M3.5 10.3h4.2v4.2H3.5z",
+      "M10.3 10.3h4.2v4.2h-4.2z"
+    ],
+    board: [
+      "M2.8 3.2h12.4a1 1 0 0 1 1 1v9.6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1V4.2a1 1 0 0 1 1-1z",
+      "M6.9 3.2v11.6",
+      "M11.1 3.2v11.6"
+    ],
+    hub: [
+      "M4 2.8h8.5L15 5.3v9.9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3.8a1 1 0 0 1 1-1z",
+      "M6 7.5h6",
+      "M6 10.5h6",
+      "M6 13.2h3.8"
+    ],
+    doc: [
+      "M4.5 2.5h5.8L13.5 5.7v7.8a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z",
+      "M10 2.5v3.4h3.4",
+      "M6.2 8.5h5.2",
+      "M6.2 11.2h3.8"
+    ],
+    user: [
+      "M9 8.2a2.7 2.7 0 1 0 0-5.4 2.7 2.7 0 0 0 0 5.4z",
+      "M3.8 14.6c0-2.4 2.3-4.1 5.2-4.1s5.2 1.7 5.2 4.1"
+    ],
+    calendar: [
+      "M3.2 4.2h11.6a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z",
+      "M5.8 2.4v2.6",
+      "M12.2 2.4v2.6",
+      "M2.2 7.4h13.6"
+    ],
+    book: [
+      "M2.5 3.6c1.8-.5 3.8-.5 5.5.4 1.7-.9 3.7-.9 5.5-.4v10.2c-1.8-.5-3.8-.5-5.5.4-1.7-.9-3.7-.9-5.5-.4z",
+      "M8 4v10.2"
+    ],
+    clock: [
+      "M9 15.2a6.2 6.2 0 1 0 0-12.4 6.2 6.2 0 0 0 0 12.4z",
+      "M9 5.5V9l2.4 1.6"
+    ],
+    tag: [
+      "M2.8 9.1V3.8a1 1 0 0 1 1-1h5.3l6.1 6.1a1 1 0 0 1 0 1.4l-4.9 4.9a1 1 0 0 1-1.4 0z",
+      "M5.8 5.8h.01"
+    ],
+    search: [
+      "M8.2 13.4a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z",
+      "M12.1 12.1l3.2 3.2"
+    ],
+    sort: [
+      "M5.5 3.5v11",
+      "M3 6l2.5-2.5L8 6",
+      "M12.5 14.5v-11",
+      "M10 12l2.5 2.5L15 12"
+    ],
+    star: [
+      "M9 2.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L9 12.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z"
+    ],
+    note: [
+      "M3.5 3.2h11a1 1 0 0 1 1 1v7.6l-3.2 3.2H3.5a1 1 0 0 1-1-1V4.2a1 1 0 0 1 1-1z",
+      "M11.8 11.5v3.2"
+    ]
+  };
+  function createGallerySvgIcon(doc, name, size = 14) {
+    const svg = doc.createElementNS(SVG_NS2, "svg");
+    svg.setAttribute("width", String(size));
+    svg.setAttribute("height", String(size));
+    svg.setAttribute("viewBox", "0 0 18 18");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.45");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.flex = "none";
+    for (const d of ICON_PATHS[name] || []) {
+      const path = doc.createElementNS(SVG_NS2, "path");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+  var RICH_TAG_RE = /<(\/?)(sub|sup|i|em|b|strong|span)(?:\s[^>]*)?>/gi;
+  function renderRichTitleNodes(doc, container, rawTitle) {
+    const text2 = String(rawTitle || "");
+    container.textContent = "";
+    if (!text2.includes("<") || !doc.createTextNode) {
+      container.textContent = text2;
+      return;
+    }
+    const stack = [container];
+    let lastIdx = 0;
+    for (const match of text2.matchAll(RICH_TAG_RE)) {
+      const idx = match.index ?? 0;
+      if (idx > lastIdx) {
+        stack[stack.length - 1].appendChild(doc.createTextNode(text2.slice(lastIdx, idx)));
+      }
+      const isClose = match[1] === "/";
+      const rawTag = match[2].toLowerCase();
+      const normTag = rawTag === "em" ? "i" : rawTag === "strong" ? "b" : rawTag;
+      if (!isClose) {
+        if (normTag === "span") {
+          stack.push(doc.createElementNS(XHTML_NS3, "span"));
+          stack[stack.length - 2].appendChild(stack[stack.length - 1]);
+        } else {
+          const node = doc.createElementNS(XHTML_NS3, normTag);
+          stack[stack.length - 1].appendChild(node);
+          stack.push(node);
+        }
+      } else if (stack.length > 1) {
+        stack.pop();
+      }
+      lastIdx = idx + match[0].length;
+    }
+    if (lastIdx < text2.length) {
+      stack[stack.length - 1].appendChild(doc.createTextNode(text2.slice(lastIdx)));
+    }
+  }
+  var PASTEL_PALETTE = [
+    { bg: "#ffe4e6", fg: "#9f1239", darkBg: "rgba(244,63,94,0.2)", darkFg: "#fda4af" },
+    { bg: "#ffedd5", fg: "#9a3412", darkBg: "rgba(249,115,22,0.2)", darkFg: "#fdba74" },
+    { bg: "#dcfce7", fg: "#166534", darkBg: "rgba(34,197,94,0.2)", darkFg: "#86efac" },
+    { bg: "#e0f2fe", fg: "#075985", darkBg: "rgba(14,165,233,0.2)", darkFg: "#7dd3fc" },
+    { bg: "#ede9fe", fg: "#5b21b6", darkBg: "rgba(139,92,246,0.2)", darkFg: "#c4b5fd" },
+    { bg: "#fef3c7", fg: "#92400e", darkBg: "rgba(245,158,11,0.2)", darkFg: "#fcd34d" },
+    { bg: "#f1f5f9", fg: "#334155", darkBg: "rgba(148,163,184,0.2)", darkFg: "#cbd5e1" }
+  ];
+  function resolvePastelTagStyle(tag) {
+    let h = 0;
+    const s = String(tag || "");
+    for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i) | 0;
+    return PASTEL_PALETTE[Math.abs(h) % PASTEL_PALETTE.length];
+  }
+
   // src/domains/visual-notes/column-popovers.ts
   function openReadingInsightsPopover(options) {
     const { win, anchor, item, progress: progress2, zh, heatColor = "#0d9488", onOpenItem } = options;
@@ -5656,7 +5983,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     head.className = "zbf-vc-head";
     const titleEl = vcEl(doc, "div");
     titleEl.className = "zbf-vc-title";
-    titleEl.textContent = titleStr;
+    renderRichTitleNodes(doc, titleEl, titleStr);
     const badge = vcEl(doc, "span");
     badge.className = "zbf-vc-badge";
     badge.textContent = stage;
@@ -5680,25 +6007,43 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     addMetric(zh ? "阅读进度" : "Progress", progress2.lastPage ? `p.${progress2.lastPage}${progress2.totalPages ? `/${progress2.totalPages}` : ""} (${pct})` : pct);
     addMetric(zh ? "峰值停留" : "Peak Page", peak ? `p.${peak.page} · ${formatSubMinuteDuration(peak.seconds)}` : "—");
     pop.appendChild(metrics);
-    const totalPages = Math.max(Number(progress2.totalPages || 0), peak?.page || 0, Number(progress2.lastPage || 0));
-    const buckets = buildReadingHeatmapBuckets(progress2, totalPages > 0 && totalPages <= 16 ? totalPages : 16);
+    const pageSecMap = progress2.pageSeconds || {};
+    const maxRecordedPage = Math.max(0, ...Object.keys(pageSecMap).map(Number).filter((n) => Number.isFinite(n)));
+    const totalPages = Math.max(Number(progress2.totalPages || 0), maxRecordedPage, Number(progress2.lastPage || 0), 1);
+    const bucketCount = totalPages <= 16 ? totalPages : 16;
+    const buckets = buildReadingHeatmapBuckets(progress2, bucketCount);
     let closePop = () => {
     };
     if (buckets.length) {
       const bars = vcEl(doc, "div");
       bars.className = "zbf-vc-heatbars";
       buckets.forEach((ratio, idx) => {
-        const pageEst = Math.max(1, Math.round((idx + 0.5) / buckets.length * Math.max(1, totalPages)));
+        let bestPageInBin = 0;
+        let bestSecInBin = 0;
+        for (const [pk, pv] of Object.entries(pageSecMap)) {
+          const pNum = Number(pk);
+          const sec = Number(pv);
+          if (!Number.isFinite(pNum) || pNum <= 0) continue;
+          const bIdx = Math.min(bucketCount - 1, Math.max(0, Math.floor((pNum - 1) / totalPages * bucketCount)));
+          if (bIdx === idx && sec > bestSecInBin) {
+            bestPageInBin = pNum;
+            bestSecInBin = sec;
+          }
+        }
+        const targetPage = bestPageInBin > 0 ? bestPageInBin : Math.min(totalPages, Math.max(1, Math.floor(idx / bucketCount * totalPages) + 1));
         const bar = vcEl(doc, "button");
         bar.type = "button";
         bar.className = "zbf-vc-hbar";
         bar.style.height = `${Math.max(14, Math.round(ratio * 100))}%`;
         bar.style.background = ratio > 0 ? heatColor : "rgba(148,163,184,0.22)";
         bar.style.opacity = ratio > 0 ? String((0.32 + ratio * 0.68).toFixed(2)) : "0.45";
-        bar.title = zh ? `点击跳转至约第 ${pageEst} 页` : `Jump near page ${pageEst}`;
+        const secTip = bestSecInBin > 0 ? ` · ${formatSubMinuteDuration(bestSecInBin)}` : "";
+        bar.title = zh ? `p.${targetPage}${secTip}（点击直跳 PDF 第 ${targetPage} 页）` : `p.${targetPage}${secTip} (click to jump)`;
         bar.addEventListener("click", () => {
           closePop();
-          openItemPdfAtPage(item, pageEst);
+          void openItemPdfAtPage(item, targetPage).then((ok) => {
+            if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+          });
         });
         bars.appendChild(bar);
       });
@@ -5715,9 +6060,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     resumeBtn.textContent = progress2.lastPage ? zh ? `继续阅读 p.${progress2.lastPage}` : `Resume p.${progress2.lastPage}` : zh ? "打开 PDF 阅读器" : "Open PDF Reader";
     resumeBtn.addEventListener("click", () => {
       closePop();
-      if (progress2.lastPage) openItemPdfAtPage(item, progress2.lastPage);
-      else if (onOpenItem && item.id) onOpenItem(Number(item.id));
-      else openItemPdfAtPage(item);
+      void openItemPdfAtPage(item, progress2.lastPage || void 0).then((ok) => {
+        if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+      });
     });
     actions.appendChild(resumeBtn);
     if (peak && peak.page !== progress2.lastPage) {
@@ -5727,7 +6072,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       peakBtn.textContent = zh ? `跳转峰值页 p.${peak.page}` : `Peak p.${peak.page}`;
       peakBtn.addEventListener("click", () => {
         closePop();
-        openItemPdfAtPage(item, peak.page);
+        void openItemPdfAtPage(item, peak.page).then((ok) => {
+          if (!ok && onOpenItem && item.id) onOpenItem(Number(item.id));
+        });
       });
       actions.appendChild(peakBtn);
     }
@@ -5754,7 +6101,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     head.className = "zbf-vc-head";
     const titleEl = vcEl(doc, "div");
     titleEl.className = "zbf-vc-title";
-    titleEl.textContent = titleStr;
+    renderRichTitleNodes(doc, titleEl, titleStr);
     const badge = vcEl(doc, "span");
     badge.className = "zbf-vc-badge";
     badge.textContent = zh ? `共 ${collected.length} 条标注` : `${collected.length} annotations`;
@@ -5817,7 +6164,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       btn.title = zh ? "点击直跳该标注所在 PDF 位置" : "Jump to annotation in PDF reader";
       btn.addEventListener("click", () => {
         closePop();
-        openItemPdfAtPage(item, Number(a.pageLabel) || void 0, a.annotationID);
+        void openItemPdfAtPage(item, Number(a.pageLabel) || void 0, a.annotationID);
       });
       snippets.appendChild(btn);
     }
@@ -5873,13 +6220,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var STATUS_RATING_CSS = `
 @keyframes zbfPopIn { from { opacity: 0; transform: translateY(-4px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .zbf-status-cell, .zbf-rating-cell { display: flex; align-items: center; height: 100%; min-width: 0; pointer-events: auto; user-select: none; overflow: hidden; }
-.zbf-sr-fit { display: flex; align-items: center; width: 100%; height: 100%; min-width: 0; gap: 6px; container-type: inline-size; container-name: zbf-sr; }
-.zbf-rating-score { display: none; margin-inline-start: auto; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; opacity: 0.65; white-space: nowrap; }
+.zbf-sr-fit { display: flex; align-items: center; width: 100%; height: 100%; min-width: 0; container-type: inline-size; container-name: zbf-sr; }
 @container zbf-sr (min-width: 96px) {
-  .zbf-rating-stars { font-size: 13.5px; gap: 2px; }
-}
-@container zbf-sr (min-width: 118px) {
-  .zbf-rating-score[data-has-score="1"] { display: inline; }
+  .zbf-rating-stars { font-size: 12.5px; gap: 2px; }
 }
 .zbf-status-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1.5px 8px; border-radius: 6px; border: 1px solid transparent; font-size: 11px; font-weight: 600; line-height: 1.4; cursor: pointer; background: rgba(100,116,139,0.12); color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: filter 0.14s ease, transform 0.12s ease, box-shadow 0.14s ease; }
 .zbf-status-pill:hover { filter: brightness(0.95); box-shadow: 0 1px 4px rgba(15,23,42,0.10); }
@@ -5890,28 +6233,26 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .row:hover .zbf-status-empty, .zbf-status-cell:hover .zbf-status-empty { opacity: 0.96; }
 .zbf-status-empty:hover { opacity: 1 !important; border-style: solid; border-color: light-dark(rgba(79,70,229,0.45), rgba(129,140,248,0.55)); background: light-dark(rgba(79,70,229,0.07), rgba(129,140,248,0.14)); color: inherit; }
 .virtualized-table:focus-within .row.selected .zbf-status-empty { color: rgba(255,255,255,0.90); border-color: rgba(255,255,255,0.48); }
-.zbf-rating-stars { display: inline-flex; align-items: center; gap: 0.5px; cursor: pointer; font-size: 12px; line-height: 1; padding: 1.5px 2px; border-radius: 6px; transition: opacity 0.14s ease, background-color 0.14s ease; }
-.zbf-rating-stars:hover { background: light-dark(rgba(245,158,11,0.08), rgba(251,191,36,0.12)); }
-.zbf-rating-stars[data-unrated="true"] { opacity: 0.76; }
-.row:hover .zbf-rating-stars[data-unrated="true"], .zbf-rating-cell:hover .zbf-rating-stars[data-unrated="true"] { opacity: 0.98; }
-.zbf-rating-star { padding: 0 0.5px; color: light-dark(rgba(100,116,139,0.42), rgba(148,163,184,0.38)); transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), color 0.12s ease, opacity 0.12s ease; }
-.zbf-rating-star[data-lit="true"] { color: #f59e0b; }
-.zbf-rating-stars[data-hover] .zbf-rating-star { color: light-dark(rgba(148,163,184,0.34), rgba(148,163,184,0.30)); }
+.zbf-rating-stars { display: inline-flex; align-items: center; gap: 1px; cursor: pointer; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif; font-size: 11px; line-height: 1; padding: 1px 0; border-radius: 6px; transition: opacity 0.14s ease; }
+.zbf-rating-stars[data-unrated="true"] { opacity: 0.88; }
+.row:hover .zbf-rating-stars[data-unrated="true"], .zbf-rating-cell:hover .zbf-rating-stars[data-unrated="true"] { opacity: 1; }
+.zbf-rating-star { display: inline-block; padding: 0 0.5px; filter: grayscale(1) opacity(0.24); transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), filter 0.12s ease, opacity 0.12s ease; }
+.zbf-rating-star[data-lit="true"] { filter: none; opacity: 1; }
+.zbf-rating-stars[data-hover] .zbf-rating-star { filter: grayscale(1) opacity(0.22); }
 .zbf-rating-stars[data-hover="1"] .zbf-rating-star:nth-child(-n+1),
 .zbf-rating-stars[data-hover="2"] .zbf-rating-star:nth-child(-n+2),
 .zbf-rating-stars[data-hover="3"] .zbf-rating-star:nth-child(-n+3),
 .zbf-rating-stars[data-hover="4"] .zbf-rating-star:nth-child(-n+4),
-.zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { color: #fbbf24; }
-.zbf-rating-stars[data-clear-hint="true"] .zbf-rating-star[data-lit="true"] { opacity: 0.55; }
-.zbf-rating-star:hover { transform: scale(1.24); }
-.virtualized-table:focus-within .row.selected .zbf-rating-stars:hover { background: rgba(255,255,255,0.16); }
-.virtualized-table:focus-within .row.selected .zbf-rating-star { color: rgba(255,255,255,0.40); }
-.virtualized-table:focus-within .row.selected .zbf-rating-star[data-lit="true"] { color: #fde047; }
+.zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { filter: drop-shadow(0 1px 2px rgba(245,158,11,0.36)); opacity: 1; }
+.zbf-rating-stars[data-clear-hint="true"] .zbf-rating-star[data-lit="true"] { opacity: 0.72; }
+.zbf-rating-star:hover { transform: scale(1.22); }
+.virtualized-table:focus-within .row.selected .zbf-rating-star { filter: grayscale(1) brightness(2.4) opacity(0.38); }
+.virtualized-table:focus-within .row.selected .zbf-rating-star[data-lit="true"] { filter: drop-shadow(0 1px 2px rgba(0,0,0,0.22)); opacity: 1; }
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="1"] .zbf-rating-star:nth-child(-n+1),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="2"] .zbf-rating-star:nth-child(-n+2),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="3"] .zbf-rating-star:nth-child(-n+3),
 .virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="4"] .zbf-rating-star:nth-child(-n+4),
-.virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { color: #fef08a; }
+.virtualized-table:focus-within .row.selected .zbf-rating-stars[data-hover="5"] .zbf-rating-star:nth-child(-n+5) { filter: drop-shadow(0 1px 3px rgba(0,0,0,0.28)); opacity: 1; }
 .zbf-status-pop { position: fixed; z-index: 2147483645; width: 248px; padding: 8px; border-radius: 12px; background: light-dark(rgba(255,255,255,0.97), rgba(22,32,50,0.97)); backdrop-filter: blur(14px); color: light-dark(#0f172a, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.11), rgba(148,163,184,0.24)); box-shadow: 0 16px 40px rgba(15,23,42,0.19), 0 4px 12px rgba(15,23,42,0.08), inset 0 1px 0 light-dark(rgba(255,255,255,0.85), rgba(255,255,255,0.07)); font: 12px/1.4 system-ui, "Microsoft YaHei UI", sans-serif; display: flex; flex-direction: column; gap: 5px; transform-origin: top left; animation: zbfPopIn 0.15s cubic-bezier(0.22,1,0.36,1); }
 .zbf-status-pop-batch { padding: 4px 8px; border-radius: 7px; font-size: 11px; font-weight: 600; background: light-dark(rgba(79,70,229,0.09), rgba(129,140,248,0.18)); color: light-dark(#4338ca, #c7d2fe); }
 .zbf-status-pop-list { display: flex; flex-direction: column; gap: 2px; max-height: 224px; overflow-y: auto; }
@@ -5952,7 +6293,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     (doc.head || doc.documentElement)?.appendChild(style);
   }
   function openStatusPickerPopover(options) {
-    const { win, anchor, clickedItem, current, zh, excludedTag, onApplied } = options;
+    const { win, anchor, clickedItem, current, zh, excludedTag, syncZoteroTagColor, onApplied } = options;
     const doc = win.document;
     if (!doc) return;
     const clickedID = Number(clickedItem?.id || 0);
@@ -6001,7 +6342,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         try {
           for (const t of targets) {
             try {
-              await setItemStatus(t, tag, { color, excludedTag });
+              await setItemStatus(t, tag, { color, excludedTag, syncZoteroTagColor });
             } catch {
             }
           }
@@ -6309,7 +6650,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   // src/domains/visual-notes/annotation-matrix-ui.ts
   var MATRIX_STYLE_ID = "zbf-matrix-modal-style";
   var MATRIX_CSS = `
-.zbf-matrix-backdrop { position: fixed; inset: 0; z-index: 2147483646; background: rgba(15,23,42,0.48); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.zbf-matrix-backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; box-sizing: border-box; z-index: 2147483646; background: rgba(15,23,42,0.52); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; }
 .zbf-matrix-dialog { width: min(1040px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; background: light-dark(#ffffff, #1e293b); color: light-dark(#111827, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.24)); box-shadow: 0 20px 50px rgba(0,0,0,0.32); font: 12.5px/1.45 system-ui, "Microsoft YaHei UI", sans-serif; }
 .zbf-matrix-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .zbf-matrix-title { font-size: 15px; font-weight: 600; }
@@ -6332,6 +6673,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-matrix-table th { position: sticky; top: 0; background: light-dark(#f8fafc, #0f172a); font-weight: 600; z-index: 1; }
 .zbf-matrix-table tbody tr:hover td { background: light-dark(rgba(15,23,42,0.015), rgba(255,255,255,0.02)); }
 .zbf-matrix-item-link { border: 0; padding: 0; background: transparent; color: light-dark(#2563eb, #60a5fa); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.zbf-matrix-item-link sub, .zbf-matrix-item-link sup { font-size: 0.74em; line-height: 0; }
 .zbf-matrix-item-link:hover { text-decoration: underline; }
 .zbf-matrix-ann { margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; border-left: 3px solid transparent; background: light-dark(rgba(15,23,42,0.03), rgba(255,255,255,0.04)); cursor: pointer; transition: background-color 0.12s ease; }
 .zbf-matrix-ann:hover { background: light-dark(rgba(37,99,235,0.09), rgba(96,165,250,0.15)); }
@@ -6397,7 +6739,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 
   // src/domains/visual-notes/annotation-matrix-modal.ts
   function openAnnotationMatrixModal(options) {
-    const doc = options.win.document;
+    const doc = options.mountRoot?.ownerDocument || options.win.document;
     if (!doc) return;
     ensureMatrixStyles(doc);
     doc.getElementById("zbf-matrix-backdrop")?.remove();
@@ -6573,7 +6915,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         const link = matrixEl(doc, "button");
         link.type = "button";
         link.className = "zbf-matrix-item-link";
-        link.textContent = row.title;
+        renderRichTitleNodes(doc, link, row.title);
         link.title = "打开并聚焦此文献阅读器";
         link.addEventListener("click", () => {
           close();
@@ -6631,8 +6973,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       actions.appendChild(b);
     };
     mkBtn("存为 Zotero 笔记", true, () => {
-      void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then((id) => {
-        statusEl.textContent = id ? `✓ 已生成笔记 (#${id})` : "✕ 生成笔记失败";
+      void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then(async (id) => {
+        statusEl.textContent = id ? `✓ 已生成并打开笔记 (#${id})` : "✕ 生成笔记失败";
+        if (id) {
+          try {
+            await globalThis.Zotero?.Notes?.open?.(id, void 0, { openInWindow: false });
+          } catch {
+          }
+        }
       });
     });
     mkBtn("复制 Markdown", false, () => {
@@ -6672,7 +7020,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     backdrop.addEventListener("click", (e) => {
       if (e.target === backdrop) close();
     });
-    (doc.body || doc.documentElement)?.appendChild(backdrop);
+    (options.mountRoot || doc.body || doc.documentElement)?.appendChild(backdrop);
     queryInput.focus?.();
   }
 
@@ -7152,15 +7500,37 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return `${page}${ann.comment || ann.text}`;
   }
-  function renderCollectionHubMarkdown(heading, notes, annotations, preferCommentOverQuote = false) {
+  function mergeHubSynthesisEntries(notes, annotations) {
     const byItemAnn = /* @__PURE__ */ new Map();
     for (const a of annotations) {
       const arr = byItemAnn.get(a.itemID) || [];
       arr.push(a);
       byItemAnn.set(a.itemID, arr);
     }
+    const seen = /* @__PURE__ */ new Set();
+    const merged = [];
+    for (const n of notes) {
+      seen.add(n.itemID);
+      merged.push(n);
+    }
+    for (const [itemID, anns] of byItemAnn.entries()) {
+      if (seen.has(itemID) || !anns.length) continue;
+      seen.add(itemID);
+      merged.push({
+        item: null,
+        itemID,
+        title: anns[0].itemTitle || `#${itemID}`,
+        creatorYear: anns[0].creatorYear || "",
+        briefNote: "",
+        childNotes: []
+      });
+    }
+    return { merged, byItemAnn };
+  }
+  function renderCollectionHubMarkdown(heading, notes, annotations, preferCommentOverQuote = false) {
+    const { merged, byItemAnn } = mergeHubSynthesisEntries(notes, annotations);
     const lines = [`# ${heading}`, ""];
-    for (const entry of notes) {
+    for (const entry of merged) {
       const anns = byItemAnn.get(entry.itemID) || [];
       if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
       lines.push(`## ${entry.title}${entry.creatorYear ? ` (${entry.creatorYear})` : ""}`);
@@ -7182,14 +7552,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const ZoteroObj = globalThis.Zotero;
     const ItemCtor = ZoteroObj?.Item;
     if (typeof ItemCtor !== "function") return null;
-    const byItemAnn = /* @__PURE__ */ new Map();
-    for (const a of options.annotations) {
-      const arr = byItemAnn.get(a.itemID) || [];
-      arr.push(a);
-      byItemAnn.set(a.itemID, arr);
-    }
+    const { merged, byItemAnn } = mergeHubSynthesisEntries(options.notes, options.annotations);
     const sections = [`<h2>${escHtml2(options.heading)}</h2>`];
-    for (const entry of options.notes) {
+    for (const entry of merged) {
       const anns = byItemAnn.get(entry.itemID) || [];
       if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
       sections.push(`<h3>${escHtml2(entry.title)}${entry.creatorYear ? ` <small>(${escHtml2(entry.creatorYear)})</small>` : ""}</h3><ul>`);
@@ -7214,169 +7579,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     } catch {
       return null;
     }
-  }
-
-  // src/domains/visual-notes/gallery-icons.ts
-  var SVG_NS2 = "http://www.w3.org/2000/svg";
-  var XHTML_NS3 = "http://www.w3.org/1999/xhtml";
-  function createToolbarArt(doc, kind) {
-    const svg = doc.createElementNS(SVG_NS2, "svg");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    svg.setAttribute("width", "20");
-    svg.setAttribute("height", "20");
-    svg.setAttribute("aria-hidden", "true");
-    const shape = (fill, d) => {
-      const path = doc.createElementNS(SVG_NS2, "path");
-      path.setAttribute("fill", fill);
-      path.setAttribute("d", d);
-      svg.appendChild(path);
-    };
-    if (kind === "gallery") {
-      shape("#635BD9", "M3 4a2 2 0 0 1 2-2h7v13H5a2 2 0 0 1-2-2z");
-      shape("#169A99", "M14 5h5a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-5z");
-      shape("#818CF8", "M3 17h9v5H5a2 2 0 0 1-2-2z");
-      shape("#fff", "M5 5h5v1.4H5z M16 8h3v1.4h-3z");
-    } else {
-      shape("#635BD9", "M2 5q5-1.6 9.5 1v15Q7 18.7 2 20z");
-      shape("#169A99", "M13 6q4-2.5 9-1v15q-5-1.3-9 1z");
-      shape("#FABB56", "M16 3h3.5v9L18 10.5 16 12z");
-      shape("#fff", "M4.5 8q2.6-.3 4.6.8v1.3q-2.3-1-4.6-.8z M4.5 11q2.6-.3 4.6.8v1.3q-2.3-1-4.6-.8z");
-    }
-    return svg;
-  }
-  var ICON_PATHS = {
-    grid: [
-      "M3.5 3.5h4.2v4.2H3.5z",
-      "M10.3 3.5h4.2v4.2h-4.2z",
-      "M3.5 10.3h4.2v4.2H3.5z",
-      "M10.3 10.3h4.2v4.2h-4.2z"
-    ],
-    board: [
-      "M2.8 3.2h12.4a1 1 0 0 1 1 1v9.6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1V4.2a1 1 0 0 1 1-1z",
-      "M6.9 3.2v11.6",
-      "M11.1 3.2v11.6"
-    ],
-    hub: [
-      "M4 2.8h8.5L15 5.3v9.9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3.8a1 1 0 0 1 1-1z",
-      "M6 7.5h6",
-      "M6 10.5h6",
-      "M6 13.2h3.8"
-    ],
-    doc: [
-      "M4.5 2.5h5.8L13.5 5.7v7.8a1 1 0 0 1-1 1h-8a1 1 0 0 1-1-1v-10a1 1 0 0 1 1-1z",
-      "M10 2.5v3.4h3.4",
-      "M6.2 8.5h5.2",
-      "M6.2 11.2h3.8"
-    ],
-    user: [
-      "M9 8.2a2.7 2.7 0 1 0 0-5.4 2.7 2.7 0 0 0 0 5.4z",
-      "M3.8 14.6c0-2.4 2.3-4.1 5.2-4.1s5.2 1.7 5.2 4.1"
-    ],
-    calendar: [
-      "M3.2 4.2h11.6a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3.2a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z",
-      "M5.8 2.4v2.6",
-      "M12.2 2.4v2.6",
-      "M2.2 7.4h13.6"
-    ],
-    book: [
-      "M2.5 3.6c1.8-.5 3.8-.5 5.5.4 1.7-.9 3.7-.9 5.5-.4v10.2c-1.8-.5-3.8-.5-5.5.4-1.7-.9-3.7-.9-5.5-.4z",
-      "M8 4v10.2"
-    ],
-    clock: [
-      "M9 15.2a6.2 6.2 0 1 0 0-12.4 6.2 6.2 0 0 0 0 12.4z",
-      "M9 5.5V9l2.4 1.6"
-    ],
-    tag: [
-      "M2.8 9.1V3.8a1 1 0 0 1 1-1h5.3l6.1 6.1a1 1 0 0 1 0 1.4l-4.9 4.9a1 1 0 0 1-1.4 0z",
-      "M5.8 5.8h.01"
-    ],
-    search: [
-      "M8.2 13.4a5.2 5.2 0 1 0 0-10.4 5.2 5.2 0 0 0 0 10.4z",
-      "M12.1 12.1l3.2 3.2"
-    ],
-    sort: [
-      "M5.5 3.5v11",
-      "M3 6l2.5-2.5L8 6",
-      "M12.5 14.5v-11",
-      "M10 12l2.5 2.5L15 12"
-    ],
-    star: [
-      "M9 2.6l1.9 3.9 4.3.6-3.1 3 .7 4.3L9 12.4l-3.8 2 .7-4.3-3.1-3 4.3-.6z"
-    ],
-    note: [
-      "M3.5 3.2h11a1 1 0 0 1 1 1v7.6l-3.2 3.2H3.5a1 1 0 0 1-1-1V4.2a1 1 0 0 1 1-1z",
-      "M11.8 11.5v3.2"
-    ]
-  };
-  function createGallerySvgIcon(doc, name, size = 14) {
-    const svg = doc.createElementNS(SVG_NS2, "svg");
-    svg.setAttribute("width", String(size));
-    svg.setAttribute("height", String(size));
-    svg.setAttribute("viewBox", "0 0 18 18");
-    svg.setAttribute("fill", "none");
-    svg.setAttribute("stroke", "currentColor");
-    svg.setAttribute("stroke-width", "1.45");
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    svg.setAttribute("aria-hidden", "true");
-    svg.style.flex = "none";
-    for (const d of ICON_PATHS[name] || []) {
-      const path = doc.createElementNS(SVG_NS2, "path");
-      path.setAttribute("d", d);
-      svg.appendChild(path);
-    }
-    return svg;
-  }
-  var RICH_TAG_RE = /<(\/?)(sub|sup|i|em|b|strong|span)(?:\s[^>]*)?>/gi;
-  function renderRichTitleNodes(doc, container, rawTitle) {
-    const text2 = String(rawTitle || "");
-    container.textContent = "";
-    if (!text2.includes("<") || !doc.createTextNode) {
-      container.textContent = text2;
-      return;
-    }
-    const stack = [container];
-    let lastIdx = 0;
-    for (const match of text2.matchAll(RICH_TAG_RE)) {
-      const idx = match.index ?? 0;
-      if (idx > lastIdx) {
-        stack[stack.length - 1].appendChild(doc.createTextNode(text2.slice(lastIdx, idx)));
-      }
-      const isClose = match[1] === "/";
-      const rawTag = match[2].toLowerCase();
-      const normTag = rawTag === "em" ? "i" : rawTag === "strong" ? "b" : rawTag;
-      if (!isClose) {
-        if (normTag === "span") {
-          stack.push(doc.createElementNS(XHTML_NS3, "span"));
-          stack[stack.length - 2].appendChild(stack[stack.length - 1]);
-        } else {
-          const node = doc.createElementNS(XHTML_NS3, normTag);
-          stack[stack.length - 1].appendChild(node);
-          stack.push(node);
-        }
-      } else if (stack.length > 1) {
-        stack.pop();
-      }
-      lastIdx = idx + match[0].length;
-    }
-    if (lastIdx < text2.length) {
-      stack[stack.length - 1].appendChild(doc.createTextNode(text2.slice(lastIdx)));
-    }
-  }
-  var PASTEL_PALETTE = [
-    { bg: "#ffe4e6", fg: "#9f1239", darkBg: "rgba(244,63,94,0.2)", darkFg: "#fda4af" },
-    { bg: "#ffedd5", fg: "#9a3412", darkBg: "rgba(249,115,22,0.2)", darkFg: "#fdba74" },
-    { bg: "#dcfce7", fg: "#166534", darkBg: "rgba(34,197,94,0.2)", darkFg: "#86efac" },
-    { bg: "#e0f2fe", fg: "#075985", darkBg: "rgba(14,165,233,0.2)", darkFg: "#7dd3fc" },
-    { bg: "#ede9fe", fg: "#5b21b6", darkBg: "rgba(139,92,246,0.2)", darkFg: "#c4b5fd" },
-    { bg: "#fef3c7", fg: "#92400e", darkBg: "rgba(245,158,11,0.2)", darkFg: "#fcd34d" },
-    { bg: "#f1f5f9", fg: "#334155", darkBg: "rgba(148,163,184,0.2)", darkFg: "#cbd5e1" }
-  ];
-  function resolvePastelTagStyle(tag) {
-    let h = 0;
-    const s = String(tag || "");
-    for (let i = 0; i < s.length; i++) h = (h << 5) - h + s.charCodeAt(i) | 0;
-    return PASTEL_PALETTE[Math.abs(h) % PASTEL_PALETTE.length];
   }
 
   // src/domains/visual-notes/gallery-styles.ts
@@ -7424,10 +7626,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-gal-seg-btn:active { transform: scale(0.96); }
 .zbf-gal-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 4px rgba(15,23,42,0.1); }
 
-/* Viewport, Gallery Grid & Soft Pastel Kanban Swimlanes */
-.zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; }
-.zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gallery-panel[data-density="compact"] .zbf-gal-grid { gap: 8px; }
+/* Viewport, Virtualized Masonry Grid & Soft Pastel Kanban Swimlanes */
+.zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; overflow-anchor: none; }
+.zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-items: start; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gal-masonry-col { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+.zbf-gallery-panel[data-density="compact"] .zbf-gal-grid, .zbf-gallery-panel[data-density="compact"] .zbf-gal-masonry-col { gap: 8px; }
+.zbf-gal-virtual-spacer { flex: none; pointer-events: none; width: 100%; }
 
 .zbf-gal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 240px; padding: 36px 20px; text-align: center; color: light-dark(#64748b, #94a3b8); animation: zbfGalFadeIn 0.2s ease; }
 .zbf-gal-empty p { margin: 0; font-size: 13.5px; font-weight: 500; }
@@ -7435,8 +7639,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-gal-board { display: flex; align-items: flex-start; gap: 13px; min-height: 100%; overflow-x: auto; padding-bottom: 10px; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
 .zbf-gal-col { flex: 0 0 clamp(248px, calc(var(--zbf-card-width, 220px) + 56px), 440px); max-height: calc(100vh - 150px); display: flex; flex-direction: column; border-radius: 14px; background: var(--zbf-col-surface, rgba(100,116,139,0.045)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); overflow: hidden; transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1), background-color 0.18s ease; }
 .zbf-gallery-panel[data-density="compact"] .zbf-gal-col { flex: 0 0 clamp(220px, calc(var(--zbf-card-width, 220px) + 28px), 400px); }
-.zbf-gal-col[data-drop-over="true"] { border-color: #4f46e5; box-shadow: 0 0 0 2.5px rgba(79,70,229,0.2), 0 8px 20px rgba(79,70,229,0.08); transform: scale(1.006); }
-.zbf-gal-col-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; flex: none; }
+.zbf-gal-col[data-drop-over="true"], .zbf-gal-col[data-col-drag-over="true"] { border-color: #4f46e5; box-shadow: 0 0 0 2.5px rgba(79,70,229,0.2), 0 8px 20px rgba(79,70,229,0.08); transform: scale(1.006); }
+.zbf-gal-col-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; flex: none; cursor: grab; user-select: none; }
+.zbf-gal-col-head:active { cursor: grabbing; }
 .zbf-gal-col-pill { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-gal-col-count { font-size: 11.5px; font-weight: 600; color: light-dark(#64748b, #94a3b8); font-variant-numeric: tabular-nums; }
 .zbf-gal-col-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -7446,28 +7651,30 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-gallery-panel[data-density="compact"] .zbf-gal-card { padding: 6px; gap: 4px; border-radius: 7px; }
 .zbf-gal-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(15,23,42,0.08), 0 2px 6px rgba(15,23,42,0.04); border-color: light-dark(rgba(79,70,229,0.28), rgba(129,140,248,0.36)); }
 .zbf-gal-card:active { transform: translateY(0) scale(0.992); }
-.zbf-gal-card[data-selected="true"] { border-color: light-dark(#4f46e5, #818cf8); box-shadow: 0 0 0 2px light-dark(rgba(79,70,229,0.16), rgba(129,140,248,0.24)), 0 4px 12px rgba(79,70,229,0.08); }
+.zbf-gal-card[data-selected="true"] { border-color: light-dark(#4f46e5, #818cf8); box-shadow: 0 0 0 2px light-dark(rgba(79,70,229,0.18), rgba(129,140,248,0.28)), 0 4px 12px rgba(79,70,229,0.08); }
+.zbf-gal-card:focus-visible { outline: 2px solid light-dark(#4f46e5, #818cf8); outline-offset: 2px; }
 
 /* Card Top Cover (PDF First Page / Abstract Excerpt / Clean Fallback) */
 .zbf-gal-cover { position: relative; width: 100%; box-sizing: border-box; aspect-ratio: var(--zbf-cover-aspect, 1.95); height: var(--zbf-cover-height, auto); border-radius: 6px; overflow: hidden; background: light-dark(linear-gradient(135deg, #f4f6fa 0%, #eef2f8 100%), linear-gradient(135deg, #0f172a 0%, #152035 100%)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); flex: none; display: flex; align-items: center; justify-content: center; }
 .zbf-gal-cover-img { width: 100%; height: 100%; object-fit: cover; object-position: top center; background: #ffffff; display: block; animation: zbfCoverReveal 0.24s cubic-bezier(0.22,1,0.36,1); transition: transform 0.3s cubic-bezier(0.22,1,0.36,1); }
 .zbf-gal-card:hover .zbf-gal-cover-img { transform: scale(1.018); }
-.zbf-gal-cover-abstract { width: 100%; height: 100%; padding: 9px 11px 14px; box-sizing: border-box; font-size: 11px; line-height: 1.56; color: light-dark(#4b5563, #94a3b8); overflow: hidden; align-self: flex-start; mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); }
+.zbf-gal-cover-abstract { width: 100%; height: 100%; padding: 9px 11px 14px; box-sizing: border-box; font-size: 11px; line-height: 1.56; color: light-dark(#4b5563, #94a3b8); overflow: hidden; align-self: flex-start; mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); transition: padding-top 0.16s ease; }
+.zbf-gal-cover:has(.zbf-gal-rate-float[data-has-rating="true"]) .zbf-gal-cover-abstract { padding-top: 28px; }
 .zbf-gal-cover-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: light-dark(#94a3b8, #64748b); font-size: 11.5px; }
 
 /* Hover-Reveal Floating Star Rater */
 .zbf-gal-rate-float { position: absolute; top: 6px; right: 6px; z-index: 2; display: inline-flex; align-items: center; gap: 1px; padding: 2px 6px; border-radius: 999px; background: light-dark(rgba(255,255,255,0.92), rgba(15,23,42,0.88)); backdrop-filter: blur(6px); border: 1px solid rgba(15,23,42,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.09); opacity: 0; transform: translateY(-2px); transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1); }
 .zbf-gal-rate-float[data-has-rating="true"], .zbf-gal-card:hover .zbf-gal-rate-float { opacity: 1; transform: translateY(0); }
-.zbf-gal-star { font-size: 11.5px; line-height: 1; color: rgba(148,163,184,0.45); padding: 1px; cursor: pointer; transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), color 0.12s, opacity 0.12s; }
-.zbf-gal-star[data-lit="true"] { color: #f59e0b; }
-.zbf-gal-rate-float[data-hover] .zbf-gal-star { color: rgba(148,163,184,0.34); }
+.zbf-gal-star { display: inline-block; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif; font-size: 11px; line-height: 1; filter: grayscale(1) opacity(0.28); padding: 0.5px; cursor: pointer; transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), filter 0.12s, opacity 0.12s; }
+.zbf-gal-star[data-lit="true"] { filter: none; opacity: 1; }
+.zbf-gal-rate-float[data-hover] .zbf-gal-star { filter: grayscale(1) opacity(0.22); }
 .zbf-gal-rate-float[data-hover="1"] .zbf-gal-star:nth-child(-n+1),
 .zbf-gal-rate-float[data-hover="2"] .zbf-gal-star:nth-child(-n+2),
 .zbf-gal-rate-float[data-hover="3"] .zbf-gal-star:nth-child(-n+3),
 .zbf-gal-rate-float[data-hover="4"] .zbf-gal-star:nth-child(-n+4),
-.zbf-gal-rate-float[data-hover="5"] .zbf-gal-star:nth-child(-n+5) { color: #fbbf24; }
-.zbf-gal-rate-float[data-clear-hint="true"] .zbf-gal-star[data-lit="true"] { opacity: 0.55; }
-.zbf-gal-star:hover { transform: scale(1.25); }
+.zbf-gal-rate-float[data-hover="5"] .zbf-gal-star:nth-child(-n+5) { filter: drop-shadow(0 1px 2px rgba(245,158,11,0.38)); opacity: 1; }
+.zbf-gal-rate-float[data-clear-hint="true"] .zbf-gal-star[data-lit="true"] { opacity: 0.72; }
+.zbf-gal-star:hover { transform: scale(1.22); }
 
 /* Card Body Typography & Icon Metadata Rows */
 .zbf-gal-title-row { display: flex; align-items: flex-start; gap: 6px; color: light-dark(#111827, #f1f5f9); }
@@ -7921,7 +8128,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const titleSpan = hubEl(doc, "span");
       renderRichTitleNodes(doc, titleSpan, list[0].itemTitle);
       itemBtn.appendChild(titleSpan);
-      itemBtn.addEventListener("click", () => opts.onOpenItem(itemID));
+      itemBtn.addEventListener("click", () => {
+        void openItemPdfAtPage({ id: itemID }).then((ok) => {
+          if (!ok) opts.onOpenItem(itemID);
+        });
+      });
       const meta = hubEl(doc, "span");
       meta.className = "zbf-notebook-meta";
       meta.textContent = [list[0].creatorYear, zh ? `${list.length} 条标注` : `${list.length} notes`].filter(Boolean).join(" · ");
@@ -7930,7 +8141,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       openBtn.type = "button";
       openBtn.className = "zbf-reading-open-pill";
       openBtn.textContent = zh ? "打开文献" : "Open";
-      openBtn.addEventListener("click", () => opts.onOpenItem(itemID));
+      openBtn.addEventListener("click", () => {
+        void openItemPdfAtPage({ id: itemID }).then((ok) => {
+          if (!ok) opts.onOpenItem(itemID);
+        });
+      });
       head.append(headMain, openBtn);
       card.appendChild(head);
       const annGrid = hubEl(doc, "div");
@@ -7966,7 +8181,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         const jump = hubEl(doc, "button");
         jump.type = "button";
         jump.textContent = zh ? "跳至 PDF" : "Open PDF";
-        jump.addEventListener("click", () => opts.onOpenItem(itemID));
+        jump.addEventListener("click", () => {
+          void openItemPdfAtPage({ id: itemID }, Number(ann.pageLabel) || void 0, ann.annotationID).then((ok) => {
+            if (!ok) opts.onOpenItem(itemID);
+          });
+        });
         const copy = hubEl(doc, "button");
         copy.type = "button";
         const defaultCopyLabel = zh ? "复制" : "Copy";
@@ -8390,31 +8609,53 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     foot.className = "zbf-notebook-foot";
     const actions = hubEl(doc, "div");
     actions.className = "zbf-matrix-actions";
+    const flashBtn = (btn, tempText) => {
+      const orig = btn.dataset.origLabel || btn.textContent || "";
+      btn.dataset.origLabel = orig;
+      btn.textContent = tempText;
+      doc.defaultView?.setTimeout?.(() => {
+        if (btn.isConnected) btn.textContent = orig;
+      }, 1800);
+    };
     const addBtn = (lbl, primary, fn) => {
       const b = hubEl(doc, "button");
       b.type = "button";
       b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
       b.textContent = lbl;
-      b.addEventListener("click", fn);
+      b.addEventListener("click", () => fn(b));
       actions.appendChild(b);
     };
     addBtn(zh ? "打开文献对比矩阵" : "Open Matrix View", false, () => {
+      computeCurrent();
       const ids = latestScope.items.map((it) => Number(it.id)).filter((id) => id > 0);
-      const scopeName = latestScope.scopeTitle;
-      safeClose();
-      openAnnotationMatrixModal({ win: options.win, title: scopeName, itemIDs: ids, prefs: options.prefs, bus: options.bus, clipboard: options.clipboard });
+      openAnnotationMatrixModal({
+        win: options.win,
+        title: latestScope.scopeTitle,
+        itemIDs: ids,
+        prefs: options.prefs,
+        bus: options.bus,
+        clipboard: options.clipboard
+      });
     });
-    addBtn(zh ? "复制 Markdown 综述汇总" : "Copy Markdown Synthesis", false, () => {
+    addBtn(zh ? "复制 Markdown 综述汇总" : "Copy Markdown Synthesis", false, (btn) => {
       const { annData, notesData } = computeCurrent();
+      if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
+        statusEl.textContent = zh ? "当前范围暂无可复制的笔记或标注" : "Nothing to copy in current scope";
+        flashBtn(btn, zh ? "暂无内容" : "Empty");
+        return;
+      }
       const md = renderCollectionHubMarkdown(`${latestScope.scopeTitle} · 笔记与标注汇总`, notesData.entries, annData.annotations, preferComment);
-      statusEl.textContent = writeMatrixClipboard(md, options.clipboard) ? zh ? "✓ 已复制 Markdown 综述草稿" : "✓ Copied Markdown synthesis" : "✕ Copy failed";
+      const ok = writeMatrixClipboard(md, options.clipboard);
+      statusEl.textContent = ok ? zh ? `✓ 已复制 Markdown 综述（${md.length} 字）` : `✓ Copied Markdown (${md.length} chars)` : "✕ Copy failed";
+      flashBtn(btn, ok ? zh ? "✓ 已复制到剪贴板" : "✓ Copied!" : "✕ 失败");
     });
     let savingNote = false;
-    addBtn(zh ? "保存为当前分类 Zotero 笔记" : "Save as Zotero Note", true, () => {
+    addBtn(zh ? "保存为当前分类 Zotero 笔记" : "Save as Zotero Note", true, (btn) => {
       if (savingNote) return;
       const { annData, notesData } = computeCurrent();
       if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
         statusEl.textContent = zh ? "当前范围暂无可汇总的笔记或标注" : "No notes or annotations to save";
+        flashBtn(btn, zh ? "暂无可保存内容" : "Nothing to save");
         return;
       }
       savingNote = true;
@@ -8426,8 +8667,23 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         preferCommentOverQuote: preferComment,
         libraryID: latestScope.libraryID,
         collectionID: latestScope.collectionID
-      }).then((nid) => {
-        statusEl.textContent = nid ? zh ? `✓ 已生成汇总笔记 (#${nid})` : `✓ Saved Zotero Note (#${nid})` : "✕ Failed to save note";
+      }).then(async (nid) => {
+        if (!nid) {
+          statusEl.textContent = "✕ Failed to save note";
+          return;
+        }
+        statusEl.textContent = zh ? `✓ 已生成并打开汇总笔记 (#${nid})` : `✓ Saved & opened Note (#${nid})`;
+        flashBtn(btn, zh ? `✓ 已打开笔记 #${nid}` : `✓ Opened #${nid}`);
+        const zNotes = globalThis.Zotero?.Notes;
+        if (typeof zNotes?.open === "function") {
+          try {
+            await zNotes.open(nid, void 0, { openInWindow: false });
+            return;
+          } catch {
+          }
+        }
+        options.win.Zotero_Tabs?.select?.("zotero-pane");
+        await options.win.ZoteroPane?.selectItem?.(nid);
       }).catch(() => {
         statusEl.textContent = zh ? "✕ 保存汇总笔记失败" : "✕ Failed to save note";
       }).finally(() => {
@@ -8615,7 +8871,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const cols = [];
       for (let stars = 5; stars >= 1; stars--) {
         const t = SOFT_TINTS[(5 - stars) % SOFT_TINTS.length];
-        cols.push({ key: String(stars), title: `${stars} ★`, color: "#f59e0b", pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
+        cols.push({ key: String(stars), title: `${stars} ⭐`, color: "#f59e0b", pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
       }
       cols.push({ key: "0", title: zh ? "未评级" : "Unrated", color: "#94a3b8", pillBg: "#f1f5f9", pillFg: "#475569", surfaceTint: "rgba(100,116,139,0.04)", droppable: true, cards: cards.filter((c) => c.rating === 0) });
       return cols;
@@ -8639,7 +8895,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     if (groupBy === "status") {
       return setItemStatus(card.item, targetColumnKey === "__none__" ? null : targetColumnKey, {
         color: options.color,
-        excludedTag: options.excludedStatusTag
+        excludedTag: options.excludedStatusTag,
+        syncZoteroTagColor: options.syncZoteroTagColor
       });
     }
     if (groupBy === "rating") {
@@ -8648,100 +8905,415 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     return false;
   }
 
-  // src/services/pdf-cover-service.ts
+  // src/services/pdf-cover-queue.ts
+  function makeAbortController(win) {
+    const Ctor = globalThis.AbortController || win?.AbortController || globalThis.Zotero?.getMainWindow?.()?.AbortController;
+    if (typeof Ctor === "function") return new Ctor();
+    const listeners = /* @__PURE__ */ new Set();
+    const signal = {
+      aborted: false,
+      addEventListener(_type, fn) {
+        if (signal.aborted) fn();
+        else listeners.add(fn);
+      },
+      removeEventListener(_type, fn) {
+        listeners.delete(fn);
+      }
+    };
+    return {
+      signal,
+      abort() {
+        if (signal.aborted) return;
+        signal.aborted = true;
+        for (const fn of [...listeners]) {
+          listeners.delete(fn);
+          try {
+            fn();
+          } catch {
+          }
+        }
+      }
+    };
+  }
+  function createGalleryScrollIdle(quietMS = 280) {
+    let idleAt = 0;
+    let destroyed = false;
+    let paused = false;
+    let timer;
+    const waiting = /* @__PURE__ */ new Set();
+    const flush = () => {
+      timer = void 0;
+      if (paused || destroyed) return;
+      const rem = idleAt - Date.now();
+      if (rem > 0 && waiting.size) {
+        timer = setTimeout(flush, rem);
+        return;
+      }
+      for (const fn of [...waiting]) fn(true);
+    };
+    return {
+      touch() {
+        idleAt = Date.now() + quietMS;
+      },
+      setPaused(val) {
+        if (destroyed || paused === val) return;
+        paused = val;
+        if (paused) {
+          if (timer !== void 0) {
+            clearTimeout(timer);
+            timer = void 0;
+          }
+        } else {
+          idleAt = Date.now() + quietMS;
+          if (waiting.size) timer = setTimeout(flush, quietMS);
+        }
+      },
+      wait(signal) {
+        if (destroyed || signal.aborted) return Promise.reject(new Error("cancelled"));
+        if (!paused && Date.now() >= idleAt) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          const finish = (ready) => {
+            waiting.delete(finish);
+            signal.removeEventListener("abort", onAbort);
+            if (!waiting.size && timer !== void 0) {
+              clearTimeout(timer);
+              timer = void 0;
+            }
+            if (ready) resolve();
+            else reject(new Error("cancelled"));
+          };
+          const onAbort = () => finish(false);
+          waiting.add(finish);
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (!paused && timer === void 0) timer = setTimeout(flush, Math.max(0, idleAt - Date.now()));
+        });
+      },
+      destroy() {
+        destroyed = true;
+        if (timer !== void 0) {
+          clearTimeout(timer);
+          timer = void 0;
+        }
+        for (const fn of [...waiting]) fn(false);
+      }
+    };
+  }
+  function createGalleryWorkQueue(waitUntilIdle = async () => {
+  }, concurrency = 2) {
+    const pending = /* @__PURE__ */ new Set();
+    const waitingWaiters = /* @__PURE__ */ new Set();
+    const limit = Math.max(1, Math.floor(concurrency));
+    let running = 0;
+    const pickNext = () => {
+      let best;
+      let bestScore = -Infinity;
+      for (const job of pending) {
+        const score = job.priority();
+        if (!best || score > bestScore) {
+          best = job;
+          bestScore = score;
+        }
+      }
+      if (!best) return void 0;
+      pending.delete(best);
+      best.signal.removeEventListener("abort", best.abort);
+      if (best.signal.aborted) {
+        best.resolve(void 0);
+        return void 0;
+      }
+      return best;
+    };
+    const worker = async () => {
+      try {
+        while (pending.size) {
+          const ctrl = makeAbortController();
+          waitingWaiters.add(ctrl);
+          try {
+            await waitUntilIdle(ctrl.signal);
+          } catch {
+            if (ctrl.signal.aborted) continue;
+          } finally {
+            waitingWaiters.delete(ctrl);
+          }
+          if (ctrl.signal.aborted) continue;
+          const job = pickNext();
+          if (!job) continue;
+          try {
+            job.resolve(await job.run());
+          } catch (err) {
+            job.reject(err);
+          }
+        }
+      } finally {
+        running = Math.max(0, running - 1);
+      }
+    };
+    return (run, signal, priority = () => 0) => {
+      if (signal.aborted) return Promise.resolve(void 0);
+      return new Promise((resolve, reject) => {
+        const job = {
+          run,
+          signal,
+          priority,
+          resolve,
+          reject,
+          abort() {
+            pending.delete(job);
+            signal.removeEventListener("abort", job.abort);
+            resolve(void 0);
+            if (!pending.size) {
+              for (const c of waitingWaiters) c.abort();
+            }
+          }
+        };
+        pending.add(job);
+        signal.addEventListener("abort", job.abort, { once: true });
+        if (running < limit) {
+          running++;
+          void worker();
+        }
+      });
+    };
+  }
+  function computeCoverCacheEvictions(files, now, limits = { bytes: 256 * 1024 * 1024, entries: 3e3, ageMs: 30 * 24 * 3600 * 1e3 }) {
+    const remove = [];
+    const keep = [];
+    for (const f of files) {
+      if (f.legacy) remove.push(f);
+      else if (f.temporary) {
+        if (now - f.modified > 24 * 3600 * 1e3) remove.push(f);
+      } else if (now - f.modified > limits.ageMs) remove.push(f);
+      else keep.push(f);
+    }
+    keep.sort((a, b) => b.modified - a.modified);
+    let total = 0;
+    keep.forEach((f, idx) => {
+      total += f.size;
+      if (idx >= limits.entries || total > limits.bytes) remove.push(f);
+    });
+    return remove;
+  }
+
+  // src/services/pdf-cover-renderer.ts
   var PDFJS_MODULE_URL2 = "resource://zotero/reader/pdf/build/pdf.mjs";
   var PDFJS_WORKER_URL2 = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
   var PDFJS_CMAP_URL2 = "resource://zotero/reader/pdf/web/cmaps/";
   var PDFJS_FONT_URL2 = "resource://zotero/reader/pdf/web/standard_fonts/";
-  var MEM_CACHE_LIMIT = 600;
-  var MAX_CONCURRENT = 2;
-  var TARGET_COVER_WIDTH = 480;
-  var COVER_ASPECT_RATIO = 1.28;
-  var COVER_RENDER_SPEC = {
-    targetWidth: TARGET_COVER_WIDTH,
-    aspectRatio: COVER_ASPECT_RATIO,
-    cacheVersion: "v2"
-  };
   var cachedPdfJs = null;
-  var memCoverCache = /* @__PURE__ */ new Map();
-  var failedRetryAt = /* @__PURE__ */ new Map();
-  var FAIL_COOLDOWN_MS = 6e4;
-  var inflightJobs = /* @__PURE__ */ new Map();
-  var activeWorkers = 0;
-  var waitQueue = [];
-  function acquireSlot() {
-    if (activeWorkers < MAX_CONCURRENT) {
-      activeWorkers++;
-      return Promise.resolve();
+  function unwrapWindow(win) {
+    if (!win) return void 0;
+    try {
+      return win.wrappedJSObject ?? win;
+    } catch {
+      return win;
     }
-    return new Promise((resolve) => {
-      waitQueue.push(() => {
-        activeWorkers++;
-        resolve();
-      });
+  }
+  function waitWithSignal(promiseOrVal, signal) {
+    if (signal.aborted) return Promise.reject(new Error("aborted"));
+    return new Promise((resolve, reject) => {
+      const onAbort = () => reject(new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+      Promise.resolve(promiseOrVal).then(
+        (val) => {
+          signal.removeEventListener("abort", onAbort);
+          if (signal.aborted) reject(new Error("aborted"));
+          else resolve(val);
+        },
+        (err) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(err);
+        }
+      );
     });
   }
-  function releaseSlot() {
-    activeWorkers = Math.max(0, activeWorkers - 1);
-    const next = waitQueue.shift();
-    if (next) next();
-  }
-  function setMemLru(attID, dataUrl) {
-    if (memCoverCache.has(attID)) memCoverCache.delete(attID);
-    else if (memCoverCache.size >= MEM_CACHE_LIMIT) {
-      const oldest = memCoverCache.keys().next().value;
-      if (oldest !== void 0) memCoverCache.delete(oldest);
-    }
-    memCoverCache.set(attID, dataUrl);
-  }
-  function getCachedPdfCoverSync(attID) {
-    const hit = memCoverCache.get(attID);
-    if (hit) {
-      memCoverCache.delete(attID);
-      memCoverCache.set(attID, hit);
-      return hit;
-    }
-    return null;
-  }
-  function getCoverDiskPath(attID) {
-    try {
-      const zotero = globalThis.Zotero;
-      const pathUtils = globalThis.PathUtils || zotero?.getMainWindow?.()?.PathUtils;
-      const dataDir = String(zotero?.DataDirectory?.dir || "");
-      if (!dataDir || !pathUtils?.join) return null;
-      return pathUtils.join(dataDir, "bridgeflow-cache", "covers", `cover-${COVER_RENDER_SPEC.cacheVersion}-${attID}.txt`);
-    } catch {
-      return null;
-    }
-  }
-  async function readDiskCover(attID) {
-    const filePath = getCoverDiskPath(attID);
-    if (!filePath) return null;
-    try {
-      const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
-      if (!ioUtils?.readUTF8) return null;
-      const txt = await ioUtils.readUTF8(filePath);
-      return typeof txt === "string" && txt.startsWith("data:image/") ? txt : null;
-    } catch {
-      return null;
-    }
-  }
-  async function writeDiskCover(attID, dataUrl) {
-    const filePath = getCoverDiskPath(attID);
-    if (!filePath) return;
-    try {
-      const win = globalThis.Zotero?.getMainWindow?.();
-      const ioUtils = globalThis.IOUtils || win?.IOUtils;
-      const pathUtils = globalThis.PathUtils || win?.PathUtils;
-      if (!ioUtils?.writeUTF8) return;
-      if (pathUtils?.parent && ioUtils?.makeDirectory) {
-        await ioUtils.makeDirectory(pathUtils.parent(filePath), { createAncestors: true, ignoreExisting: true });
+  async function pollPreviewValue(probe, signal, timeoutMs = 12e3) {
+    const deadline = Date.now() + timeoutMs;
+    while (!signal.aborted && Date.now() < deadline) {
+      try {
+        const val = probe();
+        if (val !== void 0) return val;
+      } catch {
       }
-      await ioUtils.writeUTF8(filePath, dataUrl);
+      await waitWithSignal(new Promise((r) => setTimeout(r, 40)), signal);
+    }
+    throw new Error("preview poll timed out");
+  }
+  async function renderAttachmentPreviewCover(attachmentID, width, signal, ownerDocument, zoteroHost, waitUntilIdle) {
+    if (signal.aborted || !ownerDocument || !Number.isFinite(width) || width <= 0) return false;
+    const createXul = ownerDocument.createXULElement;
+    if (typeof createXul !== "function") return false;
+    let preview = null;
+    let renderTask = null;
+    let pdfDocument = null;
+    let canvas = null;
+    let continuationTimer;
+    let disposing = false;
+    const pendingPages = /* @__PURE__ */ new Set();
+    const trackedDocs = /* @__PURE__ */ new Set();
+    const restores = [];
+    const trackDoc = (rawDoc) => {
+      const doc = rawDoc?.wrappedJSObject ?? rawDoc;
+      if (!doc || trackedDocs.has(doc) || typeof doc.getPage !== "function") return;
+      trackedDocs.add(doc);
+      const orig = doc.getPage;
+      const wrapped = function(pageNum) {
+        const p = orig.call(this, pageNum);
+        pendingPages.add(p);
+        void Promise.resolve(p).then(() => pendingPages.delete(p), () => pendingPages.delete(p));
+        return p;
+      };
+      doc.getPage = wrapped;
+      restores.push(() => {
+        if (doc.getPage === wrapped) doc.getPage = orig;
+      });
+    };
+    const onPreviewLoaded = (ev) => {
+      if (disposing) return;
+      const win = unwrapWindow(ev.target?.defaultView);
+      if (!win) return;
+      try {
+        win.PDFViewerApplicationOptions?.set?.("disableAutoFetch", true);
+      } catch {
+      }
+      const app = win.PDFViewerApplication;
+      if (app && typeof app.load === "function") {
+        const origLoad = app.load;
+        const wrappedLoad = function(d) {
+          trackDoc(d);
+          return origLoad.call(this, d);
+        };
+        app.load = wrappedLoad;
+        restores.push(() => {
+          if (app.load === wrappedLoad) app.load = origLoad;
+        });
+      }
+    };
+    const cancelRender = () => {
+      if (continuationTimer !== void 0) {
+        clearTimeout(continuationTimer);
+        continuationTimer = void 0;
+      }
+      try {
+        renderTask?.cancel?.();
+      } catch {
+      }
+    };
+    signal.addEventListener("abort", cancelRender, { once: true });
+    try {
+      const item = await waitWithSignal(
+        zoteroHost?.Items?.getAsync ? zoteroHost.Items.getAsync(attachmentID) : zoteroHost?.Items?.get?.(attachmentID),
+        signal
+      );
+      if (!item || item.deleted || item.isPDFAttachment?.() === false || typeof item.getFilePathAsync !== "function") {
+        return false;
+      }
+      const pdfPath = await waitWithSignal(item.getFilePathAsync(), signal);
+      if (typeof pdfPath !== "string" || !pdfPath) return false;
+      if (waitUntilIdle) await waitWithSignal(waitUntilIdle(signal), signal);
+      preview = createXul.call(ownerDocument, "attachment-preview");
+      if (!preview) return false;
+      preview.style.cssText = "position:fixed;left:0;top:0;width:640px;height:900px;min-width:640px;max-height:none;opacity:0;pointer-events:none;z-index:-1;";
+      preview.setAttribute("aria-hidden", "true");
+      preview.setAttribute("tabindex", "-1");
+      preview.addEventListener("DOMContentLoaded", onPreviewLoaded, true);
+      ownerDocument.documentElement?.appendChild(preview);
+      if (!preview._previewInitializePromise?.promise) return false;
+      await waitWithSignal(
+        Promise.all([
+          preview._previewInitializePromise.promise,
+          preview._nextPreviewInitializePromise?.promise
+        ]),
+        signal
+      );
+      preview.item = item;
+      if (waitUntilIdle) await waitWithSignal(waitUntilIdle(signal), signal);
+      await waitWithSignal(preview.render(), signal);
+      const status = await pollPreviewValue(() => {
+        const v = preview?.getAttribute?.("data-preview-status");
+        return v === "success" || v === "fail" ? v : void 0;
+      }, signal);
+      if (status !== "success") return false;
+      const getViewWin = () => unwrapWindow(preview?._reader?._internalReader?._primaryView?._iframeWindow);
+      pdfDocument = await pollPreviewValue(() => getViewWin()?.PDFViewerApplication?.pdfDocument ?? void 0, signal);
+      trackDoc(pdfDocument);
+      if (pdfDocument.loadingParams) pdfDocument.loadingParams.disableAutoFetch = true;
+      const rawPage = await waitWithSignal(pdfDocument.getPage(1), signal);
+      const page = rawPage?.wrappedJSObject ?? rawPage;
+      const viewWin = getViewWin();
+      if (!viewWin) return false;
+      const mkOpts = (props) => Object.assign(new (viewWin.Object ?? Object)(), props);
+      const baseVp = page.getViewport(mkOpts({ scale: 1 }));
+      if (!Number.isFinite(baseVp?.width) || !Number.isFinite(baseVp?.height) || baseVp.width <= 0 || baseVp.height <= 0) {
+        return false;
+      }
+      const viewport = page.getViewport(mkOpts({ scale: width / baseVp.width }));
+      canvas = viewWin.document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return false;
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (waitUntilIdle) await waitWithSignal(waitUntilIdle(signal), signal);
+      renderTask = page.render(mkOpts({ canvasContext: ctx, viewport, intent: "print" }));
+      try {
+        renderTask.onContinue = (resume) => {
+          continuationTimer = setTimeout(() => {
+            continuationTimer = void 0;
+            if (!signal.aborted) resume();
+          }, 0);
+        };
+      } catch {
+      }
+      await waitWithSignal(renderTask.promise, signal);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
+      return typeof dataUrl === "string" && dataUrl.startsWith("data:image/jpeg;base64,") ? dataUrl : false;
     } catch {
+      return false;
+    } finally {
+      signal.removeEventListener("abort", cancelRender);
+      if (continuationTimer !== void 0) clearTimeout(continuationTimer);
+      if (signal.aborted) cancelRender();
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      disposing = true;
+      const cleanupCtrl = makeAbortController(ownerDocument.defaultView);
+      const cleanupTimer = setTimeout(() => cleanupCtrl.abort(), 2500);
+      try {
+        const app = unwrapWindow(preview?._reader?._internalReader?._primaryView?._iframeWindow)?.PDFViewerApplication;
+        for (const viewer of [app?.pdfViewer, app?.pdfThumbnailViewer]) {
+          if (viewer?.forceRendering) viewer.forceRendering = () => false;
+        }
+        while (pendingPages.size && !cleanupCtrl.signal.aborted) {
+          await waitWithSignal(Promise.allSettled([...pendingPages]), cleanupCtrl.signal).catch(() => {
+          });
+        }
+        const docRef = pdfDocument ?? app?.pdfDocument;
+        if (app?.close) await waitWithSignal(app.close(), cleanupCtrl.signal).catch(() => {
+        });
+        else if (docRef?.destroy) await waitWithSignal(docRef.destroy(), cleanupCtrl.signal).catch(() => {
+        });
+      } catch {
+      } finally {
+        clearTimeout(cleanupTimer);
+        try {
+          preview?.removeEventListener?.("DOMContentLoaded", onPreviewLoaded, true);
+          preview?.destroy?.();
+          preview?.remove?.();
+        } catch {
+        }
+        for (const fn of restores.reverse()) {
+          try {
+            fn();
+          } catch {
+          }
+        }
+      }
     }
   }
-  function tryImportEsModule(cu, url) {
+  function tryImportModule2(cu, url) {
     if (!cu?.importESModule) return null;
     for (const opts of [{ global: "current" }, null]) {
       try {
@@ -8752,66 +9324,43 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return null;
   }
-  async function ensurePdfJs(win) {
-    if (cachedPdfJs) return cachedPdfJs;
-    const hostWin = win || globalThis.Zotero?.getMainWindow?.();
-    const winCu = hostWin?.ChromeUtils;
-    const globalCu = globalThis.ChromeUtils;
-    const workerMod = tryImportEsModule(winCu, PDFJS_WORKER_URL2) || tryImportEsModule(globalCu, PDFJS_WORKER_URL2);
-    if (workerMod) {
-      try {
-        globalThis.pdfjsWorker = workerMod;
-        if (hostWin) hostWin.pdfjsWorker = workerMod;
-      } catch {
-      }
-    }
-    let mod = tryImportEsModule(winCu, PDFJS_MODULE_URL2) || tryImportEsModule(globalCu, PDFJS_MODULE_URL2);
-    if (typeof mod?.getDocument !== "function") {
-      try {
-        mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL2);
-      } catch {
-        mod = null;
-      }
-    }
-    if (typeof mod?.getDocument !== "function") return null;
-    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
-      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL2;
-    }
-    cachedPdfJs = mod;
-    return mod;
-  }
-  async function resolveAttachmentFileBytes(attID) {
-    try {
-      const zotero = globalThis.Zotero;
-      const att = zotero?.Items?.get?.(attID) || await zotero?.Items?.getAsync?.(attID);
-      if (!att || att.deleted) return null;
-      const filePath = await att.getFilePathAsync?.().catch(() => null) || att.getFilePath?.();
-      if (typeof filePath !== "string" || !filePath.trim()) return null;
-      const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
-      if (ioUtils?.read) {
-        const raw = await ioUtils.read(filePath);
-        return raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-      }
-    } catch {
-    }
-    return null;
-  }
-  async function renderCoverInternal(attID, doc) {
-    const diskHit = await readDiskCover(attID);
-    if (diskHit) {
-      setMemLru(attID, diskHit);
-      return diskHit;
-    }
-    await acquireSlot();
+  async function renderFallbackPdfJsCover(attachmentID, width, signal, doc, zoteroHost) {
+    if (signal.aborted || !doc) return false;
     let pdfDoc = null;
     let page = null;
     try {
-      const [pdfjs, bytes] = await Promise.all([
-        ensurePdfJs(doc.defaultView),
-        resolveAttachmentFileBytes(attID)
-      ]);
-      if (!pdfjs || !bytes?.length) return null;
-      const task = pdfjs.getDocument({
+      if (!cachedPdfJs) {
+        const winCu = doc.defaultView?.ChromeUtils;
+        const globalCu = globalThis.ChromeUtils;
+        const workerMod = tryImportModule2(winCu, PDFJS_WORKER_URL2) || tryImportModule2(globalCu, PDFJS_WORKER_URL2);
+        if (workerMod) {
+          try {
+            globalThis.pdfjsWorker = workerMod;
+          } catch {
+          }
+        }
+        let mod = tryImportModule2(winCu, PDFJS_MODULE_URL2) || tryImportModule2(globalCu, PDFJS_MODULE_URL2);
+        if (typeof mod?.getDocument !== "function") {
+          try {
+            mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL2);
+          } catch {
+            mod = null;
+          }
+        }
+        if (typeof mod?.getDocument === "function") {
+          if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL2;
+          cachedPdfJs = mod;
+        }
+      }
+      if (!cachedPdfJs) return false;
+      const att = zoteroHost?.Items?.get?.(attachmentID) || await zoteroHost?.Items?.getAsync?.(attachmentID);
+      const path = await att?.getFilePathAsync?.().catch(() => null) || att?.getFilePath?.();
+      const ioUtils = globalThis.IOUtils || zoteroHost?.getMainWindow?.()?.IOUtils;
+      if (!path || !ioUtils?.read || signal.aborted) return false;
+      const raw = await ioUtils.read(path);
+      const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+      if (!bytes.length || signal.aborted) return false;
+      pdfDoc = await cachedPdfJs.getDocument({
         data: bytes,
         ownerDocument: doc,
         isEvalSupported: false,
@@ -8819,39 +9368,22 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         cMapUrl: PDFJS_CMAP_URL2,
         cMapPacked: true,
         standardFontDataUrl: PDFJS_FONT_URL2
-      });
-      pdfDoc = await task.promise;
+      }).promise;
       page = await pdfDoc.getPage(1);
       const baseVp = page.getViewport({ scale: 1 });
-      const scale = TARGET_COVER_WIDTH * 1.5 / Math.max(1, baseVp.width);
-      const vp = page.getViewport({ scale });
-      const fullCanvas = doc.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
-      fullCanvas.width = Math.max(1, Math.floor(vp.width));
-      fullCanvas.height = Math.max(1, Math.floor(vp.height));
-      const ctx = fullCanvas.getContext("2d");
-      if (!ctx) return null;
+      const vp = page.getViewport({ scale: width / Math.max(1, baseVp.width) });
+      const c = doc.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+      c.width = Math.max(1, Math.ceil(vp.width));
+      c.height = Math.max(1, Math.ceil(vp.height));
+      const ctx = c.getContext("2d");
+      if (!ctx) return false;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, fullCanvas.width, fullCanvas.height);
+      ctx.fillRect(0, 0, c.width, c.height);
       await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      const cropHeight = Math.max(1, Math.min(fullCanvas.height, Math.floor(fullCanvas.width * COVER_ASPECT_RATIO)));
-      const outCanvas = doc.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
-      outCanvas.width = fullCanvas.width;
-      outCanvas.height = cropHeight;
-      const outCtx = outCanvas.getContext("2d");
-      if (!outCtx) return null;
-      outCtx.fillStyle = "#ffffff";
-      outCtx.fillRect(0, 0, outCanvas.width, outCanvas.height);
-      outCtx.drawImage(fullCanvas, 0, 0, fullCanvas.width, cropHeight, 0, 0, outCanvas.width, cropHeight);
-      const dataUrl = outCanvas.toDataURL("image/jpeg", 0.84);
-      if (dataUrl && dataUrl.startsWith("data:image/")) {
-        setMemLru(attID, dataUrl);
-        void writeDiskCover(attID, dataUrl);
-        return dataUrl;
-      }
-      return null;
+      const url = c.toDataURL("image/jpeg", 0.88);
+      return url.startsWith("data:image/") ? url : false;
     } catch {
-      failedRetryAt.set(attID, Date.now() + FAIL_COOLDOWN_MS);
-      return null;
+      return false;
     } finally {
       try {
         page?.cleanup?.();
@@ -8861,23 +9393,255 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         await pdfDoc?.destroy?.();
       } catch {
       }
-      releaseSlot();
     }
   }
-  function loadPdfCoverDataUrl(attID, doc) {
-    if (!attID) return Promise.resolve(null);
-    const retryAfter = failedRetryAt.get(attID) || 0;
-    if (retryAfter > Date.now()) return Promise.resolve(null);
-    if (retryAfter) failedRetryAt.delete(attID);
+
+  // src/services/pdf-cover-service.ts
+  var MEM_CACHE_LIMIT = 512;
+  var MAX_COVER_BYTES = 4 * 1024 * 1024;
+  var TARGET_COVER_WIDTH = 480;
+  var FAIL_COOLDOWN_MS = 45e3;
+  var memCoverCache = /* @__PURE__ */ new Map();
+  var fingerprints = /* @__PURE__ */ new Map();
+  var attPathByID = /* @__PURE__ */ new Map();
+  var touchedAt = /* @__PURE__ */ new Map();
+  var writingPaths = /* @__PURE__ */ new Set();
+  var failedRetryAt = /* @__PURE__ */ new Map();
+  var lastSweepAt = 0;
+  var sweepingPromise = null;
+  function setMemLru(attID, url) {
+    if (memCoverCache.has(attID)) memCoverCache.delete(attID);
+    else if (memCoverCache.size >= MEM_CACHE_LIMIT) {
+      const oldest = memCoverCache.keys().next().value;
+      if (oldest !== void 0) memCoverCache.delete(oldest);
+    }
+    memCoverCache.set(attID, url);
+  }
+  function getCachedPdfCoverSync(attID) {
+    const hit = memCoverCache.get(attID);
+    if (!hit) return null;
+    memCoverCache.delete(attID);
+    memCoverCache.set(attID, hit);
+    return hit;
+  }
+  function getCoversDir(customDir = "") {
+    try {
+      const zotero = globalThis.Zotero;
+      const pathUtils = globalThis.PathUtils || zotero?.getMainWindow?.()?.PathUtils;
+      const base = String(customDir || "").trim() || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
+      return base && pathUtils?.join ? pathUtils.join(base, "covers") : null;
+    } catch {
+      return null;
+    }
+  }
+  function isValidJpegDataUrl(url) {
+    return typeof url === "string" && url.length > 32 && url.length <= MAX_COVER_BYTES && url.startsWith("data:image/");
+  }
+  async function locateAttachmentPdf(attID, width) {
+    try {
+      const zotero = globalThis.Zotero;
+      const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
+      const item = zotero?.Items?.get?.(attID) || await zotero?.Items?.getAsync?.(attID);
+      if (!item || item.deleted || item.isPDFAttachment?.() === false) return null;
+      const pdfPath = await item.getFilePathAsync?.().catch(() => null) || item.getFilePath?.();
+      if (!pdfPath || !ioUtils?.stat) return null;
+      const stat = await ioUtils.stat(pdfPath);
+      if (stat.type !== "regular" || !Number.isFinite(stat.lastModified) || !Number.isFinite(stat.size)) return null;
+      attPathByID.set(attID, pdfPath);
+      return {
+        key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
+        path: pdfPath,
+        stamp: JSON.stringify([stat.lastModified, stat.size])
+      };
+    } catch {
+      return null;
+    }
+  }
+  async function identifyAttachmentPdf(attID, width, verify = false) {
+    const located = await locateAttachmentPdf(attID, width);
+    if (!located) return null;
+    const zotero = globalThis.Zotero;
+    const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
+    let fp = fingerprints.get(located.path);
+    if (verify || fp?.stamp !== located.stamp) {
+      const hashPromise = (async () => {
+        const digest = typeof ioUtils?.computeHexDigest === "function" ? `sha256:${await ioUtils.computeHexDigest(located.path, "sha256")}` : typeof zotero?.Utilities?.Internal?.md5Async === "function" ? `md5:${await zotero.Utilities.Internal.md5Async(located.path)}` : `stamp:${located.stamp}`;
+        const after = await ioUtils.stat(located.path);
+        if (JSON.stringify([after.lastModified, after.size]) !== located.stamp) throw new Error("PDF modified during hash");
+        return digest;
+      })();
+      fp = { stamp: located.stamp, hashPromise };
+      fingerprints.set(located.path, fp);
+    }
+    try {
+      return { key: located.key, stamp: located.stamp, revision: await fp.hashPromise };
+    } catch {
+      if (fingerprints.get(located.path) === fp) fingerprints.delete(located.path);
+      return null;
+    }
+  }
+  function triggerCoverCacheSweep() {
+    if (sweepingPromise || Date.now() - lastSweepAt < 36e5) return;
+    const dir = getCoversDir();
+    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+    if (!dir || typeof ioUtils?.getChildren !== "function") return;
+    lastSweepAt = Date.now();
+    sweepingPromise = (async () => {
+      const children = await ioUtils.getChildren(dir).catch(() => []);
+      const entries = [];
+      for (const p of children) {
+        if (writingPaths.has(p)) continue;
+        const name = String(p.split(/[\\/]/).pop() || "");
+        const isLegacyTxt = /^cover-v\d+-\d+\.txt$/i.test(name);
+        const isJson = /\.json(?:\.[^.]+\.tmp)?$/i.test(name);
+        if (!isLegacyTxt && !isJson) continue;
+        try {
+          const st = await ioUtils.stat(p);
+          if (st.type === "regular") {
+            entries.push({ path: p, size: st.size || 0, modified: st.lastModified || 0, temporary: name.endsWith(".tmp"), legacy: isLegacyTxt });
+          }
+        } catch {
+        }
+      }
+      for (const ev of computeCoverCacheEvictions(entries, Date.now())) {
+        if (!writingPaths.has(ev.path)) await ioUtils.remove(ev.path, { ignoreAbsent: true }).catch(() => {
+        });
+      }
+    })().finally(() => {
+      sweepingPromise = null;
+    });
+  }
+  async function readDiskEnvelope(key) {
+    const dir = getCoversDir();
+    const pathUtils = globalThis.PathUtils || globalThis.Zotero?.getMainWindow?.()?.PathUtils;
+    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+    if (!dir || !pathUtils?.join || !ioUtils?.readUTF8) return null;
+    const filePath = pathUtils.join(dir, `${key}.json`);
+    try {
+      const st = await ioUtils.stat?.(filePath);
+      if (st && (!st.size || st.size > MAX_COVER_BYTES + 8192)) return null;
+      const raw = await ioUtils.readUTF8(filePath);
+      const parsed = JSON.parse(raw);
+      if (parsed?.version !== 2 || typeof parsed.revision !== "string" || !isValidJpegDataUrl(parsed.url)) return null;
+      if (typeof ioUtils.setModificationTime === "function" && Date.now() - (touchedAt.get(key) ?? 0) >= 36e5) {
+        touchedAt.set(key, Date.now());
+        void ioUtils.setModificationTime(filePath).catch(() => {
+        });
+      }
+      triggerCoverCacheSweep();
+      return { revision: parsed.revision, stamp: String(parsed.stamp || ""), url: parsed.url };
+    } catch {
+      return null;
+    }
+  }
+  async function writeDiskEnvelope(key, payload) {
+    const dir = getCoversDir();
+    const pathUtils = globalThis.PathUtils || globalThis.Zotero?.getMainWindow?.()?.PathUtils;
+    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+    if (!dir || !pathUtils?.join || !ioUtils?.writeUTF8) return;
+    const filePath = pathUtils.join(dir, `${key}.json`);
+    const tmpPath = `${filePath}.${Math.random().toString(36).slice(2, 8)}.tmp`;
+    writingPaths.add(filePath);
+    writingPaths.add(tmpPath);
+    try {
+      await ioUtils.makeDirectory?.(dir, { ignoreExisting: true, createAncestors: true });
+      await ioUtils.writeUTF8(filePath, JSON.stringify({ version: 2, ...payload }), { tmpPath });
+    } catch {
+    } finally {
+      writingPaths.delete(filePath);
+      writingPaths.delete(tmpPath);
+      await ioUtils.remove?.(tmpPath, { ignoreAbsent: true }).catch(() => {
+      });
+      triggerCoverCacheSweep();
+    }
+  }
+  var defaultScrollIdle = createGalleryScrollIdle(260);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
+  var ioQueue = createGalleryWorkQueue(async () => {
+  }, 2);
+  var activeJobs = /* @__PURE__ */ new Map();
+  function notifyGalleryCoverScroll(paused) {
+    if (typeof paused === "boolean") defaultScrollIdle.setPaused(paused);
+    else defaultScrollIdle.touch();
+  }
+  function requestGalleryPdfCover(opts) {
+    const { attID, doc } = opts;
+    const width = opts.width ?? TARGET_COVER_WIDTH;
+    const callerSignal = opts.signal ?? makeAbortController(doc?.defaultView).signal;
+    const priority = opts.priority ?? (() => 0);
+    if (!attID || callerSignal.aborted) return Promise.resolve(null);
     const mem = getCachedPdfCoverSync(attID);
     if (mem) return Promise.resolve(mem);
-    const existing = inflightJobs.get(attID);
-    if (existing) return existing;
-    const job = renderCoverInternal(attID, doc).finally(() => {
-      inflightJobs.delete(attID);
+    const cooldown = failedRetryAt.get(attID) || 0;
+    if (cooldown > Date.now()) return Promise.resolve(null);
+    if (cooldown) failedRetryAt.delete(attID);
+    const jobKey = `${attID}:${width}`;
+    let job = activeJobs.get(jobKey);
+    if (!job) {
+      const controller = makeAbortController(doc?.defaultView);
+      const subscribers = /* @__PURE__ */ new Set();
+      const rank = () => Math.max(0, ...[...subscribers].filter((s) => !s.signal.aborted).map((s) => s.priority()));
+      const promise = (async () => {
+        const sig = controller.signal;
+        const hint = await ioQueue(() => locateAttachmentPdf(attID, width), sig, rank);
+        const cand = hint && !sig.aborted ? await ioQueue(() => readDiskEnvelope(hint.key), sig, rank) : null;
+        if (cand && hint && cand.stamp === hint.stamp && !sig.aborted) {
+          for (const sub2 of subscribers) if (!sub2.signal.aborted) sub2.onPreview?.(cand.url);
+        }
+        const ident = await ioQueue(() => identifyAttachmentPdf(attID, width), sig, rank);
+        if (sig.aborted) return null;
+        if (ident) {
+          const verified = hint?.key === ident.key ? cand : await ioQueue(() => readDiskEnvelope(ident.key), sig, rank);
+          if (verified && verified.revision === ident.revision) {
+            setMemLru(attID, verified.url);
+            return verified.url;
+          }
+        }
+        const rendered = await renderQueue(async () => {
+          if (sig.aborted) return false;
+          const timeoutCtrl = makeAbortController(doc?.defaultView);
+          const onParentAbort = () => timeoutCtrl.abort();
+          sig.addEventListener("abort", onParentAbort, { once: true });
+          const timer = setTimeout(() => timeoutCtrl.abort(), 15e3);
+          try {
+            const host2 = globalThis.Zotero;
+            const viaPreview = await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host2, (s) => defaultScrollIdle.wait(s));
+            return viaPreview || await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host2);
+          } finally {
+            clearTimeout(timer);
+            sig.removeEventListener("abort", onParentAbort);
+          }
+        }, sig, rank);
+        if (!isValidJpegDataUrl(rendered)) {
+          if (!sig.aborted) failedRetryAt.set(attID, Date.now() + FAIL_COOLDOWN_MS);
+          return null;
+        }
+        setMemLru(attID, rendered);
+        if (ident && !sig.aborted) {
+          void writeDiskEnvelope(ident.key, { revision: ident.revision, stamp: ident.stamp, url: rendered });
+        }
+        return rendered;
+      })().catch(() => null).finally(() => {
+        if (activeJobs.get(jobKey)?.controller === controller) activeJobs.delete(jobKey);
+      });
+      job = { controller, subscribers, promise };
+      activeJobs.set(jobKey, job);
+    }
+    const currentJob = job;
+    const sub = { signal: callerSignal, priority, onPreview: opts.onPreview };
+    currentJob.subscribers.add(sub);
+    const onCallerAbort = () => {
+      currentJob.subscribers.delete(sub);
+      if (!currentJob.subscribers.size) {
+        currentJob.controller.abort();
+        activeJobs.delete(jobKey);
+      }
+    };
+    callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+    return currentJob.promise.then((res) => callerSignal.aborted ? null : res).finally(() => {
+      callerSignal.removeEventListener("abort", onCallerAbort);
+      currentJob.subscribers.delete(sub);
     });
-    inflightJobs.set(attID, job);
-    return job;
   }
 
   // src/domains/visual-notes/gallery-card-renderer.ts
@@ -8998,11 +9762,17 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const { doc, card } = opts;
     const el = galEl(doc, "div");
     el.className = "zbf-gal-card";
+    el.tabIndex = 0;
+    el.dataset.itemId = String(card.itemID);
     if (opts.selected) el.setAttribute("data-selected", "true");
     if (opts.draggable) {
       el.draggable = true;
       el.addEventListener("dragstart", (ev) => {
+        el.setAttribute("data-dragging", "true");
         ev.dataTransfer?.setData("text/zbf-item-id", String(card.itemID));
+      });
+      el.addEventListener("dragend", () => {
+        el.removeAttribute("data-dragging");
       });
     }
     const cover = galEl(doc, "div");
@@ -9065,7 +9835,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     for (let k = 1; k <= 5; k++) {
       const s = galEl(doc, "span");
       s.className = "zbf-gal-star";
-      s.textContent = "★";
+      s.textContent = "⭐";
       s.addEventListener("mouseenter", () => {
         rateFloat.setAttribute("data-hover", String(k));
         if (currentRating === k) rateFloat.setAttribute("data-clear-hint", "true");
@@ -9143,215 +9913,470 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       }
       el.appendChild(tagsRow);
     }
-    el.addEventListener("click", () => opts.onSelect(card, el));
-    el.addEventListener("dblclick", () => opts.onOpenReader(card.itemID));
+    el.addEventListener("click", (ev) => opts.onSelect(card, el, ev));
+    el.addEventListener("dblclick", (ev) => opts.onOpenReader(card, ev));
+    el.addEventListener("contextmenu", (ev) => {
+      if (!opts.onContextMenu) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      opts.onContextMenu(card, el, ev);
+    });
+    el.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        opts.onOpenReader(card, ev);
+        return;
+      }
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(ev.key)) {
+        ev.preventDefault();
+        opts.onNavigateKey?.(card, ev.key, ev);
+      }
+    });
     return el;
   }
 
-  // src/domains/visual-notes/gallery-viewport-renderer.ts
-  function hydrateLazyPdfCovers(viewport, doc) {
-    const targets = [...viewport.querySelectorAll(".zbf-gal-cover[data-pdf-att-id]")];
-    if (!targets.length) return () => {
+  // src/domains/visual-notes/gallery-pane-adapter.ts
+  function sameGallerySourceSnapshot(a, b) {
+    if (!a || a.context !== b.context || a.ids.length !== b.ids.length) return false;
+    for (let i = 0; i < a.ids.length; i++) {
+      if (a.ids[i] !== b.ids[i]) return false;
+    }
+    return true;
+  }
+  function getGallerySourceSnapshot(win) {
+    const pane = win?.ZoteroPane;
+    const view = pane?.itemsView;
+    const colRow = pane?.getCollectionTreeRow?.();
+    const searchText = typeof pane?.getSearchFilterBoxValue === "function" ? pane.getSearchFilterBoxValue() : "";
+    const context = `${colRow?.id ?? colRow?.type ?? "root"}|${view?.sortColumnId ?? ""}|${view?.sortDirection ?? ""}|${searchText ?? ""}`;
+    const ids = [];
+    const rowCount = Math.min(Number(view?.rowCount || 0), 2e4);
+    for (let i = 0; i < rowCount; i++) {
+      const ref = view?.getRow?.(i)?.ref;
+      const id = Number(ref?.id || 0);
+      if (id > 0) ids.push(id);
+    }
+    return { context, ids };
+  }
+  function wrapObjectMethods(target, names, afterCall) {
+    if (!target || typeof target !== "object") return () => {
     };
-    let disposed = false;
-    const loadForCover = (coverEl) => {
-      if (disposed || coverEl.getAttribute("data-cover-hydrated") === "1") return;
-      coverEl.setAttribute("data-cover-hydrated", "1");
-      const attID = Number(coverEl.getAttribute("data-pdf-att-id") || 0);
-      if (!attID || coverEl.querySelector(".zbf-gal-cover-img")) return;
-      void loadPdfCoverDataUrl(attID, doc).then((dataUrl) => {
-        if (disposed || !dataUrl || !coverEl.isConnected) return;
-        const rateEl = coverEl.querySelector(".zbf-gal-rate-float");
-        coverEl.textContent = "";
-        const img = galEl(doc, "img");
-        img.className = "zbf-gal-cover-img";
-        img.src = dataUrl;
-        coverEl.appendChild(img);
-        if (rateEl) coverEl.appendChild(rateEl);
-        img.setAttribute("data-loaded", "true");
-      });
+    const restores = [];
+    for (const name of names) {
+      const orig = target[name];
+      if (typeof orig !== "function") continue;
+      const wrapped = function(...args) {
+        const res = orig.apply(this, args);
+        if (res && typeof res.then === "function") {
+          void res.then(() => afterCall(), () => {
+          });
+        } else {
+          afterCall();
+        }
+        return res;
+      };
+      try {
+        target[name] = wrapped;
+        restores.push(() => {
+          if (target[name] === wrapped) target[name] = orig;
+        });
+      } catch {
+      }
+    }
+    return () => {
+      for (const fn of restores.reverse()) fn();
     };
-    const ObserverCtor = doc.defaultView?.IntersectionObserver || globalThis.IntersectionObserver;
-    if (typeof ObserverCtor === "function") {
-      const io = new ObserverCtor((entries) => {
-        for (const entry of entries) {
-          if (entry.isIntersecting) {
-            io.unobserve(entry.target);
-            loadForCover(entry.target);
+  }
+  function createZoteroPaneGalleryAdapter(win) {
+    let active = true;
+    let boundItemsView = null;
+    let boundCollectionsView = null;
+    let boundProvider = null;
+    let snapshot;
+    let cleanups = [];
+    let debounceTimer = null;
+    const refreshListeners = /* @__PURE__ */ new Set();
+    const selectionListeners = /* @__PURE__ */ new Set();
+    const emit = (set) => {
+      for (const fn of [...set]) {
+        if (!active || !set.has(fn)) continue;
+        try {
+          fn();
+        } catch {
+        }
+      }
+    };
+    const scheduleSourceCheck = () => {
+      if (!active) return;
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (!active) return;
+        const next = getGallerySourceSnapshot(win);
+        if (sameGallerySourceSnapshot(snapshot, next)) return;
+        snapshot = next;
+        rebind();
+        emit(refreshListeners);
+      }, 32);
+    };
+    const detach = () => {
+      for (const fn of cleanups) fn();
+      cleanups = [];
+      boundItemsView = null;
+      boundCollectionsView = null;
+      boundProvider = null;
+    };
+    const rebind = () => {
+      if (!active) return;
+      const pane = win?.ZoteroPane;
+      const nextItems = pane?.itemsView;
+      const nextCols = pane?.collectionsView;
+      const nextProv = nextItems?.rowProvider;
+      if (nextItems === boundItemsView && nextCols === boundCollectionsView && nextProv === boundProvider) return;
+      detach();
+      boundItemsView = nextItems;
+      boundCollectionsView = nextCols;
+      boundProvider = nextProv;
+      if (snapshot === void 0) snapshot = getGallerySourceSnapshot(win);
+      if (nextItems) {
+        cleanups.push(wrapObjectMethods(nextItems, [
+          "refresh",
+          "sort",
+          "setFilter",
+          "refreshAndMaintainSelection",
+          "changeCollectionTreeRow",
+          "changeCollectionTreeRows",
+          "notify"
+        ], scheduleSourceCheck));
+        const onSel = () => {
+          if (active) emit(selectionListeners);
+        };
+        if (typeof nextItems.onSelect?.addListener === "function") {
+          nextItems.onSelect.addListener(onSel);
+          cleanups.push(() => nextItems.onSelect?.removeListener?.(onSel));
+        }
+        const treeDom = win.document?.getElementById("zotero-items-tree");
+        if (treeDom) {
+          treeDom.addEventListener("select", onSel);
+          cleanups.push(() => treeDom.removeEventListener("select", onSel));
+        }
+      }
+      if (nextCols) {
+        const onColSel = () => {
+          if (active) {
+            rebind();
+            scheduleSourceCheck();
+          }
+        };
+        if (typeof nextCols.onSelect?.addListener === "function") {
+          nextCols.onSelect.addListener(onColSel);
+          cleanups.push(() => nextCols.onSelect?.removeListener?.(onColSel));
+        }
+        const colDom = win.document?.getElementById("zotero-collections-tree");
+        if (colDom) {
+          colDom.addEventListener("click", onColSel);
+          colDom.addEventListener("keyup", onColSel);
+          cleanups.push(() => {
+            colDom.removeEventListener("click", onColSel);
+            colDom.removeEventListener("keyup", onColSel);
+          });
+        }
+      }
+    };
+    rebind();
+    return {
+      rebind,
+      destroy() {
+        if (!active) return;
+        active = false;
+        if (debounceTimer !== null) {
+          clearTimeout(debounceTimer);
+          debounceTimer = null;
+        }
+        detach();
+        refreshListeners.clear();
+        selectionListeners.clear();
+      },
+      getSelectedIDs() {
+        const sel = win?.ZoteroPane?.getSelectedItems?.() || [];
+        return sel.map((it) => Number(it?.id || 0)).filter((n) => n > 0);
+      },
+      onRefresh(fn) {
+        if (!active) return () => {
+        };
+        refreshListeners.add(fn);
+        return () => refreshListeners.delete(fn);
+      },
+      onSelection(fn) {
+        if (!active) return () => {
+        };
+        selectionListeners.add(fn);
+        return () => selectionListeners.delete(fn);
+      }
+    };
+  }
+  function createGalleryVisibilityGuard(win, itemsPane, galleryPanel, onChildListChanged) {
+    const saved = /* @__PURE__ */ new Map();
+    let active = true;
+    let enabled = false;
+    const collectNativeNodes = () => {
+      const out = /* @__PURE__ */ new Set();
+      for (const child of Array.from(itemsPane.children)) {
+        if (child !== galleryPanel && !child.contains(galleryPanel)) {
+          out.add(child);
+        }
+      }
+      for (const sel of ["#zotero-items-tree", "#item-tree-main-default", "#item-tree-main", '[id^="item-tree-main-"]', "#zotero-items-pane .virtualized-table"]) {
+        itemsPane.querySelectorAll(sel).forEach((n) => {
+          if (n !== galleryPanel && !galleryPanel.contains(n) && !n.contains(galleryPanel)) out.add(n);
+        });
+      }
+      return [...out];
+    };
+    const restoreNode = (node) => {
+      const st = saved.get(node);
+      if (!st) return;
+      saved.delete(node);
+      if (st.visibility[0]) node.style.setProperty("visibility", st.visibility[0], st.visibility[1]);
+      else node.style.removeProperty("visibility");
+      if (st.inert === null) node.removeAttribute("inert");
+      else node.setAttribute("inert", st.inert);
+      if (st.ariaHidden === null) node.removeAttribute("aria-hidden");
+      else node.setAttribute("aria-hidden", st.ariaHidden);
+    };
+    const restoreAll = () => {
+      for (const n of [...saved.keys()]) restoreNode(n);
+    };
+    const refresh = () => {
+      if (!active) return;
+      const wantDisplay = enabled ? "flex" : "none";
+      if (galleryPanel.style.getPropertyValue("display") !== wantDisplay || galleryPanel.style.getPropertyPriority("display") !== "important") {
+        galleryPanel.style.setProperty("display", wantDisplay, "important");
+      }
+      if (!enabled) {
+        itemsPane.removeAttribute("data-zbf-gallery");
+        restoreAll();
+        return;
+      }
+      itemsPane.setAttribute("data-zbf-gallery", "true");
+      const nodes = new Set(collectNativeNodes());
+      for (const prev of [...saved.keys()]) {
+        if (!nodes.has(prev)) restoreNode(prev);
+      }
+      for (const node of nodes) {
+        if (!saved.has(node)) {
+          saved.set(node, {
+            visibility: [node.style.getPropertyValue("visibility"), node.style.getPropertyPriority("visibility")],
+            inert: node.getAttribute("inert"),
+            ariaHidden: node.getAttribute("aria-hidden")
+          });
+        }
+        if (node.style.getPropertyValue("visibility") !== "hidden") node.style.setProperty("visibility", "hidden", "important");
+        if (node.getAttribute("inert") === null) node.setAttribute("inert", "");
+        if (node.getAttribute("aria-hidden") !== "true") node.setAttribute("aria-hidden", "true");
+      }
+    };
+    const MutationObs = win?.MutationObserver || globalThis.MutationObserver;
+    const observer = MutationObs ? new MutationObs((records) => {
+      if (!active) return;
+      const external = records.filter((r) => r.target !== galleryPanel && !galleryPanel.contains(r.target));
+      if (!external.length) return;
+      if (enabled) refresh();
+      if (external.some((r) => r.type === "childList")) onChildListChanged?.();
+    }) : null;
+    observer?.observe(itemsPane, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "id"] });
+    return {
+      setEnabled(next) {
+        if (!active) return;
+        enabled = next;
+        refresh();
+        if (!next) {
+          const tree = win?.ZoteroPane?.itemsView?.tree;
+          try {
+            tree?.invalidate?.();
+            tree?.render?.();
+          } catch {
           }
         }
-      }, { root: viewport, rootMargin: "240px" });
-      for (const t of targets) io.observe(t);
-      return () => {
-        disposed = true;
-        io.disconnect();
-      };
-    }
-    for (const t of targets.slice(0, 24)) loadForCover(t);
-    return () => {
-      disposed = true;
+      },
+      refresh,
+      destroy() {
+        if (!active) return;
+        active = false;
+        enabled = false;
+        observer?.disconnect();
+        itemsPane.removeAttribute("data-zbf-gallery");
+        restoreAll();
+      }
     };
   }
-  function renderGalleryViewport(opts) {
-    const { doc, zh, sorted } = opts;
-    const viewport = galEl(doc, "div");
-    viewport.className = "zbf-gal-viewport";
-    const cardByID = new Map(sorted.map((c) => [c.itemID, c]));
-    if (opts.mode === "gallery") {
-      if (!sorted.length) {
-        const empty = galEl(doc, "div");
-        empty.className = "zbf-gal-empty";
-        empty.appendChild(createGallerySvgIcon(doc, "search", 28));
-        const msg = galEl(doc, "p");
-        msg.textContent = zh ? "当前筛选条件下暂无匹配的文献" : "No items match the current filter";
-        empty.appendChild(msg);
-        if (opts.onClearQuery) {
-          const reset = galEl(doc, "button");
-          reset.type = "button";
-          reset.className = "zbf-gal-more";
-          reset.textContent = zh ? "清空搜索条件" : "Clear filter";
-          reset.addEventListener("click", opts.onClearQuery);
-          empty.appendChild(reset);
-        }
-        viewport.appendChild(empty);
-        return viewport;
+  async function selectZoteroGalleryItems(win, ids) {
+    const view = win?.ZoteroPane?.itemsView;
+    if (!view) return;
+    try {
+      if (!ids.length) {
+        await view.selection?.clearSelection?.();
+        return;
       }
-      const grid = galEl(doc, "div");
-      grid.className = "zbf-gal-grid";
-      for (const c of sorted.slice(0, opts.renderLimit)) grid.appendChild(opts.makeCard(c, false));
-      viewport.appendChild(grid);
-      if (sorted.length > opts.renderLimit) {
-        const more = galEl(doc, "button");
-        more.type = "button";
-        more.className = "zbf-gal-more";
-        more.textContent = zh ? `加载更多 (${opts.renderLimit} / ${sorted.length})` : `Load more (${opts.renderLimit} / ${sorted.length})`;
-        more.addEventListener("click", opts.onLoadMore);
-        viewport.appendChild(more);
+      if (typeof view.selectItems === "function") {
+        await view.selectItems([...ids], true, true);
+      } else if (typeof view.selectItem === "function") {
+        await view.selectItem(ids[0]);
       }
-      return viewport;
+    } catch {
     }
-    const board = galEl(doc, "div");
-    board.className = "zbf-gal-board";
-    const cols = buildKanbanColumns(sorted, opts.rawItems, opts.groupBy, zh, opts.excludedTag);
-    for (const col of cols) {
-      const colEl = galEl(doc, "div");
-      colEl.className = "zbf-gal-col";
-      colEl.style.setProperty("--zbf-col-surface", col.surfaceTint);
-      const head = galEl(doc, "div");
-      head.className = "zbf-gal-col-head";
-      const pill = galEl(doc, "span");
-      pill.className = "zbf-gal-col-pill";
-      pill.style.background = `light-dark(${col.pillBg}, rgba(255,255,255,0.1))`;
-      pill.style.color = `light-dark(${col.pillFg}, #f1f5f9)`;
-      pill.textContent = col.title;
-      const count2 = galEl(doc, "span");
-      count2.className = "zbf-gal-col-count";
-      count2.textContent = String(col.cards.length);
-      head.append(pill, count2);
-      const body = galEl(doc, "div");
-      body.className = "zbf-gal-col-body";
-      let shown = 0;
-      const more = galEl(doc, "button");
-      more.type = "button";
-      more.className = "zbf-gal-more";
-      more.textContent = zh ? "加载更多" : "Load more";
-      const appendBatch = (fromClick = false) => {
-        more.remove();
-        for (const card of col.cards.slice(shown, shown + 80)) body.appendChild(opts.makeCard(card, col.droppable));
-        shown += 80;
-        if (shown < col.cards.length) body.appendChild(more);
-        if (fromClick) opts.onBatchAppended?.(body);
-      };
-      more.addEventListener("click", () => appendBatch(true));
-      appendBatch(false);
-      if (col.droppable) {
-        colEl.addEventListener("dragover", (ev) => {
-          ev.preventDefault();
-          colEl.setAttribute("data-drop-over", "true");
-        });
-        colEl.addEventListener("dragleave", (ev) => {
-          if (ev.relatedTarget && colEl.contains(ev.relatedTarget)) return;
-          colEl.removeAttribute("data-drop-over");
-        });
-        colEl.addEventListener("drop", (ev) => {
-          ev.preventDefault();
-          colEl.removeAttribute("data-drop-over");
-          const draggedID = Number(ev.dataTransfer?.getData("text/zbf-item-id") || 0);
-          const card = cardByID.get(draggedID);
-          if (!card) return;
-          void applyKanbanColumnDrop(card, opts.groupBy, col.key, {
-            excludedStatusTag: opts.excludedTag,
-            ratingStorage: opts.ratingStorage,
-            color: col.color
-          }).then((changed) => {
-            if (changed) opts.onDropMutated();
-          }).catch(() => {
-          });
-        });
-      }
-      colEl.append(head, body);
-      board.appendChild(colEl);
-    }
-    viewport.appendChild(board);
-    return viewport;
   }
-  function renderGalleryInlineFeed(opts) {
-    const { doc, win, zh, rawItems, query, kernel, dataSource } = opts;
-    ensureCollectionHubStyles(doc);
-    const viewport = galEl(doc, "div");
-    viewport.className = "zbf-gal-viewport";
-    const feed = galEl(doc, "div");
-    feed.className = "zbf-gal-feed-grid";
-    const terms = extractQueryTerms(query);
-    let count2 = 0;
-    if (opts.tab === "notes") {
-      const notesData = collectHubNotes(rawItems, (it) => readItemRemarkWithFallback(it, dataSource), query);
-      count2 = notesData.totalBriefNotes + notesData.totalChildNotes;
-      renderHubNotesList({
-        doc,
-        win,
-        scroll: feed,
-        selection: opts.selection,
-        entries: notesData.entries.filter((entry) => entry.briefNote || entry.childNotes.length),
-        syncExtra: Boolean(kernel.prefs.get("workspace.syncRemarkToExtra")),
-        dataSource,
-        terms,
-        zh,
-        onRemarkMutated: opts.onMutated,
-        onStatus: () => {
-        },
-        onOpenItem: (itemID) => {
-          kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
-        }
-      });
-    } else {
-      const annData = collectHubAnnotations(
-        rawItems,
-        kernel.prefs.get("inspector.annotations.colorLabels"),
-        {
-          query,
-          ignoreFigureTable: Boolean(kernel.prefs.get("visualNotes.collectionHub.ignoreFigureTable"))
-        }
-      );
-      count2 = annData.annotations.length;
-      renderHubAnnotationsList({
-        doc,
-        scroll: feed,
-        selection: opts.selection,
-        annotations: annData.annotations,
-        colorHexByLabel: annData.colorHexByLabel,
-        preferComment: Boolean(kernel.prefs.get("visualNotes.collectionHub.preferCommentOverQuote")),
-        terms,
-        zh,
-        onStatus: () => {
-        },
-        onOpenItem: (itemID) => {
-          kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
-        }
-      });
+  async function openZoteroItemContextMenu(win, event) {
+    const pane = win?.ZoteroPane;
+    if (!pane) return;
+    try {
+      if (typeof pane.onItemsContextMenuOpen === "function") {
+        await pane.onItemsContextMenuOpen.call(pane, event);
+        return;
+      }
+      if (typeof pane.buildItemContextMenu === "function") {
+        await pane.buildItemContextMenu.call(pane);
+        const menu = win.document?.getElementById("zotero-itemmenu");
+        menu?.openPopupAtScreen?.(event.screenX + 1, event.screenY + 1, true);
+      }
+    } catch {
     }
-    viewport.appendChild(feed);
-    return { viewport, count: count2 };
+  }
+  async function openZoteroGalleryItem(win, item, event, fallbackOpenItem) {
+    const pane = win?.ZoteroPane;
+    if (!item) return;
+    try {
+      if (item.isNote?.() && typeof pane?.openNoteWindow === "function") {
+        await pane.openNoteWindow(item.id);
+        return;
+      }
+      if (item.isAnnotation?.() && item.parentID && typeof pane?.viewAttachment === "function") {
+        await pane.viewAttachment(item.parentID, event, false, { location: { annotationID: item.key } });
+        return;
+      }
+      if (typeof pane?.viewItems === "function") {
+        await pane.viewItems([item], event);
+        return;
+      }
+    } catch {
+    }
+    if (item.id) fallbackOpenItem?.(Number(item.id));
+  }
+
+  // src/domains/visual-notes/gallery-cover-hydrator.ts
+  function applyCoverUrl(coverEl, doc, url) {
+    if (!coverEl.isConnected) return;
+    const existing = coverEl.querySelector(".zbf-gal-cover-img");
+    if (existing) {
+      if (existing.src !== url) existing.src = url;
+      return;
+    }
+    coverEl.querySelector(".zbf-gal-cover-abstract, .zbf-gal-cover-fallback")?.remove();
+    const img = galEl(doc, "img");
+    img.className = "zbf-gal-cover-img";
+    img.src = url;
+    img.setAttribute("data-loaded", "true");
+    coverEl.insertBefore(img, coverEl.firstChild);
+  }
+  function createViewportCoverHydrator(viewport, doc) {
+    const tasks = /* @__PURE__ */ new Map();
+    const tracked = /* @__PURE__ */ new Set();
+    let disposed = false;
+    let observer = null;
+    const cancelCard = (card) => {
+      const ctrl = tasks.get(card);
+      if (ctrl) {
+        tasks.delete(card);
+        ctrl.abort();
+      }
+    };
+    const startCard = (card) => {
+      if (disposed || tasks.has(card)) return;
+      const coverEl = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
+      if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return;
+      const attID = Number(coverEl.getAttribute("data-pdf-att-id") || 0);
+      if (!attID) return;
+      const mem = getCachedPdfCoverSync(attID);
+      if (mem) {
+        applyCoverUrl(coverEl, doc, mem);
+        return;
+      }
+      const ctrl = makeAbortController(doc.defaultView);
+      tasks.set(card, ctrl);
+      const computePriority = () => {
+        const vr = viewport.getBoundingClientRect?.();
+        const cr = card.getBoundingClientRect?.();
+        if (!vr || !cr) return 10;
+        const dist = Math.abs((cr.top + cr.bottom) / 2 - (vr.top + vr.bottom) / 2);
+        return Math.max(1, Math.round(2e3 - dist));
+      };
+      void requestGalleryPdfCover({
+        attID,
+        doc,
+        signal: ctrl.signal,
+        priority: computePriority,
+        onPreview: (previewUrl) => {
+          if (!disposed && !ctrl.signal.aborted) applyCoverUrl(coverEl, doc, previewUrl);
+        }
+      }).then((url) => {
+        if (tasks.get(card) === ctrl) tasks.delete(card);
+        if (!disposed && !ctrl.signal.aborted && url) applyCoverUrl(coverEl, doc, url);
+      }).catch(() => {
+        if (tasks.get(card) === ctrl) tasks.delete(card);
+      });
+    };
+    const ensureObserver = () => {
+      if (observer || !viewport.isConnected) return observer;
+      const IO = doc.defaultView?.IntersectionObserver || globalThis.IntersectionObserver;
+      if (!IO) return null;
+      const obs = new IO((entries) => {
+        if (disposed) return;
+        for (const entry of entries) {
+          const card = entry.target;
+          if (entry.isIntersecting) startCard(card);
+          else if (!card.contains(doc.activeElement)) cancelCard(card);
+        }
+      }, { root: viewport, rootMargin: "240px 0px" });
+      observer = obs;
+      for (const c of tracked) {
+        if (c.isConnected) obs.observe(c);
+      }
+      return obs;
+    };
+    const onScroll = () => notifyGalleryCoverScroll();
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    viewport.addEventListener("wheel", onScroll, { passive: true });
+    return {
+      observeCard(card) {
+        if (disposed) return;
+        tracked.add(card);
+        const obs = ensureObserver();
+        if (obs && card.isConnected) obs.observe(card);
+        if (viewport.isConnected && card.isConnected) startCard(card);
+      },
+      activate() {
+        if (disposed) return;
+        ensureObserver();
+        for (const c of tracked) {
+          if (c.isConnected) startCard(c);
+        }
+      },
+      unobserveCard(card) {
+        tracked.delete(card);
+        observer?.unobserve(card);
+        cancelCard(card);
+      },
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        tracked.clear();
+        viewport.removeEventListener("scroll", onScroll);
+        viewport.removeEventListener("wheel", onScroll);
+        observer?.disconnect();
+        for (const ctrl of tasks.values()) ctrl.abort();
+        tasks.clear();
+      }
+    };
   }
   function syncVisualNotesToolbarGroup(opts) {
     const { doc, zh, galEnabled, hubEnabled } = opts;
@@ -9397,8 +10422,580 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     return { tbGroup, btnGallery, btnHub };
   }
 
+  // src/domains/visual-notes/gallery-height-index.ts
+  var GalleryHeightIndex = class {
+    length;
+    gap;
+    heights;
+    tree;
+    constructor(length, estimate, gap) {
+      this.length = Math.max(0, length);
+      this.gap = gap;
+      this.heights = new Float64Array(this.length).fill(estimate);
+      this.tree = new Float64Array(this.length + 1);
+      for (let i = 1; i <= this.length; i++) {
+        this.tree[i] += estimate + gap;
+        const parent = i + (i & -i);
+        if (parent <= this.length) this.tree[parent] += this.tree[i];
+      }
+    }
+    height(index) {
+      return this.heights[index] ?? 0;
+    }
+    offset(end) {
+      let sum = 0;
+      for (let i = Math.min(this.length, Math.max(0, end)); i > 0; i -= i & -i) {
+        sum += this.tree[i];
+      }
+      return sum;
+    }
+    get total() {
+      return this.length ? Math.max(0, this.offset(this.length) - this.gap) : 0;
+    }
+    measure(index, height) {
+      if (index < 0 || index >= this.length || !Number.isFinite(height) || height <= 0) return false;
+      const delta = height - this.heights[index];
+      if (Math.abs(delta) < 0.5) return false;
+      this.heights[index] = height;
+      for (let i = index + 1; i <= this.length; i += i & -i) {
+        this.tree[i] += delta;
+      }
+      return true;
+    }
+    at(offset) {
+      if (!this.length) return 0;
+      let index = 0;
+      let sum = 0;
+      for (let bit = 2 ** Math.floor(Math.log2(this.length || 1)); bit >= 1; bit = Math.floor(bit / 2)) {
+        const next = index + bit;
+        if (next <= this.length && sum + this.tree[next] <= offset) {
+          index = next;
+          sum += this.tree[next];
+        }
+      }
+      return Math.min(index, Math.max(0, this.length - 1));
+    }
+    range(top, bottom) {
+      if (!this.length) return [0, 0];
+      const start = this.at(Math.max(0, top));
+      const end = Math.min(this.length, this.at(Math.max(0, bottom)) + 1);
+      return [start, Math.max(start, end)];
+    }
+  };
+  function moveGalleryKeys(order, moved, before) {
+    const set = new Set(moved);
+    const rest = order.filter((k) => !set.has(k));
+    const idx = before === void 0 ? rest.length : rest.indexOf(before);
+    const insertAt = idx < 0 ? rest.length : idx;
+    return [...rest.slice(0, insertAt), ...moved, ...rest.slice(insertAt)];
+  }
+  function computeMasonryColumnCount(viewportWidth, cardMinWidth, gap = 12) {
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) return 1;
+    const minW = Math.max(120, cardMinWidth);
+    return Math.max(1, Math.floor((viewportWidth + gap) / (minW + gap)));
+  }
+
+  // src/domains/visual-notes/gallery-virtual-layout.ts
+  function createGalleryVirtualLayout(options) {
+    const { doc, scroll, content, board, gap, estimateHeight } = options;
+    const win = doc.defaultView;
+    const overscan = options.overscan ?? 360;
+    const measured = options.measurements ?? /* @__PURE__ */ new Map();
+    const entries = /* @__PURE__ */ new Map();
+    const mounted = /* @__PURE__ */ new Map();
+    let byID = /* @__PURE__ */ new Map();
+    let columns = [];
+    let order = [];
+    let orderIDs = [];
+    let active = true;
+    let dragging = false;
+    let rafId = 0;
+    let lastWidth = -1;
+    let forcedToken;
+    const makeSpacer = (px) => {
+      const s = galEl(doc, "div");
+      s.className = "zbf-gal-virtual-spacer";
+      s.setAttribute("aria-hidden", "true");
+      s.style.cssText = `flex:none;pointer-events:none;height:${Math.max(0, Math.round(px))}px;`;
+      return s;
+    };
+    const clearSpacers = (parent) => {
+      for (const ch of Array.from(parent.children)) {
+        if (ch.classList.contains("zbf-gal-virtual-spacer")) ch.remove();
+      }
+    };
+    const buildColumn = (spec, colIndex) => {
+      const heights = new GalleryHeightIndex(spec.items.length, estimateHeight, gap);
+      const col = {
+        value: spec.value,
+        colIndex,
+        createShell: spec.createShell,
+        heights,
+        items: [],
+        headingHeight: board ? 44 : 0
+      };
+      col.items = spec.items.map((it, row) => {
+        const token = `${board ? spec.value : colIndex}::${it.key}`;
+        const entry = { id: it.id, key: it.key, data: it.data, token, colIndex, row, position: 0 };
+        entries.set(token, entry);
+        const m = measured.get(token);
+        if (m) heights.measure(row, m);
+        return entry;
+      });
+      return col;
+    };
+    const rebuildOrder = () => {
+      if (board) {
+        order = columns.flatMap((c) => c.items);
+      } else {
+        order = [];
+        const maxRows = Math.max(0, ...columns.map((c) => c.items.length));
+        for (let r = 0; r < maxRows; r++) {
+          for (const c of columns) {
+            if (c.items[r]) order.push(c.items[r]);
+          }
+        }
+      }
+      orderIDs = order.map((e) => e.id);
+      byID = /* @__PURE__ */ new Map();
+      order.forEach((e, idx) => {
+        e.position = idx;
+        const arr = byID.get(e.id) || [];
+        arr.push(e);
+        byID.set(e.id, arr);
+      });
+    };
+    const forgetCard = (token, card) => {
+      resizeObs?.unobserve(card);
+      options.onCardUnmounted?.(card);
+      card.remove();
+      mounted.delete(token);
+    };
+    const ResizeObsCtor = win?.ResizeObserver || globalThis.ResizeObserver;
+    const resizeObs = ResizeObsCtor ? new ResizeObsCtor((records) => {
+      if (!active || dragging) return;
+      let dirty = false;
+      for (const rec of records) {
+        if (rec.target === scroll) {
+          schedule();
+          continue;
+        }
+        const card = rec.target;
+        const entry = entries.get(card.dataset?.virtualKey || "");
+        if (!entry || !card.isConnected) continue;
+        const h = rec.borderBoxSize?.[0]?.blockSize ?? card.offsetHeight;
+        if (h > 0 && columns[entry.colIndex]?.heights.measure(entry.row, h)) {
+          measured.set(entry.token, h);
+          dirty = true;
+        }
+      }
+      if (dirty) schedule();
+    }) : null;
+    const schedule = () => {
+      if (!active || rafId) return;
+      if (typeof win?.requestAnimationFrame === "function") {
+        rafId = win.requestAnimationFrame(() => {
+          rafId = 0;
+          refresh();
+        });
+      } else {
+        refresh();
+      }
+    };
+    const rebuildMasonryColumns = (colCount) => {
+      for (const [tok, card] of [...mounted.entries()]) forgetCard(tok, card);
+      entries.clear();
+      content.replaceChildren();
+      const src = options.items || [];
+      const specs = Array.from({ length: colCount }, (_, idx) => ({
+        value: String(idx),
+        items: src.filter((_2, i) => i % colCount === idx),
+        createShell: () => {
+          const colNode = galEl(doc, "div");
+          colNode.className = "zbf-gal-masonry-col";
+          return { root: colNode, list: colNode, headingHeight: 0 };
+        }
+      }));
+      columns = specs.map(buildColumn);
+      rebuildOrder();
+      content.style.gridTemplateColumns = `repeat(${colCount}, minmax(0, 1fr))`;
+    };
+    if (board) {
+      columns = (options.columns || []).map(buildColumn);
+      rebuildOrder();
+    } else {
+      const initialW = Math.max(260, (scroll.clientWidth || 960) - 24);
+      lastWidth = initialW;
+      rebuildMasonryColumns(computeMasonryColumnCount(initialW, options.cardMinWidth, gap));
+    }
+    function refresh() {
+      if (!active) return;
+      if (!board) {
+        const availW = Math.max(240, (scroll.clientWidth || lastWidth || 960) - 24);
+        if (Math.abs(availW - lastWidth) > 2) {
+          lastWidth = availW;
+          const nextCount = computeMasonryColumnCount(availW, options.cardMinWidth, gap);
+          if (nextCount !== columns.length) rebuildMasonryColumns(nextCount);
+        }
+      }
+      const wanted = /* @__PURE__ */ new Set();
+      for (const [tok, card] of mounted.entries()) {
+        if (card.contains(doc.activeElement) || dragging && card.getAttribute("data-dragging") === "true") {
+          wanted.add(tok);
+        }
+      }
+      if (forcedToken && entries.has(forcedToken)) wanted.add(forcedToken);
+      for (const col of columns) {
+        if (!col.root) {
+          const shell = col.createShell();
+          col.root = shell.root;
+          col.list = shell.list;
+          if (shell.headingHeight !== void 0) col.headingHeight = shell.headingHeight;
+          content.appendChild(col.root);
+          if (board && col.list !== scroll) {
+            col.list.addEventListener("scroll", schedule, { passive: true });
+          }
+        }
+        const vScrollHost = board && col.list && col.list !== col.root ? col.list : scroll;
+        const vTop = vScrollHost.scrollTop || 0;
+        const vHeight = Math.max(420, vScrollHost.clientHeight || scroll.clientHeight || 680);
+        const headOff = vScrollHost === scroll ? col.headingHeight : 0;
+        const [start, end] = col.heights.range(vTop - headOff - overscan, vTop + vHeight - headOff + overscan);
+        for (let r = start; r < end; r++) {
+          if (col.items[r]) wanted.add(col.items[r].token);
+        }
+      }
+      for (const [tok, card] of [...mounted.entries()]) {
+        if (!wanted.has(tok)) forgetCard(tok, card);
+      }
+      for (const col of columns) {
+        const list = col.list;
+        clearSpacers(list);
+        const vis = col.items.filter((e) => wanted.has(e.token));
+        for (const entry of vis) {
+          let card = mounted.get(entry.token);
+          const isNew = !card;
+          if (!card) {
+            card = options.createCard({ id: entry.id, key: entry.key, data: entry.data, columnValue: col.value });
+            card.dataset.virtualKey = entry.token;
+            card.dataset.itemId = String(entry.id);
+            mounted.set(entry.token, card);
+          }
+          const nextSibling = Array.from(list.children).find((node) => {
+            const other = entries.get(node.dataset?.virtualKey || "");
+            return other && other.colIndex === col.colIndex && other.row > entry.row;
+          });
+          if (card.parentElement !== list || card.nextElementSibling !== (nextSibling ?? null)) {
+            list.insertBefore(card, nextSibling ?? null);
+          }
+          if (isNew) {
+            resizeObs?.observe(card, { box: "border-box" });
+            options.onCardMounted?.(card, { id: entry.id, data: entry.data });
+          }
+        }
+        let cursor = 0;
+        for (const child of Array.from(list.children)) {
+          const entry = entries.get(child.dataset?.virtualKey || "");
+          if (!entry || entry.row < cursor) continue;
+          if (entry.row > cursor) {
+            const spH = col.heights.offset(entry.row) - col.heights.offset(cursor) - gap;
+            if (spH > 0.5) list.insertBefore(makeSpacer(spH), child);
+          }
+          cursor = entry.row + 1;
+        }
+        if (cursor < col.items.length) {
+          const tailH = col.heights.offset(col.items.length) - col.heights.offset(cursor) - gap;
+          if (tailH > 0.5) list.appendChild(makeSpacer(tailH));
+        }
+      }
+      options.onVisibleChanged?.([...mounted.values()]);
+    }
+    scroll.style.overflowAnchor = "none";
+    content.style.overflowAnchor = "none";
+    scroll.addEventListener("scroll", schedule, { passive: true });
+    resizeObs?.observe(scroll);
+    refresh();
+    return {
+      get orderIDs() {
+        return orderIDs;
+      },
+      refresh,
+      ensureItemVisible(itemID) {
+        const entry = byID.get(itemID)?.[0];
+        if (!entry) return void 0;
+        const col = columns[entry.colIndex];
+        if (!col) return void 0;
+        forcedToken = entry.token;
+        const vHost = board && col.list && col.list !== col.root ? col.list : scroll;
+        const y = col.heights.offset(entry.row) + (vHost === scroll ? col.headingHeight : 0);
+        const h = col.heights.height(entry.row);
+        if (y < vHost.scrollTop) vHost.scrollTop = Math.max(0, y - 12);
+        else if (y + h > vHost.scrollTop + (vHost.clientHeight || 600)) {
+          vHost.scrollTop = Math.max(0, y + h - (vHost.clientHeight || 600) + 12);
+        }
+        refresh();
+        forcedToken = void 0;
+        return mounted.get(entry.token);
+      },
+      adjacentItemID(currentID, key) {
+        const entry = byID.get(currentID)?.[0];
+        if (!entry) return order[0]?.id;
+        if (key === "Home") return order[0]?.id;
+        if (key === "End") return order[order.length - 1]?.id;
+        const col = columns[entry.colIndex];
+        if (key === "ArrowUp" || key === "ArrowDown") {
+          return col?.items[entry.row + (key === "ArrowUp" ? -1 : 1)]?.id;
+        }
+        const dir = key === "ArrowLeft" ? -1 : 1;
+        const centerY = col.heights.offset(entry.row) + col.heights.height(entry.row) / 2;
+        for (let cIdx = entry.colIndex + dir; cIdx >= 0 && cIdx < columns.length; cIdx += dir) {
+          const targetCol = columns[cIdx];
+          if (!targetCol.items.length) continue;
+          const approx = targetCol.heights.at(centerY);
+          return targetCol.items[approx]?.id;
+        }
+        return void 0;
+      },
+      getMountedCards: () => [...mounted.values()],
+      setDragging(val) {
+        dragging = val;
+        if (!val) schedule();
+      },
+      destroy() {
+        if (!active) return;
+        active = false;
+        if (rafId && typeof win?.cancelAnimationFrame === "function") win.cancelAnimationFrame(rafId);
+        scroll.removeEventListener("scroll", schedule);
+        resizeObs?.disconnect();
+        for (const col of columns) {
+          if (board && col.list && col.list !== scroll) col.list.removeEventListener("scroll", schedule);
+        }
+        for (const [tok, card] of [...mounted.entries()]) forgetCard(tok, card);
+        entries.clear();
+        byID.clear();
+        columns = [];
+        order = [];
+        orderIDs = [];
+      }
+    };
+  }
+
+  // src/domains/visual-notes/gallery-viewport-renderer.ts
+  function renderGalleryViewport(opts) {
+    const { doc, zh, sorted } = opts;
+    const viewport = galEl(doc, "div");
+    viewport.className = "zbf-gal-viewport";
+    const cardByID = new Map(sorted.map((c) => [c.itemID, c]));
+    const gap = opts.density === "compact" ? 8 : 11;
+    const estimateHeight = opts.density === "compact" ? 210 : 254;
+    if (opts.mode === "gallery" && !sorted.length) {
+      const empty = galEl(doc, "div");
+      empty.className = "zbf-gal-empty";
+      empty.appendChild(createGallerySvgIcon(doc, "search", 28));
+      const msg = galEl(doc, "p");
+      msg.textContent = zh ? "当前筛选条件下暂无匹配的文献" : "No items match the current filter";
+      empty.appendChild(msg);
+      if (opts.onClearQuery) {
+        const reset = galEl(doc, "button");
+        reset.type = "button";
+        reset.className = "zbf-gal-more";
+        reset.textContent = zh ? "清空搜索条件" : "Clear filter";
+        reset.addEventListener("click", opts.onClearQuery);
+        empty.appendChild(reset);
+      }
+      viewport.appendChild(empty);
+      return { viewport, layout: null, activate: () => {
+      }, dispose: () => {
+      } };
+    }
+    const hydrator = createViewportCoverHydrator(viewport, doc);
+    if (opts.mode === "gallery") {
+      const grid = galEl(doc, "div");
+      grid.className = "zbf-gal-grid";
+      viewport.appendChild(grid);
+      const layout = createGalleryVirtualLayout({
+        doc,
+        scroll: viewport,
+        content: grid,
+        board: false,
+        cardMinWidth: opts.cardMinWidth,
+        gap,
+        estimateHeight,
+        measurements: opts.measurements,
+        items: sorted.map((c) => ({ id: c.itemID, key: String(c.itemID), data: c })),
+        createCard: ({ data }) => opts.makeCard(data, false),
+        onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
+        onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl)
+      });
+      return { viewport, layout, activate: () => hydrator.activate(), dispose: () => {
+        layout.destroy();
+        hydrator.dispose();
+      } };
+    }
+    const board = galEl(doc, "div");
+    board.className = "zbf-gal-board";
+    viewport.appendChild(board);
+    let cols = buildKanbanColumns(sorted, opts.rawItems, opts.groupBy, zh, opts.excludedTag);
+    if (opts.columnOrder?.length) {
+      const orderIndex = new Map(opts.columnOrder.map((k, idx) => [k, idx]));
+      cols = [...cols].sort((a, b) => (orderIndex.get(a.key) ?? 9999) - (orderIndex.get(b.key) ?? 9999));
+    }
+    const allColKeys = cols.map((c) => c.key);
+    const droppableCols = new Set(cols.filter((c) => c.droppable).map((c) => c.key));
+    let layoutRef = null;
+    const colSpecs = cols.map((col) => ({
+      value: col.key,
+      items: col.cards.map((c) => ({ id: c.itemID, key: String(c.itemID), data: c })),
+      createShell: () => {
+        const colEl = galEl(doc, "div");
+        colEl.className = "zbf-gal-col";
+        colEl.dataset.colKey = col.key;
+        colEl.style.setProperty("--zbf-col-surface", col.surfaceTint);
+        const head = galEl(doc, "div");
+        head.className = "zbf-gal-col-head";
+        head.draggable = true;
+        head.addEventListener("dragstart", (ev) => {
+          ev.stopPropagation();
+          notifyGalleryCoverScroll(true);
+          layoutRef?.setDragging(true);
+          ev.dataTransfer?.setData("text/zbf-col-key", col.key);
+        });
+        head.addEventListener("dragend", () => {
+          notifyGalleryCoverScroll(false);
+          layoutRef?.setDragging(false);
+        });
+        const pill = galEl(doc, "span");
+        pill.className = "zbf-gal-col-pill";
+        pill.style.background = `light-dark(${col.pillBg}, rgba(255,255,255,0.1))`;
+        pill.style.color = `light-dark(${col.pillFg}, #f1f5f9)`;
+        pill.textContent = col.title;
+        const count2 = galEl(doc, "span");
+        count2.className = "zbf-gal-col-count";
+        count2.textContent = String(col.cards.length);
+        head.append(pill, count2);
+        const body = galEl(doc, "div");
+        body.className = "zbf-gal-col-body";
+        body.addEventListener("scroll", () => notifyGalleryCoverScroll(), { passive: true });
+        colEl.addEventListener("dragover", (ev) => {
+          const types = Array.from(ev.dataTransfer?.types || []);
+          if (types.includes("text/zbf-col-key")) {
+            ev.preventDefault();
+            colEl.setAttribute("data-col-drag-over", "true");
+          } else if (col.droppable && types.includes("text/zbf-item-id")) {
+            ev.preventDefault();
+            colEl.setAttribute("data-drop-over", "true");
+          }
+        });
+        colEl.addEventListener("dragleave", (ev) => {
+          if (ev.relatedTarget && colEl.contains(ev.relatedTarget)) return;
+          colEl.removeAttribute("data-drop-over");
+          colEl.removeAttribute("data-col-drag-over");
+        });
+        colEl.addEventListener("drop", (ev) => {
+          colEl.removeAttribute("data-drop-over");
+          colEl.removeAttribute("data-col-drag-over");
+          const draggedCol = ev.dataTransfer?.getData("text/zbf-col-key");
+          if (draggedCol && draggedCol !== col.key) {
+            ev.preventDefault();
+            opts.onColumnOrderChange?.(moveGalleryKeys(allColKeys, [draggedCol], col.key));
+            return;
+          }
+          if (!col.droppable) return;
+          const draggedID = Number(ev.dataTransfer?.getData("text/zbf-item-id") || 0);
+          if (!draggedID) return;
+          ev.preventDefault();
+          const targetIDs = opts.selectedIDs.has(draggedID) ? [...opts.selectedIDs] : [draggedID];
+          void (async () => {
+            let anyChanged = false;
+            for (const tid of targetIDs) {
+              const card = cardByID.get(tid);
+              if (!card) continue;
+              const ch = await applyKanbanColumnDrop(card, opts.groupBy, col.key, {
+                excludedStatusTag: opts.excludedTag,
+                ratingStorage: opts.ratingStorage,
+                color: col.color,
+                syncZoteroTagColor: opts.syncZoteroTagColor
+              }).catch(() => false);
+              if (ch) anyChanged = true;
+            }
+            if (anyChanged) opts.onDropMutated();
+          })();
+        });
+        colEl.append(head, body);
+        return { root: colEl, list: body, headingHeight: 44 };
+      }
+    }));
+    layoutRef = createGalleryVirtualLayout({
+      doc,
+      scroll: viewport,
+      content: board,
+      board: true,
+      cardMinWidth: opts.cardMinWidth,
+      gap: 10,
+      estimateHeight,
+      measurements: opts.measurements,
+      columns: colSpecs,
+      createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue)),
+      onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
+      onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl)
+    });
+    return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => {
+      layoutRef?.destroy();
+      hydrator.dispose();
+    } };
+  }
+  function renderGalleryInlineFeed(opts) {
+    const { doc, win, zh, rawItems, query, kernel, dataSource } = opts;
+    ensureCollectionHubStyles(doc);
+    const viewport = galEl(doc, "div");
+    viewport.className = "zbf-gal-viewport";
+    const feed = galEl(doc, "div");
+    feed.className = "zbf-gal-feed-grid";
+    const terms = extractQueryTerms(query);
+    let count2 = 0;
+    if (opts.tab === "notes") {
+      const notesData = collectHubNotes(rawItems, (it) => readItemRemarkWithFallback(it, dataSource), query);
+      count2 = notesData.totalBriefNotes + notesData.totalChildNotes;
+      renderHubNotesList({
+        doc,
+        win,
+        scroll: feed,
+        selection: opts.selection,
+        entries: notesData.entries.filter((entry) => entry.briefNote || entry.childNotes.length),
+        syncExtra: Boolean(kernel.prefs.get("workspace.syncRemarkToExtra")),
+        dataSource,
+        terms,
+        zh,
+        onRemarkMutated: opts.onMutated,
+        onStatus: () => {
+        },
+        onOpenItem: (itemID) => kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true })
+      });
+    } else {
+      const annData = collectHubAnnotations(rawItems, kernel.prefs.get("inspector.annotations.colorLabels"), {
+        query,
+        ignoreFigureTable: Boolean(kernel.prefs.get("visualNotes.collectionHub.ignoreFigureTable"))
+      });
+      count2 = annData.annotations.length;
+      renderHubAnnotationsList({
+        doc,
+        scroll: feed,
+        selection: opts.selection,
+        annotations: annData.annotations,
+        colorHexByLabel: annData.colorHexByLabel,
+        preferComment: Boolean(kernel.prefs.get("visualNotes.collectionHub.preferCommentOverQuote")),
+        terms,
+        zh,
+        onStatus: () => {
+        },
+        onOpenItem: (itemID) => kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true })
+      });
+    }
+    viewport.appendChild(feed);
+    return { viewport, count: count2 };
+  }
+
   // src/domains/visual-notes/gallery-view.ts
-  var BATCH_STEP = 120;
   var GalleryBoardController = class {
     states = /* @__PURE__ */ new Map();
     kernel;
@@ -9428,6 +11025,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     attachWindow(win) {
       if (!win?.document || this.states.has(win)) return;
+      const adapter = createZoteroPaneGalleryAdapter(win);
+      const initialSel = adapter.getSelectedIDs();
       const st = {
         win,
         open: false,
@@ -9436,46 +11035,60 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         groupBy: this.defaultGroupBy(),
         sortField: "dateModified",
         query: "",
-        renderLimit: BATCH_STEP,
-        selectedItemID: 0,
+        selectedIDs: new Set(initialSel),
+        anchorItemID: initialSel[0] || 0,
         readingSelection: { itemID: 0 },
+        columnOrders: /* @__PURE__ */ new Map(),
+        measurements: /* @__PURE__ */ new Map(),
         tbGroup: null,
         btnGallery: null,
         btnHub: null,
         panel: null,
-        colChangeTimer: null,
-        coverDisposers: [],
+        layout: null,
+        viewportDispose: null,
+        visibilityGuard: null,
+        paneAdapter: adapter,
         cleanupListeners: []
       };
       this.states.set(win, st);
       this.syncWindow(st);
-      const colTree = win.document.getElementById("zotero-collections-tree");
-      if (colTree) {
-        const onColChange = () => {
-          if (!st.open) return;
-          if (st.colChangeTimer !== null) clearTimeout(st.colChangeTimer);
-          st.colChangeTimer = setTimeout(() => {
-            st.colChangeTimer = null;
-            if (st.open && !st.win.closed) {
-              st.renderLimit = BATCH_STEP;
-              this.renderPanel(st);
-            }
-          }, 55);
-        };
-        colTree.addEventListener("click", onColChange);
-        colTree.addEventListener("keyup", onColChange);
-        st.cleanupListeners.push(() => {
-          if (st.colChangeTimer !== null) {
-            clearTimeout(st.colChangeTimer);
-            st.colChangeTimer = null;
-          }
-          colTree.removeEventListener("click", onColChange);
-          colTree.removeEventListener("keyup", onColChange);
-        });
+      st.cleanupListeners.push(
+        adapter.onRefresh(() => {
+          if (st.open && !st.win.closed) this.renderPanel(st);
+        }),
+        adapter.onSelection(() => {
+          if (!st.open || st.contentTab !== "items") return;
+          const nextIDs = adapter.getSelectedIDs();
+          st.selectedIDs = new Set(nextIDs);
+          if (nextIDs.length) st.anchorItemID = nextIDs[nextIDs.length - 1];
+          this.syncSelectionAttributes(st);
+        })
+      );
+    }
+    syncSelectionAttributes(st) {
+      if (!st.panel) return;
+      st.panel.querySelectorAll(".zbf-gal-card[data-item-id]").forEach((node) => {
+        const el = node;
+        const id = Number(el.dataset.itemId || 0);
+        if (st.selectedIDs.has(id)) el.setAttribute("data-selected", "true");
+        else el.removeAttribute("data-selected");
+      });
+    }
+    applyGallerySelection(st, nextIDs, anchorID, focusCard = false) {
+      st.selectedIDs = new Set(nextIDs);
+      if (anchorID) st.anchorItemID = anchorID;
+      this.syncSelectionAttributes(st);
+      void selectZoteroGalleryItems(st.win, nextIDs);
+      if (focusCard && anchorID) {
+        const cardEl = st.layout?.ensureItemVisible(anchorID);
+        cardEl?.focus?.({ preventScroll: true });
       }
     }
-    disposeCovers(st) {
-      for (const fn of st.coverDisposers.splice(0)) {
+    disposeViewport(st) {
+      st.layout = null;
+      if (st.viewportDispose) {
+        const fn = st.viewportDispose;
+        st.viewportDispose = null;
         try {
           fn();
         } catch {
@@ -9485,8 +11098,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     detachWindow(win) {
       const st = this.states.get(win);
       if (!st) return;
-      this.disposeCovers(st);
+      this.disposeViewport(st);
       this.setGalleryOpen(st, false);
+      st.visibilityGuard?.destroy();
+      st.visibilityGuard = null;
+      st.paneAdapter?.destroy();
+      st.paneAdapter = null;
       for (const fn of st.cleanupListeners) fn();
       st.cleanupListeners.length = 0;
       st.tbGroup?.remove();
@@ -9554,47 +11171,43 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const itemsPane = doc.getElementById("zotero-items-pane");
       if (!itemsPane) return;
       if (!nextOpen) {
-        if (st.colChangeTimer !== null) {
-          clearTimeout(st.colChangeTimer);
-          st.colChangeTimer = null;
-        }
-        this.disposeCovers(st);
-        if (st.panel) st.panel.style.display = "none";
-        itemsPane.removeAttribute("data-zbf-gallery");
-        const tree = st.win.ZoteroPane?.itemsView?.tree;
-        try {
-          tree?.invalidate?.();
-          tree?.render?.();
-        } catch {
-        }
+        this.disposeViewport(st);
+        st.visibilityGuard?.setEnabled(false);
         return;
       }
       if (!st.panel || !st.panel.isConnected) {
         doc.getElementById("zbf-gallery-panel")?.remove();
+        st.visibilityGuard?.destroy();
         const panel = galEl(doc, "div");
         panel.id = "zbf-gallery-panel";
         panel.className = "zbf-gallery-panel";
         itemsPane.prepend(panel);
         st.panel = panel;
+        st.visibilityGuard = createGalleryVisibilityGuard(st.win, itemsPane, panel, () => {
+          st.paneAdapter?.rebind();
+        });
       }
-      itemsPane.setAttribute("data-zbf-gallery", "true");
-      st.panel.style.display = "flex";
+      st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
+      st.visibilityGuard?.setEnabled(true);
       this.renderPanel(st);
     }
     renderPanel(st, keepTopBar = false) {
       const doc = st.win.document;
       const panel = st.panel;
       if (!doc || !panel || !st.open) return;
-      this.disposeCovers(st);
+      const prevScrollTop = panel.querySelector(".zbf-gal-viewport")?.scrollTop || 0;
+      const prevScrollLeft = panel.querySelector(".zbf-gal-viewport")?.scrollLeft || 0;
+      this.disposeViewport(st);
       const zh = this.isZh();
       const density = this.kernel.prefs.get("visualNotes.gallery.cardDensity") === "compact" ? "compact" : "comfortable";
       const showBrief = Boolean(this.kernel.prefs.get("visualNotes.gallery.showBriefNote"));
       const excludedTag = String(this.kernel.prefs.get("wordCite.citationTags.text") || "/Citations");
       const ratingStorage = normalizeRatingStorage(this.kernel.prefs.get("visualNotes.ratingStorage"));
+      const cardWidth = Number(this.kernel.prefs.get("visualNotes.gallery.cardWidth")) || 220;
+      const coverHeight = Number(this.kernel.prefs.get("visualNotes.gallery.coverHeight")) || 0;
       panel.setAttribute("data-density", density);
-      panel.style.setProperty("--zbf-card-width", this.kernel.prefs.get("visualNotes.gallery.cardWidth") + "px");
-      const coverHeight = this.kernel.prefs.get("visualNotes.gallery.coverHeight");
-      panel.style.setProperty("--zbf-cover-height", coverHeight > 0 ? coverHeight + "px" : "auto");
+      panel.style.setProperty("--zbf-card-width", `${cardWidth}px`);
+      panel.style.setProperty("--zbf-cover-height", coverHeight > 0 ? `${coverHeight}px` : "auto");
       panel.style.setProperty("--zbf-cover-aspect", coverHeight > 0 ? "auto" : density === "compact" ? "2.1" : "1.95");
       const { cards: allCards, rawItems } = extractGalleryCards(st.win, {
         zh,
@@ -9605,56 +11218,88 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       });
       let displayCount = 0;
       let bodyViewport;
+      let activateCovers;
       if (st.contentTab === "items") {
         const sorted = filterAndSortGalleryCards(allCards, st.query, st.sortField);
         displayCount = sorted.length;
-        bodyViewport = renderGalleryViewport({
+        const vpRes = renderGalleryViewport({
           doc,
           zh,
           mode: st.mode,
           groupBy: st.groupBy,
+          cardMinWidth: cardWidth,
+          density,
           sorted,
           rawItems,
-          renderLimit: st.renderLimit,
+          selectedIDs: st.selectedIDs,
+          columnOrder: st.columnOrders.get(st.groupBy),
+          measurements: st.measurements,
           excludedTag,
           ratingStorage,
+          syncZoteroTagColor: Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")),
           makeCard: (c, draggable) => renderGalleryCardElement({
             doc,
             card: c,
-            selected: st.selectedItemID === c.itemID,
+            selected: st.selectedIDs.has(c.itemID),
             showBrief,
             ratingStorage,
             draggable,
-            onSelect: (picked, el) => {
-              st.selectedItemID = picked.itemID;
-              st.panel?.querySelectorAll('.zbf-gal-card[data-selected="true"]').forEach((n) => n.removeAttribute("data-selected"));
-              el.setAttribute("data-selected", "true");
-              st.win.ZoteroPane?.itemsView?.selectItem?.(picked.itemID);
+            onSelect: (picked, _el, ev) => {
+              const order = st.layout?.orderIDs || sorted.map((x) => x.itemID);
+              if (ev.shiftKey && st.anchorItemID && order.includes(st.anchorItemID)) {
+                const a = order.indexOf(st.anchorItemID);
+                const b = order.indexOf(picked.itemID);
+                const range = order.slice(Math.min(a, b), Math.max(a, b) + 1);
+                const merged = ev.ctrlKey || ev.metaKey ? [.../* @__PURE__ */ new Set([...st.selectedIDs, ...range])] : range;
+                this.applyGallerySelection(st, merged, st.anchorItemID);
+              } else if (ev.ctrlKey || ev.metaKey) {
+                const next = new Set(st.selectedIDs);
+                if (next.has(picked.itemID)) next.delete(picked.itemID);
+                else next.add(picked.itemID);
+                this.applyGallerySelection(st, [...next], picked.itemID);
+              } else {
+                this.applyGallerySelection(st, [picked.itemID], picked.itemID);
+              }
             },
-            onOpenReader: (itemID) => {
-              this.kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
+            onContextMenu: (picked, _el, ev) => {
+              if (!st.selectedIDs.has(picked.itemID)) {
+                this.applyGallerySelection(st, [picked.itemID], picked.itemID);
+              }
+              void openZoteroItemContextMenu(st.win, ev);
+            },
+            onOpenReader: (picked, ev) => {
+              void openZoteroGalleryItem(st.win, picked.item, ev, (itemID) => {
+                this.kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
+              });
+            },
+            onNavigateKey: (picked, key, ev) => {
+              const nextID = st.layout?.adjacentItemID(picked.itemID, key);
+              if (!nextID) return;
+              const nextSel = ev.shiftKey ? [.../* @__PURE__ */ new Set([...st.selectedIDs, nextID])] : [nextID];
+              this.applyGallerySelection(st, nextSel, ev.shiftKey ? st.anchorItemID : nextID, true);
             },
             onRated: () => {
               this.onMutated();
-              this.renderPanel(st);
+              this.renderPanel(st, true);
             }
           }),
-          onLoadMore: () => {
-            st.renderLimit += BATCH_STEP;
-            this.renderPanel(st);
+          onColumnOrderChange: (nextKeys) => {
+            st.columnOrders.set(st.groupBy, nextKeys);
+            this.renderPanel(st, true);
           },
           onDropMutated: () => {
             this.onMutated();
-            this.renderPanel(st);
-          },
-          onBatchAppended: (laneEl) => {
-            st.coverDisposers.push(hydrateLazyPdfCovers(laneEl, doc));
+            this.renderPanel(st, true);
           },
           onClearQuery: st.query ? () => {
             st.query = "";
             this.renderPanel(st);
           } : void 0
         });
+        bodyViewport = vpRes.viewport;
+        st.layout = vpRes.layout;
+        st.viewportDispose = vpRes.dispose;
+        activateCovers = vpRes.activate;
       } else {
         const res = renderGalleryInlineFeed({
           doc,
@@ -9713,7 +11358,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         }));
         panel.appendChild(bodyViewport);
       }
-      st.coverDisposers.push(hydrateLazyPdfCovers(bodyViewport, doc));
+      if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
+      if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
+      st.layout?.refresh();
+      activateCovers?.();
     }
   };
 
@@ -9786,20 +11434,35 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   // src/domains/visual-notes/library-column-cells.ts
   function stopTreePointer(el) {
     el.addEventListener("mousedown", (ev) => {
-      if (ev.button !== 0) return;
-      ev.stopPropagation();
-      ev.preventDefault();
+      if (ev.button === 0) ev.stopPropagation();
+    });
+    el.addEventListener("mouseup", (ev) => {
+      if (ev.button === 0) ev.stopPropagation();
     });
     el.addEventListener("dblclick", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
     });
   }
+  function bindInstantChipPress(el, handler) {
+    let lastPointerDownAt = 0;
+    el.addEventListener("mousedown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation();
+      lastPointerDownAt = Date.now();
+      handler();
+    });
+    el.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (Date.now() - lastPointerDownAt < 450) return;
+      handler();
+    });
+  }
   function buildReadTimeCell(opts) {
     const { win, doc, item, prog, className, zh, heatColor, callbacks } = opts;
     ensureVisualColumnStyles(doc);
     const cell = vcEl(doc, "span");
-    cell.className = `cell ${className || ""} zbf-read-cell`.trim();
+    cell.className = `cell ${className || ""} clickable zbf-read-cell`.trim();
     if (!item || !prog || !prog.readSeconds && !prog.lastPage) return cell;
     const fmt = formatReadingProgress(prog);
     const durText = formatSubMinuteDuration(prog.readSeconds);
@@ -9842,8 +11505,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     chip.title = `${tipParts.join(" · ")}
 ${zh ? "点击查看页级停留热力柱并直跳 PDF 页码" : "Click for page heatbar & quick PDF jump"}`;
     stopTreePointer(chip);
-    chip.addEventListener("click", (ev) => {
-      ev.stopPropagation();
+    bindInstantChipPress(chip, () => {
       if (!win) return;
       closeStatusPickerPopover(win.document);
       openReadingInsightsPopover({
@@ -9864,7 +11526,7 @@ ${zh ? "点击查看页级停留热力柱并直跳 PDF 页码" : "Click for page
     const { win, doc, item, summary, className, zh, semantics, callbacks } = opts;
     ensureVisualColumnStyles(doc);
     const cell = vcEl(doc, "span");
-    cell.className = `cell ${className || ""} zbf-ann-cell`.trim();
+    cell.className = `cell ${className || ""} clickable zbf-ann-cell`.trim();
     if (!item || !summary || !summary.total) return cell;
     const fit = vcEl(doc, "span");
     fit.className = "zbf-cell-fit";
@@ -9903,8 +11565,7 @@ ${zh ? "点击查看页级停留热力柱并直跳 PDF 页码" : "Click for page
     chip.title = `${zh ? `共 ${summary.total} 条标注：` : `${summary.total} annotations: `}${detail}
 ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click for breakdown, PDF jump & matrix"}`;
     stopTreePointer(chip);
-    chip.addEventListener("click", (ev) => {
-      ev.stopPropagation();
+    bindInstantChipPress(chip, () => {
       if (!win) return;
       closeStatusPickerPopover(win.document);
       const selected = (win.ZoteroPane?.getSelectedItems?.() || []).map((it) => Number(it?.parentItemID || it?.id || 0)).filter((n) => n > 0);
@@ -10218,13 +11879,28 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
   }
   function guardPrimaryTreePointer(el) {
     el.addEventListener("mousedown", (ev) => {
-      if (ev.button !== 0) return;
-      ev.stopPropagation();
-      ev.preventDefault();
+      if (ev.button === 0) ev.stopPropagation();
+    });
+    el.addEventListener("mouseup", (ev) => {
+      if (ev.button === 0) ev.stopPropagation();
     });
     el.addEventListener("dblclick", (ev) => {
       ev.stopPropagation();
       ev.preventDefault();
+    });
+  }
+  function bindInstantCellPress(el, handler) {
+    let lastPointerDownAt = 0;
+    el.addEventListener("mousedown", (ev) => {
+      if (ev.button !== 0) return;
+      ev.stopPropagation();
+      lastPointerDownAt = Date.now();
+      handler(ev);
+    });
+    el.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (Date.now() - lastPointerDownAt < 450) return;
+      handler(ev);
     });
   }
   var StatusRatingColumnsController = class {
@@ -10304,7 +11980,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           if (!doc) return {};
           ensureStatusRatingStyle(doc);
           const span = srHtmlEl(doc, "span");
-          span.className = `cell ${column?.className || ""} zbf-status-cell`.trim();
+          span.className = `cell ${column?.className || ""} clickable zbf-status-cell`.trim();
           if (!item || typeof item.isRegularItem === "function" && !item.isRegularItem()) return span;
           const current = getItemStatus(item, this.excludedTag());
           const trigger = srHtmlEl(doc, "span");
@@ -10325,8 +12001,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
             trigger.title = zh ? "点击设置阅读状态（支持多选批量与数字键 1–9 快选）" : "Set reading status (supports multi-select & keys 1–9)";
           }
           guardPrimaryTreePointer(trigger);
-          trigger.addEventListener("click", (ev) => {
-            ev.stopPropagation();
+          bindInstantCellPress(trigger, () => {
             if (win) {
               openStatusPickerPopover({
                 win,
@@ -10335,6 +12010,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
                 current,
                 zh,
                 excludedTag: this.excludedTag(),
+                syncZoteroTagColor: Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")),
                 onApplied: this.notifyApplied
               });
             }
@@ -10361,7 +12037,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           if (!doc) return {};
           ensureStatusRatingStyle(doc);
           const span = srHtmlEl(doc, "span");
-          span.className = `cell ${column?.className || ""} zbf-rating-cell`.trim();
+          span.className = `cell ${column?.className || ""} clickable zbf-rating-cell`.trim();
           if (!item || typeof item.isRegularItem === "function" && !item.isRegularItem()) return span;
           let current = getItemRating(item, this.ratingStorage());
           const fit = srHtmlEl(doc, "span");
@@ -10371,19 +12047,10 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           wrap.setAttribute("role", "radiogroup");
           wrap.setAttribute("aria-label", zh ? "星级评价" : "Star rating");
           guardPrimaryTreePointer(wrap);
-          const score = srHtmlEl(doc, "span");
-          score.className = "zbf-rating-score";
           const starEls = [];
           const syncVisual = (val) => {
-            if (val === 0) {
-              wrap.setAttribute("data-unrated", "true");
-              score.removeAttribute("data-has-score");
-              score.textContent = "";
-            } else {
-              wrap.removeAttribute("data-unrated");
-              score.setAttribute("data-has-score", "1");
-              score.textContent = `${val}/5`;
-            }
+            if (val === 0) wrap.setAttribute("data-unrated", "true");
+            else wrap.removeAttribute("data-unrated");
             starEls.forEach((s, idx) => {
               const k = idx + 1;
               if (k <= val) s.setAttribute("data-lit", "true");
@@ -10398,14 +12065,13 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           for (let k = 1; k <= 5; k++) {
             const star = srHtmlEl(doc, "span");
             star.className = "zbf-rating-star";
-            star.textContent = "★";
+            star.textContent = "⭐";
             star.addEventListener("mouseenter", () => {
               wrap.setAttribute("data-hover", String(k));
               if (current === k) wrap.setAttribute("data-clear-hint", "true");
               else wrap.removeAttribute("data-clear-hint");
             });
-            star.addEventListener("click", (ev) => {
-              ev.stopPropagation();
+            bindInstantCellPress(star, () => {
               const selected = win?.ZoteroPane?.getSelectedItems?.() || [];
               const targets = captureBatchTargets(selected, item);
               const next = current === k ? 0 : k;
@@ -10431,7 +12097,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
             wrap.appendChild(star);
           }
           syncVisual(current);
-          fit.append(wrap, score);
+          fit.appendChild(wrap);
           span.appendChild(fit);
           return span;
         }
@@ -10442,6 +12108,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
   // src/domains/visual-notes/title-heatmap.ts
   var DEFAULT_RGB = "13, 148, 136";
   var HEATMAP_STYLE_ID = "zbf-title-heatmap-style";
+  var TITLE_TAG_DOTS_STYLE_ID = "zbf-title-tag-dots-style";
+  var TITLE_TAG_DOTS_HIDE_CSS = "#zotero-items-pane .cell.primary .colored-tag-swatches { display: none !important; }";
   var MAX_GRADIENT_CACHE = 5e3;
   var heatmapGradientCache = /* @__PURE__ */ new Map();
   function setGradientCache(key, value) {
@@ -10618,17 +12286,23 @@ ${summary}` : summary;
     attachWindow(win) {
       if (!win) return;
       this.windows.add(win);
+      this.syncTitleTagDotsStyle(win);
       if (!this.isEnabled() || this.disposers.has(win) || this.pollTimers.has(win)) return;
       this.tryPatchWindow(win, 0);
     }
     detachWindow(win) {
       this.windows.delete(win);
+      try {
+        win.document?.getElementById?.(TITLE_TAG_DOTS_STYLE_ID)?.remove?.();
+      } catch {
+      }
       this.clearWindowPatch(win);
     }
     sync(knownWindows) {
       if (knownWindows) {
         for (const win of knownWindows) this.windows.add(win);
       }
+      for (const win of this.windows) this.syncTitleTagDotsStyle(win);
       if (this.isEnabled()) {
         for (const win of this.windows) {
           if (!this.disposers.has(win) && !this.pollTimers.has(win)) {
@@ -10642,6 +12316,25 @@ ${summary}` : summary;
         }
       }
     }
+    syncTitleTagDotsStyle(win) {
+      const doc = win?.document;
+      if (!doc || typeof doc.createElementNS !== "function") return;
+      const modOn = Boolean(this.kernel.prefs.get("modules.visualNotes.enable"));
+      const showDots = Boolean(this.kernel.prefs.get("visualNotes.showTitleTagDots"));
+      const existing = doc.getElementById?.(TITLE_TAG_DOTS_STYLE_ID);
+      if (!modOn || showDots) {
+        existing?.remove?.();
+        return;
+      }
+      if (!existing) {
+        const head = doc.head || doc.documentElement;
+        if (!head) return;
+        const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+        style.id = TITLE_TAG_DOTS_STYLE_ID;
+        style.textContent = TITLE_TAG_DOTS_HIDE_CSS;
+        head.appendChild(style);
+      }
+    }
     refreshWindows() {
       for (const win of this.windows) {
         try {
@@ -10652,6 +12345,10 @@ ${summary}` : summary;
     }
     disposeAll() {
       for (const win of [...this.windows]) {
+        try {
+          win.document?.getElementById?.(TITLE_TAG_DOTS_STYLE_ID)?.remove?.();
+        } catch {
+        }
         this.clearWindowPatch(win);
       }
       this.windows.clear();
@@ -10794,13 +12491,34 @@ ${summary}` : summary;
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
+      loadCustomStatusColors(this.kernel.prefs.get("visualNotes.statusCustomColors"));
+      bindCustomStatusColorPersistence((json) => {
+        if (this.kernel.prefs.get("visualNotes.statusCustomColors") !== json) {
+          this.kernel.prefs.set("visualNotes.statusCustomColors", json);
+        }
+      });
       this.syncFeatureStates();
       this.annotationTools.register();
+      if (!this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")) {
+        this.runStatusTagDotSync(false);
+        const uiReady = globalThis.Zotero?.uiReadyPromise;
+        if (uiReady && typeof uiReady.then === "function") {
+          void uiReady.then(() => {
+            if (this.active && !this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")) {
+              this.runStatusTagDotSync(false);
+            }
+          }).catch(() => {
+          });
+        }
+      }
       this.disposables.add(
         this.kernel.prefs.observeKeys(
           [
             "visualNotes.infoBriefNote.enable",
+            "visualNotes.showTitleTagDots",
             "visualNotes.statusColumn.enable",
+            "visualNotes.statusSyncZoteroTagColor",
+            "visualNotes.statusCustomColors",
             "visualNotes.ratingColumn.enable",
             "visualNotes.ratingStorage",
             "visualNotes.gallery.enable",
@@ -10824,6 +12542,14 @@ ${summary}` : summary;
           (key) => {
             if (!this.active) return;
             this.syncFeatureStates();
+            if (key === "visualNotes.statusCustomColors") {
+              loadCustomStatusColors(this.kernel.prefs.get("visualNotes.statusCustomColors"));
+              this.statusRatingColumns.refreshColumns();
+              this.galleryBoard.refreshWindows();
+            }
+            if (key === "visualNotes.statusSyncZoteroTagColor") {
+              this.runStatusTagDotSync(Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")));
+            }
             if (key === "inspector.annotations.popupLabelsEnable" || key === "inspector.annotations.colorLabels" || key === "inspector.annotations.enabledColors") {
               this.annotationTools.popupLabels.sync();
             }
@@ -10886,6 +12612,9 @@ ${summary}` : summary;
       this.windows.add(win);
       this.titleHeatmap.attachWindow(win);
       this.galleryBoard.attachWindow(win);
+      if (!this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")) {
+        this.runStatusTagDotSync(false);
+      }
     }
     onMainWindowUnload(win) {
       closeHubPage(win);
@@ -10968,6 +12697,7 @@ ${summary}` : summary;
     stop() {
       if (!this.active) return;
       this.active = false;
+      bindCustomStatusColorPersistence(null);
       if (this.refreshTimer !== null) {
         clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
@@ -10982,6 +12712,13 @@ ${summary}` : summary;
       for (const win of this.windows) closeHubPage(win);
       this.windows.clear();
       this.disposables.disposeAll();
+    }
+    runStatusTagDotSync(enable) {
+      const excluded = String(this.kernel.prefs.get("wordCite.citationTags.text") || "/Citations");
+      void syncNativeStatusTagDots(enable, excluded).then((changed) => {
+        if (this.active && changed > 0) this.refreshLibraryViews();
+      }).catch(() => {
+      });
     }
     syncFeatureStates() {
       if (this.kernel.prefs.get("visualNotes.infoBriefNote.enable")) this.infoBriefNote.register();
@@ -19370,7 +21107,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "workspace.readingHeatmap.opacity": { defaultValue: 42, min: 10, max: 90 },
     "workspace.annotationColumn.enable": { defaultValue: true },
     "visualNotes.infoBriefNote.enable": { defaultValue: true },
+    "visualNotes.showTitleTagDots": { defaultValue: false },
     "visualNotes.statusColumn.enable": { defaultValue: true },
+    "visualNotes.statusSyncZoteroTagColor": { defaultValue: false },
+    "visualNotes.statusCustomColors": { defaultValue: "", resettable: false },
     "visualNotes.ratingColumn.enable": { defaultValue: true },
     "visualNotes.ratingStorage": {
       defaultValue: "cache",

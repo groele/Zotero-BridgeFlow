@@ -249,7 +249,7 @@ export function buildKanbanColumns(
 		const cols: KanbanColumnModel[] = [];
 		for (let stars = 5; stars >= 1; stars--) {
 			const t = SOFT_TINTS[(5 - stars) % SOFT_TINTS.length];
-			cols.push({ key: String(stars), title: `${stars} ★`, color: '#f59e0b', pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
+			cols.push({ key: String(stars), title: `${stars} ⭐`, color: '#f59e0b', pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
 		}
 		cols.push({ key: '0', title: zh ? '未评级' : 'Unrated', color: '#94a3b8', pillBg: '#f1f5f9', pillFg: '#475569', surfaceTint: 'rgba(100,116,139,0.04)', droppable: true, cards: cards.filter((c) => c.rating === 0) });
 		return cols;
@@ -278,12 +278,13 @@ export async function applyKanbanColumnDrop(
 	card: GalleryCardModel,
 	groupBy: GalleryGroupBy,
 	targetColumnKey: string,
-	options: { excludedStatusTag: string; ratingStorage: RatingStorageLocation; color?: string },
+	options: { excludedStatusTag: string; ratingStorage: RatingStorageLocation; color?: string; syncZoteroTagColor?: boolean },
 ): Promise<boolean> {
 	if (groupBy === 'status') {
 		return setItemStatus(card.item, targetColumnKey === '__none__' ? null : targetColumnKey, {
 			color: options.color,
 			excludedTag: options.excludedStatusTag,
+			syncZoteroTagColor: options.syncZoteroTagColor,
 		});
 	}
 	if (groupBy === 'rating') {

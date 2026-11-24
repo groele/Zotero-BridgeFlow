@@ -3,44 +3,27 @@ import { normalizeRatingStorage } from '../../services/item-status-rating.ts';
 import type { TabReadingProgress } from '../../services/reading-stats.ts';
 import { readItemRemarkWithFallback, type VisualNotesDataSource } from './data-source.ts';
 import {
-	extractGalleryCards,
-	filterAndSortGalleryCards,
-	type GalleryCardModel,
-	type GalleryContentTab,
-	type GalleryGroupBy,
-	type GalleryMode,
-	type GallerySortField,
+	extractGalleryCards, filterAndSortGalleryCards,
+	type GalleryCardModel, type GalleryContentTab, type GalleryGroupBy, type GalleryMode, type GallerySortField,
 } from './gallery-board-helpers.ts';
 import { renderGalleryCardElement, renderGalleryTopBar } from './gallery-card-renderer.ts';
-import { ensureGalleryStyles, galEl } from './gallery-styles.ts';
 import {
-	hydrateLazyPdfCovers,
-	renderGalleryInlineFeed,
-	renderGalleryViewport,
-	syncVisualNotesToolbarGroup,
-} from './gallery-viewport-renderer.ts';
+	createGalleryVisibilityGuard, createZoteroPaneGalleryAdapter,
+	openZoteroGalleryItem, openZoteroItemContextMenu, selectZoteroGalleryItems, type ZoteroPaneGalleryAdapter,
+} from './gallery-pane-adapter.ts';
+import { ensureGalleryStyles, galEl } from './gallery-styles.ts';
+import { renderGalleryInlineFeed, renderGalleryViewport, syncVisualNotesToolbarGroup } from './gallery-viewport-renderer.ts';
+import type { GalleryVirtualLayoutController } from './gallery-virtual-layout.ts';
 
 interface WindowGalleryState {
-	win: Window;
-	open: boolean;
-	contentTab: GalleryContentTab;
-	mode: GalleryMode;
-	groupBy: GalleryGroupBy;
-	sortField: GallerySortField;
-	query: string;
-	renderLimit: number;
-	selectedItemID: number;
-	readingSelection: { itemID: number };
-	tbGroup: HTMLElement | null;
-	btnGallery: HTMLButtonElement | null;
-	btnHub: HTMLButtonElement | null;
-	panel: HTMLElement | null;
-	colChangeTimer: ReturnType<typeof setTimeout> | null;
-	coverDisposers: Array<() => void>;
-	cleanupListeners: Array<() => void>;
+	win: Window; open: boolean; contentTab: GalleryContentTab; mode: GalleryMode; groupBy: GalleryGroupBy;
+	sortField: GallerySortField; query: string; selectedIDs: Set<number>; anchorItemID: number;
+	readingSelection: { itemID: number }; columnOrders: Map<GalleryGroupBy, string[]>; measurements: Map<string, number>;
+	tbGroup: HTMLElement | null; btnGallery: HTMLButtonElement | null; btnHub: HTMLButtonElement | null;
+	panel: HTMLElement | null; layout: GalleryVirtualLayoutController | null; viewportDispose: (() => void) | null;
+	visibilityGuard: ReturnType<typeof createGalleryVisibilityGuard> | null;
+	paneAdapter: ZoteroPaneGalleryAdapter | null; cleanupListeners: Array<() => void>;
 }
-
-const BATCH_STEP = 120;
 
 export class GalleryBoardController {
 	private readonly states = new Map<Window, WindowGalleryState>();
@@ -82,53 +65,58 @@ export class GalleryBoardController {
 
 	attachWindow(win: Window): void {
 		if (!win?.document || this.states.has(win)) return;
+		const adapter = createZoteroPaneGalleryAdapter(win);
+		const initialSel = adapter.getSelectedIDs();
 		const st: WindowGalleryState = {
-			win,
-			open: false,
-			contentTab: 'items',
-			mode: this.defaultMode(),
-			groupBy: this.defaultGroupBy(),
-			sortField: 'dateModified',
-			query: '',
-			renderLimit: BATCH_STEP,
-			selectedItemID: 0,
-			readingSelection: { itemID: 0 },
-			tbGroup: null,
-			btnGallery: null,
-			btnHub: null,
-			panel: null,
-			colChangeTimer: null,
-			coverDisposers: [],
-			cleanupListeners: [],
+			win, open: false, contentTab: 'items', mode: this.defaultMode(), groupBy: this.defaultGroupBy(),
+			sortField: 'dateModified', query: '', selectedIDs: new Set(initialSel), anchorItemID: initialSel[0] || 0,
+			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(),
+			tbGroup: null, btnGallery: null, btnHub: null, panel: null, layout: null,
+			viewportDispose: null, visibilityGuard: null, paneAdapter: adapter, cleanupListeners: [],
 		};
 		this.states.set(win, st);
 		this.syncWindow(st);
 
-		const colTree = win.document.getElementById('zotero-collections-tree');
-		if (colTree) {
-			const onColChange = () => {
-				if (!st.open) return;
-				if (st.colChangeTimer !== null) clearTimeout(st.colChangeTimer);
-				st.colChangeTimer = setTimeout(() => {
-					st.colChangeTimer = null;
-					if (st.open && !(st.win as any).closed) {
-						st.renderLimit = BATCH_STEP;
-						this.renderPanel(st);
-					}
-				}, 55);
-			};
-			colTree.addEventListener('click', onColChange);
-			colTree.addEventListener('keyup', onColChange);
-			st.cleanupListeners.push(() => {
-				if (st.colChangeTimer !== null) { clearTimeout(st.colChangeTimer); st.colChangeTimer = null; }
-				colTree.removeEventListener('click', onColChange);
-				colTree.removeEventListener('keyup', onColChange);
-			});
+		st.cleanupListeners.push(
+			adapter.onRefresh(() => {
+				if (st.open && !(st.win as any).closed) this.renderPanel(st);
+			}),
+			adapter.onSelection(() => {
+				if (!st.open || st.contentTab !== 'items') return;
+				const nextIDs = adapter.getSelectedIDs();
+				st.selectedIDs = new Set(nextIDs);
+				if (nextIDs.length) st.anchorItemID = nextIDs[nextIDs.length - 1];
+				this.syncSelectionAttributes(st);
+			}),
+		);
+	}
+
+	private syncSelectionAttributes(st: WindowGalleryState): void {
+		if (!st.panel) return;
+		st.panel.querySelectorAll('.zbf-gal-card[data-item-id]').forEach((node) => {
+			const el = node as HTMLElement;
+			const id = Number(el.dataset.itemId || 0);
+			if (st.selectedIDs.has(id)) el.setAttribute('data-selected', 'true');
+			else el.removeAttribute('data-selected');
+		});
+	}
+
+	private applyGallerySelection(st: WindowGalleryState, nextIDs: number[], anchorID?: number, focusCard = false): void {
+		st.selectedIDs = new Set(nextIDs);
+		if (anchorID) st.anchorItemID = anchorID;
+		this.syncSelectionAttributes(st);
+		void selectZoteroGalleryItems(st.win, nextIDs);
+		if (focusCard && anchorID) {
+			const cardEl = st.layout?.ensureItemVisible(anchorID);
+			cardEl?.focus?.({ preventScroll: true });
 		}
 	}
 
-	private disposeCovers(st: WindowGalleryState): void {
-		for (const fn of st.coverDisposers.splice(0)) {
+	private disposeViewport(st: WindowGalleryState): void {
+		st.layout = null;
+		if (st.viewportDispose) {
+			const fn = st.viewportDispose;
+			st.viewportDispose = null;
 			try { fn(); } catch { /* ignore */ }
 		}
 	}
@@ -136,8 +124,12 @@ export class GalleryBoardController {
 	detachWindow(win: Window): void {
 		const st = this.states.get(win);
 		if (!st) return;
-		this.disposeCovers(st);
+		this.disposeViewport(st);
 		this.setGalleryOpen(st, false);
+		st.visibilityGuard?.destroy();
+		st.visibilityGuard = null;
+		st.paneAdapter?.destroy();
+		st.paneAdapter = null;
 		for (const fn of st.cleanupListeners) fn();
 		st.cleanupListeners.length = 0;
 		st.tbGroup?.remove();
@@ -186,15 +178,10 @@ export class GalleryBoardController {
 		ensureGalleryStyles(doc);
 		const galEnabled = Boolean(this.kernel.prefs.get('visualNotes.gallery.enable'));
 		const hubEnabled = Boolean(this.kernel.prefs.get('visualNotes.collectionHub.enable'));
-
 		if (!galEnabled && st.open) this.setGalleryOpen(st, false);
 
 		const mounted = syncVisualNotesToolbarGroup({
-			doc,
-			zh: this.isZh(),
-			galEnabled,
-			hubEnabled,
-			isOpen: st.open,
+			doc, zh: this.isZh(), galEnabled, hubEnabled, isOpen: st.open,
 			existingGroup: st.tbGroup,
 			onToggleGallery: () => this.setGalleryOpen(st, !st.open),
 			onOpenHub: () => this.onOpenHub(st.win),
@@ -210,29 +197,29 @@ export class GalleryBoardController {
 		if (!doc) return;
 		st.open = nextOpen;
 		st.btnGallery?.setAttribute('aria-pressed', String(nextOpen));
-		const itemsPane = doc.getElementById('zotero-items-pane');
+		const itemsPane = doc.getElementById('zotero-items-pane') as HTMLElement | null;
 		if (!itemsPane) return;
 
 		if (!nextOpen) {
-			if (st.colChangeTimer !== null) { clearTimeout(st.colChangeTimer); st.colChangeTimer = null; }
-			this.disposeCovers(st);
-			if (st.panel) st.panel.style.display = 'none';
-			itemsPane.removeAttribute('data-zbf-gallery');
-			const tree = (st.win as any).ZoteroPane?.itemsView?.tree;
-			try { tree?.invalidate?.(); tree?.render?.(); } catch { /* ignore */ }
+			this.disposeViewport(st);
+			st.visibilityGuard?.setEnabled(false);
 			return;
 		}
 
 		if (!st.panel || !st.panel.isConnected) {
 			doc.getElementById('zbf-gallery-panel')?.remove();
+			st.visibilityGuard?.destroy();
 			const panel = galEl(doc, 'div');
 			panel.id = 'zbf-gallery-panel';
 			panel.className = 'zbf-gallery-panel';
 			itemsPane.prepend(panel);
 			st.panel = panel;
+			st.visibilityGuard = createGalleryVisibilityGuard(st.win, itemsPane, panel, () => {
+				st.paneAdapter?.rebind();
+			});
 		}
-		itemsPane.setAttribute('data-zbf-gallery', 'true');
-		st.panel.style.display = 'flex';
+		st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
+		st.visibilityGuard?.setEnabled(true);
 		this.renderPanel(st);
 	}
 
@@ -241,87 +228,102 @@ export class GalleryBoardController {
 		const panel = st.panel;
 		if (!doc || !panel || !st.open) return;
 
-		this.disposeCovers(st);
+		const prevScrollTop = panel.querySelector('.zbf-gal-viewport')?.scrollTop || 0;
+		const prevScrollLeft = panel.querySelector('.zbf-gal-viewport')?.scrollLeft || 0;
+		this.disposeViewport(st);
 
 		const zh = this.isZh();
 		const density = this.kernel.prefs.get('visualNotes.gallery.cardDensity') === 'compact' ? 'compact' : 'comfortable';
 		const showBrief = Boolean(this.kernel.prefs.get('visualNotes.gallery.showBriefNote'));
 		const excludedTag = String(this.kernel.prefs.get('wordCite.citationTags.text') || '/Citations');
 		const ratingStorage = normalizeRatingStorage(this.kernel.prefs.get('visualNotes.ratingStorage'));
+		const cardWidth = Number(this.kernel.prefs.get('visualNotes.gallery.cardWidth')) || 220;
+		const coverHeight = Number(this.kernel.prefs.get('visualNotes.gallery.coverHeight')) || 0;
 
 		panel.setAttribute('data-density', density);
-		panel.style.setProperty('--zbf-card-width', this.kernel.prefs.get('visualNotes.gallery.cardWidth') + 'px');
-		const coverHeight = this.kernel.prefs.get('visualNotes.gallery.coverHeight');
-		panel.style.setProperty('--zbf-cover-height', coverHeight > 0 ? coverHeight + 'px' : 'auto');
+		panel.style.setProperty('--zbf-card-width', `${cardWidth}px`);
+		panel.style.setProperty('--zbf-cover-height', coverHeight > 0 ? `${coverHeight}px` : 'auto');
 		panel.style.setProperty('--zbf-cover-aspect', coverHeight > 0 ? 'auto' : (density === 'compact' ? '2.1' : '1.95'));
+
 		const { cards: allCards, rawItems } = extractGalleryCards(st.win, {
-			zh,
-			excludedStatusTag: excludedTag,
-			ratingStorage,
+			zh, excludedStatusTag: excludedTag, ratingStorage,
 			getBriefNote: (it) => readItemRemarkWithFallback(it, this.dataSource),
 			getReadProgress: this.getReadProgress,
 		});
 
 		let displayCount = 0;
 		let bodyViewport: HTMLElement;
+		let activateCovers: (() => void) | undefined;
 
 		if (st.contentTab === 'items') {
 			const sorted = filterAndSortGalleryCards(allCards, st.query, st.sortField);
 			displayCount = sorted.length;
-			bodyViewport = renderGalleryViewport({
-				doc,
-				zh,
-				mode: st.mode,
-				groupBy: st.groupBy,
-				sorted,
-				rawItems,
-				renderLimit: st.renderLimit,
-				excludedTag,
-				ratingStorage,
+			const vpRes = renderGalleryViewport({
+				doc, zh, mode: st.mode, groupBy: st.groupBy, cardMinWidth: cardWidth, density,
+				sorted, rawItems, selectedIDs: st.selectedIDs,
+				columnOrder: st.columnOrders.get(st.groupBy),
+				measurements: st.measurements,
+				excludedTag, ratingStorage,
+				syncZoteroTagColor: Boolean(this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')),
 				makeCard: (c: GalleryCardModel, draggable: boolean) => renderGalleryCardElement({
-					doc,
-					card: c,
-					selected: st.selectedItemID === c.itemID,
-					showBrief,
-					ratingStorage,
-					draggable,
-					onSelect: (picked, el) => {
-						st.selectedItemID = picked.itemID;
-						st.panel?.querySelectorAll('.zbf-gal-card[data-selected="true"]').forEach((n) => n.removeAttribute('data-selected'));
-						el.setAttribute('data-selected', 'true');
-						(st.win as any).ZoteroPane?.itemsView?.selectItem?.(picked.itemID);
+					doc, card: c, selected: st.selectedIDs.has(c.itemID), showBrief, ratingStorage, draggable,
+					onSelect: (picked, _el, ev) => {
+						const order = st.layout?.orderIDs || sorted.map((x) => x.itemID);
+						if (ev.shiftKey && st.anchorItemID && order.includes(st.anchorItemID)) {
+							const a = order.indexOf(st.anchorItemID);
+							const b = order.indexOf(picked.itemID);
+							const range = order.slice(Math.min(a, b), Math.max(a, b) + 1);
+							const merged = ev.ctrlKey || ev.metaKey ? [...new Set([...st.selectedIDs, ...range])] : range;
+							this.applyGallerySelection(st, merged, st.anchorItemID);
+						} else if (ev.ctrlKey || ev.metaKey) {
+							const next = new Set(st.selectedIDs);
+							if (next.has(picked.itemID)) next.delete(picked.itemID);
+							else next.add(picked.itemID);
+							this.applyGallerySelection(st, [...next], picked.itemID);
+						} else {
+							this.applyGallerySelection(st, [picked.itemID], picked.itemID);
+						}
 					},
-					onOpenReader: (itemID) => {
-						this.kernel.bus.emit('workspace:open-item-request', { itemID, preferExistingTab: true });
+					onContextMenu: (picked, _el, ev) => {
+						if (!st.selectedIDs.has(picked.itemID)) {
+							this.applyGallerySelection(st, [picked.itemID], picked.itemID);
+						}
+						void openZoteroItemContextMenu(st.win, ev);
+					},
+					onOpenReader: (picked, ev) => {
+						void openZoteroGalleryItem(st.win, picked.item, ev, (itemID) => {
+							this.kernel.bus.emit('workspace:open-item-request', { itemID, preferExistingTab: true });
+						});
+					},
+					onNavigateKey: (picked, key, ev) => {
+						const nextID = st.layout?.adjacentItemID(picked.itemID, key);
+						if (!nextID) return;
+						const nextSel = ev.shiftKey ? [...new Set([...st.selectedIDs, nextID])] : [nextID];
+						this.applyGallerySelection(st, nextSel, ev.shiftKey ? st.anchorItemID : nextID, true);
 					},
 					onRated: () => {
 						this.onMutated();
-						this.renderPanel(st);
+						this.renderPanel(st, true);
 					},
 				}),
-				onLoadMore: () => {
-					st.renderLimit += BATCH_STEP;
-					this.renderPanel(st);
+				onColumnOrderChange: (nextKeys) => {
+					st.columnOrders.set(st.groupBy, nextKeys);
+					this.renderPanel(st, true);
 				},
 				onDropMutated: () => {
 					this.onMutated();
-					this.renderPanel(st);
-				},
-				onBatchAppended: (laneEl) => {
-					st.coverDisposers.push(hydrateLazyPdfCovers(laneEl, doc));
+					this.renderPanel(st, true);
 				},
 				onClearQuery: st.query ? () => { st.query = ''; this.renderPanel(st); } : undefined,
 			});
+			bodyViewport = vpRes.viewport;
+			st.layout = vpRes.layout;
+			st.viewportDispose = vpRes.dispose;
+			activateCovers = vpRes.activate;
 		} else {
 			const res = renderGalleryInlineFeed({
-				doc,
-				win: st.win,
-				zh,
-				tab: st.contentTab, selection: st.readingSelection,
-				rawItems,
-				query: st.query,
-				kernel: this.kernel,
-				dataSource: this.dataSource,
+				doc, win: st.win, zh, tab: st.contentTab, selection: st.readingSelection,
+				rawItems, query: st.query, kernel: this.kernel, dataSource: this.dataSource,
 				onMutated: () => this.onMutated(),
 			});
 			bodyViewport = res.viewport;
@@ -346,6 +348,9 @@ export class GalleryBoardController {
 			}));
 			panel.appendChild(bodyViewport);
 		}
-		st.coverDisposers.push(hydrateLazyPdfCovers(bodyViewport, doc));
+		if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
+		if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
+		st.layout?.refresh();
+		activateCovers?.();
 	}
 }

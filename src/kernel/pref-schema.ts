@@ -52,7 +52,10 @@ export const PREF_SCHEMA = {
 	'workspace.readingHeatmap.opacity': { defaultValue: 42, min: 10, max: 90 },
 	'workspace.annotationColumn.enable': { defaultValue: true },
 	'visualNotes.infoBriefNote.enable': { defaultValue: true },
+	'visualNotes.showTitleTagDots': { defaultValue: false },
 	'visualNotes.statusColumn.enable': { defaultValue: true },
+	'visualNotes.statusSyncZoteroTagColor': { defaultValue: false },
+	'visualNotes.statusCustomColors': { defaultValue: '', resettable: false },
 	'visualNotes.ratingColumn.enable': { defaultValue: true },
 	'visualNotes.ratingStorage': {
 		defaultValue: 'cache',

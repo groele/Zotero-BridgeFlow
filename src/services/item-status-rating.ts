@@ -1,10 +1,15 @@
 import { getActiveRatingsCache } from './item-ratings-cache.ts';
+import {
+	getCustomStatusColor,
+	purgeZoteroStatusTagColors,
+	rememberCustomStatusColor,
+	restoreZoteroStatusTagColors,
+} from './status-tag-colors.ts';
 
 export type RatingStorageLocation = 'cache' | 'extra' | 'tag';
 
 export function normalizeRatingStorage(raw: unknown): RatingStorageLocation {
-	if (raw === 'extra' || raw === 'tag') return raw;
-	return 'cache';
+	return raw === 'extra' || raw === 'tag' ? raw : 'cache';
 }
 
 export interface StatusOption {
@@ -35,7 +40,6 @@ export const DEFAULT_STATUS_PRESETS_EN: readonly StatusOption[] = [
 ];
 
 const FALLBACK_PALETTE = ['#2563eb', '#0d9488', '#e11d48', '#d97706', '#7c3aed', '#16a34a', '#0284c7', '#64748b'];
-
 const ratingCache = new Map<string, number>();
 const statusCache = new Map<string, StatusOption | null>();
 
@@ -50,10 +54,7 @@ function setLru<V>(map: Map<string, V>, key: string, value: V): void {
 
 function getLru<V>(map: Map<string, V>, key: string): V | undefined {
 	const hit = map.get(key);
-	if (hit !== undefined) {
-		map.delete(key);
-		map.set(key, hit);
-	}
+	if (hit !== undefined) { map.delete(key); map.set(key, hit); }
 	return hit;
 }
 
@@ -65,16 +66,13 @@ export function clearStatusRatingCaches(): void {
 export function isStatusTagName(tagName: string, excludedTag = '/Citations'): boolean {
 	const t = String(tagName || '').trim();
 	if (!t.startsWith('/') || t.length < 2) return false;
-	if (excludedTag && t.toLowerCase() === excludedTag.trim().toLowerCase()) return false;
-	return true;
+	return !(excludedTag && t.toLowerCase() === excludedTag.trim().toLowerCase());
 }
 
 export function normalizeHexColor(raw: string, fallback = '#2563eb'): string {
 	const hex = String(raw || '').trim();
 	if (/^#[\da-f]{6}$/i.test(hex)) return hex.toLowerCase();
-	if (/^#[\da-f]{3}$/i.test(hex)) {
-		return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
-	}
+	if (/^#[\da-f]{3}$/i.test(hex)) return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`.toLowerCase();
 	return fallback;
 }
 
@@ -83,11 +81,7 @@ export function parseCustomStatusInput(name: string, color: string, excludedTag 
 	if (!cleanLabel || /[\r\n]/.test(cleanLabel)) return null;
 	const tag = `/${cleanLabel}`;
 	if (!isStatusTagName(tag, excludedTag)) return null;
-	return {
-		tag,
-		label: cleanLabel,
-		color: normalizeHexColor(color, '#2563eb'),
-	};
+	return { tag, label: cleanLabel, color: normalizeHexColor(color, '#2563eb') };
 }
 
 function hashTagColor(tag: string): string {
@@ -100,6 +94,8 @@ export function resolveStatusColor(libraryID: number | undefined, tag: string): 
 	for (const p of [...DEFAULT_STATUS_PRESETS_ZH, ...DEFAULT_STATUS_PRESETS_EN]) {
 		if (p.tag.toLowerCase() === tag.toLowerCase()) return p.color;
 	}
+	const savedCustom = getCustomStatusColor(tag);
+	if (savedCustom) return savedCustom;
 	try {
 		const zTags = (globalThis as any).Zotero?.Tags;
 		const colorEntry = libraryID ? zTags?.getColor?.(libraryID, tag) : null;
@@ -168,7 +164,7 @@ export function listAvailableStatuses(items: readonly any[], zh = true, excluded
 export async function setItemStatus(
 	rawItem: any,
 	statusTag: string | null,
-	options?: { color?: string; excludedTag?: string },
+	options?: { color?: string; excludedTag?: string; syncZoteroTagColor?: boolean },
 ): Promise<boolean> {
 	const item = resolveTargetRegularItem(rawItem);
 	if (!item || typeof item.getTags !== 'function') return false;
@@ -190,12 +186,16 @@ export async function setItemStatus(
 			changed = true;
 		}
 		if (options?.color) {
-			try {
-				const zTags = (globalThis as any).Zotero?.Tags;
-				if (item.libraryID && typeof zTags?.setColor === 'function' && !zTags?.getColor?.(item.libraryID, statusTag)) {
-					await zTags.setColor(item.libraryID, statusTag, normalizeHexColor(options.color));
-				}
-			} catch { /* ignore */ }
+			const cleanHex = normalizeHexColor(options.color);
+			rememberCustomStatusColor(statusTag, cleanHex);
+			if (options.syncZoteroTagColor) {
+				try {
+					const zTags = (globalThis as any).Zotero?.Tags;
+					if (item.libraryID && typeof zTags?.setColor === 'function' && !zTags?.getColor?.(item.libraryID, statusTag)) {
+						await zTags.setColor(item.libraryID, statusTag, cleanHex);
+					}
+				} catch { /* ignore */ }
+			}
 		}
 	}
 	if (changed) {
@@ -205,17 +205,25 @@ export async function setItemStatus(
 	return changed;
 }
 
+export function clearNativeStatusTagDots(excludedTag = '/Citations'): Promise<number> {
+	statusCache.clear();
+	return purgeZoteroStatusTagColors(isStatusTagName, excludedTag);
+}
+
+export function syncNativeStatusTagDots(enable: boolean, excludedTag = '/Citations'): Promise<number> {
+	statusCache.clear();
+	return enable
+		? restoreZoteroStatusTagColors(isStatusTagName, resolveStatusColor, excludedTag)
+		: purgeZoteroStatusTagColors(isStatusTagName, excludedTag);
+}
+
 export function isStarRatingTag(tagName: string): number {
 	const chars = Array.from(String(tagName || '').trim());
-	if (chars.length >= 1 && chars.length <= MAX_RATING && chars.every((c) => c === RATING_STAR || c === '★')) {
-		return chars.length;
-	}
-	return 0;
+	return chars.length >= 1 && chars.length <= MAX_RATING && chars.every((c) => c === RATING_STAR || c === '★') ? chars.length : 0;
 }
 
 export function parseExtraRating(extra: string): number {
-	const lines = String(extra || '').split(/\r?\n/);
-	for (const line of lines) {
+	for (const line of String(extra || '').split(/\r?\n/)) {
 		const m = EXTRA_RATING_RE.exec(line.trim());
 		if (m) return Number(m[1]);
 	}
@@ -223,13 +231,9 @@ export function parseExtraRating(extra: string): number {
 }
 
 export function writeExtraRating(extra: string, rating: number): string {
-	const kept = String(extra || '')
-		.split(/\r?\n/)
-		.filter((line) => !EXTRA_RATING_RE.test(line.trim()));
+	const kept = String(extra || '').split(/\r?\n/).filter((line) => !EXTRA_RATING_RE.test(line.trim()));
 	while (kept.length && !kept[kept.length - 1].trim()) kept.pop();
-	if (rating >= 1 && rating <= MAX_RATING) {
-		kept.push(`Rating: ${rating}`);
-	}
+	if (rating >= 1 && rating <= MAX_RATING) kept.push(`Rating: ${rating}`);
 	return kept.join('\n');
 }
 

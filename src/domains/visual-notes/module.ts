@@ -4,7 +4,9 @@ import { closeStatusPickerPopover } from './status-rating-popover.ts';
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
+import { syncNativeStatusTagDots } from '../../services/item-status-rating.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import { bindCustomStatusColorPersistence, loadCustomStatusColors } from '../../services/status-tag-colors.ts';
 import { openAnnotationMatrixModal } from './annotation-matrix-modal.ts';
 import { ReaderAnnotationTools } from './annotation-tools.ts';
 import { openCollectionNotesHubModal } from './collection-notes-hub.ts';
@@ -87,14 +89,33 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.active = true;
 		this.disposables.reset();
 
+		loadCustomStatusColors(this.kernel.prefs.get('visualNotes.statusCustomColors'));
+		bindCustomStatusColorPersistence((json) => {
+			if (this.kernel.prefs.get('visualNotes.statusCustomColors') !== json) {
+				this.kernel.prefs.set('visualNotes.statusCustomColors', json);
+			}
+		});
+
 		this.syncFeatureStates();
 		this.annotationTools.register();
+		if (!this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')) {
+			this.runStatusTagDotSync(false);
+			const uiReady = (globalThis as any).Zotero?.uiReadyPromise;
+			if (uiReady && typeof uiReady.then === 'function') {
+				void uiReady.then(() => {
+					if (this.active && !this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')) {
+						this.runStatusTagDotSync(false);
+					}
+				}).catch(() => {});
+			}
+		}
 
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(
 				[
-					'visualNotes.infoBriefNote.enable',
-					'visualNotes.statusColumn.enable',
+					'visualNotes.infoBriefNote.enable', 'visualNotes.showTitleTagDots',
+					'visualNotes.statusColumn.enable', 'visualNotes.statusSyncZoteroTagColor',
+					'visualNotes.statusCustomColors',
 					'visualNotes.ratingColumn.enable',
 					'visualNotes.ratingStorage',
 					'visualNotes.gallery.enable',
@@ -118,6 +139,14 @@ export class VisualNotesDomainModule implements DomainModule {
 				(key) => {
 					if (!this.active) return;
 					this.syncFeatureStates();
+					if (key === 'visualNotes.statusCustomColors') {
+						loadCustomStatusColors(this.kernel.prefs.get('visualNotes.statusCustomColors'));
+						this.statusRatingColumns.refreshColumns();
+						this.galleryBoard.refreshWindows();
+					}
+					if (key === 'visualNotes.statusSyncZoteroTagColor') {
+						this.runStatusTagDotSync(Boolean(this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')));
+					}
 					if (key === 'inspector.annotations.popupLabelsEnable' || key === 'inspector.annotations.colorLabels' || key === 'inspector.annotations.enabledColors') {
 						this.annotationTools.popupLabels.sync();
 					}
@@ -187,6 +216,9 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.windows.add(win);
 		this.titleHeatmap.attachWindow(win);
 		this.galleryBoard.attachWindow(win);
+		if (!this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')) {
+			this.runStatusTagDotSync(false);
+		}
 	}
 
 	onMainWindowUnload(win: Window): void {
@@ -273,6 +305,7 @@ export class VisualNotesDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		bindCustomStatusColorPersistence(null);
 		if (this.refreshTimer !== null) {
 			clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
@@ -287,6 +320,13 @@ export class VisualNotesDomainModule implements DomainModule {
 		for (const win of this.windows) closeHubPage(win);
 		this.windows.clear();
 		this.disposables.disposeAll();
+	}
+
+	private runStatusTagDotSync(enable: boolean): void {
+		const excluded = String(this.kernel.prefs.get('wordCite.citationTags.text') || '/Citations');
+		void syncNativeStatusTagDots(enable, excluded).then((changed) => {
+			if (this.active && changed > 0) this.refreshLibraryViews();
+		}).catch(() => {});
 	}
 
 	private syncFeatureStates(): void {

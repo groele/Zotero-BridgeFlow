@@ -16,6 +16,7 @@ import {
 	renderHighlightedSnippet,
 	writeMatrixClipboard,
 } from './annotation-matrix-ui.ts';
+import { renderRichTitleNodes } from './gallery-icons.ts';
 
 export function openAnnotationMatrixModal(options: {
 	win: Window;
@@ -24,8 +25,9 @@ export function openAnnotationMatrixModal(options: {
 	prefs: UnifiedPrefService;
 	bus?: TypedEventBus;
 	clipboard?: UnifiedClipboardService;
+	mountRoot?: HTMLElement | null;
 }): void {
-	const doc = options.win.document;
+	const doc = options.mountRoot?.ownerDocument || options.win.document;
 	if (!doc) return;
 	ensureMatrixStyles(doc);
 	doc.getElementById('zbf-matrix-backdrop')?.remove();
@@ -208,7 +210,7 @@ export function openAnnotationMatrixModal(options: {
 			const link = el(doc, 'button') as HTMLButtonElement;
 			link.type = 'button';
 			link.className = 'zbf-matrix-item-link';
-			link.textContent = row.title;
+			renderRichTitleNodes(doc, link, row.title);
 			link.title = '打开并聚焦此文献阅读器';
 			link.addEventListener('click', () => {
 				close();
@@ -271,8 +273,11 @@ export function openAnnotationMatrixModal(options: {
 	};
 
 	mkBtn('存为 Zotero 笔记', true, () => {
-		void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then((id) => {
-			statusEl.textContent = id ? `✓ 已生成笔记 (#${id})` : '✕ 生成笔记失败';
+		void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then(async (id) => {
+			statusEl.textContent = id ? `✓ 已生成并打开笔记 (#${id})` : '✕ 生成笔记失败';
+			if (id) {
+				try { await (globalThis as any).Zotero?.Notes?.open?.(id, undefined, { openInWindow: false }); } catch { /* ignore */ }
+			}
 		});
 	});
 	mkBtn('复制 Markdown', false, () => {
@@ -305,6 +310,6 @@ export function openAnnotationMatrixModal(options: {
 	doc.addEventListener?.('keydown', onKey, true);
 	closeBtn.addEventListener('click', close);
 	backdrop.addEventListener('click', (e: MouseEvent) => { if (e.target === backdrop) close(); });
-	(doc.body || doc.documentElement)?.appendChild(backdrop);
+	(options.mountRoot || doc.body || doc.documentElement)?.appendChild(backdrop);
 	queryInput.focus?.();
 }
