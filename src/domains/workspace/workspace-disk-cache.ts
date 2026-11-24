@@ -1,3 +1,4 @@
+import { cacheDirectory, cacheFile } from '../../services/cache-directory.ts';
 import { readBackup, readWorkspace } from './workspace-schema.ts';
 import type { WorkspaceSession, WorkspaceState } from './types.ts';
 
@@ -13,28 +14,14 @@ export class WorkspaceDiskCache {
 	private lastWrittenJson = '';
 	public lastError = '';
 
-	getDirectoryPath(): string {
-		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
-		const pathUtils = (globalThis as any).PathUtils;
-		if (dataDir && pathUtils?.join) {
-			return pathUtils.join(dataDir, 'bridgeflow-cache');
-		}
-		return 'bridgeflow-cache';
-	}
+	constructor(privateDirectory = '') { this.directory = cacheDirectory(privateDirectory); }
+	private readonly directory: string;
 
-	getFilePath(): string {
-		const pathUtils = (globalThis as any).PathUtils;
-		const dir = this.getDirectoryPath();
-		return pathUtils?.join ? pathUtils.join(dir, 'workspace-snapshots.json') : `${dir}/workspace-snapshots.json`;
-	}
+	getDirectoryPath(): string { return this.directory; }
+	getFilePath(): string { return cacheFile(this.directory, 'workspace-snapshots.json'); }
+	getBackupFilePath(): string { return cacheFile(this.directory, 'workspace-snapshots.bak.json'); }
 
-	getBackupFilePath(): string {
-		const pathUtils = (globalThis as any).PathUtils;
-		const dir = this.getDirectoryPath();
-		return pathUtils?.join ? pathUtils.join(dir, 'workspace-snapshots.bak.json') : `${dir}/workspace-snapshots.bak.json`;
-	}
-
-	scheduleSave(state: WorkspaceState, immediate = false): void {
+	scheduleSave(state: WorkspaceState, immediate = false, serialized?: string): void {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8) return;
 		if (this.flushTimer !== null) {
@@ -42,19 +29,19 @@ export class WorkspaceDiskCache {
 			this.flushTimer = null;
 		}
 		if (immediate) {
-			void this.flushNow(state);
+			void this.flushNow(state, serialized);
 			return;
 		}
 		this.flushTimer = setTimeout(() => {
 			this.flushTimer = null;
-			void this.flushNow(state);
+			void this.flushNow(state, serialized);
 		}, 320);
 	}
 
-	async flushNow(state: WorkspaceState): Promise<boolean> {
+	async flushNow(state: WorkspaceState, _serialized?: string): Promise<boolean> {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8) return true;
-		const payload = JSON.stringify({ format: 'zotero-bridgeflow-workspace', version: 2, state }, null, 2);
+		const payload = `${JSON.stringify({ format: 'zotero-bridgeflow-workspace', version: 2, state }, null, 2)}\n`;
 
 		const run = async (): Promise<boolean> => {
 			if (payload === this.lastWrittenJson) return true;
@@ -63,7 +50,7 @@ export class WorkspaceDiskCache {
 				const mainPath = this.getFilePath();
 				const bakPath = this.getBackupFilePath();
 				if (this.lastWrittenJson) {
-					try { await ioUtils.writeUTF8(bakPath, this.lastWrittenJson); } catch { /* ignore backup error */ }
+					try { await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + '.tmp' }); } catch { /* ignore backup error */ }
 				}
 				await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + '.tmp' });
 				this.lastWrittenJson = payload;
@@ -82,18 +69,22 @@ export class WorkspaceDiskCache {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
 
-		for (const candidatePath of [this.getFilePath(), this.getBackupFilePath()]) {
+		const paths = [this.getFilePath(), this.getBackupFilePath()];
+		if (this.directory !== cacheDirectory()) {
+			paths.push(cacheFile(cacheDirectory(), 'workspace-snapshots.json'), cacheFile(cacheDirectory(), 'workspace-snapshots.bak.json'));
+		}
+		for (const candidatePath of paths) {
 			try {
 				if (!(await ioUtils.exists(candidatePath))) continue;
 				const raw = await ioUtils.readUTF8(candidatePath);
 				if (!raw) continue;
 				try {
 					const parsed = readBackup(raw);
-					this.lastWrittenJson = raw;
+					this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : '';
 					return parsed;
 				} catch {
 					const parsed = readWorkspace(raw);
-					this.lastWrittenJson = raw;
+					this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : '';
 					return parsed;
 				}
 			} catch { /* try next candidate */ }
@@ -147,6 +138,43 @@ export class WorkspaceDiskCache {
 			if (!current.remarks[k]) {
 				current.remarks[k] = rem;
 				changed = true;
+			}
+		}
+		for (const [k, viewedAt] of Object.entries(disk.lastViewedAt)) {
+			if (viewedAt > (current.lastViewedAt[k] || 0)) {
+				current.lastViewedAt[k] = viewedAt;
+				changed = true;
+			}
+		}
+		for (const [k, diskProg] of Object.entries(disk.readingProgress)) {
+			const cur = current.readingProgress[k];
+			if (!cur) {
+				current.readingProgress[k] = {
+					...diskProg,
+					...(diskProg.pageSeconds ? { pageSeconds: { ...diskProg.pageSeconds } } : {}),
+				};
+				changed = true;
+			} else {
+				const mergedPages: Record<string, number> = { ...(cur.pageSeconds || {}) };
+				let pagesChanged = false;
+				for (const [p, sec] of Object.entries(diskProg.pageSeconds || {})) {
+					if (sec > (mergedPages[p] || 0)) {
+						mergedPages[p] = sec;
+						pagesChanged = true;
+					}
+				}
+				const nextRead = Math.max(cur.readSeconds, diskProg.readSeconds);
+				const nextLast = cur.lastPage || diskProg.lastPage;
+				const nextTotal = Math.max(cur.totalPages || 0, diskProg.totalPages || 0) || undefined;
+				if (pagesChanged || nextRead > cur.readSeconds || nextLast !== cur.lastPage || nextTotal !== cur.totalPages) {
+					current.readingProgress[k] = {
+						readSeconds: nextRead,
+						...(nextLast ? { lastPage: nextLast } : {}),
+						...(nextTotal ? { totalPages: nextTotal } : {}),
+						...(Object.keys(mergedPages).length ? { pageSeconds: mergedPages } : {}),
+					};
+					changed = true;
+				}
 			}
 		}
 		if (!current.groups.length && disk.groups.length) {

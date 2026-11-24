@@ -6,6 +6,7 @@ import {
 	syncMenulistLabels,
 	updatePreferenceDependencies,
 } from './prefs-helpers.ts';
+import { syncAnnotationColorInputs } from './prefs-color-editor.ts';
 
 declare const document: Document | undefined;
 declare const window: Window | undefined;
@@ -26,35 +27,6 @@ function extractPrefKey(el: Element): PrefKey | null {
 	const full = el.getAttribute('preference') || el.getAttribute('data-preference') || '';
 	const shortKey = full.startsWith(PREF_PREFIX) ? full.slice(PREF_PREFIX.length) : '';
 	return shortKey in PREF_SCHEMA ? (shortKey as PrefKey) : null;
-}
-
-function bindTabs(pane: Element): void {
-	const tabBtns = Array.from(pane.querySelectorAll('.zbf-tab-btn')) as HTMLButtonElement[];
-	const panels = Array.from(pane.querySelectorAll('.zbf-tabpanel')) as HTMLElement[];
-	const activate = (tabID: string): void => {
-		for (const btn of tabBtns) {
-			const match = btn.getAttribute('data-zbf-tab') === tabID;
-			btn.classList.toggle('active', match);
-			btn.setAttribute('aria-selected', String(match));
-		}
-		for (const panel of panels) {
-			const match = panel.getAttribute('data-zbf-panel') === tabID;
-			panel.hidden = !match;
-			if (match) panel.removeAttribute('hidden');
-			else panel.setAttribute('hidden', 'hidden');
-		}
-	};
-	tabBtns.forEach((btn, idx) => {
-		btn.addEventListener('click', (ev) => { ev.preventDefault(); const id = btn.getAttribute('data-zbf-tab'); if (id) activate(id); });
-		btn.addEventListener('keydown', (ev: KeyboardEvent) => {
-			if (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft') return;
-			ev.preventDefault();
-			const nextBtn = tabBtns[(idx + (ev.key === 'ArrowRight' ? 1 : tabBtns.length - 1)) % tabBtns.length];
-			nextBtn?.focus?.();
-			const id = nextBtn?.getAttribute('data-zbf-tab');
-			if (id) activate(id);
-		});
-	});
 }
 
 async function populateCslStyles(doc: Document, prefs: UnifiedPrefService): Promise<void> {
@@ -100,13 +72,15 @@ const BridgeFlowPreferences = {
 
 		const prefs = new UnifiedPrefService();
 		prefs.seedDefaults();
-		bindTabs(pane);
 
 		const versionEl = doc.getElementById('zbf-version-badge');
 		if (versionEl) {
 			versionEl.setAttribute('data-l10n-args', JSON.stringify({ version: __BRIDGEFLOW_VERSION__ }));
 			versionEl.textContent = `v${__BRIDGEFLOW_VERSION__}`;
 		}
+		const brandIcon = doc.querySelector('.zbf-brand-icon') as HTMLImageElement | null;
+		const rootURI = String((doc.defaultView as any)?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || (globalThis as any).Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || '');
+		if (brandIcon && rootURI) brandIcon.src = `${rootURI}assets/bridgeflow.svg`;
 
 		const checkboxes = Array.from(pane.querySelectorAll('checkbox[preference]')) as Element[];
 		const menulists = Array.from(pane.querySelectorAll('menulist[preference]')) as Element[];
@@ -154,6 +128,15 @@ const BridgeFlowPreferences = {
 				const cacheDirInput = doc.getElementById('zbf-input-cachedir') as HTMLInputElement | null;
 				const defaultDir = (globalThis as any).Zotero?.zoterobridgeflow?.services?.history?.getDirectoryPath?.() || '';
 				if (cacheDirInput && defaultDir) cacheDirInput.placeholder = defaultDir;
+				const heatColorHex = doc.getElementById('zbf-heatmap-color-hex');
+				if (heatColorHex) heatColorHex.textContent = String(prefs.get('workspace.readingHeatmap.color') || '#0d9488');
+				const heatRange = doc.getElementById('zbf-range-heatmap-opacity') as HTMLInputElement | null;
+				if (heatRange) {
+					const op = String(prefs.get('workspace.readingHeatmap.opacity') || 42);
+					heatRange.value = op;
+					heatRange.setAttribute('value', op);
+				}
+				syncAnnotationColorInputs(doc, String(prefs.get('inspector.annotations.colorLabels') || ''));
 				updatePreferenceDependencies(doc, prefs);
 			} catch { cleanup(); }
 		};
@@ -192,12 +175,91 @@ const BridgeFlowPreferences = {
 				updatePreferenceDependencies(doc, prefs);
 				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
 			};
+			if (key === 'workspace.readingHeatmap.color') {
+				input.addEventListener('input', () => {
+					const val = input.value.trim();
+					prefs.set(key, val as never);
+					const hexEl = doc.getElementById('zbf-heatmap-color-hex');
+					if (hexEl) hexEl.textContent = val;
+					setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				});
+			} else if (key === 'workspace.readingHeatmap.opacity') {
+				input.addEventListener('input', () => {
+					const range = doc.getElementById('zbf-range-heatmap-opacity') as HTMLInputElement | null;
+					const n = Number(input.value);
+					if (Number.isFinite(n) && range) range.value = String(n);
+				});
+			}
 			input.addEventListener('change', commitInput);
 			input.addEventListener('keydown', (ev: KeyboardEvent) => { if (ev.key === 'Enter') commitInput(); });
 		}
 
+		const heatOpacityRange = doc.getElementById('zbf-range-heatmap-opacity') as HTMLInputElement | null;
+		const heatOpacityNum = doc.getElementById('zbf-num-heatmap-opacity') as HTMLInputElement | null;
+		if (heatOpacityRange) {
+			const syncRange = () => {
+				const next = String(prefs.set('workspace.readingHeatmap.opacity', Number(heatOpacityRange.value) as never));
+				if (heatOpacityNum) {
+					heatOpacityNum.value = next;
+					heatOpacityNum.setAttribute('value', next);
+				}
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+			};
+			heatOpacityRange.addEventListener('input', syncRange);
+			heatOpacityRange.addEventListener('change', syncRange);
+		}
+
 		bindPreferenceActions(doc, targetWin, prefs, syncAll);
-		void populateCslStyles(doc, prefs);
+		syncAnnotationColorInputs(doc, String(prefs.get('inspector.annotations.colorLabels') || ''));
+		let stylesRequested = false;
+		const ensureStyles = () => {
+			if (stylesRequested) return;
+			stylesRequested = true;
+			void populateCslStyles(doc, prefs);
+		};
+		const tabs = Array.from(pane.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+		const panels = Array.from(pane.querySelectorAll('[role="tabpanel"]')) as HTMLElement[];
+		const selectTab = (tabId: string, focusTab = false) => {
+			for (const tab of tabs) {
+				const active = tab.getAttribute('data-zbf-tab') === tabId;
+				tab.setAttribute('aria-selected', String(active));
+				tab.tabIndex = active ? 0 : -1;
+				tab.classList.toggle('is-active', active);
+				if (active && focusTab) tab.focus();
+			}
+			for (const panel of panels) {
+				panel.hidden = panel.getAttribute('data-zbf-panel') !== tabId;
+			}
+			if (tabId === 'inspector') ensureStyles();
+		};
+		tabs.forEach((tab, idx) => {
+			tab.addEventListener('click', () => selectTab(tab.getAttribute('data-zbf-tab') || 'overview'));
+			tab.addEventListener('keydown', (ev: KeyboardEvent) => {
+				if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(ev.key)) return;
+				ev.preventDefault();
+				const next = ev.key === 'Home' ? 0
+					: ev.key === 'End' ? tabs.length - 1
+					: (idx + (ev.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+				selectTab(tabs[next]?.getAttribute('data-zbf-tab') || 'overview', true);
+			});
+		});
+		pane.querySelectorAll('[data-zbf-jump]').forEach((btn) => {
+			btn.addEventListener('click', () => {
+				const target = btn.getAttribute('data-zbf-jump');
+				if (target) selectTab(target);
+			});
+		});
+		pane.querySelectorAll('[data-zbf-enable-mod]').forEach((btn) => {
+			const modKey = btn.getAttribute('data-zbf-enable-mod') as PrefKey | null;
+			if (!modKey || !(modKey in PREF_SCHEMA)) return;
+			const enableMod = () => {
+				prefs.set(modKey, true as never);
+				syncAll();
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+			};
+			btn.addEventListener('command', enableMod);
+			btn.addEventListener('click', enableMod);
+		});
 		(doc as { l10n?: { ready?: Promise<unknown> } }).l10n?.ready?.then?.(() => { if (!disposed) syncMenulistLabels(doc); });
 
 		if ((globalThis as any).Zotero?.Prefs?.registerObserver) {

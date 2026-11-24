@@ -4,6 +4,7 @@ import type { Disposable } from '../../kernel/types.ts';
 export type WordCommandResult = 'completed' | 'busy' | 'cancelled' | 'unavailable';
 
 let commandInFlight = false;
+let commandStartedAt = 0;
 
 /** Track the native command separately from execCommand, which handles and swallows errors. */
 export async function runWordCommand(
@@ -18,6 +19,10 @@ export async function runWordCommand(
 	if (typeof integration?.execCommand !== 'function'
 		|| typeof integration.getApplication !== 'function' || typeof iface?.[command] !== 'function') {
 		return 'unavailable';
+	}
+	if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 90_000) {
+		commandInFlight = false;
+		commandStartedAt = 0;
 	}
 	if (commandInFlight || integration.currentDoc) return 'busy';
 
@@ -34,6 +39,7 @@ export async function runWordCommand(
 	};
 
 	commandInFlight = true;
+	commandStartedAt = Date.now();
 	try {
 		disposers.push(kernel.runtime.patch(integration, 'getApplication', 'Word command', (original) =>
 			function (this: unknown, ...args: unknown[]) {
@@ -83,5 +89,6 @@ export async function runWordCommand(
 	} finally {
 		for (const dispose of disposers.reverse()) dispose();
 		commandInFlight = false;
+		commandStartedAt = 0;
 	}
 }

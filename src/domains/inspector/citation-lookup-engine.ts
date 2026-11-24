@@ -98,10 +98,9 @@ export class CitationLookupEngine {
 					})),
 				};
 			}
-			return { parsed, historyMatched: false, candidates: [] };
 		}
 
-		const weighted = await this.weightedSearch(query, options.libraryItems);
+		const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID);
 		return { parsed, historyMatched: false, candidates: weighted };
 	}
 
@@ -120,8 +119,8 @@ export class CitationLookupEngine {
 		return item;
 	}
 
-	private async weightedSearch(query: string, libraryItems?: readonly any[]): Promise<LookupCandidate[]> {
-		const candidates = libraryItems ?? await this.fetchLocalLibraryItems();
+	private async weightedSearch(query: string, libraryItems?: readonly any[], libraryID?: number): Promise<LookupCandidate[]> {
+		const candidates = libraryItems ?? await this.fetchLocalLibraryItems(libraryID);
 		const targetDoi = extractDoi(query);
 		const targetYear = extractYear(query);
 		const lowerQuery = query.toLowerCase();
@@ -138,7 +137,7 @@ export class CitationLookupEngine {
 			if (targetDoi && doi && doi === targetDoi) {
 				seen.add(id);
 				results.push({ itemID: id, title, score: 98, source: 'doi', item });
-				continue;
+				return results;
 			}
 
 			let score = 0;
@@ -162,12 +161,12 @@ export class CitationLookupEngine {
 		return results.slice(0, 8);
 	}
 
-	private async fetchLocalLibraryItems(): Promise<any[]> {
+	private async fetchLocalLibraryItems(libraryID?: number): Promise<any[]> {
 		const hostItems = (globalThis as any).Zotero?.Items;
-		const userLibID = (globalThis as any).Zotero?.Libraries?.userLibraryID ?? 1;
+		const targetLibID = libraryID ?? (globalThis as any).Zotero?.Libraries?.userLibraryID ?? 1;
 		if (typeof hostItems?.getAll === 'function') {
 			try {
-				return await hostItems.getAll(userLibID, true, false);
+				return await hostItems.getAll(targetLibID, true, false);
 			} catch {
 				return [];
 			}

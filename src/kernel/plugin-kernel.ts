@@ -22,6 +22,7 @@ export class PluginKernel {
 	private readonly openWindows = new Set<Window>();
 	private initialized = false;
 	private started = false;
+	private syncQueue: Promise<void> = Promise.resolve();
 
 	constructor(options: { prefAdapter?: HostPrefsAdapter } = {}) {
 		this.bus = new TypedEventBus((event, err) => this.logger.error(`bus:${event}`, err));
@@ -55,6 +56,7 @@ export class PluginKernel {
 			'debug',
 			'wordCite.perfSlowThresholdMs',
 			'modules.workspace.enable',
+			'modules.visualNotes.enable',
 			'modules.inspector.enable',
 			'modules.wordCite.enable',
 		];
@@ -88,20 +90,30 @@ export class PluginKernel {
 		}
 	}
 
-	async syncDomainStates(): Promise<void> {
+	syncDomainStates(): Promise<void> {
+		const next = this.syncQueue.then(() => this.runSyncDomainStates());
+		this.syncQueue = next.catch(() => {});
+		return next;
+	}
+
+	private async runSyncDomainStates(): Promise<void> {
 		for (const domain of this.domains.values()) {
 			const shouldEnable = Boolean(this.prefs.get(domain.enabledPref as PrefKey));
 			const currentlyActive = domain.isActive();
 			if (shouldEnable && !currentlyActive) {
 				try {
 					await domain.start();
-					for (const win of this.openWindows) domain.onMainWindowLoad?.(win);
+					for (const win of this.openWindows) {
+						try { domain.onMainWindowLoad?.(win); } catch (err) { this.logger.error(`windowLoad:${domain.id}`, err); }
+					}
 				} catch (err) {
 					this.logger.error(`domain:start:${domain.id}`, err);
 				}
 			} else if (!shouldEnable && currentlyActive) {
 				try {
-					for (const win of this.openWindows) domain.onMainWindowUnload?.(win);
+					for (const win of this.openWindows) {
+						try { domain.onMainWindowUnload?.(win); } catch (err) { this.logger.error(`windowUnload:${domain.id}`, err); }
+					}
 					domain.stop();
 				} catch (err) {
 					this.logger.error(`domain:stop:${domain.id}`, err);

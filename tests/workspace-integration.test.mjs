@@ -200,8 +200,8 @@ test('cross-domain fusion: shared primary item field cache, multi-item copy hist
 	store.removeGroup(grp.id);
 
 	const spotlight = new WorkspaceSpotlightEngine(prefs, store, tabs);
-	const snapPaperHits = spotlight.query('ferroelectric', { Zotero_Tabs: { _tabs: [] } });
-	assert.ok(snapPaperHits.some((h) => h.badge === '快照文献' && h.title.includes('Archived Ferroelectric MoS2')));
+	const snapPaperHits = spotlight.query('archived cvd', { Zotero_Tabs: { _tabs: [] } });
+	assert.ok(snapPaperHits.some((h) => h.id.startsWith('session:') && h.title === 'Archived CVD Group'));
 
 	delete globalThis.Zotero;
 });

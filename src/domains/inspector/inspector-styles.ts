@@ -179,19 +179,41 @@ collapsible-section:has(> .zotero-viewflow-lookup-body) {
 	font-size: 13px;
 	line-height: 1.5;
 }
+.viewflow-lookup-input-wrap {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
 .viewflow-lookup-input {
 	display: block;
 	box-sizing: border-box;
 	width: 100%;
 	min-width: 0;
 	height: 28px;
-	padding: 3px 7px;
+	padding: 3px 26px 3px 7px;
 	border: 1px solid var(--material-border, light-dark(#d1d1d1, #555));
 	border-radius: 3px;
 	background: var(--material-background, light-dark(#fff, #242424));
 	color: inherit;
 	font: inherit;
 }
+.viewflow-lookup-clear {
+	position: absolute;
+	right: 4px;
+	width: 18px;
+	height: 18px;
+	min-height: 0 !important;
+	padding: 0 !important;
+	border: 0 !important;
+	border-radius: 3px;
+	background: transparent !important;
+	color: var(--fill-secondary, #888);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+}
+.viewflow-lookup-clear[hidden] { display: none !important; }
 .viewflow-lookup-input::placeholder { color: var(--fill-secondary, #888); }
 .viewflow-lookup-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .viewflow-lookup-container button {

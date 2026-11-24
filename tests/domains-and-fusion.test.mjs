@@ -248,9 +248,16 @@ test('Fusion Bridges 1-4: Tab copy -> Reverse lookup -> Jump open tab + Word bad
 		},
 	]);
 
-	const spotlightResults = app.workspace.spotlight.query('survey.docx', win);
+	const spotlightResults = app.workspace.spotlight.query('>survey.docx', win);
 	const groupCmd = spotlightResults.find((r) => r.id.startsWith('cmd:group-word:'));
 	assert.ok(groupCmd, 'Expected Spotlight cross-domain group command');
+	const matrixCmd = spotlightResults.find((r) => r.id.startsWith('cmd:matrix-word:'));
+	assert.ok(matrixCmd, 'Expected Spotlight Word-to-Matrix command');
+	let matrixPayload = null;
+	const offMatrix = app.kernel.bus.on('visual-notes:open-matrix', (p) => { matrixPayload = p; });
+	await matrixCmd.action();
+	offMatrix();
+	assert.deepEqual(matrixPayload?.itemIDs, [202]);
 	await groupCmd.action();
 	const surveyGroup = app.workspace.store.state.groups.find((g) => g.name === 'survey.docx');
 	assert.ok(surveyGroup?.memberKeys.includes('item:202'), 'Expected cited open tab to be grouped into survey.docx');
@@ -561,6 +568,9 @@ test('WordCite switches: dragCite=false still allows Plan C & menus; column.enab
 			'wordCite.column.enable': true,
 			'wordCite.tabContextMenu.enable': true,
 			'inspector.wordCite.enable': true,
+			'workspace.remarkColumn.enable': false,
+			'workspace.readingColumn.enable': false,
+			'workspace.annotationColumn.enable': false,
 		}).adapter,
 	});
 	app.init({ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' });

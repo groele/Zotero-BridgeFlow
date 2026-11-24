@@ -13,6 +13,7 @@ const MANAGED_TAG_IDS_PREF = 'extensions.zotero.bridgeflow.wordCite.managedTagIt
 export class CitationTagGovernance {
 	private readonly managedItemIDs = new Set<number>();
 	private activeTagText: string;
+	private syncQueue: Promise<{ added: number; removed: number }> = Promise.resolve({ added: 0, removed: 0 });
 
 	private readonly prefs: UnifiedPrefService;
 
@@ -51,33 +52,69 @@ export class CitationTagGovernance {
 		return clean || '/Citations';
 	}
 
-	async syncCitedItems(
+	syncCitedItems(
 		citedUnion: ReadonlySet<number>,
 		resolveItem: (id: number) => any = (id) => (globalThis as any).Zotero?.Items?.get?.(id),
+	): Promise<{ added: number; removed: number }> {
+		const snapshotUnion = new Set(citedUnion);
+		const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem));
+		this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
+		return run;
+	}
+
+	private async performSync(
+		citedUnion: ReadonlySet<number>,
+		resolveItem: (id: number) => any,
 	): Promise<{ added: number; removed: number }> {
 		const enabled = this.prefs.get('wordCite.citationTags.enable');
 		const nextTag = this.sanitizeTagText(this.prefs.get('wordCite.citationTags.text'));
 		let added = 0;
 		let removed = 0;
-
-		// Handle tag rename migration first
-		if (nextTag !== this.activeTagText) {
-			const prevTag = this.activeTagText;
-			this.activeTagText = nextTag;
-			for (const id of [...this.managedItemIDs]) {
-				const item = resolveItem(id);
-				if (!isItemWritable(item)) continue;
-				if (item.hasTag?.(prevTag)) {
-					item.removeTag?.(prevTag);
-					if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
-					await item.saveTx?.();
+		try {
+			// Handle tag rename migration first
+			if (nextTag !== this.activeTagText) {
+				const prevTag = this.activeTagText;
+				this.activeTagText = nextTag;
+				for (const id of [...this.managedItemIDs]) {
+					const item = resolveItem(id);
+					if (!isItemWritable(item)) continue;
+					if (item.hasTag?.(prevTag)) {
+						item.removeTag?.(prevTag);
+						if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
+						await item.saveTx?.();
+					}
 				}
 			}
-		}
 
-		// If disabled, strip only plugin-owned tags
-		if (!enabled) {
+			// If disabled, strip only plugin-owned tags
+			if (!enabled) {
+				for (const id of [...this.managedItemIDs]) {
+					const item = resolveItem(id);
+					if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
+						item.removeTag?.(this.activeTagText);
+						await item.saveTx?.();
+						removed++;
+					}
+					this.managedItemIDs.delete(id);
+				}
+				return { added, removed };
+			}
+
+			// Add tag to newly cited writable items (skip if user already manually added it)
+			for (const id of citedUnion) {
+				const item = resolveItem(id);
+				if (!isItemWritable(item)) continue;
+				if (!item.hasTag?.(this.activeTagText)) {
+					item.addTag?.(this.activeTagText);
+					await item.saveTx?.();
+					this.managedItemIDs.add(id);
+					added++;
+				}
+			}
+
+			// Remove tag from uncited plugin-managed items
 			for (const id of [...this.managedItemIDs]) {
+				if (citedUnion.has(id)) continue;
 				const item = resolveItem(id);
 				if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
 					item.removeTag?.(this.activeTagText);
@@ -86,35 +123,9 @@ export class CitationTagGovernance {
 				}
 				this.managedItemIDs.delete(id);
 			}
-			this.savePersistedIDs();
 			return { added, removed };
+		} finally {
+			this.savePersistedIDs();
 		}
-
-		// Add tag to newly cited writable items (skip if user already manually added it)
-		for (const id of citedUnion) {
-			const item = resolveItem(id);
-			if (!isItemWritable(item)) continue;
-			if (!item.hasTag?.(this.activeTagText)) {
-				item.addTag?.(this.activeTagText);
-				await item.saveTx?.();
-				this.managedItemIDs.add(id);
-				added++;
-			}
-		}
-
-		// Remove tag from uncited plugin-managed items
-		for (const id of [...this.managedItemIDs]) {
-			if (citedUnion.has(id)) continue;
-			const item = resolveItem(id);
-			if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-				item.removeTag?.(this.activeTagText);
-				await item.saveTx?.();
-				removed++;
-			}
-			this.managedItemIDs.delete(id);
-		}
-
-		this.savePersistedIDs();
-		return { added, removed };
 	}
 }

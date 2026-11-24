@@ -30,6 +30,15 @@ export class WorkspaceWindowUI {
 	private renderTimer = 0;
 	private destroyed = false;
 	private readonly lifetime: AbortController | null;
+	private readonly onActivity?: () => void;
+	private lastActivitySentAt = 0;
+
+	private readonly onInputActivity = () => {
+		const now = Date.now();
+		if (now - this.lastActivitySentAt < 1500) return;
+		this.lastActivitySentAt = now;
+		this.onActivity?.();
+	};
 
 	private readonly onKeydown = (ev: Event) => {
 		const e = ev as KeyboardEvent;
@@ -55,11 +64,13 @@ export class WorkspaceWindowUI {
 		store: WorkspaceStateStore,
 		tabs: WorkspaceTabController,
 		spotlightEngine: WorkspaceSpotlightEngine,
+		onActivity?: () => void,
 	) {
 		this.win = win;
 		this.doc = win.document;
 		this.prefs = prefs;
 		this.tabs = tabs;
+		this.onActivity = onActivity;
 		this.lifetime = this.doc ? new ((win as Window & typeof globalThis).AbortController)() : null;
 		if (!this.doc || !this.lifetime) return;
 
@@ -76,6 +87,9 @@ export class WorkspaceWindowUI {
 
 		this.attachObservers();
 		this.doc.addEventListener('keydown', this.onKeydown, { capture: true, signal: this.lifetime.signal });
+		this.doc.addEventListener('pointerdown', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
+		this.doc.addEventListener('keydown', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
+		this.doc.addEventListener('wheel', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
 		this.win.addEventListener('resize', this.onResize, { signal: this.lifetime.signal });
 		this.render();
 	}

@@ -240,6 +240,11 @@ export class WorkspaceTabContextMenu {
 				this.onRefresh();
 			}, close, { icon: 'save' });
 		}
+		if (this.prefs.get('workspace.enableAnnotationMatrix')) {
+			addPopupButton(this.doc, pop, '生成本组文献对比矩阵…', () => {
+				this.tabs.openGroupAnnotationMatrix(this.win, group.id);
+			}, close, { icon: 'layers' });
+		}
 
 		addPopupButton(this.doc, pop, '折叠其他分组', () => {
 			this.store.collapseOtherGroups(group.id);

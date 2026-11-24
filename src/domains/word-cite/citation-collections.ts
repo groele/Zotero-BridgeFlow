@@ -266,8 +266,9 @@ export class WordCitationCollectionManager {
 
 			const targetIDs = [...ses.itemCitations.keys()].filter((id) => {
 				if (!Number.isSafeInteger(id) || id <= 0) return false;
-				const item = hostItems?.get?.(id);
-				if (!item) return true;
+				if (typeof hostItems?.get !== 'function') return true;
+				const item = hostItems.get(id);
+				if (!item) return false;
 				const inTrash = typeof item.inTrash === 'function' ? item.inTrash() === true : item.inTrash === true;
 				if (item.deleted === true || inTrash) return false;
 				if (item.libraryID != null && col.libraryID != null && item.libraryID !== col.libraryID) return false;
@@ -284,14 +285,18 @@ export class WordCitationCollectionManager {
 			const toAdd = targetIDs.filter((id) => !currentSet.has(id));
 			if (!toRemove.length && !toAdd.length) continue;
 
-			if (typeof ZoteroObj.DB?.executeTransaction === 'function') {
-				await ZoteroObj.DB.executeTransaction(async () => {
+			try {
+				if (typeof ZoteroObj.DB?.executeTransaction === 'function') {
+					await ZoteroObj.DB.executeTransaction(async () => {
+						if (toRemove.length) await col.removeItems?.(toRemove);
+						if (toAdd.length) await col.addItems?.(toAdd);
+					});
+				} else {
 					if (toRemove.length) await col.removeItems?.(toRemove);
 					if (toAdd.length) await col.addItems?.(toAdd);
-				});
-			} else {
-				if (toRemove.length) await col.removeItems?.(toRemove);
-				if (toAdd.length) await col.addItems?.(toAdd);
+				}
+			} catch (err) {
+				this.kernel.logger.error('word-cite:collection-sync', err);
 			}
 		}
 	}

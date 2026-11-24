@@ -36,6 +36,7 @@ export class WordCiteSectionController {
 	private receipt: ReceiptState = { text: '', tone: 'none' };
 	private requestSeq = 0;
 	private pendingRequest: string | undefined;
+	private pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -55,12 +56,14 @@ export class WordCiteSectionController {
 		}));
 		this.disposables.add(this.kernel.bus.on('word:insert-result', (res) => {
 			if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+			this.clearPendingTimer();
 			this.pendingRequest = undefined;
 			this.receipt = formatInsertReceipt(res, isZhLocale());
 			this.renderAllBodies();
 		}));
 		this.disposables.add(this.kernel.bus.on('word:refresh-result', (res) => {
 			if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+			this.clearPendingTimer();
 			this.pendingRequest = undefined;
 			this.receipt = formatRefreshReceipt(res, isZhLocale());
 			this.renderAllBodies();
@@ -111,6 +114,7 @@ export class WordCiteSectionController {
 	}
 
 	unregister(): void {
+		this.clearPendingTimer();
 		this.services.panePositions.setTarget('word-cite', null);
 		this.disposables.disposeAll();
 		for (const c of this.buttonListeners.values()) c.abort();
@@ -133,11 +137,20 @@ export class WordCiteSectionController {
 		return true;
 	}
 
+	private clearPendingTimer(): void { if (this.pendingTimer !== null) { clearTimeout(this.pendingTimer); this.pendingTimer = null; } }
+
 	private beginRequest(kind: 'insert' | 'refresh', owner?: WordCiteBodyState): string {
+		this.clearPendingTimer();
 		const requestId = `word-${++this.requestSeq}`;
 		this.pendingRequest = requestId;
 		this.receiptOwner = owner;
 		this.receipt = formatPendingReceipt(kind, isZhLocale());
+		this.pendingTimer = setTimeout(() => {
+			if (this.pendingRequest !== requestId) return;
+			this.pendingTimer = null; this.pendingRequest = undefined;
+			this.receipt = { tone: 'warn', text: isZhLocale() ? '⌛ 未收到 Word 响应，请检查 Word 后重试' : '⌛ Word request timed out; retry when ready' };
+			this.renderAllBodies();
+		}, 12_000);
 		this.renderAllBodies();
 		return requestId;
 	}
@@ -251,6 +264,9 @@ export class WordCiteSectionController {
 			? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null
 			: null;
 		st.lastGroup = matchedGroup;
+		const uncitedInGroup = matchedGroup && hasSession
+			? matchedGroup.itemIDs.filter((id) => !snap!.byItemID.has(id)).length
+			: 0;
 
 		st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : '');
 		const stats = this.buildStats(zh, snap, st.lastItemIDs);
@@ -280,7 +296,9 @@ export class WordCiteSectionController {
 				? (zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})`)
 				: '',
 			groupButtonTitle: matchedGroup
-				? (zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"`)
+				? (zh
+					? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ''}`
+					: `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ''}`)
 				: '',
 			showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get('wordCite.collections.enable')),
 			colButtonText: zh ? '已引清单' : 'Cited List',
@@ -309,33 +327,17 @@ export class WordCiteSectionController {
 			const b = snap.byItemID.get(ids[0]);
 			if (b) {
 				const occ = b.occurrences ?? 1;
-				return {
-					text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`,
-					title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ''}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`,
-					state: 'cited',
-				};
+				return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ''}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: 'cited' };
 			}
-			return {
-				text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`,
-				title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`,
-				state: 'uncited',
-			};
+			return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: 'uncited' };
 		}
 		if (ids.length > 1) {
 			const cited = ids.map((id) => snap.byItemID.get(id)).filter((b): b is NonNullable<typeof b> => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
 			if (cited.length) {
 				const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(', ')}${cited.length > 3 ? '…' : ''}]`;
-				return {
-					text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`,
-					title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`,
-					state: 'cited',
-				};
+				return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: 'cited' };
 			}
-			return {
-				text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`,
-				title: zh ? '当前选中文献均尚未在 Word 中引用' : 'None of the selected items are cited yet',
-				state: 'uncited',
-			};
+			return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? '当前选中文献均尚未在 Word 中引用' : 'None of the selected items are cited yet', state: 'uncited' };
 		}
 		return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: 'uncited' };
 	}

@@ -4,6 +4,10 @@ import {
 	resolvePrimaryCollectionName as sharedResolvePrimaryCollectionName,
 	revealItemAttachmentInFilesystem,
 } from '../../services/item-resolution.ts';
+import {
+	formatReadingDuration as sharedFormatReadingDuration,
+	formatReadingProgress as sharedFormatReadingProgress,
+} from '../../services/reading-stats.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { TabReadingProgress, VirtualMemberMeta } from './types.ts';
 
@@ -98,49 +102,18 @@ export async function selectItemInLibrary(win: Window, itemID: number, switchCol
 }
 
 export function formatReadingDuration(seconds?: number): string {
-	const total = Math.max(0, Math.floor(Number(seconds) || 0));
-	if (total < 60) return '';
-	const mins = Math.floor(total / 60);
-	if (mins < 60) return `${mins}m`;
-	const hrs = Math.floor(mins / 60);
-	const rem = mins % 60;
-	return rem ? `${hrs}h${rem}m` : `${hrs}h`;
+	return sharedFormatReadingDuration(seconds);
 }
 
 export function formatReadingProgress(prog?: TabReadingProgress): { text: string; ratio: number | null } {
-	if (!prog) return { text: '', ratio: null };
-	const dur = formatReadingDuration(prog.readSeconds);
-	const page = Number(prog.lastPage) || 0;
-	const total = Number(prog.totalPages) || 0;
-	const pageText = page > 0 ? (total > 0 ? `p.${page}/${total}` : `p.${page}`) : '';
-	const text = [dur, pageText].filter(Boolean).join(' · ');
-	const ratio = page > 0 && total > 0 ? Math.max(0, Math.min(1, page / total)) : null;
-	return { text, ratio };
+	return sharedFormatReadingProgress(prog);
 }
 
-export function trackActiveReaderProgress(
-	win: Window,
-	store: WorkspaceStateStore,
-	tracked: readonly { tabID: string; key: string; type: string; virtual: boolean }[],
-	elapsedSeconds: number,
-): boolean {
-	const doc = win.document as Document | undefined;
-	if (typeof doc?.hasFocus === 'function' && !doc.hasFocus()) return false;
-	const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
-	if (!selectedID || selectedID === 'zotero-pane') return false;
-	const current = tracked.find((t) => !t.virtual && t.tabID === selectedID);
-	if (!current || current.key.startsWith('tab:') || !current.type.startsWith('reader')) return false;
-
-	const prevText = formatReadingProgress(store.state.readingProgress[current.key]).text;
-	const reader: any = (globalThis as any).Zotero?.Reader?.getByTabID?.(selectedID);
-	const pdfApp = reader?._iframeWindow?.PDFViewerApplication;
-	const page = Number(pdfApp?.page || (reader?.state?.pageIndex != null ? Number(reader.state.pageIndex) + 1 : 0)) || 0;
-	const total = Number(pdfApp?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount || 0) || 0;
-
-	store.touchViewed(current.key);
-	const next = store.updateReadingProgress(current.key, elapsedSeconds, page, total);
-	return formatReadingProgress(next).text !== prevText;
-}
+export {
+	readReaderPageMetrics,
+	trackActiveReaderProgress,
+	type ReadingTrackOptions,
+} from './reading-tracker.ts';
 
 export function buildVirtualMetaFromTracked(tab: {
 	key: string;
@@ -293,20 +266,39 @@ export async function focusOrOpenTrackedItem(
 		onSelectTab(match.tabID);
 		return 'focused';
 	}
-	const reader = (globalThis as any).Zotero?.Reader;
-	const targetAttachmentID = req.attachmentID || req.itemID;
-	if (typeof reader?.open === 'function' && targetAttachmentID > 0) {
-		await reader.open(targetAttachmentID);
-		store.removeVirtualMember(`item:${targetAttachmentID}`);
-		store.removeVirtualMember(`item:${req.itemID}`);
-		if (req.assignToActiveGroup) {
-			const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
-			const activeTab = tracked.find((t) => t.tabID === selectedID);
-			if (activeTab?.groupId) store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
+	try {
+		if (!req.attachmentID) {
+			const openedParent = await openItemAttachmentOrNote(
+				win, store, req.itemID,
+				req.assignToActiveGroup ? activeGroupId(win, tracked) : undefined,
+				false,
+			);
+			if (openedParent) return 'opened';
 		}
-		return 'opened';
+		const reader = (globalThis as any).Zotero?.Reader;
+		const targetAttachmentID = req.attachmentID || req.itemID;
+		if (typeof reader?.open === 'function' && targetAttachmentID > 0) {
+			await reader.open(targetAttachmentID);
+			store.removeVirtualMember(`item:${targetAttachmentID}`);
+			store.removeVirtualMember(`item:${req.itemID}`);
+			if (req.assignToActiveGroup) {
+				const gid = activeGroupId(win, tracked);
+				if (gid) store.assignToGroup(`item:${targetAttachmentID}`, gid);
+			}
+			return 'opened';
+		}
+	} catch (error) {
+		(globalThis as any).Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
 	}
 	return 'not-found';
+}
+
+function activeGroupId(
+	win: Window,
+	tracked: readonly { tabID: string; groupId: string }[],
+): string {
+	const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+	return tracked.find((t) => t.tabID === selectedID)?.groupId || '';
 }
 
 export function disambiguateSameParentTabs<T extends { parentItemID: number; title: string; shortTitle: string; filename: string }>(

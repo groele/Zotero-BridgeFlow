@@ -66,16 +66,20 @@ export class UnifiedClipboardService {
 	async copyItems(rawItems: readonly any[], options: ClipboardCopyOptions): Promise<boolean> {
 		const { items } = deduplicateRegularItems(rawItems);
 		if (!items.length) return false;
-		const formatted = await this.csl.formatItems(items, {
-			styleID: options.styleID,
-			asCitation: options.asCitation,
-		});
-		if (!formatted.text && !formatted.html) return false;
-		const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
-		if (ok) {
-			this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
+		try {
+			const formatted = await this.csl.formatItems(items, {
+				styleID: options.styleID,
+				asCitation: options.asCitation,
+			});
+			if (!formatted.text && !formatted.html) return false;
+			const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
+			if (ok) {
+				this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
+			}
+			return ok;
+		} catch {
+			return false;
 		}
-		return ok;
 	}
 
 	copyRendered(

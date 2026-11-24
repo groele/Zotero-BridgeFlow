@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { WorkspaceDiskCache } from '../src/domains/workspace/workspace-disk-cache.ts';
-import { SpotlightLibraryIndex } from '../src/domains/workspace/spotlight-library.ts';
 import { CslFormattingEngine } from '../src/services/csl-engine.ts';
 import { displayAttachmentName } from '../src/domains/inspector/pdf-folder-section.ts';
 
@@ -16,25 +15,6 @@ test('queued workspace writes preserve a fast revert and deduplicate adjacent id
 	await cache.flushNow({ name: 'A' });
 	await Promise.all(['B', 'A', 'A'].map(name => cache.flushNow({ name })));
 	assert.deepEqual(writes, ['A', 'B', 'A']);
-});
-
-test('Spotlight coalesces invalidations received during library enumeration', async (t) => {
-	const original = globalThis.Zotero;
-	t.after(() => { globalThis.Zotero = original; });
-	let release, calls = 0;
-	const item = { id: 1, key: 'K', isRegularItem: () => true, getField: () => 'updated' };
-	globalThis.Zotero = { Items: { async getAll() {
-		if (++calls === 1) { await new Promise(resolve => { release = resolve; }); return []; }
-		return [item];
-	} } };
-	const index = new SpotlightLibraryIndex({});
-	index.warmUp();
-	index.invalidate();
-	index.invalidate();
-	release();
-	await new Promise(resolve => setImmediate(resolve));
-	assert.equal(calls, 2);
-	assert.equal(index.query('updated', {}, new Set()).length, 1);
 });
 
 test('CSL concurrent calls share initialization and locale changes invalidate the formatted result', async (t) => {

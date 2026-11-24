@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.2.1 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.4.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -105,7 +105,9 @@
           if (!ev.text || !ev.itemIDs.length) return;
           if (ev.itemIDs.length === 1) {
             const itemID = ev.itemIDs[0];
+            if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
             const item = globalThis.Zotero?.Items?.get?.(itemID);
+            if (item?.deleted || item?.isTrashed?.()) return;
             this.services.history.record({
               text: ev.text,
               libraryID: Number(item?.libraryID || 1),
@@ -120,7 +122,9 @@
           if (lines.length === ev.itemIDs.length) {
             for (let i = 0; i < ev.itemIDs.length; i++) {
               const itemID = ev.itemIDs[i];
+              if (!Number.isSafeInteger(itemID) || itemID <= 0) continue;
               const item = globalThis.Zotero?.Items?.get?.(itemID);
+              if (item?.deleted || item?.isTrashed?.()) continue;
               this.services.history.record({
                 text: lines[i],
                 libraryID: Number(item?.libraryID || 1),
@@ -206,27 +210,24 @@
                   }
                 });
               }
-              for (const [itemID, info] of active.itemCitations.entries()) {
-                const zotItem = globalThis.Zotero?.Items?.get?.(itemID);
-                const itemTitle = String(zotItem?.getField?.("title") || info.shortText || `文献 #${itemID}`);
-                const label = `${itemTitle} ${info.shortText} (${active.displayName})`;
-                if (term && !label.toLowerCase().includes(term) && !`[${info.ordinal}]`.includes(term)) {
-                  continue;
+              if (active.itemCitations.size > 0 && this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.enableAnnotationMatrix")) {
+                const matrixTitle = `> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`;
+                if (!term || matrixTitle.toLowerCase().includes(term) || "word".includes(term) || "matrix".includes(term) || "矩阵".includes(term)) {
+                  out.push({
+                    id: `cmd:matrix-word:${active.sessionID}`,
+                    category: "command",
+                    title: matrixTitle,
+                    subtitle: `汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
+                    badge: "矩阵",
+                    action: () => {
+                      this.kernel.bus.emit("visual-notes:open-matrix", {
+                        win,
+                        title: `Word 已引：${active.displayName}`,
+                        itemIDs: [...active.itemCitations.keys()]
+                      });
+                    }
+                  });
                 }
-                out.push({
-                  id: `word-cite:${active.sessionID}:${itemID}`,
-                  category: "citation",
-                  title: itemTitle,
-                  subtitle: `${active.displayName} · ${info.shortText}`,
-                  badge: `Word [${info.ordinal}]`,
-                  action: async () => {
-                    await this.workspace.focusOrOpenItem({
-                      itemID,
-                      preferExistingTab: true,
-                      assignToActiveGroup: false
-                    }, win);
-                  }
-                });
               }
             }
             if (this.wordCite.isActive()) {
@@ -263,6 +264,145 @@
     }
     stop() {
       this.disposables.disposeAll();
+    }
+  };
+
+  // src/services/item-remark-sync.ts
+  var REMARK_PREFIX = "BridgeFlow-Remark:";
+  var REMARK_LINE_RE = /^BridgeFlow-Remark:\s*(.*)$/i;
+  function readRemarkFromExtra(extraText) {
+    const raw = String(extraText || "");
+    if (!raw) return "";
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(REMARK_LINE_RE);
+      if (m) return m[1].trim();
+    }
+    return "";
+  }
+  function upsertRemarkInExtra(extraText, remark) {
+    const clean = remark.replace(/[\r\n]+/g, " ").trim();
+    const lines = String(extraText || "").split(/\r?\n/).filter((line) => !REMARK_LINE_RE.test(line));
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (clean) {
+      lines.push(`${REMARK_PREFIX} ${clean}`);
+    }
+    return lines.join("\n");
+  }
+  function getItemBriefNote(item, cachedRemark = "") {
+    const direct = String(cachedRemark || "").trim();
+    if (direct) return direct;
+    if (!item || typeof item.getField !== "function") return "";
+    try {
+      return readRemarkFromExtra(String(item.getField("extra") || ""));
+    } catch {
+      return "";
+    }
+  }
+  var pendingSyncByItemID = /* @__PURE__ */ new Map();
+  async function performExtraSync(itemOrID, remark) {
+    try {
+      const hostItems = globalThis.Zotero?.Items;
+      let item = typeof itemOrID === "number" ? hostItems?.get?.(itemOrID) || (hostItems?.getAsync ? await hostItems.getAsync(itemOrID) : null) : itemOrID;
+      if (!item || item.deleted) return false;
+      if (item.isAttachment?.() && item.parentItemID) {
+        const parent = hostItems?.get?.(item.parentItemID) || (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
+        if (parent && !parent.deleted) item = parent;
+      }
+      if (!item?.isRegularItem?.() || typeof item.getField !== "function" || typeof item.setField !== "function") {
+        return false;
+      }
+      const prevExtra = String(item.getField("extra") || "");
+      const nextExtra = upsertRemarkInExtra(prevExtra, remark);
+      if (prevExtra === nextExtra) return true;
+      item.setField("extra", nextExtra);
+      if (typeof item.saveTx === "function") {
+        await item.saveTx();
+      } else if (typeof item.save === "function") {
+        await item.save();
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function syncItemRemarkToExtra(itemOrID, remark) {
+    const rawID = typeof itemOrID === "number" ? itemOrID : Number(itemOrID?.id || 0);
+    if (rawID <= 0) return performExtraSync(itemOrID, remark);
+    const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
+    const next = prev.then(() => performExtraSync(itemOrID, remark));
+    pendingSyncByItemID.set(rawID, next);
+    void next.finally(() => {
+      if (pendingSyncByItemID.get(rawID) === next) pendingSyncByItemID.delete(rawID);
+    });
+    return next;
+  }
+
+  // src/bridges/visual-notes-bridge.ts
+  var VisualNotesBridge = class {
+    id = "visual-notes-bridge";
+    kernel;
+    workspace;
+    visualNotes;
+    prevRemarks = /* @__PURE__ */ new Map();
+    disposeStoreListener = null;
+    active = false;
+    constructor(kernel, workspace, visualNotes) {
+      this.kernel = kernel;
+      this.workspace = workspace;
+      this.visualNotes = visualNotes;
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.seedRemarks();
+      this.visualNotes.setDataSource({
+        getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
+        getRemark: (itemID) => this.workspace.store.state.remarks[`item:${itemID}`] || "",
+        setRemark: (itemID, remark) => {
+          this.workspace.store.setRemark(`item:${itemID}`, remark);
+          this.workspace.refreshAllWindows();
+        }
+      });
+      this.disposeStoreListener = this.workspace.store.onChange(() => {
+        if (!this.active) return;
+        this.syncChangedRemarksToExtra();
+        this.visualNotes.refreshLibraryViews();
+      });
+    }
+    stop() {
+      if (!this.active) return;
+      this.active = false;
+      this.disposeStoreListener?.();
+      this.disposeStoreListener = null;
+      this.visualNotes.setDataSource(void 0);
+    }
+    seedRemarks() {
+      this.prevRemarks.clear();
+      for (const [k, v] of Object.entries(this.workspace.store.state.remarks)) {
+        this.prevRemarks.set(k, v);
+      }
+    }
+    syncChangedRemarksToExtra() {
+      const current = this.workspace.store.state.remarks;
+      const changedKeys = [];
+      for (const [k, v] of Object.entries(current)) {
+        if (this.prevRemarks.get(k) !== v) changedKeys.push({ key: k, value: v });
+      }
+      for (const k of this.prevRemarks.keys()) {
+        if (!(k in current)) changedKeys.push({ key: k, value: "" });
+      }
+      if (!changedKeys.length) return;
+      this.seedRemarks();
+      if (!this.kernel.prefs.get("workspace.syncRemarkToExtra")) return;
+      for (const entry of changedKeys) {
+        const vm = this.workspace.store.state.virtualMembers[entry.key];
+        const match = entry.key.match(/^item:(\d+)$/);
+        const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
+        if (itemID > 0) {
+          void syncItemRemarkToExtra(itemID, entry.value).catch(() => {
+          });
+        }
+      }
     }
   };
 
@@ -862,9 +1002,8 @@
             }))
           };
         }
-        return { parsed, historyMatched: false, candidates: [] };
       }
-      const weighted = await this.weightedSearch(query, options.libraryItems);
+      const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID);
       return { parsed, historyMatched: false, candidates: weighted };
     }
     async lookup(rawQuery, libraryItems) {
@@ -878,8 +1017,8 @@
       if (!item || item.deleted || item.isTrashed?.() || !item.isRegularItem?.()) return null;
       return item;
     }
-    async weightedSearch(query, libraryItems) {
-      const candidates = libraryItems ?? await this.fetchLocalLibraryItems();
+    async weightedSearch(query, libraryItems, libraryID) {
+      const candidates = libraryItems ?? await this.fetchLocalLibraryItems(libraryID);
       const targetDoi = extractDoi(query);
       const targetYear = extractYear(query);
       const lowerQuery = query.toLowerCase();
@@ -894,7 +1033,7 @@
         if (targetDoi && doi && doi === targetDoi) {
           seen.add(id);
           results.push({ itemID: id, title, score: 98, source: "doi", item });
-          continue;
+          return results;
         }
         let score = 0;
         const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
@@ -915,12 +1054,12 @@
       results.sort((a, b) => b.score - a.score);
       return results.slice(0, 8);
     }
-    async fetchLocalLibraryItems() {
+    async fetchLocalLibraryItems(libraryID) {
       const hostItems = globalThis.Zotero?.Items;
-      const userLibID = globalThis.Zotero?.Libraries?.userLibraryID ?? 1;
+      const targetLibID = libraryID ?? globalThis.Zotero?.Libraries?.userLibraryID ?? 1;
       if (typeof hostItems?.getAll === "function") {
         try {
-          return await hostItems.getAll(userLibID, true, false);
+          return await hostItems.getAll(targetLibID, true, false);
         } catch {
           return [];
         }
@@ -1235,19 +1374,41 @@ collapsible-section:has(> .zotero-viewflow-lookup-body) {
 	font-size: 13px;
 	line-height: 1.5;
 }
+.viewflow-lookup-input-wrap {
+	position: relative;
+	display: flex;
+	align-items: center;
+}
 .viewflow-lookup-input {
 	display: block;
 	box-sizing: border-box;
 	width: 100%;
 	min-width: 0;
 	height: 28px;
-	padding: 3px 7px;
+	padding: 3px 26px 3px 7px;
 	border: 1px solid var(--material-border, light-dark(#d1d1d1, #555));
 	border-radius: 3px;
 	background: var(--material-background, light-dark(#fff, #242424));
 	color: inherit;
 	font: inherit;
 }
+.viewflow-lookup-clear {
+	position: absolute;
+	right: 4px;
+	width: 18px;
+	height: 18px;
+	min-height: 0 !important;
+	padding: 0 !important;
+	border: 0 !important;
+	border-radius: 3px;
+	background: transparent !important;
+	color: var(--fill-secondary, #888);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+}
+.viewflow-lookup-clear[hidden] { display: none !important; }
 .viewflow-lookup-input::placeholder { color: var(--fill-secondary, #888); }
 .viewflow-lookup-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .viewflow-lookup-container button {
@@ -1365,7 +1526,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     meta.className = "viewflow-lookup-card-meta";
     const journal = safeGetItemField(target, "publicationTitle") || safeGetItemField(target, "journalAbbreviation") || "";
     const year = (safeGetItemField(target, "year") || safeGetItemField(target, "date")).slice(0, 4);
-    meta.textContent = `${journal} (${year}) · Vol.${safeGetItemField(target, "volume") || "-"} · pp.${safeGetItemField(target, "pages") || "-"}`;
+    const vol = safeGetItemField(target, "volume");
+    const pages = safeGetItemField(target, "pages");
+    const headPart = [journal, year ? `(${year})` : ""].filter(Boolean).join(" ");
+    const metaParts = [headPart, vol ? `Vol.${vol}` : "", pages ? `pp.${pages}` : ""].filter(Boolean);
+    meta.textContent = metaParts.join(" · ") || "本地文库条目";
     card.appendChild(meta);
     const actRow = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
     actRow.className = "viewflow-lookup-actions";
@@ -1373,22 +1538,32 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     locateBtn.type = "button";
     setLookupL10n(locateBtn, "zbf-lookup-locate", "定位条目");
     locateBtn.onclick = async () => {
-      const ok = await cb.onLocate(candidate.itemID);
-      if (cb.isActive()) {
-        setLookupL10n(
-          stateEl,
-          ok ? "zbf-lookup-status-located" : "zbf-lookup-status-locate-failed",
-          ok ? "已定位" : "定位失败，请重试"
-        );
+      locateBtn.disabled = true;
+      try {
+        const ok = await cb.onLocate(candidate.itemID);
+        if (cb.isActive()) {
+          setLookupL10n(
+            stateEl,
+            ok ? "zbf-lookup-status-located" : "zbf-lookup-status-locate-failed",
+            ok ? "已定位" : "定位失败，请重试"
+          );
+        }
+      } finally {
+        locateBtn.disabled = false;
       }
     };
     const pdfBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
     pdfBtn.type = "button";
     setLookupL10n(pdfBtn, "zbf-lookup-open-pdf", "打开 PDF");
     pdfBtn.onclick = async () => {
-      const opened = await cb.onOpenPdf(target || candidate.itemID);
-      if (cb.isActive() && !opened) {
-        setLookupL10n(stateEl, "zbf-lookup-status-no-pdf", "未找到 PDF 附件");
+      pdfBtn.disabled = true;
+      try {
+        const opened = await cb.onOpenPdf(target || candidate.itemID);
+        if (cb.isActive() && !opened) {
+          setLookupL10n(stateEl, "zbf-lookup-status-no-pdf", "未找到 PDF 附件");
+        }
+      } finally {
+        pdfBtn.disabled = false;
       }
     };
     actRow.append(locateBtn, pdfBtn);
@@ -1400,7 +1575,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       citeBtn.onclick = () => {
         const sent = cb.onCiteWord?.(candidate.itemID);
         if (cb.isActive() && sent) {
-          setLookupL10n(stateEl, "zbf-lookup-status-located", "已发送至 Word 光标处");
+          stateEl.removeAttribute("data-l10n-id");
+          stateEl.textContent = "已发送至 Word 光标处";
         }
       };
       actRow.appendChild(citeBtn);
@@ -1527,10 +1703,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       body.className = "zotero-viewflow-lookup-body";
       const container = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
       container.className = "viewflow-lookup-container";
+      const inputWrap = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
+      inputWrap.className = "viewflow-lookup-input-wrap";
       const input = doc.createElementNS("http://www.w3.org/1999/xhtml", "input");
       input.type = "text";
       input.className = "viewflow-lookup-input";
       input.setAttribute("data-l10n-id", "zbf-lookup-input");
+      const clearBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
+      clearBtn.type = "button";
+      clearBtn.className = "viewflow-lookup-clear";
+      clearBtn.textContent = "✕";
+      clearBtn.title = "清空引文输入";
+      clearBtn.hidden = true;
+      inputWrap.append(input, clearBtn);
       const btnRow = doc.createElementNS("http://www.w3.org/1999/xhtml", "div");
       btnRow.className = "viewflow-lookup-actions";
       const searchBtn = doc.createElementNS("http://www.w3.org/1999/xhtml", "button");
@@ -1554,7 +1739,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       retryBtn.className = "viewflow-lookup-cache-retry";
       retryBtn.textContent = "重试保存缓存";
       cacheNotice.append(cacheMsg, retryBtn);
-      container.append(input, btnRow, cacheNotice, statusDiv);
+      container.append(inputWrap, btnRow, cacheNotice, statusDiv);
       body.append(container);
       const syncCacheStatus = () => {
         if (!body.isConnected) return;
@@ -1641,8 +1826,23 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (isActive()) setLookupL10n(statusDiv, "zbf-lookup-status-error", "查询失败，请重试或重新粘贴引文。");
         }
       };
+      const syncClear = () => {
+        clearBtn.hidden = !input.value;
+      };
+      const resetInput = () => {
+        cancelPaste();
+        request++;
+        input.value = "";
+        syncClear();
+        clearLookupResult(statusDiv);
+      };
+      clearBtn.onclick = () => {
+        resetInput();
+        input.focus();
+      };
       input.oninput = () => {
         request++;
+        syncClear();
         clearLookupResult(statusDiv);
         if (!input.value.trim()) cancelPaste();
       };
@@ -1653,6 +1853,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         cancelPaste();
         pasteTimer = setTimeout(() => {
           pasteTimer = void 0;
+          syncClear();
           if (input.value.trim()) void executeLookup(input.value);
         }, 0);
       };
@@ -1662,16 +1863,14 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           cancelPaste();
           void executeLookup(input.value);
         } else if (key === "Escape") {
-          cancelPaste();
-          request++;
-          input.value = "";
-          clearLookupResult(statusDiv);
+          resetInput();
         }
       };
       clipBtn.onclick = () => {
         const clipText = readSystemClipboardText();
         if (clipText) {
           input.value = clipText;
+          syncClear();
           void executeLookup(clipText);
           return;
         }
@@ -2427,7 +2626,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     openFolder(item, win) {
       if (!item || this.openingFolders.has(win) || !this.kernel.prefs.get("inspector.pdfFolder.enable")) return;
       this.openingFolders.add(win);
-      void this.revealAttachmentFolder(item, win).catch((error) => this.kernel.logger.error("pdf-folder", error)).finally(() => this.openingFolders.delete(win));
+      void this.revealAttachmentFolder(item, win).then((ok) => {
+        if (ok) return;
+        const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+        for (const st of this.states.values()) {
+          if (st.body.ownerDocument === win.document && (st.selectedAttachment === item || st.item === item)) {
+            st.meta.textContent = zh ? "未找到本地附件文件（可能尚未下载或已被移动）" : "Local attachment file not found (may not be synced locally)";
+            st.meta.title = st.meta.textContent;
+          }
+        }
+      }).catch((error) => this.kernel.logger.error("pdf-folder", error)).finally(() => this.openingFolders.delete(win));
     }
     onDestroy(doc, body) {
       this.states.get(body)?.controller.abort();
@@ -2503,188 +2711,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return resolveBestFileAttachment(item);
     }
   };
-
-  // src/domains/inspector/pdf-preview-styles.ts
-  var STYLE_ID = "zbf-pdf-preview-styles";
-  var PREVIEW_CSS = `
-.ztf-pdf-root {
-	display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px;
-	min-inline-size: 0; inline-size: 100%; contain: inline-size;
-	font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-	padding: 2px 0 4px 0; color: var(--fill-primary, currentColor);
-}
-.ztf-pdf-toolbar {
-	display: flex; align-items: center; justify-content: space-between;
-	gap: 4px; flex-wrap: wrap; min-block-size: 24px; padding: 0 1px 4px;
-	min-inline-size: 0; max-inline-size: 100%; overflow: hidden;
-	background: transparent;
-	border-bottom: 1px solid var(--fill-quinary, color-mix(in srgb, currentColor 7%, transparent));
-}
-.ztf-pdf-att-select {
-	flex: 1 1 100%; min-inline-size: 0; inline-size: 100%; block-size: 22px;
-	padding: 0 6px; margin-top: 2px; border-radius: 4px;
-	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
-	background: var(--material-background, transparent);
-	color: var(--fill-primary, inherit); font: 500 11px/1.3 system-ui, sans-serif; cursor: pointer;
-}
-.ztf-pdf-btn-group { display: flex; align-items: center; gap: 2px; }
-.ztf-pdf-btn {
-	appearance: none !important; -moz-appearance: none !important; box-sizing: border-box;
-	display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-	min-inline-size: 20px !important; min-block-size: 20px !important; block-size: 20px !important;
-	margin: 0 !important; padding: 0 5px !important;
-	border: 1px solid transparent !important; border-radius: 4px !important;
-	background: transparent !important; box-shadow: none !important;
-	color: var(--fill-secondary, inherit); font: 500 11.5px/1 system-ui, sans-serif;
-	cursor: pointer; user-select: none;
-	transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
-}
-.ztf-pdf-btn-svg { inline-size: 12px; block-size: 12px; flex-shrink: 0; pointer-events: none; }
-.ztf-pdf-btn:hover:not(:disabled) {
-	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent)) !important;
-	color: var(--fill-primary, inherit);
-}
-.ztf-pdf-btn:active:not(:disabled) {
-	background: var(--fill-quarternary, color-mix(in srgb, currentColor 14%, transparent)) !important;
-}
-.ztf-pdf-btn:disabled { opacity: 0.32; cursor: default; }
-.ztf-pdf-mode-btn[data-active="true"] {
-	color: var(--accent-blue, #4072e5) !important;
-	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
-	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
-}
-.ztf-pdf-compare-bar {
-	display: flex; align-items: center; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
-	padding-top: 3px; margin-top: 2px;
-	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
-}
-.ztf-pdf-compare-count {
-	flex-shrink: 0; padding: 1px 5px; border-radius: 999px;
-	background: var(--accent-blue10, rgba(64, 114, 229, 0.12));
-	color: var(--accent-blue, #4072e5); font: 600 10.5px/1.3 system-ui, sans-serif;
-	font-variant-numeric: tabular-nums;
-}
-.ztf-pdf-compare-nav { flex-shrink: 0; padding: 0 3px !important; }
-.ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; }
-.ztf-pdf-compare-btn[data-active="true"] {
-	color: var(--accent-blue, #4072e5) !important;
-	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
-	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
-}
-.ztf-pdf-compare-select, .ztf-pdf-att-select, .ztf-pdf-folder-select {
-	appearance: none !important; -moz-appearance: none !important;
-	flex: 1 1 auto; min-inline-size: 0; max-inline-size: 100%;
-	block-size: 22px; padding: 0 20px 0 7px; border-radius: 5px;
-	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
-	background-color: var(--fill-senary, rgba(127, 127, 127, 0.06));
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
-	background-repeat: no-repeat; background-position: right 6px center;
-	color: var(--fill-primary, inherit);
-	font: 500 11.5px/20px system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
-	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
-	transition: border-color 0.14s ease, background-color 0.14s ease;
-}
-.ztf-pdf-compare-select:hover, .ztf-pdf-att-select:hover, .ztf-pdf-folder-select:hover {
-	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
-	background-color: var(--fill-quinary, rgba(127, 127, 127, 0.11));
-}
-.ztf-pdf-compare-select:focus-visible, .ztf-pdf-att-select:focus-visible, .ztf-pdf-folder-select:focus-visible {
-	outline: none; border-color: var(--accent-blue, #4072e5);
-}
-.ztf-pdf-open-btn {
-	padding: 0 7px !important; color: var(--accent-blue, #4072e5) !important;
-	background: var(--accent-blue10, rgba(64, 114, 229, 0.1)) !important;
-	font-weight: 500; font-size: 11px;
-}
-.ztf-pdf-open-btn:hover:not(:disabled) {
-	background: var(--accent-blue30, rgba(64, 114, 229, 0.2)) !important;
-	color: var(--accent-blue, #4072e5) !important;
-}
-.ztf-pdf-page-label {
-	min-inline-size: 38px; padding: 2px 4px; border-radius: 4px;
-	text-align: center; font-variant-numeric: tabular-nums;
-	color: var(--fill-secondary, inherit); font-size: 11px; cursor: pointer; user-select: none;
-}
-.ztf-pdf-page-label:hover {
-	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
-	color: var(--fill-primary, inherit);
-}
-.ztf-pdf-page-input {
-	inline-size: 38px; block-size: 19px; padding: 0 3px; border-radius: 4px;
-	border: 1px solid var(--accent-blue, #4072e5);
-	background: var(--material-background, #fff); color: var(--fill-primary, inherit);
-	font: 500 11px/1 system-ui, sans-serif; text-align: center; outline: none;
-}
-.ztf-pdf-status {
-	padding: 12px 8px; color: var(--fill-secondary, inherit);
-	font-size: 12px; text-align: center; display: none; overflow-wrap: anywhere;
-}
-.ztf-pdf-viewport {
-	position: relative; display: flex; flex-direction: column; align-items: stretch;
-	gap: 8px; max-block-size: clamp(240px, 38vh, 420px);
-	min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box;
-	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
-	scrollbar-width: thin; outline: none;
-	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
-}
-.ztf-pdf-page-card {
-	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
-	min-inline-size: 0; max-inline-size: 100%;
-	inline-size: 100%; box-sizing: border-box; background: #fff;
-	border-radius: 5px; border: 1px solid light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.18));
-	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden; cursor: pointer;
-	transition: border-color 0.14s ease, box-shadow 0.14s ease;
-}
-.ztf-pdf-page-card:hover {
-	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
-}
-.ztf-pdf-page-card[data-unrendered="true"] {
-	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
-	background: var(--fill-senary, rgba(0, 0, 0, 0.02));
-}
-.ztf-pdf-canvas { display: block; inline-size: 100%; block-size: auto; background: #fff; }
-.ztf-pdf-page-badge {
-	position: absolute; inset-inline-end: 6px; inset-block-end: 6px;
-	padding: 1px 6px; border-radius: 999px; font: 500 10px/1.35 system-ui, sans-serif;
-	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.56);
-	color: #fff; pointer-events: none; opacity: 0.72; transition: opacity 0.14s ease;
-}
-.ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
-.ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
-[data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
-[data-ztf-pdf-full-stack="true"]::before { display: none !important; }
-[data-ztf-pdf-full-stack="true"] {
-	display: flex !important; flex-direction: column !important;
-	block-size: 100% !important; max-block-size: 100% !important; overflow: hidden !important;
-}
-[data-ztf-pdf-full-section="true"],
-[data-ztf-pdf-full-section="true"] > collapsible-section,
-[data-ztf-pdf-full-section="true"] > collapsible-section > [data-type="body"] {
-	display: flex !important; flex-direction: column !important;
-	flex: 1 1 auto !important; block-size: 100% !important; min-block-size: 0 !important;
-}
-[data-ztf-pdf-full-section="true"] > collapsible-section > .head { display: none !important; }
-.ztf-pdf-root[data-layout-mode="full"] {
-	display: flex; flex-direction: column; flex: 1 1 auto; block-size: 100%; min-block-size: 0;
-}
-.ztf-pdf-root[data-layout-mode="full"] .ztf-pdf-viewport {
-	flex: 1 1 auto; max-block-size: calc(100vh - 96px); block-size: 100%;
-}
-`;
-  function ensurePdfPreviewStyles(doc) {
-    if (!doc?.getElementById) return;
-    let style = doc.getElementById(STYLE_ID);
-    if (!style) {
-      style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
-      style.id = STYLE_ID;
-      (doc.head || doc.documentElement)?.append(style);
-    }
-    if (style.textContent !== PREVIEW_CSS) style.textContent = PREVIEW_CSS;
-  }
-  function removePdfPreviewStyles(doc) {
-    doc?.getElementById?.(STYLE_ID)?.remove?.();
-  }
 
   // src/domains/inspector/pdf-preview-ui.ts
   var XHTML_NS = "http://www.w3.org/1999/xhtml";
@@ -2875,9 +2901,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return { bar, countLabel, prevAttBtn, swapBtn, selfBtn, selectEl, nextAttBtn };
   }
   function syncCompareBar(ui, st, entries, activeAttachmentID) {
-    const visible = entries.length > 1;
+    const isReaderSingle = st.tabType === "reader" && entries.length >= 1;
+    const visible = entries.length > 1 || isReaderSingle;
     ui.bar.style.display = visible ? "flex" : "none";
     if (!visible) return;
+    const multiAtt = entries.length > 1;
+    ui.prevAttBtn.style.display = multiAtt ? "inline-flex" : "none";
+    ui.nextAttBtn.style.display = multiAtt ? "inline-flex" : "none";
+    ui.selectEl.style.display = multiAtt ? "block" : "none";
+    ui.swapBtn.style.display = multiAtt ? "inline-flex" : "none";
+    ui.countLabel.style.display = multiAtt ? "inline-flex" : "none";
     const showSelf = st.tabType === "reader" && st.currentAttachmentID > 0;
     ui.selfBtn.style.display = showSelf ? "inline-flex" : "none";
     const isSelf = st.mode === "self" || st.currentAttachmentID > 0 && activeAttachmentID === st.currentAttachmentID;
@@ -3109,18 +3142,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
     }
   }
-  function computeOwnerAttachmentSignature(item) {
-    if (!item) return "";
-    const isAtt = Boolean(item.isAttachment?.() || item.isPDFAttachment?.() || item.itemType === "attachment");
-    const ownerRef = isAtt && item.parentItem ? item.parentItem : item;
-    const ids = ownerRef?.getAttachments?.() ?? [];
-    if (!ids.length) return `${Number(item.id) || 0}:${item.getField?.("title") || ""}:${item.attachmentFilename || ""}`;
-    const hostItems = globalThis.Zotero?.Items;
-    return ids.map((id) => {
-      const a = hostItems?.get?.(id);
-      return `${id}:${a?.getField?.("title") || ""}:${a?.attachmentFilename || ""}`;
-    }).join("|");
-  }
   async function loadItemPreviewAttachments(state, item, onError) {
     disposePreviewDocument(state, true);
     const gen = state.generation;
@@ -3219,15 +3240,367 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return slots[low].pageNumber;
   }
 
-  // src/domains/inspector/pdf-preview-section.ts
+  // src/domains/inspector/pdf-compare-helpers.ts
+  function attachNeighborCompareButtons(doc, bar, signal, onPickNeighbor) {
+    const leftBtn = createXhtmlEl(doc, "button");
+    leftBtn.type = "button";
+    leftBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn ztf-pdf-neighbor-left";
+    leftBtn.textContent = "◀ 左标签";
+    leftBtn.style.display = "none";
+    const rightBtn = createXhtmlEl(doc, "button");
+    rightBtn.type = "button";
+    rightBtn.className = "ztf-pdf-btn ztf-pdf-compare-btn ztf-pdf-neighbor-right";
+    rightBtn.textContent = "右标签 ▶";
+    rightBtn.style.display = "none";
+    const controls = { leftBtn, rightBtn, activeSide: null };
+    leftBtn.addEventListener("click", () => onPickNeighbor("left"), { signal });
+    rightBtn.addEventListener("click", () => onPickNeighbor("right"), { signal });
+    bar.append(leftBtn, rightBtn);
+    return controls;
+  }
+  function syncNeighborCompareButtons(controls, bar, tabType, sameItemCount, neighbors) {
+    const isReader = tabType === "reader";
+    const hasLeft = isReader && Boolean(neighbors?.left);
+    const hasRight = isReader && Boolean(neighbors?.right);
+    controls.leftBtn.style.display = hasLeft ? "inline-flex" : "none";
+    controls.rightBtn.style.display = hasRight ? "inline-flex" : "none";
+    if (neighbors?.left) {
+      const shortLeft = neighbors.left.title.slice(0, 8);
+      controls.leftBtn.textContent = `◀ ${shortLeft}`;
+      controls.leftBtn.title = `对照左侧标签页：${neighbors.left.title}`;
+    }
+    if (neighbors?.right) {
+      const shortRight = neighbors.right.title.slice(0, 8);
+      controls.rightBtn.textContent = `${shortRight} ▶`;
+      controls.rightBtn.title = `对照右侧标签页：${neighbors.right.title}`;
+    }
+    if (controls.activeSide === "left" && hasLeft) controls.leftBtn.setAttribute("data-active", "true");
+    else controls.leftBtn.removeAttribute("data-active");
+    if (controls.activeSide === "right" && hasRight) controls.rightBtn.setAttribute("data-active", "true");
+    else controls.rightBtn.removeAttribute("data-active");
+    if (sameItemCount > 1 || isReader && (sameItemCount >= 1 || hasLeft || hasRight)) {
+      bar.style.display = "flex";
+    } else {
+      bar.style.display = "none";
+    }
+  }
+  async function resolveNeighborPdfEntries(ref) {
+    const hostItems = globalThis.Zotero?.Items;
+    const targetID = ref.parentItemID || ref.itemID;
+    let item = targetID > 0 ? hostItems?.get?.(targetID) || (hostItems?.getAsync ? await hostItems.getAsync(targetID).catch(() => null) : null) : null;
+    if (!item && ref.itemID > 0 && ref.itemID !== targetID) {
+      item = hostItems?.get?.(ref.itemID) || (hostItems?.getAsync ? await hostItems.getAsync(ref.itemID).catch(() => null) : null);
+    }
+    if (!item) return [];
+    const entries = await resolveAllPdfAttachments(item);
+    if (ref.itemID > 0) {
+      const exact = entries.find((e) => e.id === ref.itemID);
+      if (exact) return [exact, ...entries.filter((e) => e.id !== ref.itemID)];
+    }
+    return entries;
+  }
+  async function activateNeighborComparison(state, controls, side, neighbors, onError) {
+    const ref = side === "left" ? neighbors?.left : neighbors?.right;
+    if (!ref) return false;
+    const entries = await resolveNeighborPdfEntries(ref);
+    const chosen = entries[0];
+    if (!chosen?.attachment) return false;
+    controls.activeSide = side;
+    state.compareUI.selfBtn?.removeAttribute?.("data-active");
+    syncNeighborCompareButtons(controls, state.compareUI.bar, state.compare.tabType, state.attachments.length, neighbors);
+    await loadAttachmentPreviewDoc(state, chosen.attachment, onError);
+    return true;
+  }
+
+  // src/domains/inspector/pdf-preview-events.ts
   var MIN_ZOOM = 0.6;
   var MAX_ZOOM = 2;
   var ZOOM_STEP = 0.2;
+  function setPreviewZoom(state, nextZoom, onError) {
+    const clamped = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom)) * 100) / 100;
+    if (clamped === state.zoom) return;
+    state.zoom = clamped;
+    syncPreviewControls(state);
+    invalidateVisibleSlots(state, onError);
+  }
+  function updatePreviewPageFromScroll(state) {
+    if (!state.slots.length) return;
+    const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
+    const best = nearestPreviewPage(state.slots, top);
+    if (best !== state.currentPage) {
+      state.currentPage = best;
+      const attID = Number(state.attachment?.id) || 0;
+      if (attID > 0) state.pageByAttachment.set(attID, best);
+      syncPreviewControls(state);
+      evictDistantPageCanvases(state.slots, state.currentPage);
+    }
+  }
+  function bindPreviewToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, signal, actions) {
+    const opts = { signal };
+    state.prevBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage - 1, actions.onRenderError), opts);
+    state.nextBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage + 1, actions.onRenderError), opts);
+    zoomOutBtn.addEventListener("click", () => setPreviewZoom(state, state.zoom - ZOOM_STEP, actions.onRenderError), opts);
+    zoomInBtn.addEventListener("click", () => setPreviewZoom(state, state.zoom + ZOOM_STEP, actions.onRenderError), opts);
+    state.zoomLabel.addEventListener("click", () => setPreviewZoom(state, 1, actions.onRenderError), opts);
+    modeBtn.addEventListener("click", () => actions.onToggleFullMode(state), opts);
+    state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
+    const selectAttachmentById = (attId) => {
+      const chosen = state.attachments.find((entry) => entry.id === attId);
+      if (!chosen) return;
+      const ctrl = actions.getNeighborCtrl(state.body);
+      if (ctrl) ctrl.activeSide = null;
+      const prevId = Number(state.compare.pickedAttachmentID || state.attachment?.id || 0);
+      if (prevId && prevId !== chosen.id) state.compare.lastAttachmentID = prevId;
+      state.compare.pickedAttachmentID = chosen.id;
+      state.attSelect.value = String(chosen.id);
+      syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
+      if (ctrl) syncNeighborCompareButtons(ctrl, state.compareUI.bar, state.compare.tabType, state.attachments.length, actions.getLatestNeighbors());
+      if (chosen.attachment !== state.attachment) {
+        void loadAttachmentPreviewDoc(state, chosen.attachment, actions.onRenderError);
+      }
+    };
+    state.attSelect.addEventListener("change", () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
+    state.doc.addEventListener("zbf:pdf-folder-attachment-selected", ((ev) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))), opts);
+    state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, actions.onRenderError)), opts);
+    state.viewportEl.addEventListener("scroll", () => updatePreviewPageFromScroll(state), opts);
+    state.viewportEl.addEventListener("dblclick", (event) => {
+      if (!state.attachment || !actions.isDblClickOpen()) return;
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      const card = event.target?.closest?.("[data-page-number]");
+      void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.("data-page-number")) || state.currentPage || 1);
+    }, opts);
+    state.viewportEl.addEventListener("keydown", (event) => {
+      if (!state.numPages) return;
+      const k = event.key;
+      if (k === "PageDown" || k === "ArrowRight") {
+        event.preventDefault?.();
+        jumpToPreviewPage(state, state.currentPage + 1, actions.onRenderError);
+      } else if (k === "PageUp" || k === "ArrowLeft") {
+        event.preventDefault?.();
+        jumpToPreviewPage(state, state.currentPage - 1, actions.onRenderError);
+      } else if (k === "Home" || k === "End") {
+        event.preventDefault?.();
+        jumpToPreviewPage(state, k === "Home" ? 1 : state.numPages, actions.onRenderError);
+      } else if ((event.ctrlKey || event.metaKey) && k === "0") {
+        event.preventDefault?.();
+        setPreviewZoom(state, 1, actions.onRenderError);
+      }
+    }, opts);
+    state.viewportEl.addEventListener("wheel", (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        setPreviewZoom(state, state.zoom + (e.deltaY < 0 ? 0.1 : -0.1), actions.onRenderError);
+      }
+    }, { signal, passive: false });
+  }
+  function setupPreviewResizeObserver(state, onError) {
+    const RO = state.win.ResizeObserver;
+    if (!RO) return;
+    state.resizeObserver = new RO(() => {
+      const width = state.viewportEl.clientWidth || state.body.clientWidth || 0;
+      if (!width || !state.pdfDoc || Math.abs(width - state.lastWidth) < 8) return;
+      state.lastWidth = width;
+      if (state.resizeTimer !== null) state.win.clearTimeout(state.resizeTimer);
+      state.resizeTimer = state.win.setTimeout(() => {
+        state.resizeTimer = null;
+        invalidateVisibleSlots(state, onError);
+      }, 120);
+    });
+    state.resizeObserver.observe(state.viewportEl);
+  }
+
+  // src/domains/inspector/pdf-preview-styles.ts
+  var STYLE_ID = "zbf-pdf-preview-styles";
+  var PREVIEW_CSS = `
+.ztf-pdf-root {
+	display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px;
+	min-inline-size: 0; inline-size: 100%; contain: inline-size;
+	font: 12px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+	padding: 2px 0 4px 0; color: var(--fill-primary, currentColor);
+}
+.ztf-pdf-toolbar {
+	display: flex; align-items: center; justify-content: space-between;
+	gap: 4px; flex-wrap: wrap; min-block-size: 24px; padding: 0 1px 4px;
+	min-inline-size: 0; max-inline-size: 100%; overflow: hidden;
+	background: transparent;
+	border-bottom: 1px solid var(--fill-quinary, color-mix(in srgb, currentColor 7%, transparent));
+}
+.ztf-pdf-att-select {
+	flex: 1 1 100%; min-inline-size: 0; inline-size: 100%; block-size: 22px;
+	padding: 0 6px; margin-top: 2px; border-radius: 4px;
+	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
+	background: var(--material-background, transparent);
+	color: var(--fill-primary, inherit); font: 500 11px/1.3 system-ui, sans-serif; cursor: pointer;
+}
+.ztf-pdf-btn-group { display: flex; align-items: center; gap: 2px; }
+.ztf-pdf-btn {
+	appearance: none !important; -moz-appearance: none !important; box-sizing: border-box;
+	display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+	min-inline-size: 20px !important; min-block-size: 20px !important; block-size: 20px !important;
+	margin: 0 !important; padding: 0 5px !important;
+	border: 1px solid transparent !important; border-radius: 4px !important;
+	background: transparent !important; box-shadow: none !important;
+	color: var(--fill-secondary, inherit); font: 500 11.5px/1 system-ui, sans-serif;
+	cursor: pointer; user-select: none;
+	transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+.ztf-pdf-btn-svg { inline-size: 12px; block-size: 12px; flex-shrink: 0; pointer-events: none; }
+.ztf-pdf-btn:hover:not(:disabled) {
+	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent)) !important;
+	color: var(--fill-primary, inherit);
+}
+.ztf-pdf-btn:active:not(:disabled) {
+	background: var(--fill-quarternary, color-mix(in srgb, currentColor 14%, transparent)) !important;
+}
+.ztf-pdf-btn:disabled { opacity: 0.32; cursor: default; }
+.ztf-pdf-mode-btn[data-active="true"] {
+	color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
+	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
+}
+.ztf-pdf-compare-bar {
+	display: flex; align-items: center; flex-wrap: wrap; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
+	padding-top: 3px; margin-top: 2px;
+	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
+}
+.ztf-pdf-compare-count {
+	flex-shrink: 0; padding: 1px 5px; border-radius: 999px;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.12));
+	color: var(--accent-blue, #4072e5); font: 600 10.5px/1.3 system-ui, sans-serif;
+	font-variant-numeric: tabular-nums;
+}
+.ztf-pdf-compare-nav { flex-shrink: 0; padding: 0 3px !important; }
+.ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; max-inline-size: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ztf-pdf-compare-btn[data-active="true"] {
+	color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;
+	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
+}
+.ztf-pdf-compare-select, .ztf-pdf-att-select, .ztf-pdf-folder-select {
+	appearance: none !important; -moz-appearance: none !important;
+	flex: 1 1 auto; min-inline-size: 0; max-inline-size: 100%;
+	block-size: 22px; padding: 0 20px 0 7px; border-radius: 5px;
+	border: 1px solid var(--fill-quarternary, rgba(127, 127, 127, 0.22));
+	background-color: var(--fill-senary, rgba(127, 127, 127, 0.06));
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 16 16' fill='none' stroke='%2364748b' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat; background-position: right 6px center;
+	color: var(--fill-primary, inherit);
+	font: 500 11.5px/20px system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer;
+	transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+.ztf-pdf-compare-select:hover, .ztf-pdf-att-select:hover, .ztf-pdf-folder-select:hover {
+	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
+	background-color: var(--fill-quinary, rgba(127, 127, 127, 0.11));
+}
+.ztf-pdf-compare-select:focus-visible, .ztf-pdf-att-select:focus-visible, .ztf-pdf-folder-select:focus-visible {
+	outline: none; border-color: var(--accent-blue, #4072e5);
+}
+.ztf-pdf-open-btn {
+	padding: 0 7px !important; color: var(--accent-blue, #4072e5) !important;
+	background: var(--accent-blue10, rgba(64, 114, 229, 0.1)) !important;
+	font-weight: 500; font-size: 11px;
+}
+.ztf-pdf-open-btn:hover:not(:disabled) {
+	background: var(--accent-blue30, rgba(64, 114, 229, 0.2)) !important;
+	color: var(--accent-blue, #4072e5) !important;
+}
+.ztf-pdf-page-label {
+	min-inline-size: 38px; padding: 2px 4px; border-radius: 4px;
+	text-align: center; font-variant-numeric: tabular-nums;
+	color: var(--fill-secondary, inherit); font-size: 11px; cursor: pointer; user-select: none;
+}
+.ztf-pdf-page-label:hover {
+	background: var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
+	color: var(--fill-primary, inherit);
+}
+.ztf-pdf-page-input {
+	inline-size: 38px; block-size: 19px; padding: 0 3px; border-radius: 4px;
+	border: 1px solid var(--accent-blue, #4072e5);
+	background: var(--material-background, #fff); color: var(--fill-primary, inherit);
+	font: 500 11px/1 system-ui, sans-serif; text-align: center; outline: none;
+}
+.ztf-pdf-status {
+	padding: 12px 8px; color: var(--fill-secondary, inherit);
+	font-size: 12px; text-align: center; display: none; overflow-wrap: anywhere;
+}
+.ztf-pdf-viewport {
+	position: relative; display: flex; flex-direction: column; align-items: stretch;
+	gap: 8px; max-block-size: clamp(240px, 38vh, 420px);
+	min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box;
+	overflow-y: auto; overflow-x: auto; padding: 2px 0 4px; background: transparent;
+	scrollbar-width: thin; outline: none;
+	scrollbar-color: var(--color-scrollbar, rgba(127, 127, 127, 0.38)) transparent;
+}
+.ztf-pdf-page-card {
+	position: relative; flex: 0 0 auto; flex-shrink: 0; display: block;
+	min-inline-size: 0; max-inline-size: 100%;
+	inline-size: 100%; box-sizing: border-box; background: #fff;
+	border-radius: 5px; border: 1px solid light-dark(rgba(15, 23, 42, 0.16), rgba(255, 255, 255, 0.18));
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); overflow: hidden; cursor: pointer;
+	transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+.ztf-pdf-page-card:hover {
+	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
+}
+.ztf-pdf-page-card[data-unrendered="true"] {
+	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
+	background: var(--fill-senary, rgba(0, 0, 0, 0.02));
+}
+.ztf-pdf-canvas { display: block; inline-size: 100%; block-size: auto; background: #fff; }
+.ztf-pdf-page-badge {
+	position: absolute; inset-inline-end: 6px; inset-block-end: 6px;
+	padding: 1px 6px; border-radius: 999px; font: 500 10px/1.35 system-ui, sans-serif;
+	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.56);
+	color: #fff; pointer-events: none; opacity: 0.72; transition: opacity 0.14s ease;
+}
+.ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
+.ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
+[data-ztf-pdf-full-stack="true"] > :not([data-ztf-pdf-full-section="true"]) { display: none !important; }
+[data-ztf-pdf-full-stack="true"]::before { display: none !important; }
+[data-ztf-pdf-full-stack="true"] {
+	display: flex !important; flex-direction: column !important;
+	block-size: 100% !important; max-block-size: 100% !important; overflow: hidden !important;
+}
+[data-ztf-pdf-full-section="true"],
+[data-ztf-pdf-full-section="true"] > collapsible-section,
+[data-ztf-pdf-full-section="true"] > collapsible-section > [data-type="body"] {
+	display: flex !important; flex-direction: column !important;
+	flex: 1 1 auto !important; block-size: 100% !important; min-block-size: 0 !important;
+}
+[data-ztf-pdf-full-section="true"] > collapsible-section > .head { display: none !important; }
+.ztf-pdf-root[data-layout-mode="full"] {
+	display: flex; flex-direction: column; flex: 1 1 auto; block-size: 100%; min-block-size: 0;
+}
+.ztf-pdf-root[data-layout-mode="full"] .ztf-pdf-viewport {
+	flex: 1 1 auto; max-block-size: calc(100vh - 96px); block-size: 100%;
+}
+`;
+  function ensurePdfPreviewStyles(doc) {
+    if (!doc?.getElementById) return;
+    let style = doc.getElementById(STYLE_ID);
+    if (!style) {
+      style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+      style.id = STYLE_ID;
+      (doc.head || doc.documentElement)?.append(style);
+    }
+    if (style.textContent !== PREVIEW_CSS) style.textContent = PREVIEW_CSS;
+  }
+  function removePdfPreviewStyles(doc) {
+    doc?.getElementById?.(STYLE_ID)?.remove?.();
+  }
+
+  // src/domains/inspector/pdf-preview-section.ts
   var PdfPreviewSectionController = class {
     unregisterFn = null;
     prefSub = null;
+    neighborSub = null;
+    latestNeighbors = null;
     focus = new PreviewFocus();
     states = /* @__PURE__ */ new Map();
+    neighborControls = /* @__PURE__ */ new Map();
     listeners = /* @__PURE__ */ new Map();
     kernel;
     services;
@@ -3266,17 +3639,31 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.pdfPreview.position"), "zotero-editpane-related")
         });
       }
+      if (!this.neighborSub) {
+        this.neighborSub = this.kernel.bus.on("workspace:reader-neighbors-updated", (payload) => {
+          this.latestNeighbors = payload;
+          const allowNeighbor = this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable");
+          for (const [b, st] of this.states.entries()) {
+            const ctrl = this.neighborControls.get(b);
+            if (ctrl) syncNeighborCompareButtons(ctrl, st.compareUI.bar, st.compare.tabType, st.attachments.length, allowNeighbor ? payload : null);
+          }
+        });
+        this.kernel.bus.emit("workspace:reader-neighbors-query", {});
+      }
       if (!this.prefSub) {
         this.prefSub = this.kernel.prefs.observeKeys(
-          ["inspector.pdfPreview.mode", "inspector.pdfPreview.defaultZoom", "inspector.pdfPreview.showPageBadge", "inspector.pdfPreview.enable"],
+          ["inspector.pdfPreview.mode", "inspector.pdfPreview.defaultZoom", "inspector.pdfPreview.showPageBadge", "inspector.pdfPreview.enable", "inspector.pdfPreview.neighborCompareEnable"],
           (changedKey) => {
             const isFull = this.kernel.prefs.get("inspector.pdfPreview.mode") === "full" && this.kernel.prefs.get("inspector.pdfPreview.enable");
             const showBadge = this.kernel.prefs.get("inspector.pdfPreview.showPageBadge");
             const defaultZoom = Math.round(this.kernel.prefs.get("inspector.pdfPreview.defaultZoom")) / 100;
-            for (const st of this.states.values()) {
+            const allowNeighbor = this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable");
+            for (const [b, st] of this.states.entries()) {
               if (changedKey === "inspector.pdfPreview.mode" || changedKey === "inspector.pdfPreview.enable") this.focus.set(st, isFull);
               st.root.setAttribute("data-show-badge", showBadge ? "true" : "false");
               if (changedKey === "inspector.pdfPreview.defaultZoom") st.zoom = defaultZoom;
+              const ctrl = this.neighborControls.get(b);
+              if (ctrl) syncNeighborCompareButtons(ctrl, st.compareUI.bar, st.compare.tabType, st.attachments.length, allowNeighbor ? this.latestNeighbors : null);
               syncPreviewControls(st);
               invalidateVisibleSlots(st, this.onRenderError);
             }
@@ -3293,6 +3680,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.services.panePositions.setTarget("pdf-preview", null);
       this.prefSub?.();
       this.prefSub = null;
+      this.neighborSub?.();
+      this.neighborSub = null;
+      this.latestNeighbors = null;
+      this.neighborControls.clear();
       for (const state of this.states.values()) {
         if (state.resizeTimer !== null) state.win.clearTimeout?.(state.resizeTimer);
         state.resizeObserver?.disconnect();
@@ -3349,6 +3740,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       attSelect.className = "ztf-pdf-att-select";
       const compare = { mode: "sibling", pickedAttachmentID: null, currentAttachmentID: 0, tabType: tabType || "library" };
       const compareUI = createCompareBar(doc, controller.signal, () => state.compare, (nextMode, nextPickedID) => {
+        const ctrl = this.neighborControls.get(body);
+        if (ctrl) ctrl.activeSide = null;
         state.compare.mode = nextMode;
         state.compare.pickedAttachmentID = nextPickedID;
         const chosen = pickCompareAttachment(
@@ -3362,10 +3755,28 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           state.attSelect.value = String(chosen.id);
         }
         syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
+        const allowNeighbor = this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable");
+        if (ctrl) syncNeighborCompareButtons(ctrl, compareUI.bar, state.compare.tabType, state.attachments.length, allowNeighbor ? this.latestNeighbors : null);
         if (chosen && chosen.attachment !== state.attachment) {
           void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
         }
       });
+      const neighborCtrl = attachNeighborCompareButtons(doc, compareUI.bar, controller.signal, (side) => {
+        if (neighborCtrl.activeSide === side) {
+          neighborCtrl.activeSide = null;
+          syncNeighborCompareButtons(neighborCtrl, compareUI.bar, state.compare.tabType, state.attachments.length, this.latestNeighbors);
+          const fallback = pickCompareAttachment(
+            { ownerID: state.ownerID, currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments },
+            state.compare.mode,
+            state.compare.pickedAttachmentID,
+            state.compare.tabType === "reader" ? "reader" : "library"
+          );
+          if (fallback && fallback.attachment !== state.attachment) void loadAttachmentPreviewDoc(state, fallback.attachment, this.onRenderError);
+          return;
+        }
+        void activateNeighborComparison(state, neighborCtrl, side, this.latestNeighbors, this.onRenderError);
+      });
+      this.neighborControls.set(body, neighborCtrl);
       toolbar.append(navGroup, zoomGroup, attSelect, compareUI.bar);
       const statusEl = createXhtmlEl(doc, "div");
       statusEl.className = "ztf-pdf-status";
@@ -3425,88 +3836,23 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (!active) this.services.panePositions.observeAndQueue(body);
         }
       );
-      this.bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal);
-      this.setupResizeObserver(state);
+      bindPreviewToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal, {
+        isDblClickOpen: this.isDblClickOpen,
+        onToggleFullMode: (st) => {
+          this.focus.set(st, !st.fullActive);
+          if (!st.fullActive) this.services.panePositions.observeAndQueue(st.body);
+          invalidateVisibleSlots(st, this.onRenderError);
+        },
+        getLatestNeighbors: () => this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable") ? this.latestNeighbors : null,
+        getNeighborCtrl: (b) => this.neighborControls.get(b),
+        onRenderError: this.onRenderError
+      });
+      setupPreviewResizeObserver(state, this.onRenderError);
       syncPreviewControls(state);
       this.renderSection(props);
     }
     isSectionEnabled(tabType) {
       return Boolean(this.kernel.prefs.get("inspector.pdfPreview.enable") && (!tabType || tabType === "library" || tabType === "reader"));
-    }
-    bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, signal) {
-      const opts = { signal };
-      state.prevBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError), opts);
-      state.nextBtn.addEventListener("click", () => jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError), opts);
-      zoomOutBtn.addEventListener("click", () => this.setZoom(state, state.zoom - ZOOM_STEP), opts);
-      zoomInBtn.addEventListener("click", () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
-      state.zoomLabel.addEventListener("click", () => this.setZoom(state, 1), opts);
-      modeBtn.addEventListener("click", () => {
-        this.focus.set(state, !state.fullActive);
-        if (!state.fullActive) this.services.panePositions.observeAndQueue(state.body);
-        invalidateVisibleSlots(state, this.onRenderError);
-      }, opts);
-      state.openBtn.addEventListener("click", () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
-      const selectAttachmentById = (attId) => {
-        const chosen = state.attachments.find((entry) => entry.id === attId);
-        if (!chosen) return;
-        const prevId = Number(state.compare.pickedAttachmentID || state.attachment?.id || 0);
-        if (prevId && prevId !== chosen.id) state.compare.lastAttachmentID = prevId;
-        state.compare.pickedAttachmentID = chosen.id;
-        state.attSelect.value = String(chosen.id);
-        syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
-        if (chosen.attachment !== state.attachment) {
-          void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
-        }
-      };
-      state.attSelect.addEventListener("change", () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
-      state.doc.addEventListener("zbf:pdf-folder-attachment-selected", ((ev) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))), opts);
-      state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
-      state.viewportEl.addEventListener("scroll", () => this.updateCurrentPageFromScroll(state), opts);
-      state.viewportEl.addEventListener("dblclick", (event) => {
-        if (!state.attachment || !this.isDblClickOpen()) return;
-        event.preventDefault?.();
-        event.stopPropagation?.();
-        const card = event.target?.closest?.("[data-page-number]");
-        void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.("data-page-number")) || state.currentPage || 1);
-      }, opts);
-      state.viewportEl.addEventListener("keydown", (event) => {
-        if (!state.numPages) return;
-        const k = event.key;
-        if (k === "PageDown" || k === "ArrowRight") {
-          event.preventDefault?.();
-          jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError);
-        } else if (k === "PageUp" || k === "ArrowLeft") {
-          event.preventDefault?.();
-          jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError);
-        } else if (k === "Home" || k === "End") {
-          event.preventDefault?.();
-          jumpToPreviewPage(state, k === "Home" ? 1 : state.numPages, this.onRenderError);
-        } else if ((event.ctrlKey || event.metaKey) && k === "0") {
-          event.preventDefault?.();
-          this.setZoom(state, 1);
-        }
-      }, opts);
-      state.viewportEl.addEventListener("wheel", (e) => {
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          this.setZoom(state, state.zoom + (e.deltaY < 0 ? 0.1 : -0.1));
-        }
-      }, opts);
-    }
-    setupResizeObserver(state) {
-      const RO = state.win.ResizeObserver;
-      if (!RO) return;
-      state.resizeObserver = new RO(() => {
-        const width = state.viewportEl.clientWidth || state.body.clientWidth || 0;
-        if (!width || !state.pdfDoc || Math.abs(width - state.lastWidth) < 8) return;
-        state.lastWidth = width;
-        if (state.resizeTimer !== null) state.win.clearTimeout(state.resizeTimer);
-        state.resizeTimer = state.win.setTimeout(() => {
-          state.resizeTimer = null;
-          invalidateVisibleSlots(state, this.onRenderError);
-        }, 120);
-      });
-      state.resizeObserver.observe(state.viewportEl);
     }
     onDestroy(body) {
       const state = this.states.get(body);
@@ -3517,6 +3863,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         disposePreviewDocument(state, true);
       }
       this.states.delete(body);
+      this.neighborControls.delete(body);
       this.listeners.get(body)?.abort();
       this.listeners.delete(body);
     }
@@ -3543,7 +3890,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
       const nextTabType = tabType || "library";
       const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === "attachment");
-      const nextAttIdsKey = computeOwnerAttachmentSignature(item);
+      const nextAttIdsKey = `${Number(item?.id || 0)}:${(item?.parentItem?.getAttachments?.() || item?.getAttachments?.() || []).join(",")}`;
       const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
       state.compare.tabType = nextTabType;
       state.attIdsKey = nextAttIdsKey;
@@ -3558,29 +3905,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       state.compare.mode = "sibling";
       state.compare.pickedAttachmentID = isAtt ? Number(item?.id) || null : sameOwner ? state.compare.pickedAttachmentID : null;
       state.compare.currentAttachmentID = 0;
+      const ctrl = this.neighborControls.get(body);
+      if (ctrl) ctrl.activeSide = null;
+      const allowNeighbor = this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable");
       syncCompareBar(state.compareUI, state.compare, [], 0);
+      if (ctrl) syncNeighborCompareButtons(ctrl, state.compareUI.bar, nextTabType, 0, allowNeighbor ? this.latestNeighbors : null);
       state.item = item ?? null;
-      void loadItemPreviewAttachments(state, state.item, this.onRenderError);
+      void loadItemPreviewAttachments(state, state.item, this.onRenderError).then(() => {
+        if (ctrl && state.body.isConnected) {
+          const allow = this.kernel.prefs.get("inspector.pdfPreview.neighborCompareEnable");
+          syncNeighborCompareButtons(ctrl, state.compareUI.bar, state.compare.tabType, state.attachments.length, allow ? this.latestNeighbors : null);
+        }
+      });
       return enabled;
-    }
-    setZoom(state, nextZoom) {
-      const clamped = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom)) * 100) / 100;
-      if (clamped === state.zoom) return;
-      state.zoom = clamped;
-      syncPreviewControls(state);
-      invalidateVisibleSlots(state, this.onRenderError);
-    }
-    updateCurrentPageFromScroll(state) {
-      if (!state.slots.length) return;
-      const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
-      const best = nearestPreviewPage(state.slots, top);
-      if (best !== state.currentPage) {
-        state.currentPage = best;
-        const attID = Number(state.attachment?.id) || 0;
-        if (attID > 0) state.pageByAttachment.set(attID, best);
-        syncPreviewControls(state);
-        evictDistantPageCanvases(state.slots, state.currentPage);
-      }
     }
   };
 
@@ -3650,6 +3987,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-synergy { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; padding-top: 4px; border-top: 1px dashed rgba(128,128,128,0.2); }
 .zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: none; padding: 1px 2px; font-size: 11px; color: #2563eb; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .zbf-wc-link:hover { text-decoration: underline; }
+.zbf-wc-doc.is-multi:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible { outline: 2px solid var(--accent-blue, #2563eb); outline-offset: 1px; }
 .zbf-wc-col-link { flex: none; margin-inline-start: auto; }
 .zbf-wc-receipt { font-size: 11px; padding: 4px 7px; border-radius: 5px; line-height: 1.4; }
 .zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.12); color: #15803d; }
@@ -3774,6 +4112,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     receipt = { text: "", tone: "none" };
     requestSeq = 0;
     pendingRequest;
+    pendingTimer = null;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.services = services;
@@ -3791,12 +4130,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       }));
       this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => {
         if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+        this.clearPendingTimer();
         this.pendingRequest = void 0;
         this.receipt = formatInsertReceipt(res, isZhLocale());
         this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => {
         if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
+        this.clearPendingTimer();
         this.pendingRequest = void 0;
         this.receipt = formatRefreshReceipt(res, isZhLocale());
         this.renderAllBodies();
@@ -3844,6 +4185,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.renderAllBodies();
     }
     unregister() {
+      this.clearPendingTimer();
       this.services.panePositions.setTarget("word-cite", null);
       this.disposables.disposeAll();
       for (const c of this.buttonListeners.values()) c.abort();
@@ -3864,11 +4206,25 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.kernel.bus.emit("word:insert-items-request", { itemIDs: valid, win, requestId });
       return true;
     }
+    clearPendingTimer() {
+      if (this.pendingTimer !== null) {
+        clearTimeout(this.pendingTimer);
+        this.pendingTimer = null;
+      }
+    }
     beginRequest(kind, owner) {
+      this.clearPendingTimer();
       const requestId = `word-${++this.requestSeq}`;
       this.pendingRequest = requestId;
       this.receiptOwner = owner;
       this.receipt = formatPendingReceipt(kind, isZhLocale());
+      this.pendingTimer = setTimeout(() => {
+        if (this.pendingRequest !== requestId) return;
+        this.pendingTimer = null;
+        this.pendingRequest = void 0;
+        this.receipt = { tone: "warn", text: isZhLocale() ? "⌛ 未收到 Word 响应，请检查 Word 后重试" : "⌛ Word request timed out; retry when ready" };
+        this.renderAllBodies();
+      }, 12e3);
       this.renderAllBodies();
       return requestId;
     }
@@ -3971,6 +4327,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const idSet = new Set(st.lastItemIDs);
       const matchedGroup = showGroupSynergy && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
       st.lastGroup = matchedGroup;
+      const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
       st.setSectionSummary?.(showSummaryCounts ? this.buildSectionSummary(zh, snap, st.lastItemIDs) : "");
       const stats = this.buildStats(zh, snap, st.lastItemIDs);
       const meta = buildWordCiteMetaText(zh, items);
@@ -3991,7 +4348,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         refreshDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
         refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
         groupButtonText: matchedGroup ? zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
-        groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"` : "",
+        groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ""}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ""}` : "",
         showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
         colButtonText: zh ? "已引清单" : "Cited List",
         colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
@@ -4017,33 +4374,17 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         const b = snap.byItemID.get(ids[0]);
         if (b) {
           const occ = b.occurrences ?? 1;
-          return {
-            text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`,
-            title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`,
-            state: "cited"
-          };
+          return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: "cited" };
         }
-        return {
-          text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`,
-          title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`,
-          state: "uncited"
-        };
+        return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: "uncited" };
       }
       if (ids.length > 1) {
         const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
         if (cited.length) {
           const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
-          return {
-            text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`,
-            title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`,
-            state: "cited"
-          };
+          return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: "cited" };
         }
-        return {
-          text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`,
-          title: zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet",
-          state: "uncited"
-        };
+        return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet", state: "uncited" };
       }
       return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: "uncited" };
     }
@@ -4177,6 +4518,1697 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         this.wordCiteSection.unregister();
       }
       this.services.panePositions.queueAll();
+    }
+  };
+
+  // src/services/annotation-utils.ts
+  var DEFAULT_ANNOTATION_COLORS = {
+    "#ffd400": "背景",
+    "#ff6666": "方法",
+    "#5fb236": "不足",
+    "#2ea8e5": "创新",
+    "#a28ae5": "结论",
+    "#e56eee": "引用",
+    "#f19837": "数据",
+    "#aaaaaa": "备注"
+  };
+  function normalizeHexColor(color) {
+    const clean = String(color || "").trim().toLowerCase();
+    if (/^#[0-9a-f]{6}$/.test(clean)) return clean;
+    if (/^#[0-9a-f]{3}$/.test(clean)) {
+      return `#${clean[1]}${clean[1]}${clean[2]}${clean[2]}${clean[3]}${clean[3]}`;
+    }
+    return clean;
+  }
+  function parseColorSemantics(rawJson) {
+    const merged = { ...DEFAULT_ANNOTATION_COLORS };
+    const raw = String(rawJson || "").trim();
+    if (!raw) return merged;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) {
+          const hex = normalizeHexColor(k);
+          const label = String(v || "").trim();
+          if (hex && label) merged[hex] = label;
+        }
+      } else if (Array.isArray(parsed)) {
+        for (const entry of parsed) {
+          if (!Array.isArray(entry) || entry.length < 2) continue;
+          const a = String(entry[0] || "").trim();
+          const b = String(entry[1] || "").trim();
+          const aHex = /^#[0-9a-f]{3,6}$/i.test(a);
+          const bHex = /^#[0-9a-f]{3,6}$/i.test(b);
+          if (aHex && b) merged[normalizeHexColor(a)] = b;
+          else if (bHex && a) merged[normalizeHexColor(b)] = a;
+        }
+      }
+    } catch {
+    }
+    return merged;
+  }
+  function resolveColorLabel(color, semantics) {
+    const hex = normalizeHexColor(color);
+    return hex && semantics[hex] || hex || "未分类";
+  }
+  function joinAnnotationText(parts) {
+    let acc = "";
+    for (const raw of parts) {
+      const piece = String(raw || "").trim();
+      if (!piece) continue;
+      if (!acc) {
+        acc = piece;
+      } else if (acc.endsWith("-") && /^[a-zA-Z]/.test(piece)) {
+        acc = acc.slice(0, -1) + piece;
+      } else {
+        acc = `${acc} ${piece}`;
+      }
+    }
+    return acc;
+  }
+  function compareAnnotationsByOrder(a, b) {
+    const sa = String(a?.annotationSortIndex || "");
+    const sb = String(b?.annotationSortIndex || "");
+    if (sa && sb && sa !== sb) return sa.localeCompare(sb);
+    const pa = Number(a?.annotationPageLabel || 0);
+    const pb = Number(b?.annotationPageLabel || 0);
+    if (Number.isFinite(pa) && Number.isFinite(pb) && pa !== pb) return pa - pb;
+    return Number(a?.id || 0) - Number(b?.id || 0);
+  }
+  function mergeAnnotationPayloads(annotations) {
+    const sorted = [...annotations].sort(compareAnnotationsByOrder);
+    const texts = [];
+    const comments = [];
+    const commentSeen = /* @__PURE__ */ new Set();
+    let basePos = null;
+    const allRects = [];
+    for (const ann of sorted) {
+      const t = String(ann?.annotationText ?? ann?.getField?.("annotationText") ?? "").trim();
+      if (t) texts.push(t);
+      const c = String(ann?.annotationComment ?? ann?.getField?.("annotationComment") ?? "").trim();
+      if (c && !commentSeen.has(c)) {
+        commentSeen.add(c);
+        comments.push(c);
+      }
+      const posRaw = ann?.annotationPosition ?? ann?.getField?.("annotationPosition");
+      if (typeof posRaw === "string" && posRaw.trim()) {
+        try {
+          const parsed = JSON.parse(posRaw);
+          if (parsed && typeof parsed === "object") {
+            if (!basePos) basePos = { ...parsed };
+            if (basePos && Array.isArray(parsed.rects) && parsed.pageIndex === basePos.pageIndex) {
+              allRects.push(...parsed.rects);
+            }
+          }
+        } catch {
+        }
+      }
+    }
+    if (basePos && allRects.length) {
+      basePos.rects = allRects;
+    }
+    return {
+      mergedText: joinAnnotationText(texts),
+      mergedComment: comments.join("\n"),
+      mergedPosition: basePos ? JSON.stringify(basePos) : ""
+    };
+  }
+  async function mergeAnnotationsByIDs(ids) {
+    const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+    if (unique.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
+    const hostItems = globalThis.Zotero?.Items;
+    if (!hostItems) return { ok: false, keptID: 0, removedCount: 0 };
+    const loaded = [];
+    for (const id of unique) {
+      const it = hostItems.get?.(id) || (hostItems.getAsync ? await hostItems.getAsync(id).catch(() => null) : null);
+      if (it && !it.deleted && (it.isAnnotation?.() || it.itemType === "annotation")) {
+        loaded.push(it);
+      }
+    }
+    if (loaded.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
+    const parentID = Number(loaded[0].parentID || loaded[0].parentItemID || 0);
+    const sameParent = loaded.filter((it) => Number(it.parentID || it.parentItemID || 0) === parentID);
+    if (sameParent.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
+    const sorted = [...sameParent].sort(compareAnnotationsByOrder);
+    const primary = sorted[0];
+    const rest = sorted.slice(1);
+    const { mergedText, mergedComment, mergedPosition } = mergeAnnotationPayloads(sorted);
+    primary.annotationText = mergedText;
+    primary.annotationComment = mergedComment;
+    if (mergedPosition) primary.annotationPosition = mergedPosition;
+    if (typeof primary.saveTx === "function") await primary.saveTx();
+    else if (typeof primary.save === "function") await primary.save();
+    const restIDs = rest.map((r) => Number(r.id)).filter((id) => id > 0);
+    if (restIDs.length && typeof hostItems.trashTx === "function") {
+      await hostItems.trashTx(restIDs);
+    } else {
+      for (const r of rest) {
+        r.deleted = true;
+        if (typeof r.saveTx === "function") await r.saveTx();
+      }
+    }
+    return { ok: true, keptID: Number(primary.id || 0), removedCount: rest.length };
+  }
+  function collectItemAnnotations(items, semantics) {
+    const hostItems = globalThis.Zotero?.Items;
+    const out = [];
+    const seenAnn = /* @__PURE__ */ new Set();
+    for (const rawItem of items) {
+      if (!rawItem || rawItem.deleted) continue;
+      const itemID = Number(rawItem.id || 0);
+      const itemTitle = String(rawItem.getField?.("title") || rawItem.title || `文献 #${itemID}`);
+      const creator = String(rawItem.firstCreator || "").trim();
+      const year = String(rawItem.getField?.("year") || rawItem.getField?.("date") || "").slice(0, 4);
+      const creatorYear = [creator, year].filter(Boolean).join(" ");
+      const canHaveAnnotations = (it) => {
+        if (!it || it.deleted || typeof it.getAnnotations !== "function") return false;
+        if (typeof it.isFileAttachment === "function") return Boolean(it.isFileAttachment());
+        if (typeof it.isAttachment === "function" && !it.isAttachment()) return false;
+        return true;
+      };
+      const attachments = [];
+      if (canHaveAnnotations(rawItem)) attachments.push(rawItem);
+      const attIDs = typeof rawItem.getAttachments === "function" ? rawItem.getAttachments() || [] : [];
+      for (const aid of attIDs) {
+        const att = hostItems?.get?.(aid);
+        if (canHaveAnnotations(att)) attachments.push(att);
+      }
+      for (const att of attachments) {
+        let anns = [];
+        try {
+          anns = att.getAnnotations?.() || [];
+        } catch {
+          anns = [];
+        }
+        for (const ann of [...anns].sort(compareAnnotationsByOrder)) {
+          const annID = Number(ann?.id || 0);
+          if (!ann || ann.deleted || annID > 0 && seenAnn.has(annID)) continue;
+          if (annID > 0) seenAnn.add(annID);
+          const color = normalizeHexColor(ann.annotationColor || ann.color);
+          const text2 = String(ann.annotationText || "").trim();
+          const comment = String(ann.annotationComment || "").trim();
+          if (!text2 && !comment) continue;
+          const tags = typeof ann.getTags === "function" ? (ann.getTags() || []).map((t) => String(t?.tag || t || "").trim()).filter(Boolean) : [];
+          out.push({
+            itemID,
+            itemTitle,
+            creatorYear,
+            annotationID: annID,
+            color,
+            colorLabel: resolveColorLabel(color, semantics),
+            text: text2,
+            comment,
+            pageLabel: String(ann.annotationPageLabel || ""),
+            tags
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  // src/services/annotation-matrix.ts
+  function matchesAnnotationQuery(ann, rawQuery) {
+    const query = String(rawQuery || "").trim().toLowerCase();
+    if (!query) return true;
+    const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(" ")}`.toLowerCase();
+    const orClauses = query.split("||").map((s) => s.trim()).filter(Boolean);
+    if (!orClauses.length) return true;
+    return orClauses.some((clause) => {
+      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
+      return andTerms.length > 0 && andTerms.every((term) => hay.includes(term));
+    });
+  }
+  function filterCollectedAnnotations(list, opts = {}) {
+    const wantedColor = String(opts.colorLabel || "").trim().toLowerCase();
+    const wantedTag = String(opts.tag || "").trim().toLowerCase();
+    return list.filter((ann) => {
+      if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && normalizeHexColor(ann.color) !== wantedColor) {
+        return false;
+      }
+      if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
+        return false;
+      }
+      return matchesAnnotationQuery(ann, opts.query || "");
+    });
+  }
+  function buildAnnotationMatrix(items, colorLabelsJson, opts = {}) {
+    const semantics = parseColorSemantics(colorLabelsJson);
+    const all = collectItemAnnotations(items, semantics);
+    const filtered = filterCollectedAnnotations(all, opts);
+    const colOrder = [];
+    const colSeen = /* @__PURE__ */ new Set();
+    for (const label of Object.values(semantics)) {
+      if (filtered.some((a) => a.colorLabel === label) && !colSeen.has(label)) {
+        colSeen.add(label);
+        colOrder.push(label);
+      }
+    }
+    for (const a of filtered) {
+      if (!colSeen.has(a.colorLabel)) {
+        colSeen.add(a.colorLabel);
+        colOrder.push(a.colorLabel);
+      }
+    }
+    const byItem = /* @__PURE__ */ new Map();
+    for (const raw of items) {
+      const id = Number(raw?.id || 0);
+      if (!id || raw?.deleted) continue;
+      const title = String(raw.getField?.("title") || raw.title || `文献 #${id}`);
+      const creator = String(raw.firstCreator || "").trim();
+      const year = String(raw.getField?.("year") || raw.getField?.("date") || "").slice(0, 4);
+      byItem.set(id, { title, creatorYear: [creator, year].filter(Boolean).join(" "), list: [] });
+    }
+    for (const a of filtered) {
+      let bucket = byItem.get(a.itemID);
+      if (!bucket) {
+        bucket = { title: a.itemTitle, creatorYear: a.creatorYear, list: [] };
+        byItem.set(a.itemID, bucket);
+      }
+      bucket.list.push(a);
+    }
+    const rows = [];
+    for (const [itemID, entry] of byItem.entries()) {
+      if (filtered.length > 0 && entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
+      const cells = {};
+      for (const col of colOrder) cells[col] = [];
+      for (const a of entry.list) {
+        if (!cells[a.colorLabel]) cells[a.colorLabel] = [];
+        cells[a.colorLabel].push(a);
+      }
+      rows.push({ itemID, title: entry.title, creatorYear: entry.creatorYear, cells });
+    }
+    return { columns: colOrder, rows, totalAnnotations: filtered.length };
+  }
+  function formatAnnotationCellText(list) {
+    return list.map((a) => {
+      const page = a.pageLabel ? `[p.${a.pageLabel}] ` : "";
+      const body = a.comment && a.text ? `${a.text}（评注：${a.comment}）` : a.comment || a.text;
+      return `${page}${body}`;
+    }).join("；");
+  }
+  function renderMatrixMarkdown(matrix, heading = "文献对比矩阵") {
+    const cols = ["文献", ...matrix.columns];
+    const header = `| ${cols.join(" | ")} |`;
+    const sep = `| ${cols.map(() => "---").join(" | ")} |`;
+    const lines = [`## ${heading}`, "", header, sep];
+    for (const row of matrix.rows) {
+      const meta = row.creatorYear ? `${row.title} (${row.creatorYear})` : row.title;
+      const cells = [
+        meta.replace(/\|/g, "\\|"),
+        ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []).replace(/\|/g, "\\|").replace(/\r?\n/g, " "))
+      ];
+      lines.push(`| ${cells.join(" | ")} |`);
+    }
+    return lines.join("\n");
+  }
+  function csvCell(val) {
+    const s = String(val || "");
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  function renderMatrixCsv(matrix) {
+    const header = ["文献", "作者年份", ...matrix.columns].map(csvCell).join(",");
+    const rows = matrix.rows.map((row) => [
+      row.title,
+      row.creatorYear,
+      ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []))
+    ].map(csvCell).join(","));
+    return [header, ...rows].join("\n");
+  }
+  function escHtml(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function renderMatrixHtmlNote(matrix, heading = "BridgeFlow 文献对比矩阵") {
+    const ths = ["文献", ...matrix.columns].map((c) => `<th>${escHtml(c)}</th>`).join("");
+    const trs = matrix.rows.map((row) => {
+      const meta = row.creatorYear ? `${escHtml(row.title)}<br/><small>${escHtml(row.creatorYear)}</small>` : escHtml(row.title);
+      const tds = matrix.columns.map((c) => `<td>${escHtml(formatAnnotationCellText(row.cells[c] || []))}</td>`).join("");
+      return `<tr><td>${meta}</td>${tds}</tr>`;
+    }).join("");
+    return `<h2>${escHtml(heading)}</h2><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+  }
+  async function saveMatrixAsZoteroNote(matrix, heading, libraryID) {
+    const ZoteroObj = globalThis.Zotero;
+    const ItemCtor = ZoteroObj?.Item;
+    if (typeof ItemCtor !== "function") return null;
+    try {
+      const note = new ItemCtor("note");
+      note.libraryID = libraryID || Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+      note.setNote(renderMatrixHtmlNote(matrix, heading));
+      const id = await note.saveTx?.();
+      return Number(id || note.id || 0) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // src/domains/visual-notes/annotation-matrix-ui.ts
+  var MATRIX_STYLE_ID = "zbf-matrix-modal-style";
+  var MATRIX_CSS = `
+.zbf-matrix-backdrop { position: fixed; inset: 0; z-index: 2147483646; background: rgba(15,23,42,0.48); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.zbf-matrix-dialog { width: min(1040px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; background: light-dark(#ffffff, #1e293b); color: light-dark(#111827, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.24)); box-shadow: 0 20px 50px rgba(0,0,0,0.32); font: 12.5px/1.45 system-ui, "Microsoft YaHei UI", sans-serif; }
+.zbf-matrix-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.zbf-matrix-title { font-size: 15px; font-weight: 600; }
+.zbf-matrix-close { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.zbf-matrix-close:hover { background: light-dark(rgba(15,23,42,0.08), rgba(255,255,255,0.1)); }
+.zbf-matrix-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.zbf-matrix-search-wrap { position: relative; flex: 1 1 230px; min-width: 180px; display: flex; align-items: center; }
+.zbf-matrix-input { width: 100%; height: 29px; padding: 0 26px 0 9px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.32)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; box-sizing: border-box; }
+.zbf-matrix-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.16); }
+.zbf-matrix-clear { position: absolute; right: 4px; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; display: none; align-items: center; justify-content: center; }
+.zbf-matrix-clear:hover { opacity: 1; background: rgba(128,128,128,0.16); }
+.zbf-matrix-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; border: 1px solid light-dark(rgba(15,23,42,0.16), rgba(148,163,184,0.28)); background: transparent; color: inherit; cursor: pointer; font-size: 11.5px; transition: background-color 0.12s, border-color 0.12s; }
+.zbf-matrix-chip:hover { background: light-dark(rgba(15,23,42,0.05), rgba(255,255,255,0.06)); }
+.zbf-matrix-chip[data-active="true"] { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+.zbf-matrix-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; border: 1px solid rgba(0,0,0,0.18); }
+.zbf-matrix-empty { padding: 32px 16px; text-align: center; font-size: 13px; opacity: 0.72; }
+.zbf-matrix-scroll { flex: 1 1 auto; overflow: auto; border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.22)); border-radius: 8px; }
+.zbf-matrix-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.zbf-matrix-table th, .zbf-matrix-table td { border-bottom: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.16)); border-right: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.14)); padding: 7px 9px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
+.zbf-matrix-table th { position: sticky; top: 0; background: light-dark(#f8fafc, #0f172a); font-weight: 600; z-index: 1; }
+.zbf-matrix-table tbody tr:hover td { background: light-dark(rgba(15,23,42,0.015), rgba(255,255,255,0.02)); }
+.zbf-matrix-item-link { border: 0; padding: 0; background: transparent; color: light-dark(#2563eb, #60a5fa); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.zbf-matrix-item-link:hover { text-decoration: underline; }
+.zbf-matrix-ann { margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; border-left: 3px solid transparent; background: light-dark(rgba(15,23,42,0.03), rgba(255,255,255,0.04)); cursor: pointer; transition: background-color 0.12s ease; }
+.zbf-matrix-ann:hover { background: light-dark(rgba(37,99,235,0.09), rgba(96,165,250,0.15)); }
+.zbf-matrix-ann:last-child { margin-bottom: 0; }
+.zbf-matrix-mark { padding: 0 2px; border-radius: 2px; background: light-dark(#fef08a, rgba(250, 204, 21, 0.34)); color: inherit; font-weight: 600; }
+.zbf-matrix-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.zbf-matrix-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 500 12px/1.2 inherit; cursor: pointer; }
+.zbf-matrix-btn:hover { background: light-dark(#e2e8f0, #334155); }
+.zbf-matrix-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.zbf-matrix-btn.primary:hover { background: #1d4ed8; }
+.zbf-matrix-status { font-size: 12px; opacity: 0.85; }
+`;
+  function matrixEl(doc, tag) {
+    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  }
+  function ensureMatrixStyles(doc) {
+    if (doc.getElementById(MATRIX_STYLE_ID)) return;
+    const style = matrixEl(doc, "style");
+    style.id = MATRIX_STYLE_ID;
+    style.textContent = MATRIX_CSS;
+    (doc.head || doc.documentElement)?.appendChild(style);
+  }
+  function writeMatrixClipboard(text2, clipboard) {
+    if (clipboard?.writePayload("", text2, true)) return true;
+    try {
+      const cb = globalThis.Zotero?.Utilities?.Internal?.copyTextToClipboard;
+      if (typeof cb === "function") {
+        cb(text2);
+        return true;
+      }
+    } catch {
+    }
+    return false;
+  }
+  function extractQueryTerms(rawQuery) {
+    return String(rawQuery || "").split(/(?:\|\||&&)/).map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2);
+  }
+  function renderHighlightedSnippet(doc, container, text2, terms) {
+    if (!terms.length || !doc.createTextNode) {
+      container.textContent = text2;
+      return;
+    }
+    const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const re = new RegExp(`(${escaped.join("|")})`, "gi");
+    let last = 0;
+    for (const match of text2.matchAll(re)) {
+      const idx = match.index ?? 0;
+      if (idx > last) container.appendChild(doc.createTextNode(text2.slice(last, idx)));
+      const mark = matrixEl(doc, "mark");
+      mark.className = "zbf-matrix-mark";
+      mark.textContent = match[0];
+      container.appendChild(mark);
+      last = idx + match[0].length;
+    }
+    if (last < text2.length) container.appendChild(doc.createTextNode(text2.slice(last)));
+  }
+
+  // src/domains/visual-notes/annotation-matrix-modal.ts
+  function openAnnotationMatrixModal(options) {
+    const doc = options.win.document;
+    if (!doc) return;
+    ensureMatrixStyles(doc);
+    doc.getElementById("zbf-matrix-backdrop")?.remove();
+    const hostItems = globalThis.Zotero?.Items;
+    const items = [...new Set(options.itemIDs)].map((id) => hostItems?.get?.(id)).filter((it) => it && !it.deleted);
+    const colorJson = options.prefs.get("inspector.annotations.colorLabels");
+    const semantics = parseColorSemantics(colorJson);
+    const colorByLabel = /* @__PURE__ */ new Map();
+    for (const [hex, lbl] of Object.entries(semantics)) {
+      if (!colorByLabel.has(lbl)) colorByLabel.set(lbl, hex);
+    }
+    const fullMatrix = buildAnnotationMatrix(items, colorJson);
+    const countsByCol = /* @__PURE__ */ new Map();
+    for (const col of fullMatrix.columns) {
+      let total = 0;
+      for (const r of fullMatrix.rows) total += (r.cells[col] || []).length;
+      countsByCol.set(col, total);
+    }
+    const backdrop = matrixEl(doc, "div");
+    backdrop.id = "zbf-matrix-backdrop";
+    backdrop.className = "zbf-matrix-backdrop";
+    const dialog = matrixEl(doc, "div");
+    dialog.className = "zbf-matrix-dialog";
+    const head = matrixEl(doc, "div");
+    head.className = "zbf-matrix-head";
+    const heading = matrixEl(doc, "div");
+    heading.className = "zbf-matrix-title";
+    heading.textContent = `文献对比矩阵 · ${options.title} (${items.length} 篇 / ${fullMatrix.totalAnnotations} 条标注)`;
+    const closeBtn = matrixEl(doc, "button");
+    closeBtn.type = "button";
+    closeBtn.className = "zbf-matrix-close";
+    closeBtn.textContent = "✕";
+    head.append(heading, closeBtn);
+    const controls = matrixEl(doc, "div");
+    controls.className = "zbf-matrix-controls";
+    const searchWrap = matrixEl(doc, "div");
+    searchWrap.className = "zbf-matrix-search-wrap";
+    const queryInput = matrixEl(doc, "input");
+    queryInput.type = "text";
+    queryInput.className = "zbf-matrix-input";
+    queryInput.placeholder = "筛选标注（支持 方法 && 对照 或 局限 || 不足）...";
+    const clearBtn = matrixEl(doc, "button");
+    clearBtn.type = "button";
+    clearBtn.className = "zbf-matrix-clear";
+    clearBtn.textContent = "✕";
+    clearBtn.title = "清空筛选条件";
+    searchWrap.append(queryInput, clearBtn);
+    controls.appendChild(searchWrap);
+    let activeColor = "";
+    const chipButtons = [];
+    const addChip = (label, value, count2) => {
+      const btn = matrixEl(doc, "button");
+      btn.type = "button";
+      btn.className = "zbf-matrix-chip";
+      const dotHex = value ? colorByLabel.get(value) : "";
+      if (dotHex) {
+        const dot = matrixEl(doc, "span");
+        dot.className = "zbf-matrix-dot";
+        dot.style.background = dotHex;
+        btn.appendChild(dot);
+      }
+      const txt = matrixEl(doc, "span");
+      txt.textContent = count2 > 0 ? `${label} (${count2})` : label;
+      btn.appendChild(txt);
+      if (!value) btn.setAttribute("data-active", "true");
+      btn.addEventListener("click", () => {
+        activeColor = value;
+        for (const b of chipButtons) b.removeAttribute("data-active");
+        btn.setAttribute("data-active", "true");
+        renderTable();
+      });
+      chipButtons.push(btn);
+      controls.appendChild(btn);
+    };
+    addChip("全部维度", "", fullMatrix.totalAnnotations);
+    for (const col of fullMatrix.columns) addChip(col, col, countsByCol.get(col) || 0);
+    const scroll = matrixEl(doc, "div");
+    scroll.className = "zbf-matrix-scroll";
+    const statusEl = matrixEl(doc, "span");
+    statusEl.className = "zbf-matrix-status";
+    const selectedIDs = new Set(items.map((it) => Number(it.id)));
+    let currentMatrix = fullMatrix;
+    const updateStatus = () => {
+      const visibleSelected = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
+      statusEl.textContent = `当前显示 ${currentMatrix.rows.length} 篇 / ${currentMatrix.totalAnnotations} 条标注 · 已勾选 ${visibleSelected} 篇`;
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault?.();
+        close();
+      }
+    };
+    const close = () => {
+      doc.removeEventListener?.("keydown", onKey, true);
+      backdrop.remove();
+    };
+    const renderTable = () => {
+      clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
+      currentMatrix = buildAnnotationMatrix(items, colorJson, { query: queryInput.value, colorLabel: activeColor });
+      scroll.textContent = "";
+      updateStatus();
+      if (!currentMatrix.rows.length || !currentMatrix.columns.length) {
+        const empty = matrixEl(doc, "div");
+        empty.className = "zbf-matrix-empty";
+        empty.textContent = items.length ? "当前筛选条件下没有匹配的标注，请尝试调整关键词或颜色维度。" : "未检测到可对比的文献。请先在阅读器中打开文献，或在主文库选中多篇带标注的文献后重试。";
+        scroll.appendChild(empty);
+        return;
+      }
+      const terms = extractQueryTerms(queryInput.value);
+      const table = matrixEl(doc, "table");
+      table.className = "zbf-matrix-table";
+      const thead = matrixEl(doc, "thead");
+      const trHead = matrixEl(doc, "tr");
+      const firstTh = matrixEl(doc, "th");
+      firstTh.style.width = "220px";
+      const allCb = matrixEl(doc, "input");
+      allCb.type = "checkbox";
+      const syncAllCheckbox = () => {
+        const total = currentMatrix.rows.length;
+        const checkedCount = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
+        allCb.checked = total > 0 && checkedCount === total;
+        allCb.indeterminate = checkedCount > 0 && checkedCount < total;
+      };
+      syncAllCheckbox();
+      allCb.style.marginRight = "6px";
+      allCb.title = "全选 / 取消当前列表文献";
+      const rowCbs = [];
+      allCb.addEventListener("change", () => {
+        allCb.indeterminate = false;
+        for (const r of currentMatrix.rows) {
+          if (allCb.checked) selectedIDs.add(r.itemID);
+          else selectedIDs.delete(r.itemID);
+        }
+        for (const cb of rowCbs) cb.checked = allCb.checked;
+        updateStatus();
+      });
+      const headTitle = matrixEl(doc, "span");
+      headTitle.textContent = `文献 (${currentMatrix.rows.length})`;
+      firstTh.append(allCb, headTitle);
+      trHead.appendChild(firstTh);
+      for (const col of currentMatrix.columns) {
+        const th = matrixEl(doc, "th");
+        const dotHex = colorByLabel.get(col);
+        if (dotHex) {
+          const dot = matrixEl(doc, "span");
+          dot.className = "zbf-matrix-dot";
+          dot.style.background = dotHex;
+          dot.style.marginRight = "5px";
+          th.appendChild(dot);
+        }
+        const lbl = matrixEl(doc, "span");
+        lbl.textContent = col;
+        th.appendChild(lbl);
+        trHead.appendChild(th);
+      }
+      thead.appendChild(trHead);
+      table.appendChild(thead);
+      const tbody = matrixEl(doc, "tbody");
+      for (const row of currentMatrix.rows) {
+        const tr = matrixEl(doc, "tr");
+        const tdTitle = matrixEl(doc, "td");
+        const cb = matrixEl(doc, "input");
+        cb.type = "checkbox";
+        cb.checked = selectedIDs.has(row.itemID);
+        cb.style.marginRight = "6px";
+        rowCbs.push(cb);
+        cb.addEventListener("change", () => {
+          if (cb.checked) selectedIDs.add(row.itemID);
+          else selectedIDs.delete(row.itemID);
+          syncAllCheckbox();
+          updateStatus();
+        });
+        const link = matrixEl(doc, "button");
+        link.type = "button";
+        link.className = "zbf-matrix-item-link";
+        link.textContent = row.title;
+        link.title = "打开并聚焦此文献阅读器";
+        link.addEventListener("click", () => {
+          close();
+          options.bus?.emit("workspace:open-item-request", { itemID: row.itemID, preferExistingTab: true });
+        });
+        tdTitle.append(cb, link);
+        if (row.creatorYear) {
+          const sub = matrixEl(doc, "div");
+          sub.style.opacity = "0.72";
+          sub.style.fontSize = "11px";
+          sub.textContent = row.creatorYear;
+          tdTitle.appendChild(sub);
+        }
+        tr.appendChild(tdTitle);
+        for (const col of currentMatrix.columns) {
+          const td = matrixEl(doc, "td");
+          const colColor = colorByLabel.get(col) || "";
+          for (const ann of row.cells[col] || []) {
+            const block = matrixEl(doc, "div");
+            block.className = "zbf-matrix-ann";
+            if (colColor) block.style.borderLeftColor = colColor;
+            const page = ann.pageLabel ? `[p.${ann.pageLabel}] ` : "";
+            const snippet = ann.comment && ann.text ? `${page}${ann.text}（评注：${ann.comment}）` : `${page}${ann.comment || ann.text}`;
+            renderHighlightedSnippet(doc, block, snippet, terms);
+            block.title = "点击复制此条标注内容";
+            block.addEventListener("click", () => {
+              statusEl.textContent = writeMatrixClipboard(snippet, options.clipboard) ? "✓ 已复制单条标注内容" : "✕ 复制失败";
+            });
+            td.appendChild(block);
+          }
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      scroll.appendChild(table);
+    };
+    clearBtn.addEventListener("click", () => {
+      queryInput.value = "";
+      renderTable();
+      queryInput.focus?.();
+    });
+    queryInput.addEventListener("input", renderTable);
+    renderTable();
+    const foot = matrixEl(doc, "div");
+    foot.className = "zbf-matrix-foot";
+    const actions = matrixEl(doc, "div");
+    actions.className = "zbf-matrix-actions";
+    const mkBtn = (label, primary, onClick) => {
+      const b = matrixEl(doc, "button");
+      b.type = "button";
+      b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
+      b.textContent = label;
+      b.addEventListener("click", onClick);
+      actions.appendChild(b);
+    };
+    mkBtn("存为 Zotero 笔记", true, () => {
+      void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then((id) => {
+        statusEl.textContent = id ? `✓ 已生成笔记 (#${id})` : "✕ 生成笔记失败";
+      });
+    });
+    mkBtn("复制 Markdown", false, () => {
+      statusEl.textContent = writeMatrixClipboard(renderMatrixMarkdown(currentMatrix, options.title), options.clipboard) ? "✓ 已复制 Markdown 表格" : "✕ 复制失败";
+    });
+    mkBtn("复制 CSV", false, () => {
+      statusEl.textContent = writeMatrixClipboard(renderMatrixCsv(currentMatrix), options.clipboard) ? "✓ 已复制 CSV" : "✕ 复制失败";
+    });
+    if (options.clipboard) {
+      mkBtn("复制勾选 CSL 引文", false, () => {
+        const targets = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => hostItems?.get?.(r.itemID)).filter(Boolean);
+        if (!targets.length) {
+          statusEl.textContent = "请先勾选至少一篇文献";
+          return;
+        }
+        void options.clipboard?.copyItems(targets, { source: "tab-menu" }).then((ok) => {
+          statusEl.textContent = ok ? `✓ 已复制 ${targets.length} 篇 CSL 引文并记入反查历史` : "✕ 复制引文失败";
+        });
+      });
+    }
+    if (options.bus && options.prefs.get("modules.wordCite.enable")) {
+      mkBtn("合并插入 Word", false, () => {
+        const ids = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => r.itemID);
+        if (!ids.length) {
+          statusEl.textContent = "请先勾选至少一篇文献";
+          return;
+        }
+        options.bus?.emit("word:insert-items-request", { itemIDs: ids, win: options.win });
+        statusEl.textContent = `✓ 已发送 ${ids.length} 篇文献到 Word`;
+      });
+    }
+    foot.append(statusEl, actions);
+    dialog.append(head, controls, scroll, foot);
+    backdrop.appendChild(dialog);
+    doc.addEventListener?.("keydown", onKey, true);
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) close();
+    });
+    (doc.body || doc.documentElement)?.appendChild(backdrop);
+    queryInput.focus?.();
+  }
+
+  // src/domains/visual-notes/annotation-popup-labels.ts
+  var STYLE_ID3 = "zbf-reader-color-labels-style";
+  var LABEL_CLASS = "zbf-popup-color-name";
+  var COLOR_KEYS = Object.keys(DEFAULT_ANNOTATION_COLORS);
+  var POPUP_CSS = `
+.selection-popup, .annotation-popup { max-width: 480px !important; }
+.selection-popup .colors, .annotation-popup .colors { flex-wrap: wrap !important; justify-content: flex-start !important; gap: 5px 10px !important; }
+.selection-popup .colors .color-button, .annotation-popup .colors .color-button {
+  width: auto !important; min-width: 20px; height: 22px !important;
+  padding: 2px 6px !important; display: inline-flex !important;
+  align-items: center !important; gap: 5px !important; border-radius: 5px !important;
+  transition: background-color 0.12s ease !important;
+}
+.selection-popup .colors .color-button svg, .annotation-popup .colors .color-button svg { flex: none; }
+.${LABEL_CLASS} {
+  font-size: 12px; line-height: 1.2; color: var(--fill-primary, currentColor);
+  white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}
+`;
+  function rgbToHex(raw) {
+    const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (!m) return "";
+    const toHex = (n) => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, "0");
+    return `#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`;
+  }
+  function resolvePopupButtonColor(btn, index) {
+    const fillNode = btn.querySelector?.('path[fill]:not([fill="none"]), rect[fill]:not([fill="none"]), circle[fill]:not([fill="none"])');
+    const fillAttr = String(fillNode?.getAttribute?.("fill") || "").trim();
+    if (fillAttr) {
+      return fillAttr.startsWith("rgb") ? rgbToHex(fillAttr) : normalizeHexColor(fillAttr);
+    }
+    const bg = String(btn.style?.backgroundColor || "").trim();
+    if (bg.startsWith("#")) return normalizeHexColor(bg);
+    if (bg.startsWith("rgb")) return rgbToHex(bg);
+    return COLOR_KEYS[index] || "";
+  }
+  function decorateSelectionPopupDoc(readerDoc, semantics) {
+    const buttons = readerDoc.querySelectorAll?.(".selection-popup .colors .color-button, .annotation-popup .colors .color-button");
+    if (!buttons || !buttons.length) return 0;
+    let updated = 0;
+    buttons.forEach((btn, index) => {
+      const hex = resolvePopupButtonColor(btn, index);
+      const label = hex && semantics[hex] || "";
+      let span = btn.querySelector?.(`.${LABEL_CLASS}`);
+      if (!label) {
+        span?.remove?.();
+        return;
+      }
+      if (!span) {
+        const htmlNs = "http://www.w3.org/1999/xhtml";
+        span = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "span") : readerDoc.createElement("span");
+        span.className = LABEL_CLASS;
+        btn.appendChild(span);
+      }
+      if (span.textContent !== label) span.textContent = label;
+      btn.setAttribute("title", label);
+      updated += 1;
+    });
+    return updated;
+  }
+  function clearSelectionPopupDoc(readerDoc) {
+    readerDoc.getElementById?.(STYLE_ID3)?.remove?.();
+    readerDoc.querySelectorAll?.(`.${LABEL_CLASS}`).forEach((el) => el.remove?.());
+  }
+  var ReaderPopupLabelsController = class {
+    kernel;
+    attachedDocs = /* @__PURE__ */ new Map();
+    pendingReaders = /* @__PURE__ */ new Set();
+    notifierSub = null;
+    active = false;
+    constructor(kernel) {
+      this.kernel = kernel;
+    }
+    isEnabled() {
+      return Boolean(this.kernel.prefs.get("inspector.annotations.popupLabelsEnable"));
+    }
+    getSemantics() {
+      return parseColorSemantics(String(this.kernel.prefs.get("inspector.annotations.colorLabels") || ""));
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.sync();
+      this.notifierSub = this.kernel.notifier?.subscribe?.(["tab"], ({ event }) => {
+        if (!this.active || !this.isEnabled()) return;
+        if (event === "add" || event === "select" || event === "open") {
+          this.scanOpenReaders();
+        } else if (event === "close") {
+          this.pruneClosedDocs();
+        }
+      }) ?? null;
+    }
+    stop() {
+      this.active = false;
+      this.notifierSub?.();
+      this.notifierSub = null;
+      this.pendingReaders.clear();
+      for (const dispose of [...this.attachedDocs.values()]) dispose();
+      this.attachedDocs.clear();
+    }
+    sync() {
+      if (!this.active) return;
+      if (!this.isEnabled()) {
+        for (const dispose of [...this.attachedDocs.values()]) dispose();
+        this.attachedDocs.clear();
+        this.pendingReaders.clear();
+        return;
+      }
+      this.scanOpenReaders();
+      const sem = this.getSemantics();
+      for (const doc of this.attachedDocs.keys()) {
+        decorateSelectionPopupDoc(doc, sem);
+      }
+    }
+    attachReaderDoc(readerDoc) {
+      if (!this.active || !this.isEnabled() || !readerDoc || this.attachedDocs.has(readerDoc)) return;
+      const headOrRoot = readerDoc.head || readerDoc.documentElement;
+      if (headOrRoot && !readerDoc.getElementById?.(STYLE_ID3)) {
+        const htmlNs = "http://www.w3.org/1999/xhtml";
+        const styleEl = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "style") : readerDoc.createElement("style");
+        styleEl.id = STYLE_ID3;
+        styleEl.textContent = POPUP_CSS;
+        headOrRoot.appendChild(styleEl);
+      }
+      const apply = () => decorateSelectionPopupDoc(readerDoc, this.getSemantics());
+      apply();
+      const Obs = readerDoc.defaultView?.MutationObserver || globalThis.MutationObserver;
+      const target = readerDoc.body || readerDoc.documentElement;
+      let observer = null;
+      let applyQueued = false;
+      if (Obs && target) {
+        const isPopupMutation = (records) => {
+          try {
+            for (let r = 0; r < records.length; r++) {
+              const rec = records[r];
+              const t = rec?.target;
+              if (t && t.nodeType === 1 && t.closest?.(".selection-popup, .annotation-popup")) return true;
+              const added = rec?.addedNodes;
+              if (added) {
+                for (let i = 0; i < added.length; i++) {
+                  const el = added[i];
+                  if (el && el.nodeType === 1 && (el.matches?.(".selection-popup, .annotation-popup") || el.querySelector?.(".selection-popup, .annotation-popup"))) {
+                    return true;
+                  }
+                }
+              }
+            }
+            return false;
+          } catch {
+            return true;
+          }
+        };
+        const obs = new Obs((records) => {
+          if (!isPopupMutation(records) || applyQueued) return;
+          applyQueued = true;
+          void Promise.resolve().then(() => {
+            applyQueued = false;
+            if (this.active && this.isEnabled() && this.attachedDocs.has(readerDoc)) apply();
+          });
+        });
+        obs.observe(target, { childList: true, subtree: true });
+        observer = obs;
+      }
+      this.attachedDocs.set(readerDoc, () => {
+        observer?.disconnect();
+        clearSelectionPopupDoc(readerDoc);
+      });
+    }
+    scanOpenReaders() {
+      const readers = globalThis.Zotero?.Reader?._readers || [];
+      for (const reader of readers) {
+        if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
+        const doc = reader._iframeWindow?.document;
+        if (doc?.body) {
+          this.attachReaderDoc(doc);
+        } else if (!this.pendingReaders.has(reader)) {
+          this.pendingReaders.add(reader);
+          const waitReady = reader._waitForReader?.() ?? reader._initPromise ?? Promise.resolve();
+          void Promise.resolve(waitReady).then(() => {
+            this.pendingReaders.delete(reader);
+            if (this.active && this.isEnabled() && !reader._isTabClosed) {
+              const readyDoc = reader._iframeWindow?.document;
+              if (readyDoc?.body) this.attachReaderDoc(readyDoc);
+            }
+          }).catch(() => {
+            this.pendingReaders.delete(reader);
+          });
+        }
+      }
+    }
+    pruneClosedDocs() {
+      for (const [doc, dispose] of [...this.attachedDocs.entries()]) {
+        if (!doc.defaultView || doc.defaultView.closed) {
+          this.attachedDocs.delete(doc);
+          dispose();
+        }
+      }
+    }
+  };
+
+  // src/domains/visual-notes/annotation-tools.ts
+  var ReaderAnnotationTools = class {
+    unregisterListener = null;
+    kernel;
+    popupLabels;
+    constructor(kernel) {
+      this.kernel = kernel;
+      this.popupLabels = new ReaderPopupLabelsController(kernel);
+    }
+    register() {
+      this.popupLabels.start();
+      if (this.unregisterListener) return;
+      const readerApi = globalThis.Zotero?.Reader;
+      if (typeof readerApi?.registerEventListener !== "function") return;
+      const listener = (event) => {
+        if (!this.kernel.prefs.get("inspector.annotations.mergeEnable")) return;
+        const ids = Array.isArray(event?.params?.ids) ? event.params.ids.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0) : [];
+        if (ids.length < 2 || typeof event?.append !== "function") return;
+        const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+        event.append({
+          label: zh ? `合并选中的 ${ids.length} 条标注` : `Merge ${ids.length} Selected Annotations`,
+          onCommand: () => {
+            void mergeAnnotationsByIDs(ids).then((res) => {
+              try {
+                const PW = globalThis.Zotero?.ProgressWindow;
+                if (typeof PW !== "function") return;
+                const win = new PW({ closeOnClick: true });
+                win.changeHeadline(zh ? "BridgeFlow 批注合并" : "BridgeFlow Annotation Merge");
+                win.addDescription(res.ok ? zh ? `已合并 ${ids.length} 条标注为 1 条` : `Merged ${ids.length} annotations` : zh ? "无法合并所选批注（请确认属于同一有效附件）" : "Unable to merge selected annotations");
+                win.show();
+                win.startCloseTimer(2600);
+              } catch {
+              }
+            });
+          }
+        });
+      };
+      try {
+        readerApi.registerEventListener("createAnnotationContextMenu", listener, this.kernel.info.id);
+        this.unregisterListener = () => {
+          try {
+            readerApi.unregisterEventListener?.("createAnnotationContextMenu", listener);
+          } catch {
+          }
+        };
+      } catch {
+        this.unregisterListener = null;
+      }
+    }
+    unregister() {
+      this.popupLabels.stop();
+      this.unregisterListener?.();
+      this.unregisterListener = null;
+    }
+    mergeByIDs(ids) {
+      return mergeAnnotationsByIDs(ids);
+    }
+  };
+
+  // src/domains/visual-notes/data-source.ts
+  function resolveParentItemID(item) {
+    if (!item) return 0;
+    if (item.isAttachment?.() && item.parentItemID) return Number(item.parentItemID) || 0;
+    return Number(item.id || 0);
+  }
+  function readItemRemarkWithFallback(item, dataSource) {
+    if (!item) return "";
+    const id = Number(item.id || 0);
+    if (id > 0 && dataSource) {
+      const cached = dataSource.getRemark(id);
+      if (cached) return cached;
+    }
+    const parentID = resolveParentItemID(item);
+    if (parentID > 0 && parentID !== id && dataSource) {
+      const parentCached = dataSource.getRemark(parentID);
+      if (parentCached) return parentCached;
+    }
+    const attIDs = typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
+    if (dataSource) {
+      for (const attID of attIDs) {
+        const attCached = dataSource.getRemark(attID);
+        if (attCached) return attCached;
+      }
+    }
+    const hostItems = globalThis.Zotero?.Items;
+    const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
+    return getItemBriefNote(targetItem);
+  }
+  function writeItemRemarkWithSync(item, remark, syncToExtra, dataSource) {
+    if (!item) return;
+    const clean = String(remark || "").replace(/[\r\n]+/g, " ").trim();
+    const id = Number(item.id || 0);
+    const parentID = resolveParentItemID(item);
+    if (dataSource) {
+      if (id > 0) dataSource.setRemark(id, clean);
+      if (parentID > 0 && parentID !== id) dataSource.setRemark(parentID, clean);
+    }
+    if (syncToExtra) {
+      const targetID = parentID > 0 ? parentID : id;
+      if (targetID > 0) void syncItemRemarkToExtra(targetID, clean);
+    }
+  }
+
+  // src/domains/visual-notes/info-brief-note.ts
+  var InfoBriefNoteController = class {
+    kernel;
+    dataSource;
+    registeredRowID = "";
+    onUpdated;
+    constructor(kernel, onUpdated) {
+      this.kernel = kernel;
+      this.onUpdated = onUpdated;
+    }
+    setDataSource(source) {
+      this.dataSource = source;
+    }
+    register() {
+      if (this.registeredRowID) return true;
+      const manager = globalThis.Zotero?.ItemPaneManager;
+      if (typeof manager?.registerInfoRow !== "function") return false;
+      try {
+        const rowID = manager.registerInfoRow({
+          rowID: "bridgeflow-brief-note",
+          pluginID: this.kernel.info.id,
+          label: { l10nID: "zbf-info-brief-note-label" },
+          position: "start",
+          multiline: true,
+          nowrap: false,
+          editable: true,
+          onGetData: ({ item }) => readItemRemarkWithFallback(item, this.dataSource),
+          onSetData: ({ item, value }) => {
+            if (!item) return;
+            const syncExtra = Boolean(this.kernel.prefs.get("workspace.syncRemarkToExtra"));
+            writeItemRemarkWithSync(item, String(value ?? ""), syncExtra, this.dataSource);
+            this.refresh();
+            this.onUpdated();
+          },
+          onItemChange: ({ item, setEnabled, setEditable }) => {
+            const valid = Boolean(item && !item.deleted && (item.isRegularItem?.() || item.isAttachment?.()));
+            setEnabled?.(valid);
+            setEditable?.(Boolean(valid && (item?.editable ?? true)));
+          }
+        });
+        if (typeof rowID === "string" && rowID) {
+          this.registeredRowID = rowID;
+          return true;
+        }
+      } catch {
+      }
+      return false;
+    }
+    unregister() {
+      if (!this.registeredRowID) return;
+      const id = this.registeredRowID;
+      this.registeredRowID = "";
+      try {
+        globalThis.Zotero?.ItemPaneManager?.unregisterInfoRow?.(id);
+      } catch {
+      }
+    }
+    refresh() {
+      if (!this.registeredRowID) return;
+      try {
+        globalThis.Zotero?.ItemPaneManager?.refreshInfoRow?.(this.registeredRowID);
+      } catch {
+      }
+    }
+  };
+
+  // src/services/reading-stats.ts
+  function mergePageSeconds(prevMap, lastPage, deltaSeconds) {
+    const next = prevMap ? { ...prevMap } : {};
+    if (lastPage && lastPage > 0 && deltaSeconds > 0) {
+      const pageKey = String(Math.floor(lastPage));
+      next[pageKey] = Math.max(0, (next[pageKey] || 0) + deltaSeconds);
+    }
+    return Object.keys(next).length ? next : void 0;
+  }
+  function buildReadingHeatmapBuckets(progress2, bucketCount = 16) {
+    const pageSec = progress2?.pageSeconds;
+    if (!pageSec || !Object.keys(pageSec).length) return [];
+    const pages = Object.keys(pageSec).map((p) => Number(p)).filter((p) => Number.isFinite(p) && p > 0);
+    if (!pages.length) return [];
+    const maxPage = Math.max(Number(progress2?.totalPages || 0), ...pages);
+    if (maxPage <= 0) return [];
+    const bins = Array.from({ length: bucketCount }, () => 0);
+    for (const p of pages) {
+      const sec = pageSec[String(p)] || 0;
+      const idx = Math.min(bucketCount - 1, Math.max(0, Math.floor((p - 1) / maxPage * bucketCount)));
+      bins[idx] += sec;
+    }
+    const peak = Math.max(...bins, 1);
+    return bins.map((v) => Math.round(v / peak * 100) / 100);
+  }
+  function formatReadingDuration(seconds) {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (total < 60) return "";
+    const mins = Math.floor(total / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    const rem = mins % 60;
+    return rem ? `${hrs}h${rem}m` : `${hrs}h`;
+  }
+  function formatReadingProgress(prog) {
+    if (!prog) return { text: "", ratio: null };
+    const dur = formatReadingDuration(prog.readSeconds);
+    const page = Number(prog.lastPage) || 0;
+    const total = Number(prog.totalPages) || 0;
+    const pageText = page > 0 ? total > 0 ? `p.${page}/${total}` : `p.${page}` : "";
+    const text2 = [dur, pageText].filter(Boolean).join(" · ");
+    const ratio = page > 0 && total > 0 ? Math.max(0, Math.min(1, page / total)) : null;
+    return { text: text2, ratio };
+  }
+
+  // src/domains/visual-notes/library-columns.ts
+  function makeSourceFromStore(store) {
+    if (!store) return void 0;
+    return {
+      getReadingProgress: (id) => store.state.readingProgress?.[`item:${id}`],
+      getRemark: (id) => store.state.remarks?.[`item:${id}`] || "",
+      setRemark: () => {
+      }
+    };
+  }
+  function registerTreeColumn(registeredKeys, descriptor, isActive) {
+    const manager = globalThis.Zotero?.ItemTreeManager;
+    const regFn = manager?.registerColumns || manager?.registerColumn;
+    if (typeof regFn !== "function") return false;
+    try {
+      const res = regFn.call(manager, descriptor);
+      const recordKey = (val) => {
+        for (const k of Array.isArray(val) ? val : [val]) {
+          if (typeof k === "string" && k) registeredKeys.add(k);
+        }
+        if (!isActive() && registeredKeys.size) flushUnregisterColumns(registeredKeys);
+      };
+      if (res && typeof res.then === "function") {
+        void res.then(recordKey).catch(() => {
+        });
+      } else {
+        recordKey(res);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function flushUnregisterColumns(registeredKeys) {
+    if (!registeredKeys.size) return;
+    const keys2 = [...registeredKeys];
+    registeredKeys.clear();
+    const manager = globalThis.Zotero?.ItemTreeManager;
+    try {
+      if (typeof manager?.unregisterColumns === "function") {
+        void Promise.resolve(manager.unregisterColumns(keys2)).catch(() => {
+        });
+      } else if (typeof manager?.unregisterColumn === "function") {
+        for (const k of keys2) void Promise.resolve(manager.unregisterColumn(k)).catch(() => {
+        });
+      }
+    } catch {
+    }
+  }
+  var RemarkColumnController = class {
+    registeredKeys = /* @__PURE__ */ new Set();
+    active = false;
+    kernel;
+    dataSource;
+    constructor(kernel, storeOrSource) {
+      this.kernel = kernel;
+      this.dataSource = storeOrSource && "getRemark" in storeOrSource ? storeOrSource : makeSourceFromStore(storeOrSource);
+    }
+    setDataSource(source) {
+      this.dataSource = source;
+    }
+    getDisplayForItem(item) {
+      return readItemRemarkWithFallback(item, this.dataSource);
+    }
+    register() {
+      if (this.active) return;
+      this.active = true;
+      const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+      registerTreeColumn(this.registeredKeys, {
+        dataKey: "bridgeflowRemark",
+        label: zh ? "简记" : "Brief Note",
+        enabledTreeIDs: ["main"],
+        zoteroPersist: ["width", "hidden", "sortDirection"],
+        pluginID: this.kernel.info.id,
+        dataProvider: (item) => this.getDisplayForItem(item)
+      }, () => this.active);
+    }
+    unregister() {
+      this.active = false;
+      flushUnregisterColumns(this.registeredKeys);
+    }
+    refresh() {
+      if (!this.active) return;
+      try {
+        globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
+      } catch {
+      }
+    }
+  };
+  var ReadingColumnsController = class {
+    registeredKeys = /* @__PURE__ */ new Set();
+    activeReadTime = false;
+    activeAnnotations = false;
+    kernel;
+    dataSource;
+    cachedColorRaw = "";
+    cachedSemantics = parseColorSemantics(void 0);
+    constructor(kernel, storeOrSource) {
+      this.kernel = kernel;
+      this.dataSource = storeOrSource && "getReadingProgress" in storeOrSource ? storeOrSource : makeSourceFromStore(storeOrSource);
+    }
+    setDataSource(source) {
+      this.dataSource = source;
+    }
+    syncColumns() {
+      const wantRead = Boolean(this.kernel.prefs.get("workspace.readingColumn.enable"));
+      const wantAnn = Boolean(this.kernel.prefs.get("workspace.annotationColumn.enable"));
+      if (wantRead !== this.activeReadTime || wantAnn !== this.activeAnnotations) {
+        this.unregisterAll();
+        if (wantRead) this.registerReadTimeColumn();
+        if (wantAnn) this.registerAnnotationColumn();
+      }
+    }
+    unregisterAll() {
+      this.activeReadTime = false;
+      this.activeAnnotations = false;
+      flushUnregisterColumns(this.registeredKeys);
+    }
+    refreshColumns() {
+      if (!this.activeReadTime && !this.activeAnnotations) return;
+      try {
+        globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
+      } catch {
+      }
+    }
+    getReadProgressForItem(item) {
+      if (!item || !this.dataSource) return void 0;
+      const id = Number(item.id || 0);
+      if (id > 0) {
+        const direct = this.dataSource.getReadingProgress(id);
+        if (direct) return direct;
+      }
+      const attIDs = typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
+      let best;
+      for (const attID of attIDs) {
+        const prog = this.dataSource.getReadingProgress(attID);
+        if (!prog) continue;
+        const hasPages = Boolean(prog.pageSeconds && Object.keys(prog.pageSeconds).length);
+        const bestHasPages = Boolean(best?.pageSeconds && Object.keys(best.pageSeconds).length);
+        if (!best || hasPages && !bestHasPages || hasPages === bestHasPages && prog.readSeconds > best.readSeconds) {
+          best = prog;
+        }
+      }
+      return best;
+    }
+    getReadTimeDisplay(item) {
+      return formatReadingProgress(this.getReadProgressForItem(item)).text;
+    }
+    getAnnotationSummaryDisplay(item) {
+      if (!item) return "";
+      const rawColor = String(this.kernel.prefs.get("inspector.annotations.colorLabels") || "");
+      if (rawColor !== this.cachedColorRaw) {
+        this.cachedColorRaw = rawColor;
+        this.cachedSemantics = parseColorSemantics(rawColor);
+      }
+      const collected = collectItemAnnotations([item], this.cachedSemantics);
+      if (!collected.length) return "";
+      const counts = /* @__PURE__ */ new Map();
+      for (const a of collected) {
+        counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+      }
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([lbl, n]) => `${lbl}:${n}`).join(" ");
+      return `${collected.length} (${top})`;
+    }
+    registerReadTimeColumn() {
+      const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+      this.activeReadTime = registerTreeColumn(this.registeredKeys, {
+        dataKey: "bridgeflowReadTime",
+        label: zh ? "阅读时长" : "Read Time",
+        enabledTreeIDs: ["main"],
+        zoteroPersist: ["width", "hidden", "sortDirection"],
+        pluginID: this.kernel.info.id,
+        dataProvider: (item) => this.getReadTimeDisplay(item)
+      }, () => this.activeReadTime);
+    }
+    registerAnnotationColumn() {
+      const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+      this.activeAnnotations = registerTreeColumn(this.registeredKeys, {
+        dataKey: "bridgeflowAnnotations",
+        label: zh ? "标注分布" : "Annotations",
+        enabledTreeIDs: ["main"],
+        zoteroPersist: ["width", "hidden", "sortDirection"],
+        pluginID: this.kernel.info.id,
+        dataProvider: (item) => this.getAnnotationSummaryDisplay(item)
+      }, () => this.activeAnnotations);
+    }
+  };
+
+  // src/domains/visual-notes/title-heatmap.ts
+  var DEFAULT_RGB = "13, 148, 136";
+  var HEATMAP_STYLE_ID = "zbf-title-heatmap-style";
+  var HEATMAP_CSS = `
+.virtualized-table .cell-text[data-zbf-heatmap="1"] {
+  border-radius: 3px; background-repeat: no-repeat; box-decoration-break: clone;
+}
+.virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"] {
+  --zbf-heat-rgb: 255, 255, 255 !important;
+}
+`;
+  function hexToRgbTuple(hex) {
+    const raw = String(hex || "").trim().replace(/^#/, "");
+    let full = raw;
+    if (/^[0-9a-f]{3}$/i.test(raw)) {
+      full = `${raw[0]}${raw[0]}${raw[1]}${raw[1]}${raw[2]}${raw[2]}`;
+    }
+    if (!/^[0-9a-f]{6}$/i.test(full)) return DEFAULT_RGB;
+    const r = Number.parseInt(full.slice(0, 2), 16);
+    const g = Number.parseInt(full.slice(2, 4), 16);
+    const b = Number.parseInt(full.slice(4, 6), 16);
+    return `${r}, ${g}, ${b}`;
+  }
+  function formatStopPct(idx, total) {
+    return `${(idx / total * 100).toFixed(2)}%`;
+  }
+  function buildTitleHeatmapGradient(progress2, options = {}) {
+    const rawTotal = Number(progress2?.totalPages || 0);
+    const bucketCount = options.bucketCount ?? (rawTotal > 0 && rawTotal < 16 ? rawTotal : 16);
+    const buckets = buildReadingHeatmapBuckets(progress2, bucketCount);
+    if (!buckets.length || !buckets.some((v) => v > 0)) return "";
+    const rgb = hexToRgbTuple(options.color);
+    const maxPct = Number(options.opacityPercent);
+    const maxAlpha = Number.isFinite(maxPct) ? Math.max(0.1, Math.min(0.9, maxPct / 100)) : 0.42;
+    const minAlpha = Math.max(0.05, maxAlpha * 0.34);
+    const stops = [];
+    const total = buckets.length;
+    let i = 0;
+    while (i < total) {
+      const ratio = buckets[i];
+      let end = i + 1;
+      while (end < total && buckets[end] === ratio) end += 1;
+      const color = ratio > 0 ? `rgba(var(--zbf-heat-rgb, ${rgb}), ${(minAlpha + ratio * (maxAlpha - minAlpha)).toFixed(3)})` : "transparent";
+      stops.push(`${color} ${formatStopPct(i, total)}`, `${color} ${formatStopPct(end, total)}`);
+      i = end;
+    }
+    return `linear-gradient(to right, ${stops.join(", ")})`;
+  }
+  function findCellText(cell) {
+    if (!cell) return null;
+    if (cell.classList?.contains?.("cell-text")) return cell;
+    return cell.querySelector?.(".cell-text") ?? null;
+  }
+  function clearTitleHeatmapFromCell(cell) {
+    const textEl = findCellText(cell);
+    if (!textEl) return;
+    if (typeof textEl.style?.removeProperty === "function") {
+      textEl.style.removeProperty("background-image");
+      textEl.style.removeProperty("--zbf-heat-rgb");
+    } else if (textEl.style) {
+      textEl.style.backgroundImage = "";
+    }
+    textEl.removeAttribute?.("data-zbf-heatmap");
+  }
+  function applyTitleHeatmapToCell(cell, progress2, options = {}) {
+    const textEl = findCellText(cell);
+    if (!textEl) return false;
+    const gradient = buildTitleHeatmapGradient(progress2, options);
+    if (!gradient) {
+      clearTitleHeatmapFromCell(textEl);
+      return false;
+    }
+    if (textEl.style) {
+      textEl.style.backgroundImage = gradient;
+    }
+    textEl.setAttribute?.("data-zbf-heatmap", "1");
+    return true;
+  }
+  var TitleHeatmapController = class {
+    kernel;
+    resolveProgress;
+    windows = /* @__PURE__ */ new Set();
+    disposers = /* @__PURE__ */ new Map();
+    pollTimers = /* @__PURE__ */ new Map();
+    constructor(kernel, resolveProgress) {
+      this.kernel = kernel;
+      this.resolveProgress = resolveProgress;
+    }
+    isEnabled() {
+      return Boolean(
+        this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.readingTitleHeatmap.enable")
+      );
+    }
+    getOptions() {
+      return {
+        color: String(this.kernel.prefs.get("workspace.readingHeatmap.color") || "#0d9488"),
+        opacityPercent: Number(this.kernel.prefs.get("workspace.readingHeatmap.opacity") || 42)
+      };
+    }
+    attachWindow(win) {
+      if (!win) return;
+      this.windows.add(win);
+      if (!this.isEnabled() || this.disposers.has(win) || this.pollTimers.has(win)) return;
+      this.tryPatchWindow(win, 0);
+    }
+    detachWindow(win) {
+      this.windows.delete(win);
+      this.clearWindowPatch(win);
+    }
+    sync(knownWindows) {
+      if (knownWindows) {
+        for (const win of knownWindows) this.windows.add(win);
+      }
+      if (this.isEnabled()) {
+        for (const win of this.windows) {
+          if (!this.disposers.has(win) && !this.pollTimers.has(win)) {
+            this.tryPatchWindow(win, 0);
+          }
+        }
+        this.refreshWindows();
+      } else {
+        for (const win of [...this.windows]) {
+          this.clearWindowPatch(win);
+        }
+      }
+    }
+    refreshWindows() {
+      for (const win of this.windows) {
+        try {
+          win?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+        } catch {
+        }
+      }
+    }
+    disposeAll() {
+      for (const win of [...this.windows]) {
+        this.clearWindowPatch(win);
+      }
+      this.windows.clear();
+    }
+    clearWindowPatch(win) {
+      const timer = this.pollTimers.get(win);
+      if (timer !== void 0) {
+        clearTimeout(timer);
+        this.pollTimers.delete(win);
+      }
+      try {
+        win.document?.getElementById?.(HEATMAP_STYLE_ID)?.remove?.();
+      } catch {
+      }
+      const dispose = this.disposers.get(win);
+      if (dispose) {
+        this.disposers.delete(win);
+        try {
+          dispose();
+        } catch {
+        }
+        try {
+          win?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+        } catch {
+        }
+      }
+    }
+    ensureWindowStyles(win) {
+      const doc = win?.document;
+      if (!doc || doc.getElementById?.(HEATMAP_STYLE_ID)) return;
+      const head = doc.head || doc.documentElement;
+      if (!head || typeof doc.createElementNS !== "function") return;
+      const style = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
+      style.id = HEATMAP_STYLE_ID;
+      style.textContent = HEATMAP_CSS;
+      head.appendChild(style);
+    }
+    tryPatchWindow(win, attempt) {
+      this.pollTimers.delete(win);
+      if (win.closed || !this.windows.has(win) || !this.isEnabled() || this.disposers.has(win)) {
+        return;
+      }
+      const iv = win?.ZoteroPane?.itemsView;
+      if (!iv || typeof iv._renderCell !== "function") {
+        if (attempt < 120) {
+          const timer = setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50);
+          this.pollTimers.set(win, timer);
+        }
+        return;
+      }
+      this.ensureWindowStyles(win);
+      const resolveProgress = this.resolveProgress;
+      const isEnabled = () => this.isEnabled();
+      const getOptions = () => this.getOptions();
+      const dispose = this.kernel.runtime.patch(iv, "_renderCell", "itemsView", (orig) => function(...args) {
+        const cell = orig.apply(this, args);
+        if (!isEnabled() || !cell) return cell;
+        const [index, , column] = args;
+        if (column?.dataKey !== "title" && column?.primary !== true) return cell;
+        const row = this.getRow?.(index) ?? this._rows?.[index];
+        const item = row?.ref;
+        if (item && typeof item.id === "number" && !item.deleted && (row?.isItem ?? true)) {
+          applyTitleHeatmapToCell(cell, resolveProgress(item), getOptions());
+        } else {
+          clearTitleHeatmapFromCell(cell);
+        }
+        return cell;
+      });
+      this.disposers.set(win, dispose);
+      try {
+        iv.tree?.invalidate?.();
+      } catch {
+      }
+    }
+  };
+
+  // src/domains/visual-notes/module.ts
+  var VisualNotesDomainModule = class {
+    id = "visual-notes";
+    enabledPref = "modules.visualNotes.enable";
+    infoBriefNote;
+    remarkColumn;
+    readingColumns;
+    titleHeatmap;
+    annotationTools;
+    kernel;
+    services;
+    disposables = new DisposableStack();
+    windows = /* @__PURE__ */ new Set();
+    active = false;
+    constructor(kernel, services) {
+      this.kernel = kernel;
+      this.services = services;
+      this.remarkColumn = new RemarkColumnController(kernel);
+      this.readingColumns = new ReadingColumnsController(kernel);
+      this.infoBriefNote = new InfoBriefNoteController(kernel, () => {
+        this.remarkColumn.refresh();
+      });
+      this.titleHeatmap = new TitleHeatmapController(kernel, (item) => this.readingColumns.getReadProgressForItem(item));
+      this.annotationTools = new ReaderAnnotationTools(kernel);
+    }
+    setDataSource(source) {
+      this.infoBriefNote.setDataSource(source);
+      this.remarkColumn.setDataSource(source);
+      this.readingColumns.setDataSource(source);
+    }
+    isActive() {
+      return this.active;
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.disposables.reset();
+      this.syncFeatureStates();
+      this.annotationTools.register();
+      this.disposables.add(
+        this.kernel.prefs.observeKeys(
+          [
+            "visualNotes.infoBriefNote.enable",
+            "workspace.remarkColumn.enable",
+            "workspace.readingColumn.enable",
+            "workspace.readingTitleHeatmap.enable",
+            "workspace.readingHeatmap.color",
+            "workspace.readingHeatmap.opacity",
+            "workspace.annotationColumn.enable",
+            "inspector.annotations.popupLabelsEnable",
+            "inspector.annotations.colorLabels"
+          ],
+          (key) => {
+            if (!this.active) return;
+            this.syncFeatureStates();
+            if (key === "inspector.annotations.popupLabelsEnable" || key === "inspector.annotations.colorLabels") {
+              this.annotationTools.popupLabels.sync();
+            }
+            if (key === "inspector.annotations.colorLabels") {
+              this.readingColumns.refreshColumns();
+            }
+          }
+        )
+      );
+      this.disposables.add(
+        this.kernel.bus.on("visual-notes:open-matrix", ({ win, title, itemIDs }) => {
+          if (!this.active || !this.kernel.prefs.get("workspace.enableAnnotationMatrix")) return;
+          openAnnotationMatrixModal({
+            win,
+            title,
+            itemIDs,
+            prefs: this.kernel.prefs,
+            bus: this.kernel.bus,
+            clipboard: this.services.clipboard
+          });
+        })
+      );
+      this.disposables.add(
+        this.kernel.bus.on("visual-notes:reading-updated", () => {
+          if (this.active) this.refreshLibraryViews();
+        })
+      );
+      this.disposables.add(
+        this.kernel.notifier.subscribe(["item"], ({ event }) => {
+          if (!this.active) return;
+          if (event === "modify" || event === "add" || event === "trash" || event === "restore") {
+            this.readingColumns.refreshColumns();
+            this.remarkColumn.refresh();
+            this.infoBriefNote.refresh();
+            this.titleHeatmap.refreshWindows();
+          }
+        })
+      );
+      for (const win of this.getMainWindows()) {
+        this.onMainWindowLoad(win);
+      }
+    }
+    onMainWindowLoad(win) {
+      if (!this.active || !win) return;
+      this.windows.add(win);
+      this.titleHeatmap.attachWindow(win);
+    }
+    onMainWindowUnload(win) {
+      this.windows.delete(win);
+      this.titleHeatmap.detachWindow(win);
+    }
+    refreshLibraryViews() {
+      if (!this.active) return;
+      this.readingColumns.refreshColumns();
+      this.remarkColumn.refresh();
+      this.infoBriefNote.refresh();
+      this.titleHeatmap.refreshWindows();
+    }
+    openMatrixModal(win, title, itemIDs) {
+      if (!this.active) return;
+      openAnnotationMatrixModal({
+        win,
+        title,
+        itemIDs,
+        prefs: this.kernel.prefs,
+        bus: this.kernel.bus,
+        clipboard: this.services.clipboard
+      });
+    }
+    openCurrentMatrix(win) {
+      if (!this.active || !win) return;
+      const ids = [];
+      const seen = /* @__PURE__ */ new Set();
+      const pushItem = (raw) => {
+        if (!raw) return;
+        const pid = Number(raw.parentItemID || raw.id || 0);
+        if (pid > 0 && !seen.has(pid)) {
+          seen.add(pid);
+          ids.push(pid);
+        }
+      };
+      const selected = win.ZoteroPane?.getSelectedItems?.() || [];
+      for (const item of selected) pushItem(item);
+      const tabs = win.Zotero_Tabs?._tabs || [];
+      const hostItems = globalThis.Zotero?.Items;
+      for (const t of tabs) {
+        const itemID = Number(t?.data?.itemID || 0);
+        if (itemID > 0) pushItem(hostItems?.get?.(itemID) || { id: itemID });
+      }
+      this.openMatrixModal(win, selected.length ? "已选与已开文献" : "已开文献", ids);
+    }
+    stop() {
+      if (!this.active) return;
+      this.active = false;
+      this.infoBriefNote.unregister();
+      this.remarkColumn.unregister();
+      this.readingColumns.unregisterAll();
+      this.titleHeatmap.disposeAll();
+      this.annotationTools.unregister();
+      this.windows.clear();
+      this.disposables.disposeAll();
+    }
+    syncFeatureStates() {
+      if (this.kernel.prefs.get("visualNotes.infoBriefNote.enable")) this.infoBriefNote.register();
+      else this.infoBriefNote.unregister();
+      if (this.kernel.prefs.get("workspace.remarkColumn.enable")) this.remarkColumn.register();
+      else this.remarkColumn.unregister();
+      this.readingColumns.syncColumns();
+      this.titleHeatmap.sync(this.windows);
+    }
+    getMainWindows() {
+      const wins = globalThis.Zotero?.getMainWindows?.();
+      return Array.isArray(wins) ? wins : [];
     }
   };
 
@@ -4662,8 +6694,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         }
         const targetIDs = [...ses.itemCitations.keys()].filter((id) => {
           if (!Number.isSafeInteger(id) || id <= 0) return false;
-          const item = hostItems?.get?.(id);
-          if (!item) return true;
+          if (typeof hostItems?.get !== "function") return true;
+          const item = hostItems.get(id);
+          if (!item) return false;
           const inTrash = typeof item.inTrash === "function" ? item.inTrash() === true : item.inTrash === true;
           if (item.deleted === true || inTrash) return false;
           if (item.libraryID != null && col.libraryID != null && item.libraryID !== col.libraryID) return false;
@@ -4676,14 +6709,18 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         const toRemove = existingIDs.filter((id) => !targetSet.has(id));
         const toAdd = targetIDs.filter((id) => !currentSet.has(id));
         if (!toRemove.length && !toAdd.length) continue;
-        if (typeof ZoteroObj.DB?.executeTransaction === "function") {
-          await ZoteroObj.DB.executeTransaction(async () => {
+        try {
+          if (typeof ZoteroObj.DB?.executeTransaction === "function") {
+            await ZoteroObj.DB.executeTransaction(async () => {
+              if (toRemove.length) await col.removeItems?.(toRemove);
+              if (toAdd.length) await col.addItems?.(toAdd);
+            });
+          } else {
             if (toRemove.length) await col.removeItems?.(toRemove);
             if (toAdd.length) await col.addItems?.(toAdd);
-          });
-        } else {
-          if (toRemove.length) await col.removeItems?.(toRemove);
-          if (toAdd.length) await col.addItems?.(toAdd);
+          }
+        } catch (err) {
+          this.kernel.logger.error("word-cite:collection-sync", err);
         }
       }
     }
@@ -4711,6 +6748,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var CitationColumnController = class {
     registeredKeys = /* @__PURE__ */ new Set();
     active = false;
+    cachedSessionID;
+    cachedSessionAt = 0;
     kernel;
     tracker;
     collections;
@@ -4718,6 +6757,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.kernel = kernel;
       this.tracker = tracker;
       this.collections = collections;
+    }
+    resolvePreferredSessionID() {
+      const now = Date.now();
+      if (now - this.cachedSessionAt > 80) {
+        this.cachedSessionAt = now;
+        this.cachedSessionID = this.collections?.resolveSelectedCollectionSessionID();
+      }
+      return this.cachedSessionID;
     }
     register() {
       if (this.active) return;
@@ -4734,8 +6781,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         dataProvider: (item) => {
           const id = Number(item?.id || 0);
           if (!id) return "";
-          const selectedSessionID = this.collections?.resolveSelectedCollectionSessionID();
-          return this.tracker.getCitationDisplayForItem(id, selectedSessionID);
+          const preferred = this.resolvePreferredSessionID();
+          const direct = this.tracker.getCitationDisplayForItem(id, preferred);
+          if (direct) return direct;
+          const parentID = Number(item?.parentItemID || 0);
+          return parentID > 0 ? this.tracker.getCitationDisplayForItem(parentID, preferred) : "";
         }
       };
       try {
@@ -4784,6 +6834,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 
   // src/domains/word-cite/word-command.ts
   var commandInFlight = false;
+  var commandStartedAt = 0;
   async function runWordCommand(kernel, command, run) {
     const host2 = globalThis.Zotero;
     const integration = host2?.Integration;
@@ -4791,6 +6842,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     if (host2?.isMac !== true && host2?.isWin === false) return "unavailable";
     if (typeof integration?.execCommand !== "function" || typeof integration.getApplication !== "function" || typeof iface?.[command] !== "function") {
       return "unavailable";
+    }
+    if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 9e4) {
+      commandInFlight = false;
+      commandStartedAt = 0;
     }
     if (commandInFlight || integration.currentDoc) return "busy";
     const isMac = host2.isMac === true;
@@ -4805,6 +6860,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       return typeof UserCancelled === "function" && error instanceof UserCancelled;
     };
     commandInFlight = true;
+    commandStartedAt = Date.now();
     try {
       disposers.push(kernel.runtime.patch(
         integration,
@@ -4864,6 +6920,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     } finally {
       for (const dispose of disposers.reverse()) dispose();
       commandInFlight = false;
+      commandStartedAt = 0;
     }
   }
 
@@ -5397,6 +7454,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var CitationTagGovernance = class {
     managedItemIDs = /* @__PURE__ */ new Set();
     activeTagText;
+    syncQueue = Promise.resolve({ added: 0, removed: 0 });
     prefs;
     constructor(prefs) {
       this.prefs = prefs;
@@ -5430,26 +7488,55 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const clean = String(raw || "").replace(/[\r\n\x00-\x1f]/g, "").trim().slice(0, 200);
       return clean || "/Citations";
     }
-    async syncCitedItems(citedUnion, resolveItem = (id) => globalThis.Zotero?.Items?.get?.(id)) {
+    syncCitedItems(citedUnion, resolveItem = (id) => globalThis.Zotero?.Items?.get?.(id)) {
+      const snapshotUnion = new Set(citedUnion);
+      const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem));
+      this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
+      return run;
+    }
+    async performSync(citedUnion, resolveItem) {
       const enabled = this.prefs.get("wordCite.citationTags.enable");
       const nextTag = this.sanitizeTagText(this.prefs.get("wordCite.citationTags.text"));
       let added = 0;
       let removed = 0;
-      if (nextTag !== this.activeTagText) {
-        const prevTag = this.activeTagText;
-        this.activeTagText = nextTag;
-        for (const id of [...this.managedItemIDs]) {
-          const item = resolveItem(id);
-          if (!isItemWritable(item)) continue;
-          if (item.hasTag?.(prevTag)) {
-            item.removeTag?.(prevTag);
-            if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
-            await item.saveTx?.();
+      try {
+        if (nextTag !== this.activeTagText) {
+          const prevTag = this.activeTagText;
+          this.activeTagText = nextTag;
+          for (const id of [...this.managedItemIDs]) {
+            const item = resolveItem(id);
+            if (!isItemWritable(item)) continue;
+            if (item.hasTag?.(prevTag)) {
+              item.removeTag?.(prevTag);
+              if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
+              await item.saveTx?.();
+            }
           }
         }
-      }
-      if (!enabled) {
+        if (!enabled) {
+          for (const id of [...this.managedItemIDs]) {
+            const item = resolveItem(id);
+            if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
+              item.removeTag?.(this.activeTagText);
+              await item.saveTx?.();
+              removed++;
+            }
+            this.managedItemIDs.delete(id);
+          }
+          return { added, removed };
+        }
+        for (const id of citedUnion) {
+          const item = resolveItem(id);
+          if (!isItemWritable(item)) continue;
+          if (!item.hasTag?.(this.activeTagText)) {
+            item.addTag?.(this.activeTagText);
+            await item.saveTx?.();
+            this.managedItemIDs.add(id);
+            added++;
+          }
+        }
         for (const id of [...this.managedItemIDs]) {
+          if (citedUnion.has(id)) continue;
           const item = resolveItem(id);
           if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
             item.removeTag?.(this.activeTagText);
@@ -5458,31 +7545,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           }
           this.managedItemIDs.delete(id);
         }
-        this.savePersistedIDs();
         return { added, removed };
+      } finally {
+        this.savePersistedIDs();
       }
-      for (const id of citedUnion) {
-        const item = resolveItem(id);
-        if (!isItemWritable(item)) continue;
-        if (!item.hasTag?.(this.activeTagText)) {
-          item.addTag?.(this.activeTagText);
-          await item.saveTx?.();
-          this.managedItemIDs.add(id);
-          added++;
-        }
-      }
-      for (const id of [...this.managedItemIDs]) {
-        if (citedUnion.has(id)) continue;
-        const item = resolveItem(id);
-        if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-          item.removeTag?.(this.activeTagText);
-          await item.saveTx?.();
-          removed++;
-        }
-        this.managedItemIDs.delete(id);
-      }
-      this.savePersistedIDs();
-      return { added, removed };
     }
   };
 
@@ -5491,6 +7557,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var WordIntegrationPoller = class {
     timer = null;
     viewRefreshTimer = null;
+    postExecTimer = null;
     unpatchExec = null;
     unpatchGetSession = null;
     running = false;
@@ -5526,6 +7593,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (this.viewRefreshTimer !== null) {
         clearTimeout(this.viewRefreshTimer);
         this.viewRefreshTimer = null;
+      }
+      if (this.postExecTimer !== null) {
+        clearTimeout(this.postExecTimer);
+        this.postExecTimer = null;
       }
       this.unpatchExec?.();
       this.unpatchExec = null;
@@ -5606,20 +7677,19 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const byIdx = session2.citationsByIndex;
       const byItem = session2.citationsByItemID;
       const missingObj = !byIdx || typeof byIdx !== "object" || !byItem || typeof byItem !== "object";
-      if (missingObj) {
-        try {
-          await session2.updateFromDocument(0);
-        } catch {
-        }
-        return;
-      }
-      const idxEmpty = Object.keys(byIdx).length === 0;
-      const itemEmpty = Object.keys(byItem).length === 0;
-      if (idxEmpty !== itemEmpty) {
-        try {
-          await session2.updateFromDocument(0);
-        } catch {
-        }
+      const mismatch = !missingObj && Object.keys(byIdx).length === 0 !== (Object.keys(byItem).length === 0);
+      if (!missingObj && !mismatch) return;
+      let guard;
+      try {
+        await Promise.race([
+          Promise.resolve(session2.updateFromDocument(0)),
+          new Promise((resolve) => {
+            guard = setTimeout(resolve, 4e3);
+          })
+        ]);
+      } catch {
+      } finally {
+        if (guard !== void 0) clearTimeout(guard);
       }
     }
     extractDirectDocCandidate(session2, docObj) {
@@ -5743,12 +7813,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           }
         }
       }
-      return [...ordinalMap.entries()].map(([itemID, info]) => ({
-        itemID,
-        ordinal: info.ordinal,
-        shortText: info.labels.join(", "),
-        occurrences: info.occurrences
-      }));
+      return [...ordinalMap.entries()].map(([itemID, info]) => ({ itemID, ordinal: info.ordinal, shortText: info.labels.join(", "), occurrences: info.occurrences }));
     }
     scheduleItemsViewRefresh() {
       if (this.viewRefreshTimer !== null) return;
@@ -5812,7 +7877,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
               this.execDepth = Math.max(0, this.execDepth - 1);
               this.pendingCmdDocHint = "";
               this.idleRounds = 0;
-              setTimeout(() => {
+              if (this.postExecTimer !== null) clearTimeout(this.postExecTimer);
+              this.postExecTimer = setTimeout(() => {
+                this.postExecTimer = null;
                 if (this.running) void this.pollOnce();
               }, 150);
             }
@@ -5925,11 +7992,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.disposables.add(
         this.kernel.bus.on("word:refresh-request", async ({ requestId }) => {
           if (!this.active) return;
+          const docName = this.tracker.getActiveSession()?.displayName || "";
           const ok = await refreshActiveWordDocument(this.kernel);
           if (ok) {
             void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error("word-cite:poll", err));
           }
-          this.kernel.bus.emit("word:refresh-result", { requestId, ok, documentName: "" });
+          this.kernel.bus.emit("word:refresh-result", { requestId, ok, documentName: docName });
         })
       );
       this.disposables.add(
@@ -5986,112 +8054,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
   };
 
-  // src/domains/workspace/spotlight-library.ts
-  var SpotlightLibraryIndex = class {
-    entries = [];
-    loaded = false;
-    revision = 0;
-    loading = null;
-    tabs;
-    constructor(tabs) {
-      this.tabs = tabs;
-    }
-    warmUp(win) {
-      if (this.loaded || this.loading) return;
-      const revision = this.revision;
-      this.loading = this.build(revision, win).finally(() => {
-        this.loading = null;
-        if (revision !== this.revision && !win?.closed) this.warmUp(win);
-      });
-    }
-    invalidate() {
-      this.revision++;
-      this.loaded = false;
-    }
-    query(needle, win, openItemIDs, limit = 15, minLen = 2) {
-      if (!needle || needle.length < minLen) return [];
-      if (!this.loaded && !this.loading) this.warmUp(win);
-      const out = [];
-      for (const item of this.entries) {
-        if (openItemIDs.has(item.id)) continue;
-        if (!item.searchText.includes(needle)) continue;
-        out.push({
-          id: `lib:${item.key}`,
-          category: "tab",
-          title: item.title,
-          subtitle: item.hint || "文库文献（点击在阅读器中打开）",
-          badge: "文库",
-          action: async () => {
-            await this.tabs.openVirtualOrItem(win, item.id);
-          }
-        });
-        if (out.length >= limit) break;
-      }
-      return out;
-    }
-    async build(revision, win) {
-      const ZoteroObj = globalThis.Zotero;
-      const itemsApi = ZoteroObj?.Items;
-      if (typeof itemsApi?.getAll !== "function") return;
-      const libsApi = ZoteroObj?.Libraries;
-      const libs = libsApi?.getAll?.();
-      const libIDs = Array.isArray(libs) ? [...new Set(libs.map((l) => Number(l?.libraryID || 0)).filter((id) => id > 0))] : [Number(libsApi?.userLibraryID || 1)];
-      const next = [];
-      for (const libraryID of libIDs) {
-        try {
-          const items = await itemsApi.getAll(libraryID, true, false, false);
-          if (revision !== this.revision) return;
-          if (!Array.isArray(items)) continue;
-          const libName = String(libsApi?.getName?.(libraryID) || "");
-          for (let i = 0; i < items.length; i++) {
-            if (i > 0 && i % 250 === 0 && win?.setTimeout) {
-              await new Promise((r) => win.setTimeout(r, 0));
-              if (revision !== this.revision) return;
-            }
-            const item = items[i];
-            if (!item?.isRegularItem?.() || item.deleted) continue;
-            const rawTitle = safeGetItemField(item, "title") || String(item.key || "");
-            const title = rawTitle.replace(/<[^>]+>/g, "").trim();
-            if (!title) continue;
-            const author = String(item.firstCreator || "");
-            const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
-            const pub = safeGetItemField(item, "publicationTitle") || safeGetItemField(item, "proceedingsTitle");
-            next.push({
-              id: Number(item.id),
-              key: `${libraryID}:${item.key}`,
-              title,
-              hint: [libName, author, year, pub].filter(Boolean).join(" · "),
-              searchText: `${title} ${author} ${year} ${pub} ${libName}`.toLowerCase()
-            });
-          }
-        } catch {
-        }
-      }
-      if (revision !== this.revision) return;
-      this.entries = next;
-      this.loaded = true;
-    }
-  };
-
   // src/domains/workspace/spotlight-engine.ts
   var WorkspaceSpotlightEngine = class {
     providers = /* @__PURE__ */ new Set();
     prefs;
     store;
     tabs;
-    libraryIndex;
-    wordCitedBadges = /* @__PURE__ */ new Map();
     constructor(prefs, store, tabs) {
       this.prefs = prefs;
       this.store = store;
       this.tabs = tabs;
-      this.libraryIndex = new SpotlightLibraryIndex(tabs);
-    }
-    invalidateLibraryIndex() {
-      this.libraryIndex.invalidate();
-    }
-    setWordCitationBadges(badges) {
-      this.wordCitedBadges = new Map(badges);
     }
     registerProvider(provider) {
       this.providers.add(provider);
@@ -6100,173 +8072,83 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       };
     }
     query(rawTerm, win) {
-      const trimmed = rawTerm.trim();
-      const isCommand = trimmed.startsWith(">");
-      const isLibrary = trimmed.startsWith("@");
-      const needle = (isCommand || isLibrary ? trimmed.slice(1) : trimmed).trim().toLowerCase();
-      const scored = [];
-      const tracked = this.tabs.buildTrackedTabs(win);
-      if (isCommand) {
-        if (needle === "tabs" || needle === "recent") {
-          const sorted = [...tracked].sort((a, b) => (b.lastViewedAt || 0) - (a.lastViewedAt || 0));
-          for (const tab of sorted) {
-            const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name;
-            scored.push({
-              score: 100,
-              item: {
-                id: `recent:${tab.key}`,
-                category: "tab",
-                title: this.tabs.getDisplayTitle(tab),
-                subtitle: [groupName, tab.creatorYear].filter(Boolean).join(" · "),
-                badge: tab.virtual ? "虚拟" : tab.sleeping ? "休眠" : "最近",
-                action: () => {
-                  if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
-                  else this.tabs.selectTab(win, tab.tabID);
-                }
-              }
-            });
+      const term = rawTerm.trim().toLowerCase();
+      if (term.startsWith(">") && term !== ">tabs" && term !== ">recent") {
+        const command = term.slice(1).trim();
+        const results2 = this.filterBuiltInCommands(command, win);
+        for (const provider of this.providers) {
+          try {
+            results2.push(...provider.query(command, win));
+          } catch {
           }
         }
-        for (const cmd of this.buildBuiltInCommands(win)) {
-          if (!needle || needle === "tabs" || `${cmd.title} ${cmd.subtitle || ""}`.toLowerCase().includes(needle)) {
-            scored.push({ score: 90, item: cmd });
-          }
-        }
+        return results2.slice(0, 40);
       }
-      for (const provider of [...this.providers].sort((a, b) => b.priority - a.priority)) {
-        try {
-          for (const item of provider.query(needle, win)) {
-            scored.push({ score: 80 + (provider.priority || 0) * 0.1, item });
+      const tabList = term === ">tabs" || term === ">recent";
+      const needle = tabList ? "" : term;
+      const results = [];
+      const limit = term ? 40 : 12;
+      const nativeTabs = win.Zotero_Tabs?._tabs || [];
+      const viewedAt = (tab) => this.store.state.lastViewedAt[tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id] || 0;
+      const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;
+      for (const tab of source) {
+        if (tab.type === "library") continue;
+        const key = tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id;
+        const title = tab.title || key;
+        const remark = this.prefs.get("workspace.enableTabRemarks") ? this.store.state.remarks[key] || "" : "";
+        if (needle && !(title + " " + remark).toLowerCase().includes(needle)) continue;
+        results.push({
+          id: "tab:" + key,
+          category: "tab",
+          title,
+          subtitle: remark,
+          action: () => {
+            this.tabs.selectTab(win, tab.id);
           }
-        } catch {
-        }
+        });
+        if (results.length === limit) return results;
       }
-      if (isLibrary) {
-        const openIDs = /* @__PURE__ */ new Set();
-        for (const libItem of this.libraryIndex.query(needle, win, openIDs, 20, 1)) {
-          scored.push({ score: 95, item: libItem });
-        }
-      } else if (!isCommand) {
-        for (const group2 of this.store.state.groups) {
-          if (!needle || group2.name.toLowerCase().includes(needle)) {
-            const firstOpen = tracked.find((t) => t.groupId === group2.id && !t.virtual);
-            scored.push({
-              score: needle ? 85 : 58,
-              item: {
-                id: `group:${group2.id}`,
-                category: "collection",
-                title: `分组：${group2.name}`,
-                subtitle: `${group2.memberKeys.length} 个成员${firstOpen ? " · 点击定位首篇文献" : ""}`,
-                badge: "分组",
-                action: () => {
-                  this.store.setCollapsed(group2.id, false);
-                  if (firstOpen) this.tabs.selectTab(win, firstOpen.tabID);
-                }
-              }
-            });
+      if (!needle) return results;
+      for (const group2 of this.store.state.groups) {
+        if (!group2.name.toLowerCase().includes(needle)) continue;
+        results.push({
+          id: "group:" + group2.id,
+          category: "collection",
+          title: group2.name,
+          badge: "分组",
+          action: () => {
+            this.store.setCollapsed(group2.id, false);
+            const first = this.tabs.buildTrackedTabs(win).find((tab) => !tab.virtual && tab.groupId === group2.id);
+            if (first) this.tabs.selectTab(win, first.tabID);
           }
-        }
-        for (const tab of tracked) {
-          const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name || "";
-          const displayTitle = this.tabs.getDisplayTitle(tab);
-          const hay = `${displayTitle} ${tab.title} ${tab.shortTitle} ${tab.creatorYear} ${tab.source} ${tab.collection} ${tab.remark} ${groupName}`.toLowerCase();
-          if (needle && !hay.includes(needle)) continue;
-          const citeInfo = this.wordCitedBadges.get(tab.parentItemID) || this.wordCitedBadges.get(tab.itemID);
-          const tags = [];
-          if (groupName) tags.push(groupName);
-          if (tab.pinned) tags.push("已固定");
-          if (tab.sleeping) tags.push("已休眠");
-          if (tab.virtual) tags.push("虚拟");
-          if (citeInfo) tags.push(`Word [${citeInfo.ordinal}]`);
-          scored.push({
-            score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 75,
-            item: {
-              id: `tab:${tab.key}`,
-              category: "tab",
-              title: displayTitle,
-              subtitle: [tab.creatorYear, tab.collection].filter(Boolean).join(" · ") || "已打开阅读标签页",
-              badge: tags.join(" · ") || void 0,
-              action: () => {
-                if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
-                else this.tabs.selectTab(win, tab.tabID);
-              }
+        });
+        if (results.length === limit) return results;
+      }
+      if (this.prefs.get("workspace.enableSessions")) {
+        for (const session2 of this.store.state.sessions) {
+          if (session2.isTemplate || !session2.name.toLowerCase().includes(needle)) continue;
+          results.push({
+            id: "session:" + session2.id,
+            category: "collection",
+            title: session2.name,
+            badge: "工作区",
+            action: () => {
+              void this.tabs.restoreSession(win, session2, true);
             }
           });
-        }
-        for (const closed of this.tabs.getRecentlyClosed(win)) {
-          if (needle && !closed.title.toLowerCase().includes(needle)) continue;
-          scored.push({
-            score: 62,
-            item: {
-              id: `closed:${closed.key}`,
-              category: "tab",
-              title: closed.title,
-              subtitle: "重新打开最近关闭的文献标签页",
-              badge: "最近关闭",
-              action: () => {
-                void this.tabs.openVirtualOrItem(win, closed.itemID, closed.groupId || void 0);
-              }
-            }
-          });
-        }
-        if (this.prefs.get("workspace.enableSessions")) {
-          for (const ses of this.store.state.sessions.filter((s) => !s.isTemplate).slice(0, 8)) {
-            const itemKeys = [.../* @__PURE__ */ new Set([
-              ...ses.openKeys,
-              ...ses.groups.flatMap((g) => g.memberKeys),
-              ...Object.keys(ses.virtualMembers)
-            ])];
-            if (!needle || ses.name.toLowerCase().includes(needle)) {
-              scored.push({
-                score: 52,
-                item: {
-                  id: `session:${ses.id}`,
-                  category: "collection",
-                  title: `会话：${ses.name}`,
-                  subtitle: `${itemKeys.length} 篇文献 · ${ses.groups.length} 个分组 · 点击合并恢复`,
-                  badge: "工作区",
-                  action: () => {
-                    void this.tabs.restoreSession(win, ses, true);
-                  }
-                }
-              });
-            }
-            if (needle.length >= 2) {
-              for (const key of itemKeys) {
-                const meta = ses.virtualMembers[key] || this.store.state.virtualMembers[key];
-                if (!meta || tracked.some((t) => t.key === key && !t.virtual)) continue;
-                const hay = `${meta.title} ${meta.shortTitle || ""} ${meta.creatorYear || ""} ${meta.source || ""} ${ses.name}`.toLowerCase();
-                if (!hay.includes(needle)) continue;
-                scored.push({
-                  score: 68,
-                  item: {
-                    id: `session:${ses.id}:${key}`,
-                    category: "tab",
-                    title: meta.title,
-                    subtitle: `已保存于快照「${ses.name}」${meta.creatorYear ? ` · ${meta.creatorYear}` : ""}`,
-                    badge: "快照文献",
-                    action: () => {
-                      const grpId = ses.groups.find((g) => g.memberKeys.includes(key))?.id;
-                      void this.tabs.openVirtualOrItem(win, meta.itemID, grpId);
-                    }
-                  }
-                });
-              }
-            }
-          }
-        }
-        if (needle.length >= 2) {
-          const openIDs = /* @__PURE__ */ new Set();
-          for (const t of tracked) {
-            if (t.itemID > 0) openIDs.add(t.itemID);
-            if (t.parentItemID > 0) openIDs.add(t.parentItemID);
-          }
-          for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15, 2)) {
-            scored.push({ score: 45, item: libItem });
-          }
+          if (results.length === limit) return results;
         }
       }
-      return scored.sort((a, b) => b.score - a.score).slice(0, 40).map((s) => s.item);
+      if (needle.length >= 2 && !needle.startsWith("@")) {
+        for (const cmd of this.filterBuiltInCommands(needle, win)) {
+          results.push(cmd);
+          if (results.length === limit) break;
+        }
+      }
+      return results;
+    }
+    filterBuiltInCommands(command, win) {
+      return this.buildBuiltInCommands(win).filter((item) => (item.title + " " + item.subtitle).toLowerCase().includes(command));
     }
     buildBuiltInCommands(win) {
       return [
@@ -6359,8 +8241,67 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           action: () => {
             this.tabs.undoCloseTab(win);
           }
-        }
+        },
+        ...this.prefs.get("workspace.enableAnnotationMatrix") ? [{
+          id: "cmd:open-annotation-matrix",
+          category: "command",
+          title: "> 生成已开文献对比矩阵",
+          subtitle: "按标注颜色维度汇总当前打开文献的批注，支持导出与插入 Word",
+          badge: "矩阵",
+          action: () => {
+            this.tabs.openGroupAnnotationMatrix(win);
+          }
+        }] : []
       ];
+    }
+  };
+
+  // src/domains/workspace/reader-neighbors.ts
+  function toNeighborRef(tab) {
+    return {
+      tabID: tab.tabID,
+      itemID: tab.itemID,
+      parentItemID: tab.parentItemID,
+      title: tab.shortTitle || tab.title || tab.filename || `文献 #${tab.itemID}`
+    };
+  }
+  function computeReaderNeighbors(win, tracked) {
+    const activeTabID = String(win.Zotero_Tabs?.selectedID || "");
+    if (!activeTabID || activeTabID === "zotero-pane") {
+      return { activeTabID };
+    }
+    const readers = tracked.filter((t) => !t.virtual && t.tabID && t.itemID > 0 && t.type.startsWith("reader"));
+    const idx = readers.findIndex((t) => t.tabID === activeTabID);
+    if (idx < 0) return { activeTabID };
+    return {
+      activeTabID,
+      left: idx > 0 ? toNeighborRef(readers[idx - 1]) : void 0,
+      right: idx + 1 < readers.length ? toNeighborRef(readers[idx + 1]) : void 0
+    };
+  }
+  function neighborFingerprint(payload) {
+    return [
+      payload.activeTabID,
+      payload.left ? `${payload.left.tabID}:${payload.left.itemID}` : "",
+      payload.right ? `${payload.right.tabID}:${payload.right.itemID}` : ""
+    ].join("|");
+  }
+  var ReaderNeighborPublisher = class {
+    lastFp = "";
+    bus;
+    constructor(bus) {
+      this.bus = bus;
+    }
+    publish(win, tracked, force = false) {
+      if (!win) return;
+      const payload = computeReaderNeighbors(win, tracked);
+      const fp = neighborFingerprint(payload);
+      if (!force && fp === this.lastFp) return;
+      this.lastFp = fp;
+      this.bus.emit("workspace:reader-neighbors-updated", payload);
+    }
+    reset() {
+      this.lastFp = "";
     }
   };
 
@@ -6839,7 +8780,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     virtualMembers: record(text, virtualMember),
     remarkModes: record(text, remarkMode)
   });
-  var progress = strictObject({ readSeconds: count, lastPage: optional(count), totalPages: optional(count) });
+  var progress = strictObject({
+    readSeconds: count,
+    lastPage: optional(count),
+    totalPages: optional(count),
+    pageSeconds: optional(record(text, count))
+  });
   var document = strictObject({
     version: literal(2),
     groups: array(group),
@@ -6855,11 +8801,102 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     rollingSessions: array(session)
   });
   var backup = strictObject({ format: literal("zotero-bridgeflow-workspace"), version: literal(2), state: document });
+  var readingNotesDocument = strictObject({
+    remarks: strings,
+    remarkModes: record(text, remarkMode),
+    lastViewedAt: record(text, count),
+    readingProgress: record(text, progress)
+  });
+  var readingNotesBackup = strictObject({
+    format: literal("zotero-bridgeflow-reading-notes"),
+    version: literal(1),
+    state: readingNotesDocument
+  });
+  var readingProgressDocument = strictObject({
+    lastViewedAt: record(text, count),
+    readingProgress: record(text, progress)
+  });
+  var readingProgressBackup = strictObject({
+    format: literal("zotero-bridgeflow-reading-progress"),
+    version: literal(1),
+    state: readingProgressDocument
+  });
+  var briefNotesDocument = strictObject({
+    remarks: strings,
+    remarkModes: record(text, remarkMode)
+  });
+  var briefNotesBackup = strictObject({
+    format: literal("zotero-bridgeflow-brief-notes"),
+    version: literal(1),
+    state: briefNotesDocument
+  });
   function readWorkspace(raw) {
     return parse(document, JSON.parse(raw));
   }
   function readBackup(raw) {
     return parse(backup, JSON.parse(raw)).state;
+  }
+  function readReadingNotesBackup(raw) {
+    return parse(readingNotesBackup, JSON.parse(raw)).state;
+  }
+  function readReadingProgressBackup(raw) {
+    return parse(readingProgressBackup, JSON.parse(raw)).state;
+  }
+  function readBriefNotesBackup(raw) {
+    return parse(briefNotesBackup, JSON.parse(raw)).state;
+  }
+  function pickWorkspaceLayoutState(state) {
+    return {
+      version: 2,
+      groups: state.groups,
+      collapsed: state.collapsed,
+      pinnedKeys: state.pinnedKeys,
+      sleepingKeys: state.sleepingKeys,
+      remarks: {},
+      remarkModes: {},
+      lastViewedAt: {},
+      readingProgress: {},
+      virtualMembers: state.virtualMembers,
+      sessions: state.sessions,
+      rollingSessions: state.rollingSessions
+    };
+  }
+  function pickReadingNotesState(state) {
+    return {
+      remarks: state.remarks || {},
+      remarkModes: state.remarkModes || {},
+      lastViewedAt: state.lastViewedAt || {},
+      readingProgress: state.readingProgress || {}
+    };
+  }
+  function pickReadingProgressState(state) {
+    return {
+      lastViewedAt: state.lastViewedAt || {},
+      readingProgress: state.readingProgress || {}
+    };
+  }
+  function pickBriefNotesState(state) {
+    return {
+      remarks: state.remarks || {},
+      remarkModes: state.remarkModes || {}
+    };
+  }
+  function hasLegacyReadingNotes(state) {
+    if (!state) return false;
+    return Boolean(
+      Object.keys(state.remarks || {}).length || Object.keys(state.remarkModes || {}).length || Object.keys(state.lastViewedAt || {}).length || Object.keys(state.readingProgress || {}).length
+    );
+  }
+
+  // src/services/cache-directory.ts
+  function cacheDirectory(custom) {
+    if (typeof custom === "string" && custom.trim()) return custom.trim();
+    const host2 = globalThis;
+    const data = host2.Zotero?.DataDirectory?.dir;
+    return data ? cacheFile(data, "bridgeflow-cache") : "bridgeflow-cache";
+  }
+  function cacheFile(directory, name) {
+    return globalThis.PathUtils?.join(directory, name) ?? directory + "/" + name;
   }
 
   // src/domains/workspace/workspace-disk-cache.ts
@@ -6868,25 +8905,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     flushing = null;
     lastWrittenJson = "";
     lastError = "";
+    constructor(privateDirectory = "") {
+      this.directory = cacheDirectory(privateDirectory);
+    }
+    directory;
     getDirectoryPath() {
-      const dataDir = globalThis.Zotero?.DataDirectory?.dir;
-      const pathUtils = globalThis.PathUtils;
-      if (dataDir && pathUtils?.join) {
-        return pathUtils.join(dataDir, "bridgeflow-cache");
-      }
-      return "bridgeflow-cache";
+      return this.directory;
     }
     getFilePath() {
-      const pathUtils = globalThis.PathUtils;
-      const dir = this.getDirectoryPath();
-      return pathUtils?.join ? pathUtils.join(dir, "workspace-snapshots.json") : `${dir}/workspace-snapshots.json`;
+      return cacheFile(this.directory, "workspace-snapshots.json");
     }
     getBackupFilePath() {
-      const pathUtils = globalThis.PathUtils;
-      const dir = this.getDirectoryPath();
-      return pathUtils?.join ? pathUtils.join(dir, "workspace-snapshots.bak.json") : `${dir}/workspace-snapshots.bak.json`;
+      return cacheFile(this.directory, "workspace-snapshots.bak.json");
     }
-    scheduleSave(state, immediate = false) {
+    scheduleSave(state, immediate = false, serialized) {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8) return;
       if (this.flushTimer !== null) {
@@ -6894,18 +8926,19 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         this.flushTimer = null;
       }
       if (immediate) {
-        void this.flushNow(state);
+        void this.flushNow(state, serialized);
         return;
       }
       this.flushTimer = setTimeout(() => {
         this.flushTimer = null;
-        void this.flushNow(state);
+        void this.flushNow(state, serialized);
       }, 320);
     }
-    async flushNow(state) {
+    async flushNow(state, _serialized) {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8) return true;
-      const payload = JSON.stringify({ format: "zotero-bridgeflow-workspace", version: 2, state }, null, 2);
+      const payload = `${JSON.stringify({ format: "zotero-bridgeflow-workspace", version: 2, state }, null, 2)}
+`;
       const run = async () => {
         if (payload === this.lastWrittenJson) return true;
         try {
@@ -6914,7 +8947,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           const bakPath = this.getBackupFilePath();
           if (this.lastWrittenJson) {
             try {
-              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson);
+              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
             } catch {
             }
           }
@@ -6933,18 +8966,22 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     async loadFromDisk() {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-      for (const candidatePath of [this.getFilePath(), this.getBackupFilePath()]) {
+      const paths = [this.getFilePath(), this.getBackupFilePath()];
+      if (this.directory !== cacheDirectory()) {
+        paths.push(cacheFile(cacheDirectory(), "workspace-snapshots.json"), cacheFile(cacheDirectory(), "workspace-snapshots.bak.json"));
+      }
+      for (const candidatePath of paths) {
         try {
           if (!await ioUtils.exists(candidatePath)) continue;
           const raw = await ioUtils.readUTF8(candidatePath);
           if (!raw) continue;
           try {
             const parsed = readBackup(raw);
-            this.lastWrittenJson = raw;
+            this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : "";
             return parsed;
           } catch {
             const parsed = readWorkspace(raw);
-            this.lastWrittenJson = raw;
+            this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : "";
             return parsed;
           }
         } catch {
@@ -6997,10 +9034,330 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           changed = true;
         }
       }
+      for (const [k, viewedAt] of Object.entries(disk.lastViewedAt)) {
+        if (viewedAt > (current.lastViewedAt[k] || 0)) {
+          current.lastViewedAt[k] = viewedAt;
+          changed = true;
+        }
+      }
+      for (const [k, diskProg] of Object.entries(disk.readingProgress)) {
+        const cur = current.readingProgress[k];
+        if (!cur) {
+          current.readingProgress[k] = {
+            ...diskProg,
+            ...diskProg.pageSeconds ? { pageSeconds: { ...diskProg.pageSeconds } } : {}
+          };
+          changed = true;
+        } else {
+          const mergedPages = { ...cur.pageSeconds || {} };
+          let pagesChanged = false;
+          for (const [p, sec] of Object.entries(diskProg.pageSeconds || {})) {
+            if (sec > (mergedPages[p] || 0)) {
+              mergedPages[p] = sec;
+              pagesChanged = true;
+            }
+          }
+          const nextRead = Math.max(cur.readSeconds, diskProg.readSeconds);
+          const nextLast = cur.lastPage || diskProg.lastPage;
+          const nextTotal = Math.max(cur.totalPages || 0, diskProg.totalPages || 0) || void 0;
+          if (pagesChanged || nextRead > cur.readSeconds || nextLast !== cur.lastPage || nextTotal !== cur.totalPages) {
+            current.readingProgress[k] = {
+              readSeconds: nextRead,
+              ...nextLast ? { lastPage: nextLast } : {},
+              ...nextTotal ? { totalPages: nextTotal } : {},
+              ...Object.keys(mergedPages).length ? { pageSeconds: mergedPages } : {}
+            };
+            changed = true;
+          }
+        }
+      }
       if (!current.groups.length && disk.groups.length) {
         current.groups = disk.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
         current.collapsed = [...disk.collapsed];
         changed = true;
+      }
+      return changed;
+    }
+    dispose() {
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+      }
+    }
+  };
+
+  // src/domains/workspace/reading-progress-cache.ts
+  var ReadingProgressDiskCache = class {
+    flushTimer = null;
+    flushing = null;
+    lastWrittenJson = "";
+    lastError = "";
+    loadedFromLegacy = false;
+    directory;
+    constructor(privateDirectory = "") {
+      this.directory = cacheDirectory(privateDirectory);
+    }
+    getDirectoryPath() {
+      return this.directory;
+    }
+    getFilePath() {
+      return cacheFile(this.directory, "reading-progress.json");
+    }
+    getBackupFilePath() {
+      return cacheFile(this.directory, "reading-progress.bak.json");
+    }
+    scheduleSave(state, immediate = false) {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.writeUTF8) return;
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+      }
+      if (immediate) {
+        void this.flushNow(state);
+        return;
+      }
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        void this.flushNow(state);
+      }, 320);
+    }
+    async flushNow(state) {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.writeUTF8) return true;
+      const payload = `${JSON.stringify({
+        format: "zotero-bridgeflow-reading-progress",
+        version: 1,
+        state: pickReadingProgressState(state)
+      }, null, 2)}
+`;
+      const run = async () => {
+        if (payload === this.lastWrittenJson) return true;
+        try {
+          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
+          const mainPath = this.getFilePath();
+          const bakPath = this.getBackupFilePath();
+          if (this.lastWrittenJson) {
+            try {
+              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
+            } catch {
+            }
+          }
+          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
+          this.lastWrittenJson = payload;
+          this.lastError = "";
+          return true;
+        } catch (err) {
+          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
+          return false;
+        }
+      };
+      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
+      return this.flushing;
+    }
+    async loadFromDisk() {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
+      this.loadedFromLegacy = false;
+      const primaryPaths = [this.getFilePath(), this.getBackupFilePath()];
+      if (this.directory !== cacheDirectory()) {
+        primaryPaths.push(cacheFile(cacheDirectory(), "reading-progress.json"), cacheFile(cacheDirectory(), "reading-progress.bak.json"));
+      }
+      for (const p of primaryPaths) {
+        try {
+          if (!await ioUtils.exists(p)) continue;
+          const raw = await ioUtils.readUTF8(p);
+          if (!raw) continue;
+          const parsed = readReadingProgressBackup(raw);
+          this.lastWrittenJson = p === this.getFilePath() ? raw : "";
+          return parsed;
+        } catch {
+        }
+      }
+      const legacyPaths = [cacheFile(this.directory, "reading-notes.json"), cacheFile(this.directory, "reading-notes.bak.json")];
+      if (this.directory !== cacheDirectory()) {
+        legacyPaths.push(cacheFile(cacheDirectory(), "reading-notes.json"), cacheFile(cacheDirectory(), "reading-notes.bak.json"));
+      }
+      for (const lp of legacyPaths) {
+        try {
+          if (!await ioUtils.exists(lp)) continue;
+          const raw = await ioUtils.readUTF8(lp);
+          if (!raw) continue;
+          const parsed = readReadingNotesBackup(raw);
+          this.loadedFromLegacy = true;
+          return pickReadingProgressState(parsed);
+        } catch {
+        }
+      }
+      return null;
+    }
+    mergeDurableState(current, disk) {
+      let changed = false;
+      for (const [k, viewedAt] of Object.entries(disk.lastViewedAt)) {
+        if (viewedAt > (current.lastViewedAt[k] || 0)) {
+          current.lastViewedAt[k] = viewedAt;
+          changed = true;
+        }
+      }
+      for (const [k, diskProg] of Object.entries(disk.readingProgress)) {
+        const cur = current.readingProgress[k];
+        if (!cur) {
+          current.readingProgress[k] = {
+            ...diskProg,
+            ...diskProg.pageSeconds ? { pageSeconds: { ...diskProg.pageSeconds } } : {}
+          };
+          changed = true;
+          continue;
+        }
+        const mergedPages = { ...cur.pageSeconds || {} };
+        let pagesChanged = false;
+        for (const [p, sec] of Object.entries(diskProg.pageSeconds || {})) {
+          if (sec > (mergedPages[p] || 0)) {
+            mergedPages[p] = sec;
+            pagesChanged = true;
+          }
+        }
+        const mergedSeconds = Math.max(cur.readSeconds, diskProg.readSeconds);
+        const nextLastPage = cur.lastPage || diskProg.lastPage;
+        const nextTotal = Math.max(cur.totalPages || 0, diskProg.totalPages || 0) || void 0;
+        if (pagesChanged || mergedSeconds > cur.readSeconds || nextLastPage !== cur.lastPage || nextTotal !== cur.totalPages) {
+          current.readingProgress[k] = {
+            readSeconds: mergedSeconds,
+            ...nextLastPage ? { lastPage: nextLastPage } : {},
+            ...nextTotal ? { totalPages: nextTotal } : {},
+            ...Object.keys(mergedPages).length ? { pageSeconds: mergedPages } : {}
+          };
+          changed = true;
+        }
+      }
+      return changed;
+    }
+    dispose() {
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+      }
+    }
+  };
+
+  // src/domains/workspace/brief-notes-cache.ts
+  var BriefNotesDiskCache = class {
+    flushTimer = null;
+    flushing = null;
+    lastWrittenJson = "";
+    lastError = "";
+    loadedFromLegacy = false;
+    directory;
+    constructor(privateDirectory = "") {
+      this.directory = cacheDirectory(privateDirectory);
+    }
+    getDirectoryPath() {
+      return this.directory;
+    }
+    getFilePath() {
+      return cacheFile(this.directory, "brief-notes.json");
+    }
+    getBackupFilePath() {
+      return cacheFile(this.directory, "brief-notes.bak.json");
+    }
+    scheduleSave(state, immediate = false) {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.writeUTF8) return;
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+      }
+      if (immediate) {
+        void this.flushNow(state);
+        return;
+      }
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        void this.flushNow(state);
+      }, 240);
+    }
+    async flushNow(state) {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.writeUTF8) return true;
+      const payload = `${JSON.stringify({
+        format: "zotero-bridgeflow-brief-notes",
+        version: 1,
+        state: pickBriefNotesState(state)
+      }, null, 2)}
+`;
+      const run = async () => {
+        if (payload === this.lastWrittenJson) return true;
+        try {
+          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
+          const mainPath = this.getFilePath();
+          const bakPath = this.getBackupFilePath();
+          if (this.lastWrittenJson) {
+            try {
+              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
+            } catch {
+            }
+          }
+          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
+          this.lastWrittenJson = payload;
+          this.lastError = "";
+          return true;
+        } catch (err) {
+          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
+          return false;
+        }
+      };
+      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
+      return this.flushing;
+    }
+    async loadFromDisk() {
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
+      this.loadedFromLegacy = false;
+      const primaryPaths = [this.getFilePath(), this.getBackupFilePath()];
+      if (this.directory !== cacheDirectory()) {
+        primaryPaths.push(cacheFile(cacheDirectory(), "brief-notes.json"), cacheFile(cacheDirectory(), "brief-notes.bak.json"));
+      }
+      for (const p of primaryPaths) {
+        try {
+          if (!await ioUtils.exists(p)) continue;
+          const raw = await ioUtils.readUTF8(p);
+          if (!raw) continue;
+          const parsed = readBriefNotesBackup(raw);
+          this.lastWrittenJson = p === this.getFilePath() ? raw : "";
+          return parsed;
+        } catch {
+        }
+      }
+      const legacyPaths = [cacheFile(this.directory, "reading-notes.json"), cacheFile(this.directory, "reading-notes.bak.json")];
+      if (this.directory !== cacheDirectory()) {
+        legacyPaths.push(cacheFile(cacheDirectory(), "reading-notes.json"), cacheFile(cacheDirectory(), "reading-notes.bak.json"));
+      }
+      for (const lp of legacyPaths) {
+        try {
+          if (!await ioUtils.exists(lp)) continue;
+          const raw = await ioUtils.readUTF8(lp);
+          if (!raw) continue;
+          const parsed = readReadingNotesBackup(raw);
+          this.loadedFromLegacy = true;
+          return pickBriefNotesState(parsed);
+        } catch {
+        }
+      }
+      return null;
+    }
+    mergeDurableState(current, disk) {
+      let changed = false;
+      for (const [k, rem] of Object.entries(disk.remarks)) {
+        if (!current.remarks[k]) {
+          current.remarks[k] = rem;
+          changed = true;
+        }
+      }
+      for (const [k, mode] of Object.entries(disk.remarkModes)) {
+        if (!current.remarkModes[k]) {
+          current.remarkModes[k] = mode;
+          changed = true;
+        }
       }
       return changed;
     }
@@ -7027,74 +9384,188 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var MAX_ROLLING_SESSIONS = 3;
   var MAX_MANUAL_SESSIONS = 30;
 
-  // src/domains/workspace/state-store.ts
-  function createEmptyState() {
+  // src/domains/workspace/workspace-session-ops.ts
+  async function hydrateWorkspaceDiskCaches(store) {
+    const [diskLayout, diskReading, diskNotes] = await Promise.all([
+      store.diskCache.loadFromDisk(),
+      store.readingCache.loadFromDisk(),
+      store.notesCache.loadFromDisk()
+    ]);
+    const hadLegacy = hasLegacyReadingNotes(store.state) || hasLegacyReadingNotes(diskLayout);
+    let layoutChanged = false;
+    let readingChanged = false;
+    let notesChanged = false;
+    if (store.readOnlyGuard && diskLayout) {
+      store.state = { ...diskLayout, ...pickReadingNotesState(store.state) };
+      store.readOnlyGuard = false;
+      layoutChanged = true;
+    } else if (diskLayout && store.diskCache.mergeDurableState(store.state, diskLayout)) {
+      layoutChanged = true;
+    }
+    if (diskReading && store.readingCache.mergeDurableState(store.state, diskReading)) readingChanged = true;
+    if (diskNotes && store.notesCache.mergeDurableState(store.state, diskNotes)) notesChanged = true;
+    if (hadLegacy) {
+      await Promise.all([
+        store.readingCache.flushNow(store.state),
+        store.notesCache.flushNow(store.state)
+      ]);
+      store.save(false);
+      await store.diskCache.flushNow(pickWorkspaceLayoutState(store.state));
+      return true;
+    }
+    if (layoutChanged || !diskLayout && !store.readOnlyGuard) store.save(Boolean(layoutChanged));
+    if (readingChanged || store.readingCache.loadedFromLegacy || !diskReading && Object.keys(store.state.readingProgress).length) {
+      await store.readingCache.flushNow(store.state);
+    }
+    if (notesChanged || store.notesCache.loadedFromLegacy || !diskNotes && Object.keys(store.state.remarks).length) {
+      await store.notesCache.flushNow(store.state);
+    }
+    return layoutChanged || readingChanged || notesChanged;
+  }
+  function groupOfStateKey(state, key) {
+    return state.groups.find((g) => g.memberKeys.includes(key))?.id || "";
+  }
+  function captureWorkspaceLayout(state, groupId, template = false) {
+    const inScope = (key) => !groupId || groupOfStateKey(state, key) === groupId;
+    const scopedRecord = (record2) => template ? {} : Object.fromEntries(Object.entries(record2).filter(([key]) => inScope(key)));
     return {
-      version: 2,
-      groups: [],
-      collapsed: [],
-      pinnedKeys: [],
-      sleepingKeys: [],
-      remarks: {},
-      remarkModes: {},
-      lastViewedAt: {},
-      readingProgress: {},
-      virtualMembers: {},
-      sessions: [],
-      rollingSessions: []
+      groups: state.groups.filter((g) => !groupId || g.id === groupId).map((g) => ({ ...g, memberKeys: template ? [] : [...g.memberKeys] })),
+      collapsed: state.collapsed.filter((id) => !groupId || id === groupId),
+      pinnedKeys: template ? [] : state.pinnedKeys.filter(inScope),
+      remarks: scopedRecord(state.remarks),
+      remarkModes: scopedRecord(state.remarkModes),
+      virtualMembers: scopedRecord(state.virtualMembers)
     };
   }
+  function applySessionLayoutToState(state, session2, merge) {
+    const hasNotes = Boolean(Object.keys(session2.remarks).length || Object.keys(session2.remarkModes).length);
+    if (!merge) {
+      state.groups = session2.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
+      state.pinnedKeys = [...session2.pinnedKeys];
+      state.collapsed = [...session2.collapsed];
+      state.virtualMembers = { ...session2.virtualMembers };
+      Object.assign(state.remarks, session2.remarks);
+      Object.assign(state.remarkModes, session2.remarkModes);
+      return hasNotes;
+    }
+    for (const sg of session2.groups) {
+      let existing = state.groups.find((g) => g.id === sg.id || g.name === sg.name);
+      if (!existing) {
+        existing = { id: sg.id, name: sg.name, color: sg.color, memberKeys: [] };
+        state.groups.push(existing);
+      }
+      if (session2.collapsed.includes(sg.id) && !state.collapsed.includes(existing.id)) state.collapsed.push(existing.id);
+      for (const key of sg.memberKeys) {
+        if (!groupOfStateKey(state, key)) existing.memberKeys.push(key);
+      }
+    }
+    state.virtualMembers = { ...session2.virtualMembers, ...state.virtualMembers };
+    state.remarkModes = { ...session2.remarkModes, ...state.remarkModes };
+    state.pinnedKeys = [.../* @__PURE__ */ new Set([...state.pinnedKeys, ...session2.pinnedKeys])];
+    state.remarks = { ...state.remarks, ...session2.remarks };
+    return hasNotes;
+  }
+  function saveWorkspaceSessionRecord(state, name, options = {}) {
+    const cleanName = name.trim() || (/* @__PURE__ */ new Date()).toLocaleString();
+    const captured = captureWorkspaceLayout(state, options.groupId, options.isTemplate);
+    const openKeyList = options.isTemplate ? [] : options.groupId ? [.../* @__PURE__ */ new Set([...options.openKeys || [], ...captured.groups.flatMap((g) => g.memberKeys)])] : [...new Set(options.openKeys || [])];
+    const existingIdx = !options.rolling && !options.isTemplate && options.groupId ? state.sessions.findIndex((s) => !s.isTemplate && (s.scopedGroupId === options.groupId || s.name === cleanName)) : -1;
+    const prior = existingIdx >= 0 ? state.sessions[existingIdx] : null;
+    const session2 = {
+      id: prior?.id || `ses-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      name: cleanName,
+      createdAt: Date.now(),
+      scopedGroupId: options.groupId ?? prior?.scopedGroupId,
+      isTemplate: Boolean(options.isTemplate),
+      openKeys: openKeyList,
+      kind: options.kind ?? (options.isTemplate ? "template" : options.rolling ? "rolling" : "manual"),
+      ...captured,
+      virtualMembers: options.isTemplate ? {} : { ...prior?.virtualMembers || {}, ...captured.virtualMembers }
+    };
+    if (options.rolling) {
+      state.rollingSessions.unshift(session2);
+      state.rollingSessions = state.rollingSessions.slice(0, MAX_ROLLING_SESSIONS);
+    } else {
+      if (existingIdx >= 0) state.sessions.splice(existingIdx, 1);
+      state.sessions.unshift(session2);
+      state.sessions = state.sessions.slice(0, MAX_MANUAL_SESSIONS);
+    }
+    return session2;
+  }
+
+  // src/domains/workspace/state-store.ts
+  var createEmptyState = () => ({
+    version: 2,
+    groups: [],
+    collapsed: [],
+    pinnedKeys: [],
+    sleepingKeys: [],
+    remarks: {},
+    remarkModes: {},
+    lastViewedAt: {},
+    readingProgress: {},
+    virtualMembers: {},
+    sessions: [],
+    rollingSessions: []
+  });
   var WorkspaceStateStore = class {
     state = createEmptyState();
-    diskCache = new WorkspaceDiskCache();
+    diskCache;
+    readingCache;
+    notesCache;
     readOnlyGuard = false;
     prefs;
     listeners = /* @__PURE__ */ new Set();
     constructor(prefs) {
       this.prefs = prefs;
+      const customDir = prefs.get("inspector.lookup.cacheDirectory");
+      this.diskCache = new WorkspaceDiskCache(customDir);
+      this.readingCache = new ReadingProgressDiskCache(customDir);
+      this.notesCache = new BriefNotesDiskCache(customDir);
       this.load();
     }
     load() {
+      const prevProgress = pickReadingProgressState(this.state);
+      const prevNotes = pickBriefNotesState(this.state);
       const raw = this.prefs.get("workspace.document");
       if (!raw) {
-        this.state = createEmptyState();
+        this.state = { ...createEmptyState(), ...prevProgress, ...prevNotes };
         this.readOnlyGuard = false;
         return;
       }
       try {
         this.state = readWorkspace(raw);
+        this.readingCache.mergeDurableState(this.state, prevProgress);
+        this.notesCache.mergeDurableState(this.state, prevNotes);
         this.readOnlyGuard = false;
       } catch {
         this.readOnlyGuard = true;
       }
     }
     async initDiskCache() {
-      const diskState = await this.diskCache.loadFromDisk();
-      if (!diskState) {
-        if (!this.readOnlyGuard) this.diskCache.scheduleSave(this.state, true);
-        return false;
-      }
-      if (this.readOnlyGuard) {
-        this.state = diskState;
-        this.readOnlyGuard = false;
-        this.save(true);
-        return true;
-      }
-      if (this.diskCache.mergeDurableState(this.state, diskState)) {
-        this.save(true);
-        return true;
-      }
-      this.diskCache.scheduleSave(this.state, false);
-      return false;
+      return hydrateWorkspaceDiskCaches(this);
     }
     save(immediateDisk = false) {
       if (!this.readOnlyGuard) {
+        const layoutOnly = pickWorkspaceLayoutState(this.state);
+        const serialized = JSON.stringify(layoutOnly);
         try {
-          this.prefs.set("workspace.document", JSON.stringify(this.state));
+          this.prefs.set("workspace.document", serialized);
         } catch {
         }
-        this.diskCache.scheduleSave(this.state, immediateDisk);
+        this.diskCache.scheduleSave(layoutOnly, immediateDisk, serialized);
       }
+      this.emitChange();
+    }
+    saveReadingProgress(immediateDisk = false) {
+      this.readingCache.scheduleSave(this.state, immediateDisk);
+      this.emitChange();
+    }
+    saveBriefNotes(immediateDisk = false) {
+      this.notesCache.scheduleSave(this.state, immediateDisk);
+      this.emitChange();
+    }
+    emitChange() {
       for (const fn of this.listeners) {
         try {
           fn();
@@ -7106,6 +9577,22 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.listeners.add(listener);
       return () => this.listeners.delete(listener);
     }
+    clearWorkspaceLayout() {
+      const notes = pickReadingNotesState(this.state);
+      this.state = { ...createEmptyState(), ...notes };
+      this.readOnlyGuard = false;
+      this.save(true);
+    }
+    clearReadingProgress() {
+      this.state.lastViewedAt = {};
+      this.state.readingProgress = {};
+      this.saveReadingProgress(true);
+    }
+    clearBriefNotes() {
+      this.state.remarks = {};
+      this.state.remarkModes = {};
+      this.saveBriefNotes(true);
+    }
     createGroup(name, color) {
       const trimmed = name.trim() || "新分组";
       const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -7116,18 +9603,13 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       return group2;
     }
     assignKeyRelative(key, groupId, anchorKey, after) {
-      for (const g of this.state.groups) {
-        g.memberKeys = g.memberKeys.filter((k) => k !== key);
-      }
+      for (const g of this.state.groups) g.memberKeys = g.memberKeys.filter((k) => k !== key);
       if (groupId) {
         const target = this.state.groups.find((g) => g.id === groupId);
         if (target) {
           const idx = target.memberKeys.indexOf(anchorKey);
-          if (idx >= 0) {
-            target.memberKeys.splice(after ? idx + 1 : idx, 0, key);
-          } else {
-            target.memberKeys.push(key);
-          }
+          if (idx >= 0) target.memberKeys.splice(after ? idx + 1 : idx, 0, key);
+          else target.memberKeys.push(key);
         }
       }
       this.save();
@@ -7156,48 +9638,24 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       return true;
     }
     restoreSessionLayout(session2, merge = false, openKeys = []) {
-      if (!merge) {
-        if (openKeys.length || this.state.groups.length || this.state.pinnedKeys.length) {
-          this.saveSession(`恢复前备份 · ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { kind: "pre-replace", rolling: true, openKeys });
-        }
-        this.state.groups = session2.groups.map((g) => ({ ...g, memberKeys: [...g.memberKeys] }));
-        this.state.pinnedKeys = [...session2.pinnedKeys];
-        this.state.collapsed = [...session2.collapsed];
-        this.state.virtualMembers = { ...session2.virtualMembers };
-        this.state.remarks = { ...session2.remarks };
-        this.state.remarkModes = { ...session2.remarkModes };
-        this.save();
-        return;
+      if (!merge && (openKeys.length || this.state.groups.length || this.state.pinnedKeys.length)) {
+        this.saveSession(`恢复前备份 · ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { kind: "pre-replace", rolling: true, openKeys });
       }
-      for (const sg of session2.groups) {
-        let existing = this.state.groups.find((g) => g.id === sg.id || g.name === sg.name);
-        if (!existing) {
-          existing = { id: sg.id, name: sg.name, color: sg.color, memberKeys: [] };
-          this.state.groups.push(existing);
-        }
-        if (session2.collapsed.includes(sg.id) && !this.state.collapsed.includes(existing.id)) this.state.collapsed.push(existing.id);
-        for (const key of sg.memberKeys) {
-          if (!this.groupOfKey(key)) existing.memberKeys.push(key);
-        }
-      }
-      this.state.virtualMembers = { ...session2.virtualMembers, ...this.state.virtualMembers };
-      this.state.remarkModes = { ...session2.remarkModes, ...this.state.remarkModes };
-      const pins = /* @__PURE__ */ new Set([...this.state.pinnedKeys, ...session2.pinnedKeys]);
-      this.state.pinnedKeys = [...pins];
-      this.state.remarks = { ...this.state.remarks, ...session2.remarks };
+      const hasNotes = applySessionLayoutToState(this.state, session2, merge);
       this.save();
+      if (hasNotes) this.saveBriefNotes();
     }
-    collapseOtherGroups(activeGroupId) {
-      this.state.collapsed = this.state.groups.filter((g) => g.id !== activeGroupId).map((g) => g.id);
+    collapseOtherGroups(activeGroupId2) {
+      this.state.collapsed = this.state.groups.filter((g) => g.id !== activeGroupId2).map((g) => g.id);
       this.save();
     }
     setRemarkMode(key, mode) {
       if (mode) this.state.remarkModes[key] = mode;
       else delete this.state.remarkModes[key];
-      this.save();
+      this.saveBriefNotes();
     }
     groupOfKey(key) {
-      return this.state.groups.find((g) => g.memberKeys.includes(key))?.id || "";
+      return groupOfStateKey(this.state, key);
     }
     setCollapsed(groupId, collapsed) {
       const set = new Set(this.state.collapsed);
@@ -7212,7 +9670,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       ses.createdAt = Date.now();
       const inScope = (key) => !ses.scopedGroupId || this.groupOfKey(key) === ses.scopedGroupId;
       if (openKeys) ses.openKeys = ses.isTemplate ? [] : [...new Set(openKeys)].filter(inScope);
-      Object.assign(ses, this.captureLayout(ses.scopedGroupId, ses.isTemplate));
+      Object.assign(ses, captureWorkspaceLayout(this.state, ses.scopedGroupId, ses.isTemplate));
       this.save();
       return true;
     }
@@ -7242,14 +9700,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       return true;
     }
     assignToGroup(key, groupId) {
-      for (const g of this.state.groups) {
-        g.memberKeys = g.memberKeys.filter((k) => k !== key);
-      }
+      for (const g of this.state.groups) g.memberKeys = g.memberKeys.filter((k) => k !== key);
       if (groupId) {
         const target = this.state.groups.find((g) => g.id === groupId);
-        if (target && !target.memberKeys.includes(key)) {
-          target.memberKeys.push(key);
-        }
+        if (target && !target.memberKeys.includes(key)) target.memberKeys.push(key);
       }
       this.save();
     }
@@ -7258,9 +9712,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (pinned) {
         set.add(key);
         this.state.sleepingKeys = this.state.sleepingKeys.filter((k) => k !== key);
-      } else {
-        set.delete(key);
-      }
+      } else set.delete(key);
       this.state.pinnedKeys = [...set];
       this.save();
     }
@@ -7282,20 +9734,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const clean = remark.trim().slice(0, MAX_REMARK_LENGTH);
       if (clean) this.state.remarks[key] = clean;
       else delete this.state.remarks[key];
-      this.save();
+      this.saveBriefNotes();
     }
     touchViewed(key, now = Date.now()) {
       this.state.lastViewedAt[key] = now;
     }
     updateReadingProgress(key, deltaSeconds, lastPage, totalPages) {
       const prev = this.state.readingProgress[key] ?? { readSeconds: 0 };
-      const next = {
+      const pageSeconds = mergePageSeconds(prev.pageSeconds, lastPage, deltaSeconds);
+      return this.state.readingProgress[key] = {
         readSeconds: Math.max(0, (prev.readSeconds || 0) + Math.max(0, deltaSeconds)),
         ...lastPage && lastPage > 0 ? { lastPage } : prev.lastPage ? { lastPage: prev.lastPage } : {},
-        ...totalPages && totalPages > 0 ? { totalPages } : prev.totalPages ? { totalPages: prev.totalPages } : {}
+        ...totalPages && totalPages > 0 ? { totalPages } : prev.totalPages ? { totalPages: prev.totalPages } : {},
+        ...pageSeconds ? { pageSeconds } : {}
       };
-      this.state.readingProgress[key] = next;
-      return next;
     }
     saveVirtualMember(meta) {
       this.state.virtualMembers[meta.key] = meta;
@@ -7306,60 +9758,99 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       delete this.state.virtualMembers[key];
       this.save();
     }
-    captureLayout(groupId, template = false) {
-      const inScope = (key) => !groupId || this.groupOfKey(key) === groupId;
-      const scopedRecord = (record2) => template ? {} : Object.fromEntries(Object.entries(record2).filter(([key]) => inScope(key)));
-      return {
-        groups: this.state.groups.filter((g) => !groupId || g.id === groupId).map((g) => ({ ...g, memberKeys: template ? [] : [...g.memberKeys] })),
-        collapsed: this.state.collapsed.filter((id) => !groupId || id === groupId),
-        pinnedKeys: template ? [] : this.state.pinnedKeys.filter(inScope),
-        remarks: scopedRecord(this.state.remarks),
-        remarkModes: scopedRecord(this.state.remarkModes),
-        virtualMembers: scopedRecord(this.state.virtualMembers)
-      };
-    }
     saveSession(name, options = {}) {
-      const cleanName = name.trim() || (/* @__PURE__ */ new Date()).toLocaleString();
-      const captured = this.captureLayout(options.groupId, options.isTemplate);
-      const openKeyList = options.isTemplate ? [] : options.groupId ? [.../* @__PURE__ */ new Set([...options.openKeys || [], ...captured.groups.flatMap((g) => g.memberKeys)])] : [...new Set(options.openKeys || [])];
-      const existingIdx = !options.rolling && !options.isTemplate && options.groupId ? this.state.sessions.findIndex((s) => !s.isTemplate && (s.scopedGroupId === options.groupId || s.name === cleanName)) : -1;
-      const prior = existingIdx >= 0 ? this.state.sessions[existingIdx] : null;
-      const session2 = {
-        id: prior?.id || `ses-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
-        name: cleanName,
-        createdAt: Date.now(),
-        scopedGroupId: options.groupId ?? prior?.scopedGroupId,
-        isTemplate: Boolean(options.isTemplate),
-        openKeys: openKeyList,
-        kind: options.kind ?? (options.isTemplate ? "template" : options.rolling ? "rolling" : "manual"),
-        ...captured,
-        virtualMembers: options.isTemplate ? {} : { ...prior?.virtualMembers || {}, ...captured.virtualMembers }
-      };
-      if (options.rolling) {
-        this.state.rollingSessions.unshift(session2);
-        this.state.rollingSessions = this.state.rollingSessions.slice(0, MAX_ROLLING_SESSIONS);
-      } else {
-        if (existingIdx >= 0) this.state.sessions.splice(existingIdx, 1);
-        this.state.sessions.unshift(session2);
-        this.state.sessions = this.state.sessions.slice(0, MAX_MANUAL_SESSIONS);
-      }
+      const session2 = saveWorkspaceSessionRecord(this.state, name, options);
       this.save(true);
       return session2;
     }
     exportJson() {
       return JSON.stringify({ format: "zotero-bridgeflow-workspace", version: 2, state: this.state }, null, 2);
     }
+    exportReadingJson() {
+      return JSON.stringify({ format: "zotero-bridgeflow-reading-progress", version: 1, state: pickReadingProgressState(this.state) }, null, 2);
+    }
+    exportBriefNotesJson() {
+      return JSON.stringify({ format: "zotero-bridgeflow-brief-notes", version: 1, state: pickBriefNotesState(this.state) }, null, 2);
+    }
     importJson(jsonText) {
       try {
         this.state = readBackup(jsonText);
         this.readOnlyGuard = false;
         this.save(true);
+        void this.readingCache.flushNow(this.state);
+        void this.notesCache.flushNow(this.state);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    importReadingJson(jsonText) {
+      try {
+        this.readingCache.mergeDurableState(this.state, readReadingProgressBackup(jsonText));
+        this.saveReadingProgress(true);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    importBriefNotesJson(jsonText) {
+      try {
+        this.notesCache.mergeDurableState(this.state, readBriefNotesBackup(jsonText));
+        this.saveBriefNotes(true);
         return true;
       } catch {
         return false;
       }
     }
   };
+
+  // src/domains/workspace/reading-tracker.ts
+  function readReaderPageMetrics(tabID) {
+    const reader = globalThis.Zotero?.Reader?.getByTabID?.(tabID);
+    const internalReader = reader?._internalReader;
+    const viewStats = internalReader?._state?.primaryViewStats || reader?.state?.primaryViewStats;
+    const viewState = internalReader?._state?.primaryViewState || reader?.state?.primaryViewState;
+    const pdfApp = internalReader?._primaryView?._iframeWindow?.PDFViewerApplication || reader?._iframeWindow?.PDFViewerApplication;
+    const rawPageIndex = viewStats?.pageIndex ?? viewState?.pageIndex ?? reader?.state?.pageIndex;
+    const page = Number(pdfApp?.page || (rawPageIndex != null ? Number(rawPageIndex) + 1 : 0)) || 0;
+    const total = Number(
+      viewStats?.pagesCount || pdfApp?.pagesCount || pdfApp?.pdfDocument?.numPages || internalReader?._primaryView?._pagesCount || internalReader?._pdfDocument?.numPages || reader?.pagesCount || 0
+    ) || 0;
+    return { page, total };
+  }
+  function trackActiveReaderProgress(win, store, tracked, elapsedSeconds, options = {}) {
+    const doc = win.document;
+    if (typeof doc?.hasFocus === "function" && !doc.hasFocus()) return false;
+    const now = options.now ?? Date.now();
+    const idleExpired = Boolean(
+      options.idleCutoffMs && options.idleCutoffMs > 0 && options.lastActivityAt && now - options.lastActivityAt > options.idleCutoffMs
+    );
+    if (options.overrideKey) {
+      if (idleExpired || options.overrideKey.startsWith("tab:")) return false;
+      const prevText2 = formatReadingProgress(store.state.readingProgress[options.overrideKey]).text;
+      store.touchViewed(options.overrideKey, now);
+      const next2 = store.updateReadingProgress(
+        options.overrideKey,
+        elapsedSeconds,
+        options.overrideLastPage,
+        options.overrideTotalPages
+      );
+      return elapsedSeconds > 0 || formatReadingProgress(next2).text !== prevText2;
+    }
+    const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+    if (!selectedID || selectedID === "zotero-pane") return false;
+    const current = tracked.find((t) => !t.virtual && t.tabID === selectedID);
+    if (!current || current.key.startsWith("tab:") || !current.type.startsWith("reader")) return false;
+    const prevProg = store.state.readingProgress[current.key];
+    const prevText = formatReadingProgress(prevProg).text;
+    const { page, total } = readReaderPageMetrics(selectedID);
+    const pageFlipped = page > 0 && prevProg?.lastPage !== page;
+    if (pageFlipped) options.onPageChanged?.(page);
+    if (idleExpired && !pageFlipped) return false;
+    store.touchViewed(current.key, now);
+    const next = store.updateReadingProgress(current.key, elapsedSeconds, page, total);
+    return elapsedSeconds > 0 || formatReadingProgress(next).text !== prevText;
+  }
 
   // src/domains/workspace/tab-actions-helpers.ts
   function computeTabMoveTarget(ids, draggedTabID, targetTabID, after) {
@@ -7419,40 +9910,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   async function selectItemInLibrary(win, itemID, switchCollection) {
     return locateItemInZoteroLibrary(itemID, { win, switchCollection });
   }
-  function formatReadingDuration(seconds) {
-    const total = Math.max(0, Math.floor(Number(seconds) || 0));
-    if (total < 60) return "";
-    const mins = Math.floor(total / 60);
-    if (mins < 60) return `${mins}m`;
-    const hrs = Math.floor(mins / 60);
-    const rem = mins % 60;
-    return rem ? `${hrs}h${rem}m` : `${hrs}h`;
-  }
-  function formatReadingProgress(prog) {
-    if (!prog) return { text: "", ratio: null };
-    const dur = formatReadingDuration(prog.readSeconds);
-    const page = Number(prog.lastPage) || 0;
-    const total = Number(prog.totalPages) || 0;
-    const pageText = page > 0 ? total > 0 ? `p.${page}/${total}` : `p.${page}` : "";
-    const text2 = [dur, pageText].filter(Boolean).join(" · ");
-    const ratio = page > 0 && total > 0 ? Math.max(0, Math.min(1, page / total)) : null;
-    return { text: text2, ratio };
-  }
-  function trackActiveReaderProgress(win, store, tracked, elapsedSeconds) {
-    const doc = win.document;
-    if (typeof doc?.hasFocus === "function" && !doc.hasFocus()) return false;
-    const selectedID = String(win.Zotero_Tabs?.selectedID || "");
-    if (!selectedID || selectedID === "zotero-pane") return false;
-    const current = tracked.find((t) => !t.virtual && t.tabID === selectedID);
-    if (!current || current.key.startsWith("tab:") || !current.type.startsWith("reader")) return false;
-    const prevText = formatReadingProgress(store.state.readingProgress[current.key]).text;
-    const reader = globalThis.Zotero?.Reader?.getByTabID?.(selectedID);
-    const pdfApp = reader?._iframeWindow?.PDFViewerApplication;
-    const page = Number(pdfApp?.page || (reader?.state?.pageIndex != null ? Number(reader.state.pageIndex) + 1 : 0)) || 0;
-    const total = Number(pdfApp?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount || 0) || 0;
-    store.touchViewed(current.key);
-    const next = store.updateReadingProgress(current.key, elapsedSeconds, page, total);
-    return formatReadingProgress(next).text !== prevText;
+  function formatReadingProgress2(prog) {
+    return formatReadingProgress(prog);
   }
   function buildVirtualMetaFromTracked(tab) {
     return {
@@ -7550,20 +10009,37 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       onSelectTab(match.tabID);
       return "focused";
     }
-    const reader = globalThis.Zotero?.Reader;
-    const targetAttachmentID = req.attachmentID || req.itemID;
-    if (typeof reader?.open === "function" && targetAttachmentID > 0) {
-      await reader.open(targetAttachmentID);
-      store.removeVirtualMember(`item:${targetAttachmentID}`);
-      store.removeVirtualMember(`item:${req.itemID}`);
-      if (req.assignToActiveGroup) {
-        const selectedID = String(win.Zotero_Tabs?.selectedID || "");
-        const activeTab = tracked.find((t) => t.tabID === selectedID);
-        if (activeTab?.groupId) store.assignToGroup(`item:${targetAttachmentID}`, activeTab.groupId);
+    try {
+      if (!req.attachmentID) {
+        const openedParent = await openItemAttachmentOrNote(
+          win,
+          store,
+          req.itemID,
+          req.assignToActiveGroup ? activeGroupId(win, tracked) : void 0,
+          false
+        );
+        if (openedParent) return "opened";
       }
-      return "opened";
+      const reader = globalThis.Zotero?.Reader;
+      const targetAttachmentID = req.attachmentID || req.itemID;
+      if (typeof reader?.open === "function" && targetAttachmentID > 0) {
+        await reader.open(targetAttachmentID);
+        store.removeVirtualMember(`item:${targetAttachmentID}`);
+        store.removeVirtualMember(`item:${req.itemID}`);
+        if (req.assignToActiveGroup) {
+          const gid = activeGroupId(win, tracked);
+          if (gid) store.assignToGroup(`item:${targetAttachmentID}`, gid);
+        }
+        return "opened";
+      }
+    } catch (error) {
+      globalThis.Zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
     }
     return "not-found";
+  }
+  function activeGroupId(win, tracked) {
+    const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+    return tracked.find((t) => t.tabID === selectedID)?.groupId || "";
   }
   function disambiguateSameParentTabs(tabs) {
     const counts = /* @__PURE__ */ new Map();
@@ -7965,10 +10441,66 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         (t) => !t.virtual && !t.pinned && t.lastViewedAt > 0 && t.lastViewedAt < cutoff
       );
     }
-    trackReadingProgress(win, elapsedSeconds) {
-      return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds);
+    resolveActiveReaderSnapshot(win) {
+      const selectedID = String(win.Zotero_Tabs?.selectedID || "");
+      if (!selectedID || selectedID === "zotero-pane") return null;
+      const current = this.buildTrackedTabs(win).find((t) => !t.virtual && t.tabID === selectedID);
+      if (!current || current.key.startsWith("tab:") || !current.type.startsWith("reader")) return null;
+      const { page, total } = readReaderPageMetrics(selectedID);
+      return { tabID: selectedID, key: current.key, page, total };
+    }
+    trackReadingProgress(win, elapsedSeconds, options) {
+      return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds, options);
+    }
+    openGroupAnnotationMatrix(win, groupId) {
+      const group2 = groupId ? this.store.state.groups.find((g) => g.id === groupId) : null;
+      const tracked = this.buildTrackedTabs(win).filter((t) => (!groupId || t.groupId === groupId) && (t.parentItemID > 0 || t.itemID > 0));
+      const itemIDs = [...new Set(tracked.map((t) => t.parentItemID || t.itemID))];
+      this.bus?.emit("visual-notes:open-matrix", {
+        win,
+        title: group2?.name || "已开文献",
+        itemIDs
+      });
     }
   };
+
+  // src/domains/workspace/workspace-group-emitter.ts
+  function buildWorkspaceGroupSummaries(windows, tabs, store) {
+    const tabParentByKey = /* @__PURE__ */ new Map();
+    for (const win of windows) {
+      for (const tab of tabs.buildTrackedTabs(win)) {
+        const pid = Number(tab.parentItemID || tab.itemID || 0);
+        if (pid > 0) tabParentByKey.set(tab.key, pid);
+      }
+    }
+    const hostItems = globalThis.Zotero?.Items;
+    const resolveRegularId = (rawId) => {
+      if (!Number.isSafeInteger(rawId) || rawId <= 0) return 0;
+      const zItem = hostItems?.get?.(rawId);
+      if (!zItem) return rawId;
+      const reg = normalizeToRegularItem(zItem);
+      return Number(reg?.id || 0);
+    };
+    const groups = [];
+    for (const group2 of store.state.groups) {
+      const seen = /* @__PURE__ */ new Set();
+      for (const key of group2.memberKeys) {
+        let rawId = tabParentByKey.get(key) || 0;
+        if (!rawId) {
+          const vm = store.state.virtualMembers[key];
+          if (vm) rawId = Number(vm.parentItemID || vm.itemID || 0);
+        }
+        if (!rawId) {
+          const m = key.match(/^item:(\d+)/);
+          if (m) rawId = Number(m[1]);
+        }
+        const resolved = resolveRegularId(rawId);
+        if (resolved > 0) seen.add(resolved);
+      }
+      groups.push({ groupId: group2.id, groupName: group2.name, itemIDs: [...seen] });
+    }
+    return groups;
+  }
 
   // src/domains/workspace/workspace-elements.ts
   function createWorkspaceElement(doc, tag) {
@@ -8123,10 +10655,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const winW = doc.defaultView?.innerWidth || 1200;
     const winH = doc.defaultView?.innerHeight || 800;
     const popW = pop.offsetWidth || minWidth;
+    const popH = Math.min(pop.offsetHeight || 260, winH - 16);
     const rawX = hasMouse ? event.clientX + 2 : rect.left > winW * 0.55 ? rect.right - popW : rect.left;
-    const rawY = hasMouse ? event.clientY + 6 : rect.bottom + 6;
+    let rawY = hasMouse ? event.clientY + 6 : rect.bottom + 6;
+    if (rawY + popH > winH - 8) {
+      rawY = hasMouse ? event.clientY - popH - 6 : rect.top - popH - 6;
+    }
     const left = Math.max(8, Math.min(rawX, winW - popW - 12));
-    const top = Math.max(8, Math.min(rawY, winH - 300));
+    const top = Math.max(8, Math.min(rawY, winH - popH - 8));
     pop.style.left = `${left}px`;
     pop.style.top = `${top}px`;
     return pop;
@@ -8973,16 +11509,43 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const rel = formatRelativeTimeZh(tab.lastViewedAt);
       if (rel) statusParts.push(`上次阅读：${rel}`);
       const reader = !tab.virtual && tab.tabID ? globalThis.Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
-      const pageIdx = reader?.state?.pageIndex;
-      const numPages = reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
-      const prog = formatReadingProgress(this.store.state.readingProgress[tab.key]);
+      const ir = reader?._internalReader;
+      const app = ir?._primaryView?._iframeWindow?.PDFViewerApplication;
+      const pageIdx = typeof app?.page === "number" && app.page > 0 ? app.page - 1 : ir?._state?.primaryViewStats?.pageIndex ?? ir?._state?.primaryViewState?.pageIndex ?? reader?.state?.pageIndex;
+      const numPages = app?.pagesCount || ir?._state?.primaryViewStats?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+      const storedProg = this.store.state.readingProgress[tab.key];
+      const prog = formatReadingProgress(storedProg);
       if (typeof pageIdx === "number" && pageIdx >= 0) {
-        statusParts.push(typeof numPages === "number" && numPages > 0 ? `第 ${pageIdx + 1} / ${numPages} 页` : `第 ${pageIdx + 1} 页`);
+        const total = typeof numPages === "number" && numPages > 0 ? numPages : storedProg?.totalPages || 0;
+        const dur = storedProg?.readSeconds && storedProg.readSeconds > 0 ? ` · ${prog.text.split(" · ")[0]}` : "";
+        statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
       } else if (prog.text) {
         statusParts.push(prog.text);
       }
+      let peakNote = "";
+      if (storedProg?.pageSeconds) {
+        let peakPage = "";
+        let peakSec = 0;
+        for (const [p, sec] of Object.entries(storedProg.pageSeconds)) {
+          if (sec > peakSec) {
+            peakSec = sec;
+            peakPage = p;
+          }
+        }
+        if (peakPage && peakSec > 0) {
+          peakNote = `最常停留 P${peakPage} (${Math.round(peakSec)}s)`;
+          statusParts.push(peakNote);
+        }
+      }
       const itemObj = tab.itemID > 0 ? globalThis.Zotero?.Items?.get?.(tab.itemID) : null;
-      const annots = itemObj?.isAttachment?.() && typeof itemObj?.getAnnotations === "function" ? itemObj.getAnnotations()?.length : void 0;
+      let annots;
+      try {
+        const isFile = itemObj?.isFileAttachment ? itemObj.isFileAttachment() : itemObj?.isAttachment?.();
+        if (isFile && typeof itemObj?.getAnnotations === "function") {
+          annots = itemObj.getAnnotations()?.length;
+        }
+      } catch {
+      }
       if (typeof annots === "number" && annots > 0) {
         statusParts.push(`批注 ${annots} 条`);
       }
@@ -8991,6 +11554,25 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         footEl.className = "zbf-hc-meta";
         footEl.textContent = statusParts.join(" · ");
         card.appendChild(footEl);
+      }
+      const bucketCount = storedProg?.totalPages && storedProg.totalPages < 16 ? storedProg.totalPages : 16;
+      const heat = buildReadingHeatmapBuckets(storedProg, bucketCount);
+      if (heat.length) {
+        const bar = createWorkspaceElement(this.doc, "div");
+        bar.className = "zbf-hc-heatbar";
+        bar.style.gridTemplateColumns = `repeat(${heat.length}, 1fr)`;
+        const heatColor = String(this.prefs.get("workspace.readingHeatmap.color") || "").trim();
+        const heatOpacity = Math.max(20, Math.min(95, Number(this.prefs.get("workspace.readingHeatmap.opacity") || 42))) / 100;
+        if (heatColor) bar.style.setProperty("--zbf-heat-accent", heatColor);
+        bar.title = peakNote ? `按页阅读热力分布 · ${peakNote}` : "按页阅读时长热力分布";
+        for (const ratio of heat) {
+          const cell = createWorkspaceElement(this.doc, "span");
+          cell.className = "zbf-hc-heatcell";
+          cell.style.opacity = String(ratio > 0 ? Math.max(0.24, Math.min(1, ratio * (0.45 + heatOpacity * 0.85))) : 0.12);
+          if (ratio > 0) cell.setAttribute("data-active", "true");
+          bar.appendChild(cell);
+        }
+        card.appendChild(bar);
       }
       host2.appendChild(card);
       const rect = anchor.getBoundingClientRect();
@@ -9026,12 +11608,23 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     win;
     doc;
     engine;
-    backdrop = null;
     panelEl = null;
     inputEl = null;
     listEl = null;
     results = [];
     activeIndex = 0;
+    rows = [];
+    timer = 0;
+    dismissOutside = (event) => {
+      if (this.panelEl && !event.composedPath().includes(this.panelEl) && !event.composedPath().some((node) => node.getAttribute?.("data-action") === "search")) this.close();
+    };
+    scheduleResults(delay) {
+      this.win.clearTimeout(this.timer);
+      this.timer = this.win.setTimeout(() => {
+        this.timer = 0;
+        if (this.inputEl) this.renderResults(this.inputEl.value);
+      }, delay);
+    }
     collapsedSections = /* @__PURE__ */ new Set(["groups"]);
     constructor(win, engine) {
       this.win = win;
@@ -9039,7 +11632,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.engine = engine;
     }
     isOpen() {
-      return Boolean(this.backdrop?.isConnected);
+      return Boolean(this.panelEl?.isConnected);
     }
     open(initialQuery = "", anchor) {
       if (this.isOpen()) {
@@ -9053,11 +11646,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       }
       const host2 = this.doc.documentElement || this.doc.body;
       if (!host2) return;
-      const backdrop = createWorkspaceElement(this.doc, "div");
-      backdrop.id = "zbf-spotlight-backdrop";
-      backdrop.addEventListener("mousedown", (e) => {
-        if (e.target === backdrop) this.close();
-      });
       const panel = createWorkspaceElement(this.doc, "div");
       panel.id = "zbf-spotlight-panel";
       const inputWrap = createWorkspaceElement(this.doc, "div");
@@ -9066,41 +11654,60 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const input = createWorkspaceElement(this.doc, "input");
       input.id = "zbf-spotlight-input";
       input.type = "search";
-      input.placeholder = "查找已打开文献、备注，或输入 @ 搜全库、> 执行操作…";
+      input.placeholder = "查找打开的标签、备注、分组或会话；输入 > 查看命令…";
       input.value = initialQuery;
-      input.addEventListener("input", () => {
+      const clearBtn = createWorkspaceElement(this.doc, "button");
+      clearBtn.type = "button";
+      clearBtn.className = "zbf-spot-clear";
+      clearBtn.textContent = "✕";
+      clearBtn.title = "清空搜索";
+      clearBtn.hidden = !initialQuery;
+      clearBtn.addEventListener("click", () => {
+        input.value = "";
+        clearBtn.hidden = true;
         this.activeIndex = 0;
-        this.renderResults(input.value);
+        this.renderResults("");
+        input.focus();
+      });
+      input.addEventListener("input", () => {
+        clearBtn.hidden = !input.value;
+        this.activeIndex = 0;
+        this.results = [];
+        this.rows = [];
+        this.listEl?.replaceChildren();
+        this.scheduleResults(75);
       });
       input.addEventListener("keydown", (e) => this.handleKeydown(e));
-      inputWrap.appendChild(input);
+      inputWrap.append(input, clearBtn);
       const list = createWorkspaceElement(this.doc, "div");
       list.id = "zbf-spotlight-list";
-      panel.append(inputWrap, list);
-      backdrop.appendChild(panel);
-      host2.appendChild(backdrop);
-      this.backdrop = backdrop;
+      const footer = createWorkspaceElement(this.doc, "div");
+      footer.className = "zbf-spot-footer";
+      footer.textContent = "↑↓ 选择 · Enter 打开/执行 · > 命令模式 · Esc 关闭";
+      panel.append(inputWrap, list, footer);
+      host2.appendChild(panel);
       this.panelEl = panel;
       this.inputEl = input;
       this.listEl = list;
       this.positionNearAnchor(anchor);
-      this.renderResults(initialQuery);
-      this.win.setTimeout(() => {
-        input.focus();
-        input.select();
-      }, 10);
+      input.focus();
+      input.select();
+      this.doc.addEventListener("pointerdown", this.dismissOutside, true);
+      this.scheduleResults(16);
     }
     toggle(anchor) {
       if (this.isOpen()) this.close();
       else this.open("", anchor);
     }
     close() {
-      this.backdrop?.remove();
-      this.backdrop = null;
+      this.doc.removeEventListener("pointerdown", this.dismissOutside, true);
+      this.win.clearTimeout(this.timer);
+      this.panelEl?.remove();
       this.panelEl = null;
       this.inputEl = null;
       this.listEl = null;
       this.results = [];
+      this.rows = [];
     }
     destroy() {
       this.close();
@@ -9137,7 +11744,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         if (it.id.startsWith("closed:")) closedTabs.push(it);
         else if (it.id.startsWith("group:")) groups.push(it);
         else if (it.id.startsWith("session:")) sessions.push(it);
-        else if (it.id.startsWith("lib:")) library.push(it);
+        else if (it.id.startsWith("lib:") || it.id.startsWith("recent-added:")) library.push(it);
         else if (it.category === "citation" || it.id.startsWith("word-cite:")) wordCites.push(it);
         else if (it.category === "command" || it.id.startsWith("cmd:")) commands.push(it);
         else openTabs.push(it);
@@ -9162,19 +11769,21 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     renderResults(rawQuery) {
       if (!this.listEl) return;
-      this.listEl.textContent = "";
+      const fragment = this.doc.createDocumentFragment();
       const all = this.engine.query(rawQuery, this.win);
       const hasQuery = rawQuery.trim().length > 0;
       const sections = this.partitionSections(all);
       if (!sections.length) {
         this.results = [];
+        this.rows = [];
         const empty = createWorkspaceElement(this.doc, "div");
         empty.className = "zbf-spotlight-empty";
-        empty.textContent = "没有匹配的文献或操作。试试输入 @ 搜索全部文库，或输入 > 筛选命令。";
-        this.listEl.appendChild(empty);
+        empty.textContent = hasQuery ? "没有匹配项。搜索整库请使用 Zotero 主文库搜索框。" : "当前没有打开的阅读标签。输入分组、会话名称，或输入 > 查看命令。";
+        this.listEl.replaceChildren(empty);
         return;
       }
       const visible = [];
+      this.rows = [];
       let rowIdx = 0;
       for (const sec of sections) {
         const collapsed = !hasQuery && this.collapsedSections.has(sec.key);
@@ -9192,15 +11801,15 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           else this.collapsedSections.add(sec.key);
           this.renderResults(this.inputEl?.value || "");
         });
-        this.listEl.appendChild(secHead);
+        fragment.appendChild(secHead);
         if (collapsed) continue;
         for (const item of sec.items) {
           const idx = rowIdx++;
           visible.push(item);
           const row = createWorkspaceElement(this.doc, "div");
           row.setAttribute("role", "option");
-          row.className = `zbf-spot-row${idx === this.activeIndex ? " active" : ""}`;
-          row.addEventListener("mouseenter", () => this.setActive(idx));
+          row.className = "zbf-spot-row";
+          row.addEventListener("mouseenter", () => this.setActive(idx, false));
           row.addEventListener("click", () => {
             this.close();
             void Promise.resolve(item.action());
@@ -9225,20 +11834,24 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
             subEl.textContent = item.subtitle;
             row.appendChild(subEl);
           }
-          this.listEl.appendChild(row);
+          fragment.appendChild(row);
+          this.rows.push(row);
         }
       }
+      this.listEl.replaceChildren(fragment);
       this.results = visible;
       this.activeIndex = Math.min(this.activeIndex, Math.max(0, this.results.length - 1));
+      this.rows[this.activeIndex]?.classList.add("active");
     }
-    setActive(idx) {
+    setActive(idx, scroll = true) {
       if (!this.results.length || !this.listEl) return;
-      this.activeIndex = (idx + this.results.length) % this.results.length;
-      const rows = Array.from(this.listEl.querySelectorAll(".zbf-spot-row"));
-      for (let i = 0; i < rows.length; i++) {
-        rows[i].classList.toggle("active", i === this.activeIndex);
+      const next = (idx + this.results.length) % this.results.length;
+      if (next !== this.activeIndex) {
+        this.rows[this.activeIndex]?.classList.remove("active");
+        this.rows[next]?.classList.add("active");
+        this.activeIndex = next;
       }
-      rows[this.activeIndex]?.scrollIntoView?.({ block: "nearest" });
+      if (scroll) this.rows[next]?.scrollIntoView?.({ block: "nearest" });
     }
     handleKeydown(e) {
       if (e.key === "Escape") {
@@ -9465,6 +12078,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           this.onRefresh();
         }, close, { icon: "save" });
       }
+      if (this.prefs.get("workspace.enableAnnotationMatrix")) {
+        addPopupButton(this.doc, pop, "生成本组文献对比矩阵…", () => {
+          this.tabs.openGroupAnnotationMatrix(this.win, group2.id);
+        }, close, { icon: "layers" });
+      }
       addPopupButton(this.doc, pop, "折叠其他分组", () => {
         this.store.collapseOtherGroups(group2.id);
         this.onRefresh();
@@ -9626,7 +12244,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       else if (subMode === "collection") subBase = tab.collection || tab.creatorYear || tab.source;
       else if (subMode === "lastViewed") subBase = formatRelativeTimeZh(tab.lastViewedAt) || tab.creatorYear || tab.source;
     }
-    const prog = formatReadingProgress(store.state.readingProgress[tab.key]);
+    const prog = formatReadingProgress2(store.state.readingProgress[tab.key]);
     const subText = [subBase, prog.text].filter(Boolean).join(" · ");
     if (subText) {
       const subEl = createWorkspaceElement(doc, "div");
@@ -10405,7 +13023,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       return "";
     }
   }
-  async function importWorkspaceJsonInteractive(win, store, onImported) {
+  async function importWorkspaceJsonInteractive(win, store, onImported, onInvalid) {
     const ZoteroObj = globalThis.Zotero;
     try {
       const { FilePicker } = globalThis.ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
@@ -10417,6 +13035,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         if (rv === fp.returnOK && fp.file) {
           const content = await ZoteroObj.File.getContentsAsync(fp.file);
           if (content && store.importJson(String(content))) onImported();
+          else if (content) onInvalid?.();
           return;
         }
         return;
@@ -10425,6 +13044,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     openTextPromptModal(win, "导入工作区 JSON", "请在此粘贴工作区 JSON 内容...", "", (raw) => {
       if (raw && store.importJson(raw)) onImported();
+      else if (raw?.trim()) onInvalid?.();
     });
   }
   function renderPublicationSuggestionsSection(doc, store, suggestions, onApplied) {
@@ -10438,6 +13058,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     for (const sug of suggestions.slice(0, 5)) {
       const card = createWorkspaceElement(doc, "div");
       card.className = "zbf-hub-card";
+      const topRow = createWorkspaceElement(doc, "div");
+      topRow.className = "zbf-hub-card-top";
       const info = createWorkspaceElement(doc, "div");
       info.className = "zbf-hub-card-info";
       const nameEl = createWorkspaceElement(doc, "div");
@@ -10456,7 +13078,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         for (const k of sug.keys) store.assignToGroup(k, group2.id);
         onApplied();
       });
-      card.append(info, applyBtn);
+      topRow.append(info, applyBtn);
+      card.appendChild(topRow);
       wrap.appendChild(card);
     }
     return wrap;
@@ -10635,6 +13258,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       nameInput.type = "text";
       nameInput.className = "zbf-hub-input";
       nameInput.placeholder = "输入工作区快照或模板名称（如：论文修改轮次）...";
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          saveBtn.click();
+        }
+      });
       const statusEl = createWorkspaceElement(this.doc, "div");
       statusEl.className = "zbf-hub-status";
       const actions = createWorkspaceElement(this.doc, "div");
@@ -10676,11 +13305,18 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       importBtn.className = "zbf-hub-btn";
       importBtn.textContent = "导入 JSON";
       importBtn.addEventListener("click", async () => {
-        await importWorkspaceJsonInteractive(this.win, this.store, () => {
-          statusEl.textContent = "已导入工作区状态";
-          renderLists();
-          this.onRefresh();
-        });
+        await importWorkspaceJsonInteractive(
+          this.win,
+          this.store,
+          () => {
+            statusEl.textContent = "已导入工作区状态";
+            renderLists();
+            this.onRefresh();
+          },
+          () => {
+            statusEl.textContent = "导入失败：JSON 格式无效或版本不兼容";
+          }
+        );
       });
       actions.append(saveBtn, tplBtn, exportBtn, importBtn);
       const listsWrap = createWorkspaceElement(this.doc, "div");
@@ -10874,7 +13510,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 #tab-bar-container[data-zbf-inline] .scroll-start-arrow,
 #tab-bar-container[data-zbf-inline] .scroll-end-arrow { display: none !important; }
 
-#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, #zbf-spotlight-backdrop, #zbf-spotlight-backdrop * {
+#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, #zbf-spotlight-panel, #zbf-spotlight-panel * {
   -moz-window-dragging: no-drag;
 }
 
@@ -10922,6 +13558,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   font: 12px system-ui, "Microsoft YaHei UI", sans-serif; cursor: pointer; flex: none; transition: background .12s, color .12s;
 }
 .zbf-htab:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-htab:focus-visible, .zbf-vtab-row:focus-visible { outline: 2px solid var(--zbf-accent); outline-offset: -2px; }
 .zbf-htab.selected { background: var(--zbf-card); color: var(--zbf-text); box-shadow: 0 0 0 1px var(--zbf-border), 0 1px 2px rgba(0,0,0,0.06); font-weight: 600; }
 .zbf-htab.sleeping { opacity: 0.65; }
 .zbf-htab.virtual { opacity: 0.62; box-shadow: inset 0 0 0 1px var(--zbf-border); }
@@ -11094,10 +13731,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-hc-meta { font-size: 11px; color: var(--zbf-muted); overflow-wrap: anywhere; }
 .zbf-hc-note { margin-top: 5px; padding: 4px 7px; border-radius: 5px; background: var(--zbf-accent-soft); color: var(--zbf-accent); font-size: 11px; }
 
-#zbf-spotlight-backdrop {
-  position: fixed; inset: 0; z-index: 2147483647; background: transparent;
-}
 #zbf-spotlight-panel {
+  z-index: 2147483647;
   position: fixed; width: 480px; max-width: calc(100vw - 24px); padding: 10px 12px 12px; box-sizing: border-box;
   border-radius: 10px; background: var(--zbf-card); color: var(--zbf-text);
   border: 1px solid var(--zbf-border); box-shadow: 0 14px 38px rgba(0, 0, 0, 0.24), 0 2px 8px rgba(0, 0, 0, 0.08);
@@ -11110,6 +13745,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   appearance: none; -moz-appearance: none; flex: 1; width: 100%; box-sizing: border-box; padding: 0; border: 0;
   background: transparent; color: var(--zbf-text); font: 13.5px/1.4 system-ui, sans-serif; outline: none;
 }
+.zbf-spot-clear { appearance: none; border: 0; border-radius: 4px; width: 20px; height: 20px; background: transparent; color: var(--zbf-muted); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.zbf-spot-clear:hover { background: var(--zbf-hover); color: var(--zbf-text); }
+.zbf-spot-clear[hidden] { display: none !important; }
+.zbf-spot-footer { padding: 5px 4px 0; border-top: 1px solid var(--zbf-border); font-size: 11px; color: var(--zbf-muted); text-align: right; }
 #zbf-spotlight-list { max-height: 440px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 2px; }
 .zbf-spot-sec-head {
   display: flex; align-items: center; justify-content: space-between; padding: 7px 8px 3px; margin-top: 2px;
@@ -11198,6 +13837,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-stale-footer { display: flex; justify-content: flex-end; gap: 6px; padding: 4px 6px; }
 .zbf-mini-btn { padding: 2px 7px; border-radius: 4px; border: 1px solid var(--zbf-border); background: var(--zbf-surface); color: var(--zbf-text); font: 11px system-ui, sans-serif; cursor: pointer; flex: none; }
 .zbf-mini-btn.danger { color: light-dark(#c62828, #f87171); }
+.zbf-hc-heatbar { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 5px; height: 5px; }
+.zbf-hc-heatcell { display: block; border-radius: 2px; background: var(--zbf-muted); }
+.zbf-hc-heatcell[data-active="true"] { background: var(--zbf-heat-accent, var(--zbf-accent)); }
 `;
 
   // src/domains/workspace/workspace-ui.ts
@@ -11218,6 +13860,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     renderTimer = 0;
     destroyed = false;
     lifetime;
+    onActivity;
+    lastActivitySentAt = 0;
+    onInputActivity = () => {
+      const now = Date.now();
+      if (now - this.lastActivitySentAt < 1500) return;
+      this.lastActivitySentAt = now;
+      this.onActivity?.();
+    };
     onKeydown = (ev) => {
       const e = ev;
       if (e.defaultPrevented) return;
@@ -11234,11 +13884,12 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     onResize = () => {
       this.scheduleRender(140);
     };
-    constructor(win, prefs, store, tabs, spotlightEngine) {
+    constructor(win, prefs, store, tabs, spotlightEngine, onActivity) {
       this.win = win;
       this.doc = win.document;
       this.prefs = prefs;
       this.tabs = tabs;
+      this.onActivity = onActivity;
       this.lifetime = this.doc ? new win.AbortController() : null;
       if (!this.doc || !this.lifetime) return;
       this.mountStyle();
@@ -11252,6 +13903,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
       this.attachObservers();
       this.doc.addEventListener("keydown", this.onKeydown, { capture: true, signal: this.lifetime.signal });
+      this.doc.addEventListener("pointerdown", this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
+      this.doc.addEventListener("keydown", this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
+      this.doc.addEventListener("wheel", this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
       this.win.addEventListener("resize", this.onResize, { signal: this.lifetime.signal });
       this.render();
     }
@@ -11365,6 +14019,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     tabs;
     spotlight;
     kernel;
+    neighbors;
     disposables = new DisposableStack();
     windows = /* @__PURE__ */ new Map();
     active = false;
@@ -11374,7 +14029,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     autoGroupTimer = null;
     pendingAutoGroup = /* @__PURE__ */ new Set();
     lastRollingAt = 0;
-    viewedDirty = false;
+    lastReadingTickAt = Date.now();
+    lastActivityAt = Date.now();
+    readingDirty = false;
+    lastReaderByWin = /* @__PURE__ */ new WeakMap();
     refreshTimer = null;
     lastGroupFingerprint = "";
     constructor(kernel, services) {
@@ -11382,6 +14040,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.store = new WorkspaceStateStore(kernel.prefs);
       this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard, kernel.bus);
       this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
+      this.neighbors = new ReaderNeighborPublisher(kernel.bus);
     }
     async start() {
       if (this.active) return;
@@ -11389,9 +14048,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.disposables.reset();
       this.store.load();
       void this.store.initDiskCache().then((merged) => {
-        if (merged && this.active) this.refreshAllWindows();
+        if (merged && this.active) {
+          this.kernel.bus.emit("visual-notes:reading-updated", {});
+          this.refreshAllWindows();
+        }
       });
-      this.disposables.add(this.store.onChange(() => this.queueRefresh()));
+      this.disposables.add(this.store.onChange(() => {
+        this.queueRefresh();
+      }));
       this.disposables.add(
         this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows())
       );
@@ -11409,12 +14073,17 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         })
       );
       this.disposables.add(
+        this.kernel.bus.on("workspace:reader-neighbors-query", ({ win }) => {
+          const targetWin = win || this.getTargetWindow();
+          if (this.active && targetWin) this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin), true);
+        })
+      );
+      this.disposables.add(
         this.kernel.notifier.subscribe(["tab", "collection", "item"], ({ event, type, ids }) => {
           if (type === "tab") {
             this.handleTabEvent(event, ids.map(String));
-          } else if (event === "modify" || event === "add" || event === "delete") {
+          } else if (event === "modify" || event === "add" || event === "delete" || event === "trash" || event === "restore") {
             invalidateTabProjectionCache();
-            if (type === "item") this.spotlight.invalidateLibraryIndex();
             this.queueRefresh(32);
           }
         })
@@ -11423,17 +14092,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         this.onMainWindowLoad(win);
       }
       this.emitGroupSummaries(true);
+      this.lastReadingTickAt = Date.now();
+      this.lastActivityAt = Date.now();
       this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 6e4);
-      this.readingTimer = setInterval(() => {
-        for (const win of this.windows.keys()) {
-          if (this.tabs.trackReadingProgress(win, 15)) {
-            this.viewedDirty = true;
-          }
-        }
-        if (this.viewedDirty && this.kernel.prefs.get("workspace.verticalTabSubtitleMode") === "lastViewed") {
-          this.queueRefresh(50);
-        }
-      }, 15e3);
+      this.readingTimer = setInterval(() => this.flushReadingProgress(1), 15e3);
     }
     stop() {
       if (!this.active) return;
@@ -11454,18 +14116,20 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         clearTimeout(this.autoGroupTimer);
         this.autoGroupTimer = null;
       }
-      for (const ui of this.windows.values()) {
-        ui.destroy();
-      }
+      for (const ui of this.windows.values()) ui.destroy();
       this.windows.clear();
       this.pendingAutoGroup.clear();
-      if (this.viewedDirty) {
-        this.viewedDirty = false;
-        this.store.save(true);
+      if (this.readingDirty) {
+        this.readingDirty = false;
+        void this.store.readingCache.flushNow(this.store.state);
       } else {
-        void this.store.diskCache.flushNow(this.store.state);
+        void this.store.readingCache.flushNow(this.store.state);
       }
+      void this.store.notesCache.flushNow(this.store.state);
+      this.store.notesCache.dispose();
+      this.store.readingCache.dispose();
       this.store.diskCache.dispose();
+      this.neighbors.reset();
       this.disposables.disposeAll();
     }
     isActive() {
@@ -11473,15 +14137,58 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     onMainWindowLoad(win) {
       if (!this.active || this.windows.has(win)) return;
-      const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight);
+      const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight, () => {
+        this.lastActivityAt = Date.now();
+      });
       ui.setCitationBadges(this.latestBadges);
       this.windows.set(win, ui);
+      const snap = this.tabs.resolveActiveReaderSnapshot(win);
+      if (snap) this.lastReaderByWin.set(win, snap);
     }
     onMainWindowUnload(win) {
       const ui = this.windows.get(win);
       if (!ui) return;
       ui.destroy();
       this.windows.delete(win);
+      this.lastReaderByWin.delete(win);
+    }
+    flushReadingProgress(minElapsed = 1, usePreviousReader = false) {
+      const now = Date.now();
+      const elapsed = Math.min(30, Math.floor((now - this.lastReadingTickAt) / 1e3));
+      if (elapsed < minElapsed) return;
+      this.lastReadingTickAt = now;
+      let updated = false;
+      for (const win of this.windows.keys()) {
+        if (win.closed) continue;
+        const prev = usePreviousReader ? this.lastReaderByWin.get(win) : void 0;
+        const didUpdate = prev ? this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+          overrideKey: prev.key,
+          overrideLastPage: prev.page,
+          overrideTotalPages: prev.total,
+          idleCutoffMs: 18e4,
+          lastActivityAt: this.lastActivityAt,
+          now
+        }) : this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+          idleCutoffMs: 18e4,
+          lastActivityAt: this.lastActivityAt,
+          now,
+          onPageChanged: () => {
+            this.lastActivityAt = now;
+          }
+        });
+        if (didUpdate) {
+          this.readingDirty = true;
+          updated = true;
+        }
+        const snap = this.tabs.resolveActiveReaderSnapshot(win);
+        if (snap) this.lastReaderByWin.set(win, snap);
+        else this.lastReaderByWin.delete(win);
+      }
+      if (updated) {
+        this.store.readingCache.scheduleSave(this.store.state);
+        this.kernel.bus.emit("visual-notes:reading-updated", {});
+        if (this.kernel.prefs.get("workspace.verticalTabSubtitleMode") === "lastViewed") this.queueRefresh(50);
+      }
     }
     queueRefresh(delayMs = 16) {
       if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
@@ -11491,46 +14198,30 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       }, delayMs);
     }
     refreshAllWindows() {
-      for (const ui of this.windows.values()) {
-        ui.render();
+      for (const [win, ui] of [...this.windows.entries()]) {
+        if (win.closed) {
+          ui.destroy();
+          this.windows.delete(win);
+          continue;
+        }
+        try {
+          ui.render();
+        } catch (err) {
+          this.kernel.logger.error("workspace:render", err);
+        }
+      }
+      const targetWin = this.getTargetWindow();
+      if (targetWin && !targetWin.closed) {
+        try {
+          this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin));
+        } catch {
+        }
       }
       this.emitGroupSummaries();
     }
     emitGroupSummaries(force = false) {
       if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === "") return;
-      const tabParentByKey = /* @__PURE__ */ new Map();
-      for (const win of this.windows.keys()) {
-        for (const tab of this.tabs.buildTrackedTabs(win)) {
-          const pid = Number(tab.parentItemID || tab.itemID || 0);
-          if (pid > 0) tabParentByKey.set(tab.key, pid);
-        }
-      }
-      const hostItems = globalThis.Zotero?.Items;
-      const resolveRegularId = (rawId) => {
-        if (!Number.isSafeInteger(rawId) || rawId <= 0) return 0;
-        const zItem = hostItems?.get?.(rawId);
-        if (!zItem) return rawId;
-        const reg = normalizeToRegularItem(zItem);
-        return Number(reg?.id || 0);
-      };
-      const groups = [];
-      for (const group2 of this.store.state.groups) {
-        const seen = /* @__PURE__ */ new Set();
-        for (const key of group2.memberKeys) {
-          let rawId = tabParentByKey.get(key) || 0;
-          if (!rawId) {
-            const vm = this.store.state.virtualMembers[key];
-            if (vm) rawId = Number(vm.parentItemID || vm.itemID || 0);
-          }
-          if (!rawId) {
-            const m = key.match(/^item:(\d+)/);
-            if (m) rawId = Number(m[1]);
-          }
-          const resolved = resolveRegularId(rawId);
-          if (resolved > 0) seen.add(resolved);
-        }
-        groups.push({ groupId: group2.id, groupName: group2.name, itemIDs: [...seen] });
-      }
+      const groups = buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store);
       const fp = groups.map((g) => `${g.groupId}:${g.groupName}:${g.itemIDs.join(",")}`).join("|");
       if (!force && fp === this.lastGroupFingerprint) return;
       this.lastGroupFingerprint = fp;
@@ -11538,7 +14229,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     setCitationBadges(badges) {
       this.latestBadges = new Map(badges);
-      this.spotlight.setWordCitationBadges(badges);
       for (const ui of this.windows.values()) {
         ui.setCitationBadges(badges);
       }
@@ -11561,6 +14251,12 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return res;
     }
     handleTabEvent(event, tabIDs) {
+      if (event === "select" || event === "close") {
+        this.flushReadingProgress(2, true);
+        this.lastActivityAt = Date.now();
+      } else if (event === "add") {
+        this.lastActivityAt = Date.now();
+      }
       for (const win of this.windows.keys()) {
         const tracked = this.tabs.buildTrackedTabs(win);
         for (const id of tabIDs) {
@@ -11568,7 +14264,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
           if (!tab) continue;
           if (event === "select" || event === "add") {
             this.store.touchViewed(tab.key);
-            this.viewedDirty = true;
+            this.readingDirty = true;
             this.store.removeVirtualMember(tab.key);
             if (tab.sleeping) this.store.setSleeping(tab.key, false);
             if (tab.groupId && this.store.state.collapsed.includes(tab.groupId)) {
@@ -11576,6 +14272,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
             }
           }
         }
+        const snap = this.tabs.resolveActiveReaderSnapshot(win);
+        if (snap) this.lastReaderByWin.set(win, snap);
+        else this.lastReaderByWin.delete(win);
       }
       if (event === "add" && this.kernel.prefs.get("workspace.newTabMode") === "collection") {
         for (const id of tabIDs) this.pendingAutoGroup.add(id);
@@ -11596,9 +14295,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       for (const win of this.windows.keys()) {
         if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
       }
-      if (this.viewedDirty) {
-        this.viewedDirty = false;
-        this.store.save();
+      if (this.readingDirty) {
+        this.readingDirty = false;
+        void this.store.readingCache.flushNow(this.store.state);
       }
       if (this.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - this.lastRollingAt > 9e5) {
         const openKeys = [...new Set([...this.windows.keys()].flatMap((win) => this.tabs.openKeys(win)))];
@@ -11845,6 +14544,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "modules.workspace.enable": { defaultValue: true },
     "modules.inspector.enable": { defaultValue: true },
     "modules.wordCite.enable": { defaultValue: true },
+    "modules.visualNotes.enable": { defaultValue: true },
     "fusion.copyToLookupHistory": { defaultValue: true },
     "fusion.sidebarCiteBadge": { defaultValue: true },
     "fusion.spotlightCrossDomain": { defaultValue: true },
@@ -11873,6 +14573,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       enumValues: ["active", "existing", "first"]
     },
     "workspace.enableTabRemarks": { defaultValue: true },
+    "workspace.syncRemarkToExtra": { defaultValue: true },
+    "workspace.remarkColumn.enable": { defaultValue: true },
+    "workspace.readingColumn.enable": { defaultValue: true },
+    "workspace.readingTitleHeatmap.enable": { defaultValue: true },
+    "workspace.readingHeatmap.color": { defaultValue: "#0d9488" },
+    "workspace.readingHeatmap.opacity": { defaultValue: 42, min: 10, max: 90 },
+    "workspace.annotationColumn.enable": { defaultValue: true },
+    "visualNotes.infoBriefNote.enable": { defaultValue: true },
     "workspace.remarkDisplayMode": {
       defaultValue: "both",
       enumValues: ["both", "remark", "title"]
@@ -11891,6 +14599,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "workspace.verticalSidebarCollapsed": { defaultValue: false },
     "workspace.enableHoverPreview": { defaultValue: true },
     "workspace.enableSpotlight": { defaultValue: true },
+    "workspace.enableAnnotationMatrix": { defaultValue: true },
     "workspace.enableSessions": { defaultValue: true },
     "workspace.enableRollingSnapshots": { defaultValue: true },
     "workspace.enableTabSleep": { defaultValue: true },
@@ -11934,6 +14643,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "inspector.pdfPreview.defaultZoom": { defaultValue: 100, min: 60, max: 200 },
     "inspector.pdfPreview.doubleClickOpen": { defaultValue: true },
     "inspector.pdfPreview.showPageBadge": { defaultValue: true },
+    "inspector.pdfPreview.neighborCompareEnable": { defaultValue: true },
+    "inspector.annotations.mergeEnable": { defaultValue: true },
+    "inspector.annotations.popupLabelsEnable": { defaultValue: true },
+    "inspector.annotations.colorLabels": { defaultValue: "" },
     "inspector.pdfFolder.enable": { defaultValue: true },
     "inspector.pdfFolder.position": {
       defaultValue: "zotero-editpane-related",
@@ -12123,6 +14836,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     openWindows = /* @__PURE__ */ new Set();
     initialized = false;
     started = false;
+    syncQueue = Promise.resolve();
     constructor(options = {}) {
       this.bus = new TypedEventBus((event, err) => this.logger.error(`bus:${event}`, err));
       this.prefs = new UnifiedPrefService({ bus: this.bus, adapter: options.prefAdapter });
@@ -12150,6 +14864,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         "debug",
         "wordCite.perfSlowThresholdMs",
         "modules.workspace.enable",
+        "modules.visualNotes.enable",
         "modules.inspector.enable",
         "modules.wordCite.enable"
       ];
@@ -12179,20 +14894,38 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         if (mainWin) this.onMainWindowLoad(mainWin);
       }
     }
-    async syncDomainStates() {
+    syncDomainStates() {
+      const next = this.syncQueue.then(() => this.runSyncDomainStates());
+      this.syncQueue = next.catch(() => {
+      });
+      return next;
+    }
+    async runSyncDomainStates() {
       for (const domain of this.domains.values()) {
         const shouldEnable = Boolean(this.prefs.get(domain.enabledPref));
         const currentlyActive = domain.isActive();
         if (shouldEnable && !currentlyActive) {
           try {
             await domain.start();
-            for (const win of this.openWindows) domain.onMainWindowLoad?.(win);
+            for (const win of this.openWindows) {
+              try {
+                domain.onMainWindowLoad?.(win);
+              } catch (err) {
+                this.logger.error(`windowLoad:${domain.id}`, err);
+              }
+            }
           } catch (err) {
             this.logger.error(`domain:start:${domain.id}`, err);
           }
         } else if (!shouldEnable && currentlyActive) {
           try {
-            for (const win of this.openWindows) domain.onMainWindowUnload?.(win);
+            for (const win of this.openWindows) {
+              try {
+                domain.onMainWindowUnload?.(win);
+              } catch (err) {
+                this.logger.error(`windowUnload:${domain.id}`, err);
+              }
+            }
             domain.stop();
           } catch (err) {
             this.logger.error(`domain:stop:${domain.id}`, err);
@@ -12261,13 +14994,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/services/citation-history-store.ts
   function normalizeCitationKey(text2) {
-    return String(text2 || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return String(text2 || "").replace(/[\u2010-\u2015\u2212]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
   }
   var CitationHistoryStore = class {
     records = /* @__PURE__ */ new Map();
     config = { maxEntries: 2e3, ttlDays: 90 };
     initialized = false;
     dirty = false;
+    writes = Promise.resolve(true);
     saveTimer = null;
     saveFailed = false;
     statusListeners = /* @__PURE__ */ new Set();
@@ -12285,7 +15019,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (typeof partial.ttlDays === "number" && Number.isFinite(partial.ttlDays)) {
         this.config.ttlDays = Math.max(7, Math.min(3650, Math.floor(partial.ttlDays)));
       }
-      if (partial.customDir !== void 0) {
+      if (!this.initialized && partial.customDir !== void 0) {
         this.config.customDir = partial.customDir.trim() || void 0;
       }
       this.pruneExpired();
@@ -12295,18 +15029,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return this.records.size;
     }
     getDirectoryPath() {
-      if (this.config.customDir) return this.config.customDir;
-      const dataDir = globalThis.Zotero?.DataDirectory?.dir;
-      const pathUtils = globalThis.PathUtils;
-      if (dataDir && pathUtils?.join) {
-        return pathUtils.join(dataDir, "bridgeflow-cache");
-      }
-      return "bridgeflow-cache";
+      return cacheDirectory(this.config.customDir);
     }
     getFilePath() {
-      const pathUtils = globalThis.PathUtils;
-      const dir = this.getDirectoryPath();
-      return pathUtils?.join ? pathUtils.join(dir, "citation-history.json") : `${dir}/citation-history.json`;
+      return cacheFile(this.getDirectoryPath(), "citation-history.json");
     }
     record(entry) {
       const key = normalizeCitationKey(entry.text);
@@ -12339,17 +15065,24 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       rec.lastAccessedAt = Date.now();
       rec.hitCount += 1;
       this.dirty = true;
+      this.scheduleSave();
       return rec;
     }
     searchFuzzy(query, limit = 5) {
       const norm = normalizeCitationKey(query);
       if (!norm) return [];
+      const qTokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((t) => t.length >= 2);
       const scored = [];
       for (const rec of this.records.values()) {
         if (rec.key === norm) {
           scored.push({ rec, score: 100 });
         } else if (rec.key.includes(norm) || norm.includes(rec.key)) {
           scored.push({ rec, score: 70 });
+        } else if (qTokens.length >= 3) {
+          let hits = 0;
+          for (const tok of qTokens) if (rec.key.includes(tok)) hits++;
+          const ratio = hits / qTokens.length;
+          if (hits >= 3 && ratio >= 0.6) scored.push({ rec, score: Math.round(45 + ratio * 20) });
         }
       }
       scored.sort((a, b) => b.score - a.score || b.rec.hitCount - a.rec.hitCount);
@@ -12366,6 +15099,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
       const paths = [this.getFilePath()];
+      if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), "citation-history.json"));
       const dataDir = globalThis.Zotero?.DataDirectory?.dir;
       const pathUtils = globalThis.PathUtils;
       if (!this.config.customDir && dataDir && pathUtils?.join) {
@@ -12394,6 +15128,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
               });
             }
           }
+          if (filePath !== paths[0]) {
+            this.dirty = true;
+            this.scheduleSave();
+          }
           break;
         } catch {
         }
@@ -12402,6 +15140,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.enforceEviction();
     }
     dispose() {
+      if (this.dirty) void this.flushToDisk();
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
@@ -12438,22 +15177,38 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         void this.flushToDisk();
       }, 400);
     }
-    async flushToDisk() {
+    flushToDisk() {
+      this.writes = this.writes.then(() => this.writeRecords());
+      return this.writes;
+    }
+    async writeRecords() {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8) return true;
       try {
         await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-        const payload = JSON.stringify({ version: 1, records: [...this.records.values()] });
-        await ioUtils.writeUTF8(this.getFilePath(), payload);
+        const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}
+`;
         this.dirty = false;
+        await ioUtils.writeUTF8(this.getFilePath(), payload, { tmpPath: this.getFilePath() + ".tmp" });
         if (this.saveFailed) {
           this.saveFailed = false;
-          for (const fn of this.statusListeners) fn();
+          for (const fn of this.statusListeners) {
+            try {
+              fn();
+            } catch {
+            }
+          }
         }
         return true;
       } catch {
+        this.dirty = true;
         this.saveFailed = true;
-        for (const fn of this.statusListeners) fn();
+        for (const fn of this.statusListeners) {
+          try {
+            fn();
+          } catch {
+          }
+        }
         return false;
       }
     }
@@ -12505,16 +15260,20 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     async copyItems(rawItems, options) {
       const { items } = deduplicateRegularItems(rawItems);
       if (!items.length) return false;
-      const formatted = await this.csl.formatItems(items, {
-        styleID: options.styleID,
-        asCitation: options.asCitation
-      });
-      if (!formatted.text && !formatted.html) return false;
-      const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
-      if (ok) {
-        this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
+      try {
+        const formatted = await this.csl.formatItems(items, {
+          styleID: options.styleID,
+          asCitation: options.asCitation
+        });
+        if (!formatted.text && !formatted.html) return false;
+        const ok = this.writePayload(formatted.html, formatted.text, Boolean(options.plainOnly));
+        if (ok) {
+          this.emitCopied(items, formatted.styleID, formatted.html, formatted.text, options.source, Boolean(options.asCitation));
+        }
+        return ok;
+      } catch {
+        return false;
       }
-      return ok;
     }
     copyRendered(rawItems, payload, options) {
       const { items } = deduplicateRegularItems(rawItems);
@@ -12575,18 +15334,22 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (typeof qc?.unserializeSetting === "function") {
         let format = {};
         try {
-          let url = "";
-          if (item?.isField?.("url")) {
-            try {
-              url = item.getField("url", true, true) || "";
-            } catch {
-              url = "";
-            }
-          }
           let rawSetting = "";
-          try {
-            rawSetting = qc.getFormatFromURL?.(url) || "";
-          } catch {
+          if (!custom) {
+            let url = "";
+            if (item?.isField?.("url")) {
+              try {
+                url = item.getField("url", true, true) || "";
+              } catch {
+                url = "";
+              }
+            }
+            try {
+              rawSetting = qc.getFormatFromURL?.(url) || "";
+            } catch {
+              rawSetting = host2?.Prefs?.get?.("export.quickCopy.setting") || "";
+            }
+          } else {
             rawSetting = host2?.Prefs?.get?.("export.quickCopy.setting") || "";
           }
           format = { ...qc.unserializeSetting(rawSetting) };
@@ -13001,6 +15764,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     workspace;
     inspector;
     wordCite;
+    visualNotes;
     _ftlRegistered = false;
     constructor(options = {}) {
       this.kernel = new PluginKernel(options);
@@ -13008,13 +15772,16 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.workspace = new WorkspaceDomainModule(this.kernel, this.services);
       this.inspector = new InspectorDomainModule(this.kernel, this.services);
       this.wordCite = new WordCiteDomainModule(this.kernel, this.services);
+      this.visualNotes = new VisualNotesDomainModule(this.kernel, this.services);
       this.kernel.registerDomain(this.workspace);
       this.kernel.registerDomain(this.inspector);
       this.kernel.registerDomain(this.wordCite);
+      this.kernel.registerDomain(this.visualNotes);
       this.kernel.registerBridge(new CopyHistoryBridge(this.kernel, this.services));
       this.kernel.registerBridge(new CiteBadgeBridge(this.kernel, this.workspace));
       this.kernel.registerBridge(new SpotlightFusionBridge(this.kernel, this.workspace, this.wordCite));
       this.kernel.registerBridge(new LookupWorkspaceBridge(this.kernel, this.workspace));
+      this.kernel.registerBridge(new VisualNotesBridge(this.kernel, this.workspace, this.visualNotes));
     }
     init(info) {
       this.kernel.init(info);

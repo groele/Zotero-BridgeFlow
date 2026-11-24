@@ -54,28 +54,25 @@ export class SpotlightFusionBridge implements BridgeModule {
 							});
 						}
 
-						// 2. Active Word cited items quick jump
-						for (const [itemID, info] of active.itemCitations.entries()) {
-							const zotItem = (globalThis as any).Zotero?.Items?.get?.(itemID);
-							const itemTitle = String(zotItem?.getField?.('title') || info.shortText || `文献 #${itemID}`);
-							const label = `${itemTitle} ${info.shortText} (${active.displayName})`;
-							if (term && !label.toLowerCase().includes(term) && !`[${info.ordinal}]`.includes(term)) {
-								continue;
+						// 2. Open Annotation Comparison Matrix sorted by active Word document citations
+						if (active.itemCitations.size > 0 && this.kernel.prefs.get('modules.visualNotes.enable') && this.kernel.prefs.get('workspace.enableAnnotationMatrix')) {
+							const matrixTitle = `> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`;
+							if (!term || matrixTitle.toLowerCase().includes(term) || 'word'.includes(term) || 'matrix'.includes(term) || '矩阵'.includes(term)) {
+								out.push({
+									id: `cmd:matrix-word:${active.sessionID}`,
+									category: 'command',
+									title: matrixTitle,
+									subtitle: `汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
+									badge: '矩阵',
+									action: () => {
+										this.kernel.bus.emit('visual-notes:open-matrix', {
+											win,
+											title: `Word 已引：${active.displayName}`,
+											itemIDs: [...active.itemCitations.keys()],
+										});
+									},
+								});
 							}
-							out.push({
-								id: `word-cite:${active.sessionID}:${itemID}`,
-								category: 'citation',
-								title: itemTitle,
-								subtitle: `${active.displayName} · ${info.shortText}`,
-								badge: `Word [${info.ordinal}]`,
-								action: async () => {
-									await this.workspace.focusOrOpenItem({
-										itemID,
-										preferExistingTab: true,
-										assignToActiveGroup: false,
-									}, win);
-								},
-							});
 						}
 					}
 

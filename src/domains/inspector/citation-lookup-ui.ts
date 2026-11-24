@@ -37,7 +37,11 @@ export function renderLookupItemCard(
 	meta.className = 'viewflow-lookup-card-meta';
 	const journal = safeGetItemField(target, 'publicationTitle') || safeGetItemField(target, 'journalAbbreviation') || '';
 	const year = (safeGetItemField(target, 'year') || safeGetItemField(target, 'date')).slice(0, 4);
-	meta.textContent = `${journal} (${year}) · Vol.${safeGetItemField(target, 'volume') || '-'} · pp.${safeGetItemField(target, 'pages') || '-'}`;
+	const vol = safeGetItemField(target, 'volume');
+	const pages = safeGetItemField(target, 'pages');
+	const headPart = [journal, year ? `(${year})` : ''].filter(Boolean).join(' ');
+	const metaParts = [headPart, vol ? `Vol.${vol}` : '', pages ? `pp.${pages}` : ''].filter(Boolean);
+	meta.textContent = metaParts.join(' · ') || '本地文库条目';
 	card.appendChild(meta);
 
 	const actRow = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLElement;
@@ -47,13 +51,18 @@ export function renderLookupItemCard(
 	locateBtn.type = 'button';
 	setLookupL10n(locateBtn, 'zbf-lookup-locate', '定位条目');
 	locateBtn.onclick = async () => {
-		const ok = await cb.onLocate(candidate.itemID);
-		if (cb.isActive()) {
-			setLookupL10n(
-				stateEl,
-				ok ? 'zbf-lookup-status-located' : 'zbf-lookup-status-locate-failed',
-				ok ? '已定位' : '定位失败，请重试',
-			);
+		locateBtn.disabled = true;
+		try {
+			const ok = await cb.onLocate(candidate.itemID);
+			if (cb.isActive()) {
+				setLookupL10n(
+					stateEl,
+					ok ? 'zbf-lookup-status-located' : 'zbf-lookup-status-locate-failed',
+					ok ? '已定位' : '定位失败，请重试',
+				);
+			}
+		} finally {
+			locateBtn.disabled = false;
 		}
 	};
 
@@ -61,9 +70,14 @@ export function renderLookupItemCard(
 	pdfBtn.type = 'button';
 	setLookupL10n(pdfBtn, 'zbf-lookup-open-pdf', '打开 PDF');
 	pdfBtn.onclick = async () => {
-		const opened = await cb.onOpenPdf(target || candidate.itemID);
-		if (cb.isActive() && !opened) {
-			setLookupL10n(stateEl, 'zbf-lookup-status-no-pdf', '未找到 PDF 附件');
+		pdfBtn.disabled = true;
+		try {
+			const opened = await cb.onOpenPdf(target || candidate.itemID);
+			if (cb.isActive() && !opened) {
+				setLookupL10n(stateEl, 'zbf-lookup-status-no-pdf', '未找到 PDF 附件');
+			}
+		} finally {
+			pdfBtn.disabled = false;
 		}
 	};
 
@@ -76,7 +90,8 @@ export function renderLookupItemCard(
 		citeBtn.onclick = () => {
 			const sent = cb.onCiteWord?.(candidate.itemID);
 			if (cb.isActive() && sent) {
-				setLookupL10n(stateEl, 'zbf-lookup-status-located', '已发送至 Word 光标处');
+				stateEl.removeAttribute('data-l10n-id');
+				stateEl.textContent = '已发送至 Word 光标处';
 			}
 		};
 		actRow.appendChild(citeBtn);

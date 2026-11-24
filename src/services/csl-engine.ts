@@ -63,14 +63,18 @@ export class CslFormattingEngine {
 		if (typeof qc?.unserializeSetting === 'function') {
 			let format: ResolvedQuickCopyFormat = {};
 			try {
-				let url = '';
-				if (item?.isField?.('url')) {
-					try { url = item.getField('url', true, true) || ''; } catch { url = ''; }
-				}
 				let rawSetting = '';
-				try {
-					rawSetting = qc.getFormatFromURL?.(url) || '';
-				} catch {
+				if (!custom) {
+					let url = '';
+					if (item?.isField?.('url')) {
+						try { url = item.getField('url', true, true) || ''; } catch { url = ''; }
+					}
+					try {
+						rawSetting = qc.getFormatFromURL?.(url) || '';
+					} catch {
+						rawSetting = host?.Prefs?.get?.('export.quickCopy.setting') || '';
+					}
+				} else {
 					rawSetting = host?.Prefs?.get?.('export.quickCopy.setting') || '';
 				}
 				format = { ...qc.unserializeSetting(rawSetting) };

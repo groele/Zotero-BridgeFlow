@@ -73,6 +73,12 @@ export class WorkspacePopover {
 		nameInput.type = 'text';
 		nameInput.className = 'zbf-hub-input';
 		nameInput.placeholder = '输入工作区快照或模板名称（如：论文修改轮次）...';
+		nameInput.addEventListener('keydown', (e) => {
+			if ((e as KeyboardEvent).key === 'Enter') {
+				e.preventDefault();
+				saveBtn.click();
+			}
+		});
 
 		const statusEl = createWorkspaceElement(this.doc, 'div');
 		statusEl.className = 'zbf-hub-status';
@@ -120,11 +126,18 @@ export class WorkspacePopover {
 		importBtn.className = 'zbf-hub-btn';
 		importBtn.textContent = '导入 JSON';
 		importBtn.addEventListener('click', async () => {
-			await importWorkspaceJsonInteractive(this.win, this.store, () => {
-				statusEl.textContent = '已导入工作区状态';
-				renderLists();
-				this.onRefresh();
-			});
+			await importWorkspaceJsonInteractive(
+				this.win,
+				this.store,
+				() => {
+					statusEl.textContent = '已导入工作区状态';
+					renderLists();
+					this.onRefresh();
+				},
+				() => {
+					statusEl.textContent = '导入失败：JSON 格式无效或版本不兼容';
+				},
+			);
 		});
 
 		actions.append(saveBtn, tplBtn, exportBtn, importBtn);

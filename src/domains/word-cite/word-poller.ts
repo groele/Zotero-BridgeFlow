@@ -12,6 +12,7 @@ const VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
 export class WordIntegrationPoller {
 	private timer: number | null = null;
 	private viewRefreshTimer: number | null = null;
+	private postExecTimer: number | null = null;
 	private unpatchExec: (() => void) | null = null;
 	private unpatchGetSession: (() => void) | null = null;
 	private running = false;
@@ -46,6 +47,7 @@ export class WordIntegrationPoller {
 		this.running = false;
 		if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
 		if (this.viewRefreshTimer !== null) { clearTimeout(this.viewRefreshTimer); this.viewRefreshTimer = null; }
+		if (this.postExecTimer !== null) { clearTimeout(this.postExecTimer); this.postExecTimer = null; }
 		this.unpatchExec?.();
 		this.unpatchExec = null;
 		this.unpatchGetSession?.();
@@ -138,14 +140,16 @@ export class WordIntegrationPoller {
 		const byIdx = session.citationsByIndex;
 		const byItem = session.citationsByItemID;
 		const missingObj = !byIdx || typeof byIdx !== 'object' || !byItem || typeof byItem !== 'object';
-		if (missingObj) {
-			try { await session.updateFromDocument(0); } catch { /* ignore busy doc */ }
-			return;
-		}
-		const idxEmpty = Object.keys(byIdx).length === 0;
-		const itemEmpty = Object.keys(byItem).length === 0;
-		if (idxEmpty !== itemEmpty) {
-			try { await session.updateFromDocument(0); } catch { /* ignore busy doc */ }
+		const mismatch = !missingObj && ((Object.keys(byIdx).length === 0) !== (Object.keys(byItem).length === 0));
+		if (!missingObj && !mismatch) return;
+		let guard: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				Promise.resolve(session.updateFromDocument(0)),
+				new Promise<void>((resolve) => { guard = setTimeout(resolve, 4000); }),
+			]);
+		} catch { /* ignore busy doc */ } finally {
+			if (guard !== undefined) clearTimeout(guard);
 		}
 	}
 
@@ -267,12 +271,7 @@ export class WordIntegrationPoller {
 			}
 		}
 
-		return [...ordinalMap.entries()].map(([itemID, info]) => ({
-			itemID,
-			ordinal: info.ordinal,
-			shortText: info.labels.join(', '),
-			occurrences: info.occurrences,
-		}));
+		return [...ordinalMap.entries()].map(([itemID, info]) => ({ itemID, ordinal: info.ordinal, shortText: info.labels.join(', '), occurrences: info.occurrences }));
 	}
 
 	private scheduleItemsViewRefresh(): void {
@@ -338,7 +337,8 @@ export class WordIntegrationPoller {
 						this.execDepth = Math.max(0, this.execDepth - 1);
 						this.pendingCmdDocHint = '';
 						this.idleRounds = 0;
-						setTimeout(() => { if (this.running) void this.pollOnce(); }, 150);
+						if (this.postExecTimer !== null) clearTimeout(this.postExecTimer);
+						this.postExecTimer = setTimeout(() => { this.postExecTimer = null; if (this.running) void this.pollOnce(); }, 150) as unknown as number;
 					}
 				},
 			);
@@ -351,9 +351,7 @@ export class WordIntegrationPoller {
 		this.timer = setTimeout(() => {
 			this.timer = null;
 			if (!this.running) return;
-			void this.pollOnce()
-				.catch((err) => this.kernel.logger.error('word-cite:poll', err))
-				.finally(() => { if (this.running) this.scheduleNext(); });
+			void this.pollOnce().catch((err) => this.kernel.logger.error('word-cite:poll', err)).finally(() => { if (this.running) this.scheduleNext(); });
 		}, delay);
 	}
 }

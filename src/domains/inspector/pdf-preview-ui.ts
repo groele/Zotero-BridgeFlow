@@ -235,9 +235,16 @@ export function createCompareBar(
 }
 
 export function syncCompareBar(ui: CompareBarUI, st: CompareState, entries: readonly PdfAttachmentEntry[], activeAttachmentID: number): void {
-	const visible = entries.length > 1;
+	const isReaderSingle = st.tabType === 'reader' && entries.length >= 1;
+	const visible = entries.length > 1 || isReaderSingle;
 	ui.bar.style.display = visible ? 'flex' : 'none';
 	if (!visible) return;
+	const multiAtt = entries.length > 1;
+	ui.prevAttBtn.style.display = multiAtt ? 'inline-flex' : 'none';
+	ui.nextAttBtn.style.display = multiAtt ? 'inline-flex' : 'none';
+	ui.selectEl.style.display = multiAtt ? 'block' : 'none';
+	ui.swapBtn.style.display = multiAtt ? 'inline-flex' : 'none';
+	ui.countLabel.style.display = multiAtt ? 'inline-flex' : 'none';
 	const showSelf = st.tabType === 'reader' && st.currentAttachmentID > 0;
 	ui.selfBtn.style.display = showSelf ? 'inline-flex' : 'none';
 	const isSelf = st.mode === 'self' || (st.currentAttachmentID > 0 && activeAttachmentID === st.currentAttachmentID);

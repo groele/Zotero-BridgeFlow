@@ -1,4 +1,5 @@
 import { UnifiedPrefService } from './kernel/pref-service.ts';
+import { initAnnotationColorEditor, syncAnnotationColorInputs } from './prefs-color-editor.ts';
 
 export function setSubtreeDisabled(el: Element | null, disabled: boolean): void {
 	if (!el) return;
@@ -36,13 +37,27 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	const wsOn = Boolean(prefs.get('modules.workspace.enable'));
 	const insOn = Boolean(prefs.get('modules.inspector.enable'));
 	const wcOn = Boolean(prefs.get('modules.wordCite.enable'));
+	const vnOn = Boolean(prefs.get('modules.visualNotes.enable'));
 	const vSideOn = wsOn && Boolean(prefs.get('workspace.enableVerticalSidebar'));
 
+	const modMap: Array<[string, boolean]> = [
+		['workspace', wsOn],
+		['visualnotes', vnOn],
+		['inspector', insOn],
+		['wordcite', wcOn],
+	];
+	for (const [slug, enabled] of modMap) {
+		const offBanner = doc.getElementById(`zbf-off-${slug}`) as HTMLElement | null;
+		if (offBanner) offBanner.hidden = enabled;
+	}
+
 	setSubtreeDisabled(doc.getElementById('zbf-group-workspace'), !wsOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-sidebar'), !wsOn);
+	setSubtreeDisabled(doc.getElementById('zbf-group-visualnotes'), !vnOn);
+	setSubtreeDisabled(doc.getElementById('zbf-sub-reading-heatmap'), !vnOn || !prefs.get('workspace.readingTitleHeatmap.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-group-inspector'), !insOn);
 	setSubtreeDisabled(doc.getElementById('zbf-group-pdf'), !insOn);
 	setSubtreeDisabled(doc.getElementById('zbf-group-wordcite'), !wcOn);
+	setSubtreeDisabled(doc.getElementById('zbf-group-word-perf'), !wcOn);
 
 	setSubtreeDisabled(doc.getElementById('zbf-sub-hcompact'), !wsOn || !prefs.get('workspace.enableHorizontalGroups'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-compactTop'), !vSideOn || !prefs.get('workspace.enableHorizontalGroups'));
@@ -50,11 +65,20 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-sub-vsidebar-typo'), !vSideOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pinnedIcon'), !wsOn || !prefs.get('workspace.enablePinnedTabs'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-multicol'), !wsOn || prefs.get('workspace.newTabMode') !== 'collection');
+	setSubtreeDisabled(doc.getElementById('zbf-session-actions'), !wsOn || !prefs.get('workspace.enableSessions'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-rolling'), !wsOn || !prefs.get('workspace.enableSessions'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-sleep-cfg'), !wsOn || !prefs.get('workspace.enableTabSleep'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-stale-days'), !wsOn || !prefs.get('workspace.enableStaleSuggestions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-remark-mode'), !wsOn || !prefs.get('workspace.enableTabRemarks'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-remark-cfg'), !wsOn || !prefs.get('workspace.enableTabRemarks'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-spotlight'), !wsOn || !prefs.get('workspace.enableSpotlight'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-tabmenu'), !wsOn || !prefs.get('workspace.enableTabContextMenu'));
+	const matrixBtn = doc.getElementById('zbf-btn-open-matrix');
+	if (matrixBtn) {
+		const dis = !vnOn || !prefs.get('workspace.enableAnnotationMatrix');
+		try { (matrixBtn as any).disabled = dis; } catch { /* ignore */ }
+		if (dis) matrixBtn.setAttribute('disabled', 'true');
+		else matrixBtn.removeAttribute('disabled');
+	}
 
 	const cslOn = insOn && Boolean(prefs.get('inspector.cslPreview.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-csl'), !cslOn);
@@ -64,6 +88,7 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-history'), !lookupOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-quota'), !historyOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-preview'), !insOn || !prefs.get('inspector.pdfPreview.enable'));
+	setSubtreeDisabled(doc.getElementById('zbf-card-annotations'), !vnOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-folder'), !insOn || !prefs.get('inspector.pdfFolder.enable'));
 
 	const wordPanelCard = doc.getElementById('zbf-sub-word-panel-card');
@@ -102,11 +127,75 @@ export function bindPreferenceActions(
 	});
 
 	bindActionBtn(doc.getElementById('zbf-clear-workspace-state'), () => {
-		prefs.set('workspace.document', '');
 		const app = getApp();
-		app?.workspace?.store?.load?.();
+		if (app?.workspace?.store?.clearWorkspaceLayout) {
+			app.workspace.store.clearWorkspaceLayout();
+		} else {
+			prefs.set('workspace.document', '');
+		}
 		app?.workspace?.refreshAllWindows?.();
-		setStatusFeedback(doc, 'zbf-prefs-status-ws-cleared', '✓ 已清除工作区分组与会话数据');
+		setStatusFeedback(doc, 'zbf-prefs-status-ws-cleared', '✓ 已清除工作区分组与会话（阅读时长与简记已完整保留）');
+	});
+
+	const exportJsonBackup = async (title: string, defaultName: string, json: string | undefined, statusId: string, okText: string) => {
+		if (!json) return;
+		try {
+			const cu = (targetWin as any)?.ChromeUtils || (globalThis as any).ChromeUtils;
+			if (cu?.importESModule && targetWin) {
+				const mod = cu.importESModule('chrome://zotero/content/modules/filePicker.mjs');
+				const picker = new mod.FilePicker();
+				picker.init(targetWin, title, picker.modeSave ?? 1);
+				picker.appendFilter('JSON 文件', '*.json');
+				picker.defaultString = defaultName;
+				const rv = await picker.show();
+				if ((rv === picker.returnOK || rv === picker.returnReplace) && picker.file) {
+					await (globalThis as any).Zotero?.File?.putContentsAsync?.(picker.file, json);
+					setStatusFeedback(doc, statusId, okText);
+				}
+			}
+		} catch { /* ignore */ }
+	};
+
+	bindActionBtn(doc.getElementById('zbf-btn-export-reading'), () => {
+		void exportJsonBackup(
+			'导出阅读时长与热力图备份 (JSON)',
+			`BridgeFlow-ReadingProgress-${new Date().toISOString().slice(0, 10)}.json`,
+			getApp()?.workspace?.store?.exportReadingJson?.(),
+			'zbf-prefs-status-reading-exported',
+			'✓ 已导出阅读时长与热力图 JSON 备份',
+		);
+	});
+
+	bindActionBtn(doc.getElementById('zbf-clear-reading-notes'), () => {
+		if (targetWin?.confirm && !targetWin.confirm('确定要清空所有文献的累计阅读时长与热力图记录吗？（不影响工作区分组与条目简记 Note，此操作不可撤销）')) {
+			return;
+		}
+		const app = getApp();
+		app?.workspace?.store?.clearReadingProgress?.();
+		app?.workspace?.refreshAllWindows?.();
+		app?.visualNotes?.refreshLibraryViews?.();
+		setStatusFeedback(doc, 'zbf-prefs-status-reading-cleared', '✓ 已清空阅读时长与热力图缓存（简记已保留）');
+	});
+
+	bindActionBtn(doc.getElementById('zbf-btn-export-brief-notes'), () => {
+		void exportJsonBackup(
+			'导出条目简记 (Note) 备份 (JSON)',
+			`BridgeFlow-BriefNotes-${new Date().toISOString().slice(0, 10)}.json`,
+			getApp()?.workspace?.store?.exportBriefNotesJson?.(),
+			'zbf-prefs-status-notes-exported',
+			'✓ 已导出独立简记 JSON 备份',
+		);
+	});
+
+	bindActionBtn(doc.getElementById('zbf-clear-brief-notes'), () => {
+		if (targetWin?.confirm && !targetWin.confirm('确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）')) {
+			return;
+		}
+		const app = getApp();
+		app?.workspace?.store?.clearBriefNotes?.();
+		app?.workspace?.refreshAllWindows?.();
+		app?.visualNotes?.refreshLibraryViews?.();
+		setStatusFeedback(doc, 'zbf-prefs-status-notes-cleared', '✓ 已清空本地简记缓存文件');
 	});
 
 	bindActionBtn(doc.getElementById('zbf-reset-defaults'), () => {
@@ -134,13 +223,33 @@ export function bindPreferenceActions(
 	});
 
 	bindActionBtn(doc.getElementById('zbf-btn-ws-open-spotlight'), () => {
-		getApp()?.kernel?.bus?.emit('inspector:lookup-clipboard', { win: getMainWin() || undefined });
+		const mw = getMainWin();
+		mw?.focus?.();
+		getApp()?.kernel?.bus?.emit('inspector:lookup-clipboard', { win: mw || undefined });
 		setStatusFeedback(doc, 'zbf-prefs-status-spotlight', '✓ 已在主窗口唤起 Spotlight 面板');
 	});
 
 	bindActionBtn(doc.getElementById('zbf-btn-csl-refresh'), () => {
 		void getApp()?.inspector?.refreshAllPreviews?.();
 		setStatusFeedback(doc, 'zbf-prefs-status-csl-refreshed', '✓ 已刷新侧栏 CSL 预览与协同面板');
+	});
+
+	initAnnotationColorEditor(doc, prefs, () => setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效'));
+
+	bindActionBtn(doc.getElementById('zbf-btn-reset-ann-colors'), () => {
+		prefs.set('inspector.annotations.colorLabels', '');
+		syncAnnotationColorInputs(doc, '');
+		syncAll();
+		setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+	});
+
+	bindActionBtn(doc.getElementById('zbf-btn-open-matrix'), () => {
+		const mw = getMainWin();
+		const app = getApp();
+		if (!mw || !app) return;
+		mw.focus?.();
+		if (app.visualNotes?.openCurrentMatrix) app.visualNotes.openCurrentMatrix(mw);
+		else app.workspace?.tabs?.openGroupAnnotationMatrix?.(mw);
 	});
 
 	bindActionBtn(doc.getElementById('zbf-btn-pdf-reset-zoom'), () => {

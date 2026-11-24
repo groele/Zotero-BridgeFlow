@@ -1,3 +1,4 @@
+import { cacheDirectory, cacheFile } from './cache-directory.ts';
 export interface CitationHistoryRecord {
 	readonly key: string;
 	readonly text: string;
@@ -19,6 +20,7 @@ export interface CitationHistoryConfig {
 
 export function normalizeCitationKey(text: string): string {
 	return String(text || '')
+		.replace(/[\u2010-\u2015\u2212]/g, '-')
 		.replace(/\s+/g, ' ')
 		.trim()
 		.toLowerCase();
@@ -33,6 +35,7 @@ export class CitationHistoryStore {
 	private config: CitationHistoryConfig = { maxEntries: 2000, ttlDays: 90 };
 	private initialized = false;
 	private dirty = false;
+	private writes = Promise.resolve(true);
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 	public saveFailed = false;
 	private readonly statusListeners = new Set<() => void>();
@@ -53,7 +56,7 @@ export class CitationHistoryStore {
 		if (typeof partial.ttlDays === 'number' && Number.isFinite(partial.ttlDays)) {
 			this.config.ttlDays = Math.max(7, Math.min(3650, Math.floor(partial.ttlDays)));
 		}
-		if (partial.customDir !== undefined) {
+		if (!this.initialized && partial.customDir !== undefined) {
 			this.config.customDir = partial.customDir.trim() || undefined;
 		}
 		this.pruneExpired();
@@ -64,21 +67,9 @@ export class CitationHistoryStore {
 		return this.records.size;
 	}
 
-	getDirectoryPath(): string {
-		if (this.config.customDir) return this.config.customDir;
-		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
-		const pathUtils = (globalThis as any).PathUtils;
-		if (dataDir && pathUtils?.join) {
-			return pathUtils.join(dataDir, 'bridgeflow-cache');
-		}
-		return 'bridgeflow-cache';
-	}
+	getDirectoryPath(): string { return cacheDirectory(this.config.customDir); }
 
-	getFilePath(): string {
-		const pathUtils = (globalThis as any).PathUtils;
-		const dir = this.getDirectoryPath();
-		return pathUtils?.join ? pathUtils.join(dir, 'citation-history.json') : `${dir}/citation-history.json`;
-	}
+	getFilePath(): string { return cacheFile(this.getDirectoryPath(), 'citation-history.json'); }
 
 	record(entry: Omit<CitationHistoryRecord, 'key' | 'copiedAt' | 'lastAccessedAt' | 'hitCount'>): CitationHistoryRecord | null {
 		const key = normalizeCitationKey(entry.text);
@@ -112,18 +103,25 @@ export class CitationHistoryStore {
 		rec.lastAccessedAt = Date.now();
 		rec.hitCount += 1;
 		this.dirty = true;
+		this.scheduleSave();
 		return rec;
 	}
 
 	searchFuzzy(query: string, limit = 5): CitationHistoryRecord[] {
 		const norm = normalizeCitationKey(query);
 		if (!norm) return [];
+		const qTokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((t) => t.length >= 2);
 		const scored: Array<{ rec: CitationHistoryRecord; score: number }> = [];
 		for (const rec of this.records.values()) {
 			if (rec.key === norm) {
 				scored.push({ rec, score: 100 });
 			} else if (rec.key.includes(norm) || norm.includes(rec.key)) {
 				scored.push({ rec, score: 70 });
+			} else if (qTokens.length >= 3) {
+				let hits = 0;
+				for (const tok of qTokens) if (rec.key.includes(tok)) hits++;
+				const ratio = hits / qTokens.length;
+				if (hits >= 3 && ratio >= 0.6) scored.push({ rec, score: Math.round(45 + ratio * 20) });
 			}
 		}
 		scored.sort((a, b) => b.score - a.score || b.rec.hitCount - a.rec.hitCount);
@@ -143,6 +141,7 @@ export class CitationHistoryStore {
 		if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
 
 		const paths = [this.getFilePath()];
+		if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), 'citation-history.json'));
 		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
 		const pathUtils = (globalThis as any).PathUtils;
 		if (!this.config.customDir && dataDir && pathUtils?.join) {
@@ -172,6 +171,7 @@ export class CitationHistoryStore {
 						});
 					}
 				}
+				if (filePath !== paths[0]) { this.dirty = true; this.scheduleSave(); }
 				break;
 			} catch { /* self-heal corrupted file */ }
 		}
@@ -180,6 +180,7 @@ export class CitationHistoryStore {
 	}
 
 	dispose(): void {
+		if (this.dirty) void this.flushToDisk();
 		if (this.saveTimer) {
 			clearTimeout(this.saveTimer);
 			this.saveTimer = null;
@@ -220,22 +221,28 @@ export class CitationHistoryStore {
 		}, 400);
 	}
 
-	private async flushToDisk(): Promise<boolean> {
+	private flushToDisk(): Promise<boolean> {
+		this.writes = this.writes.then(() => this.writeRecords());
+		return this.writes;
+	}
+
+	private async writeRecords(): Promise<boolean> {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8) return true;
 		try {
 			await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-			const payload = JSON.stringify({ version: 1, records: [...this.records.values()] });
-			await ioUtils.writeUTF8(this.getFilePath(), payload);
+			const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}\n`;
 			this.dirty = false;
+			await ioUtils.writeUTF8(this.getFilePath(), payload, { tmpPath: this.getFilePath() + '.tmp' });
 			if (this.saveFailed) {
 				this.saveFailed = false;
-				for (const fn of this.statusListeners) fn();
+				for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
 			}
 			return true;
 		} catch {
+			this.dirty = true;
 			this.saveFailed = true;
-			for (const fn of this.statusListeners) fn();
+			for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
 			return false;
 		}
 	}

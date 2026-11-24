@@ -12,7 +12,9 @@
    - 唯一可编辑源码目录为 `src/`（严格 TypeScript + ES Modules），禁止手改编译产物 `zoterobridgeflow.js` 与 `zoterobridgeflow_prefs.js`。
    - 任何单文件不得超过 `360` 行；执行 `npm test` 必须同时通过 `tsc --noEmit`、esbuild 打包、架构守卫 (`scripts/architecture-guard.mjs`)、语法校验与全部单元测试。
 4. **设置面板与本地化规范**：
-   - 采用 5 卡片单层折叠布局（仅第 1 张卡片默认展开）、严格遵守 40px 黄金对齐基准线（16px / 24px / 40px）与 Fluent `data-l10n-id` 全本地化（`zh-CN` / `en-US` 100% 对称，零硬编码中文）。
+   - 按用户最新明确指令，设置页回归 **v0.2 简练视觉风格与底边线横向标签页**（`.zbf-tabs` / `.zbf-tab-btn`，`总览` / `工作区` / `可视化与简记` / `检阅与反查` / `Word 引用` / `存储维护`），总览页采用简练复选框式「启用模块」卡片、各子系统停用横幅与一键恢复、Word 引用面板统一归入「Word 引用」标签页，并支持点击色块直接可视化编辑 8 色语义标签而无需手写 JSON；严格遵守 40px 黄金对齐基准线（16px / 24px / 40px）与 Fluent `data-l10n-id` 全本地化（`zh-CN` / `en-US` 100% 对称，零硬编码中文）。
 5. **独立运行与数据契约**：
    - BridgeFlow 使用自己的偏好命名空间与工作区格式。工作区持久化和 JSON 导入以同一份运行时 schema 为准，类型从 schema 推导。
    - 用户管理其他插件的启停。新功能直接基于当前 Zotero API 与 BridgeFlow 原生模型开发。
+6. **版本递增铁律**：
+   - **每次修改必须更新版本号**：每轮代码、样式或功能修改完成时，必须同步递增语义化版本号（如 `0.3.5` → `0.3.6`）并保证 `package.json`、`manifest.json`、`update.json`、`package-lock.json`、`scripts/architecture-baseline.json`、`prefs.xhtml`、`README.md` 及重新打包产物 100% 对齐。

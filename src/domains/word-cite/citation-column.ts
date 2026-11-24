@@ -5,6 +5,8 @@ import type { WordSessionTracker } from './session-tracker.ts';
 export class CitationColumnController {
 	private readonly registeredKeys = new Set<string>();
 	private active = false;
+	private cachedSessionID: string | null | undefined;
+	private cachedSessionAt = 0;
 
 	private readonly kernel: PluginKernel;
 	private readonly tracker: WordSessionTracker;
@@ -14,6 +16,15 @@ export class CitationColumnController {
 		this.kernel = kernel;
 		this.tracker = tracker;
 		this.collections = collections;
+	}
+
+	private resolvePreferredSessionID(): string | null | undefined {
+		const now = Date.now();
+		if (now - this.cachedSessionAt > 80) {
+			this.cachedSessionAt = now;
+			this.cachedSessionID = this.collections?.resolveSelectedCollectionSessionID();
+		}
+		return this.cachedSessionID;
 	}
 
 	register(): void {
@@ -32,8 +43,11 @@ export class CitationColumnController {
 			dataProvider: (item: any) => {
 				const id = Number(item?.id || 0);
 				if (!id) return '';
-				const selectedSessionID = this.collections?.resolveSelectedCollectionSessionID();
-				return this.tracker.getCitationDisplayForItem(id, selectedSessionID);
+				const preferred = this.resolvePreferredSessionID();
+				const direct = this.tracker.getCitationDisplayForItem(id, preferred);
+				if (direct) return direct;
+				const parentID = Number(item?.parentItemID || 0);
+				return parentID > 0 ? this.tracker.getCitationDisplayForItem(parentID, preferred) : '';
 			},
 		};
 

@@ -247,7 +247,8 @@ test('TabFlow: virtual members lifecycle, sleep/wakeup, collectionToGroup & Spot
 
 	// 4. Spotlight >tabs lists tabs sorted by lastViewedAt
 	const cmdResults = spotlight.query('>tabs', mockWin);
-	assert.ok(cmdResults.some((r) => r.id.startsWith('cmd:')));
+	assert.ok(spotlight.query('>', mockWin).some((r) => r.id.startsWith('cmd:')));
+	assert.ok(cmdResults.every(r => r.id.startsWith('tab:')));
 
 	delete globalThis.Zotero;
 });
@@ -347,7 +348,7 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 	delete globalThis.Zotero;
 });
 
-test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replace & @library Spotlight', async () => {
+test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replace & open-tab search', async () => {
 	const prefs = {
 		get(k) {
 			const defaults = {
@@ -402,7 +403,8 @@ test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replac
 		Libraries: { userLibraryID: 1 },
 		Items: {
 			get: (id) => itemsMap.get(id),
-			getAll: async () => [...itemsMap.values()],
+			getAll: async () => [...itemsMap.keys()],
+			getAsync: async ids => ids.map(id => itemsMap.get(id)),
 		},
 		Reader: { open: async (id) => { opened.push(id); } },
 	};
@@ -440,13 +442,9 @@ test('TabFlow: per-tab remark modes, venue suggestions, hub session merge/replac
 	assert.equal(store.state.rollingSessions.some((r) => r.kind === 'pre-replace'), true);
 	assert.equal(store.state.groups.some((g) => g.id === g2.id), false);
 
-	// 4. Spotlight closed tabs + @library search
-	const emptyHits = spotlight.query('', mockWin);
-	assert.ok(emptyHits.some((h) => h.id === 'closed:item:304'));
-	spotlight.query('@quantum', mockWin);
-	await new Promise((r) => setTimeout(r, 20));
-	const libHits = spotlight.query('@quantum', mockWin);
-	assert.ok(libHits.some((h) => h.id === 'lib:1:undefined' || h.title.includes('Quantum')));
+	// Quick search uses open native titles and never enumerates unopened library records.
+	assert.ok(spotlight.query('', mockWin).some(h => h.id === 'tab:item:301'));
+	assert.deepEqual(spotlight.query('@quantum', mockWin), []);
 
 	delete globalThis.Zotero;
 });

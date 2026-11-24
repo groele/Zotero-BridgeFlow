@@ -1,35 +1,17 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
-import type { CitationBadgeInfo, Disposable, SpotlightItemResult, SpotlightProvider } from '../../kernel/types.ts';
-import { SpotlightLibraryIndex } from './spotlight-library.ts';
+import type { Disposable, SpotlightItemResult, SpotlightProvider } from '../../kernel/types.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
-
-interface ScoredResult {
-	score: number;
-	item: SpotlightItemResult;
-}
 
 export class WorkspaceSpotlightEngine {
 	private readonly providers = new Set<SpotlightProvider>();
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
-	private readonly libraryIndex: SpotlightLibraryIndex;
-	private wordCitedBadges = new Map<number, CitationBadgeInfo>();
-
 	constructor(prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController) {
 		this.prefs = prefs;
 		this.store = store;
 		this.tabs = tabs;
-		this.libraryIndex = new SpotlightLibraryIndex(tabs);
-	}
-
-	invalidateLibraryIndex(): void {
-		this.libraryIndex.invalidate();
-	}
-
-	setWordCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
-		this.wordCitedBadges = new Map(badges);
 	}
 
 	registerProvider(provider: SpotlightProvider): Disposable {
@@ -40,182 +22,68 @@ export class WorkspaceSpotlightEngine {
 	}
 
 	query(rawTerm: string, win: Window): SpotlightItemResult[] {
-		const trimmed = rawTerm.trim();
-		const isCommand = trimmed.startsWith('>');
-		const isLibrary = trimmed.startsWith('@');
-		const needle = (isCommand || isLibrary ? trimmed.slice(1) : trimmed).trim().toLowerCase();
-		const scored: ScoredResult[] = [];
-		const tracked = this.tabs.buildTrackedTabs(win);
-
-		if (isCommand) {
-			if (needle === 'tabs' || needle === 'recent') {
-				const sorted = [...tracked].sort((a, b) => (b.lastViewedAt || 0) - (a.lastViewedAt || 0));
-				for (const tab of sorted) {
-					const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name;
-					scored.push({
-						score: 100,
-						item: {
-							id: `recent:${tab.key}`,
-							category: 'tab',
-							title: this.tabs.getDisplayTitle(tab),
-							subtitle: [groupName, tab.creatorYear].filter(Boolean).join(' · '),
-							badge: tab.virtual ? '虚拟' : tab.sleeping ? '休眠' : '最近',
-							action: () => {
-								if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
-								else this.tabs.selectTab(win, tab.tabID);
-							},
-						},
-					});
-				}
+		const term = rawTerm.trim().toLowerCase();
+		if (term.startsWith('>') && term !== '>tabs' && term !== '>recent') {
+			const command = term.slice(1).trim();
+			const results = this.filterBuiltInCommands(command, win);
+			for (const provider of this.providers) {
+				try { results.push(...provider.query(command, win)); } catch { /* isolate providers */ }
 			}
-			for (const cmd of this.buildBuiltInCommands(win)) {
-				if (!needle || needle === 'tabs' || `${cmd.title} ${cmd.subtitle || ''}`.toLowerCase().includes(needle)) {
-					scored.push({ score: 90, item: cmd });
-				}
-			}
+			return results.slice(0, 40);
 		}
 
-		for (const provider of [...this.providers].sort((a, b) => b.priority - a.priority)) {
-			try {
-				for (const item of provider.query(needle, win)) {
-					scored.push({ score: 80 + (provider.priority || 0) * 0.1, item });
-				}
-			} catch { /* isolate provider failures */ }
+		const tabList = term === '>tabs' || term === '>recent';
+		const needle = tabList ? '' : term;
+		const results: SpotlightItemResult[] = [];
+		const limit = term ? 40 : 12;
+		// Read titles already shown by the host. Projecting full workspace tabs also
+		// visits virtual members and fetches library metadata for each window.
+		const nativeTabs: { id: string; type: string; title?: string; data?: { itemID?: number } }[] =
+			(win as any).Zotero_Tabs?._tabs || [];
+		const viewedAt = (tab: (typeof nativeTabs)[number]) => this.store.state.lastViewedAt[
+			tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id] || 0;
+		const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;
+		for (const tab of source) {
+			if (tab.type === 'library') continue;
+			const key = tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id;
+			const title = tab.title || key;
+			const remark = this.prefs.get('workspace.enableTabRemarks') ? this.store.state.remarks[key] || '' : '';
+			if (needle && !(title + ' ' + remark).toLowerCase().includes(needle)) continue;
+			results.push({ id: 'tab:' + key, category: 'tab', title, subtitle: remark,
+				action: () => { this.tabs.selectTab(win, tab.id); } });
+			if (results.length === limit) return results;
 		}
-
-		if (isLibrary) {
-			const openIDs = new Set<number>();
-			for (const libItem of this.libraryIndex.query(needle, win, openIDs, 20, 1)) {
-				scored.push({ score: 95, item: libItem });
-			}
-		} else if (!isCommand) {
-			for (const group of this.store.state.groups) {
-				if (!needle || group.name.toLowerCase().includes(needle)) {
-					const firstOpen = tracked.find((t) => t.groupId === group.id && !t.virtual);
-					scored.push({
-						score: needle ? 85 : 58,
-						item: {
-							id: `group:${group.id}`,
-							category: 'collection',
-							title: `分组：${group.name}`,
-							subtitle: `${group.memberKeys.length} 个成员${firstOpen ? ' · 点击定位首篇文献' : ''}`,
-							badge: '分组',
-							action: () => {
-								this.store.setCollapsed(group.id, false);
-								if (firstOpen) this.tabs.selectTab(win, firstOpen.tabID);
-							},
-						},
-					});
-				}
-			}
-
-			for (const tab of tracked) {
-				const groupName = this.store.state.groups.find((g) => g.id === tab.groupId)?.name || '';
-				const displayTitle = this.tabs.getDisplayTitle(tab);
-				const hay = `${displayTitle} ${tab.title} ${tab.shortTitle} ${tab.creatorYear} ${tab.source} ${tab.collection} ${tab.remark} ${groupName}`.toLowerCase();
-				if (needle && !hay.includes(needle)) continue;
-
-				const citeInfo = this.wordCitedBadges.get(tab.parentItemID) || this.wordCitedBadges.get(tab.itemID);
-				const tags: string[] = [];
-				if (groupName) tags.push(groupName);
-				if (tab.pinned) tags.push('已固定');
-				if (tab.sleeping) tags.push('已休眠');
-				if (tab.virtual) tags.push('虚拟');
-				if (citeInfo) tags.push(`Word [${citeInfo.ordinal}]`);
-
-				scored.push({
-					score: displayTitle.toLowerCase().startsWith(needle) ? 95 : 75,
-					item: {
-						id: `tab:${tab.key}`,
-						category: 'tab',
-						title: displayTitle,
-						subtitle: [tab.creatorYear, tab.collection].filter(Boolean).join(' · ') || '已打开阅读标签页',
-						badge: tags.join(' · ') || undefined,
-						action: () => {
-							if (tab.virtual) void this.tabs.openVirtualOrItem(win, tab.itemID, tab.groupId);
-							else this.tabs.selectTab(win, tab.tabID);
-						},
-					},
-				});
-			}
-
-			for (const closed of this.tabs.getRecentlyClosed(win)) {
-				if (needle && !closed.title.toLowerCase().includes(needle)) continue;
-				scored.push({
-					score: 62,
-					item: {
-						id: `closed:${closed.key}`,
-						category: 'tab',
-						title: closed.title,
-						subtitle: '重新打开最近关闭的文献标签页',
-						badge: '最近关闭',
-						action: () => {
-							void this.tabs.openVirtualOrItem(win, closed.itemID, closed.groupId || undefined);
-						},
-					},
-				});
-			}
-
-			if (this.prefs.get('workspace.enableSessions')) {
-				for (const ses of this.store.state.sessions.filter((s) => !s.isTemplate).slice(0, 8)) {
-					const itemKeys = [...new Set([
-						...ses.openKeys,
-						...ses.groups.flatMap((g) => g.memberKeys),
-						...Object.keys(ses.virtualMembers),
-					])];
-					if (!needle || ses.name.toLowerCase().includes(needle)) {
-						scored.push({
-							score: 52,
-							item: {
-								id: `session:${ses.id}`,
-								category: 'collection',
-								title: `会话：${ses.name}`,
-								subtitle: `${itemKeys.length} 篇文献 · ${ses.groups.length} 个分组 · 点击合并恢复`,
-								badge: '工作区',
-								action: () => {
-									void this.tabs.restoreSession(win, ses, true);
-								},
-							},
-						});
-					}
-					if (needle.length >= 2) {
-						for (const key of itemKeys) {
-							const meta = ses.virtualMembers[key] || this.store.state.virtualMembers[key];
-							if (!meta || tracked.some((t) => t.key === key && !t.virtual)) continue;
-							const hay = `${meta.title} ${meta.shortTitle || ''} ${meta.creatorYear || ''} ${meta.source || ''} ${ses.name}`.toLowerCase();
-							if (!hay.includes(needle)) continue;
-							scored.push({
-								score: 68,
-								item: {
-									id: `session:${ses.id}:${key}`,
-									category: 'tab',
-									title: meta.title,
-									subtitle: `已保存于快照「${ses.name}」${meta.creatorYear ? ` · ${meta.creatorYear}` : ''}`,
-									badge: '快照文献',
-									action: () => {
-										const grpId = ses.groups.find((g) => g.memberKeys.includes(key))?.id;
-										void this.tabs.openVirtualOrItem(win, meta.itemID, grpId);
-									},
-								},
-							});
-						}
-					}
-				}
-			}
-
-			if (needle.length >= 2) {
-				const openIDs = new Set<number>();
-				for (const t of tracked) {
-					if (t.itemID > 0) openIDs.add(t.itemID);
-					if (t.parentItemID > 0) openIDs.add(t.parentItemID);
-				}
-				for (const libItem of this.libraryIndex.query(needle, win, openIDs, 15, 2)) {
-					scored.push({ score: 45, item: libItem });
-				}
+		if (!needle) return results;
+		for (const group of this.store.state.groups) {
+			if (!group.name.toLowerCase().includes(needle)) continue;
+			results.push({ id: 'group:' + group.id, category: 'collection', title: group.name, badge: '分组',
+				action: () => {
+					this.store.setCollapsed(group.id, false);
+					const first = this.tabs.buildTrackedTabs(win).find(tab => !tab.virtual && tab.groupId === group.id);
+					if (first) this.tabs.selectTab(win, first.tabID);
+				} });
+			if (results.length === limit) return results;
+		}
+		if (this.prefs.get('workspace.enableSessions')) {
+			for (const session of this.store.state.sessions) {
+				if (session.isTemplate || !session.name.toLowerCase().includes(needle)) continue;
+				results.push({ id: 'session:' + session.id, category: 'collection', title: session.name, badge: '工作区',
+					action: () => { void this.tabs.restoreSession(win, session, true); } });
+				if (results.length === limit) return results;
 			}
 		}
+		if (needle.length >= 2 && !needle.startsWith('@')) {
+			for (const cmd of this.filterBuiltInCommands(needle, win)) {
+				results.push(cmd);
+				if (results.length === limit) break;
+			}
+		}
+		return results;
+	}
 
-		return scored.sort((a, b) => b.score - a.score).slice(0, 40).map((s) => s.item);
+	private filterBuiltInCommands(command: string, win: Window): SpotlightItemResult[] {
+		return this.buildBuiltInCommands(win).filter((item) =>
+			(item.title + ' ' + item.subtitle).toLowerCase().includes(command));
 	}
 
 	private buildBuiltInCommands(win: Window): SpotlightItemResult[] {
@@ -300,6 +168,14 @@ export class WorkspaceSpotlightEngine {
 				badge: '命令',
 				action: () => { this.tabs.undoCloseTab(win); },
 			},
+			...(this.prefs.get('workspace.enableAnnotationMatrix') ? [{
+				id: 'cmd:open-annotation-matrix',
+				category: 'command' as const,
+				title: '> 生成已开文献对比矩阵',
+				subtitle: '按标注颜色维度汇总当前打开文献的批注，支持导出与插入 Word',
+				badge: '矩阵',
+				action: () => { this.tabs.openGroupAnnotationMatrix(win); },
+			}] : []),
 		];
 	}
 }

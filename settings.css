@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow - Tabbed Preferences UI with 40px Golden Baseline Cards */
+/* Zotero BridgeFlow - Clean v0.2 Underline Tabbed Preferences UI with 40px Golden Baseline */
 #zotero-prefpane-zotero-bridgeflow.zbf-settings {
   --zbf-p-text: var(--fill-primary, light-dark(#1f2328, #eeeeee));
   --zbf-p-muted: light-dark(#57606a, #b5bcc4);
@@ -37,6 +37,9 @@
 #zotero-prefpane-zotero-bridgeflow .zbf-title-left {
   display: inline-flex; align-items: center; gap: 8px;
 }
+#zotero-prefpane-zotero-bridgeflow .zbf-brand-icon {
+  width: 22px; height: 22px; flex: none; display: block;
+}
 #zotero-prefpane-zotero-bridgeflow .zbf-header h1 { margin: 0; font-size: 18px; font-weight: 600; }
 #zotero-prefpane-zotero-bridgeflow .zbf-version-badge {
   padding: 1px 7px; border-radius: 999px; font-size: 12px; color: var(--zbf-p-muted);
@@ -48,52 +51,64 @@
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--zbf-p-muted); }
 
-/* Horizontal Tab Bar */
+/* Clean v0.2 Underline Horizontal Tab Bar */
 #zotero-prefpane-zotero-bridgeflow .zbf-tabs {
-  display: flex; flex-wrap: nowrap; gap: 1px;
+  display: flex; flex-wrap: nowrap; gap: 2px;
   overflow-x: auto; scrollbar-width: none;
   border-bottom: 1px solid var(--zbf-p-divider);
   margin: 0 0 12px; padding-bottom: 0;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-tabs::-webkit-scrollbar { display: none; }
 #zotero-prefpane-zotero-bridgeflow .zbf-tab-btn {
-  flex: 0 0 auto; white-space: nowrap;
+  flex: 1 1 auto; min-width: 0; white-space: nowrap; text-align: center;
   appearance: none; border: 0; border-bottom: 2px solid transparent;
   background: transparent; color: var(--zbf-p-muted);
-  padding: 6px 5px; margin-bottom: -1px; font-size: 12px; font-weight: 500;
+  padding: 7px 6px; margin-bottom: -1px; font-size: 13px; font-weight: 500;
   border-radius: 6px 6px 0 0; cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease, border-color 0.14s ease;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-tab-btn:hover {
   color: var(--zbf-p-text); background: color-mix(in srgb, currentColor 4%, transparent);
 }
-#zotero-prefpane-zotero-bridgeflow .zbf-tab-btn.active {
+#zotero-prefpane-zotero-bridgeflow .zbf-tab-btn:focus-visible {
+  outline: 2px solid var(--zbf-p-accent); outline-offset: -2px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-tab-btn[aria-selected="true"] {
   color: var(--zbf-p-accent); font-weight: 600;
   border-bottom-color: var(--zbf-p-accent);
   background: color-mix(in srgb, var(--zbf-p-accent) 8%, transparent);
 }
 
-#zotero-prefpane-zotero-bridgeflow .zbf-tabpanel[hidden] { display: none !important; }
+#zotero-prefpane-zotero-bridgeflow .zbf-panels { display: block; }
+#zotero-prefpane-zotero-bridgeflow .zbf-panel { display: flex; flex-direction: column; gap: 10px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-panel[hidden] { display: none !important; }
 #zotero-prefpane-zotero-bridgeflow .zbf-panel-stack { display: flex; flex-direction: column; gap: 10px; }
 
-/* Info Banner */
+/* Compact Info Banner (Overview Only) */
 #zotero-prefpane-zotero-bridgeflow .zbf-banner {
-  padding: 11px 14px; margin-bottom: 10px; border-radius: 9px;
+  padding: 11px 14px; border-radius: 9px;
   border: 1px solid var(--zbf-p-banner-border);
   background: var(--zbf-p-banner-bg);
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-banner-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
 #zotero-prefpane-zotero-bridgeflow .zbf-banner-desc { font-size: 13px; color: var(--zbf-p-muted); line-height: 1.55; }
-#zotero-prefpane-zotero-bridgeflow .zbf-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-steps { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 #zotero-prefpane-zotero-bridgeflow .zbf-step {
-  padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
-  background: color-mix(in srgb, var(--zbf-p-accent) 14%, transparent);
-  color: var(--zbf-p-accent);
+  padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  border: 1px solid transparent;
+  background: color-mix(in srgb, var(--zbf-p-accent) 13%, transparent);
+  color: var(--zbf-p-accent); cursor: pointer;
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-step:hover {
+  background: color-mix(in srgb, var(--zbf-p-accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--zbf-p-accent) 36%, transparent);
 }
 
 /* 40px Golden Baseline Cards (16px horizontal padding + 24px subordinate indent = 40px) */
 #zotero-prefpane-zotero-bridgeflow .zbf-card {
   display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 16px; margin-bottom: 10px;
+  padding: 14px 16px;
   border: 1px solid var(--zbf-p-border); border-radius: 9px;
   background: var(--zbf-p-card-bg);
 }
@@ -159,8 +174,84 @@
 #zotero-prefpane-zotero-bridgeflow .zbf-path-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 
 #zotero-prefpane-zotero-bridgeflow [data-disabled="true"] { opacity: 0.52; pointer-events: none; }
-#zotero-prefpane-zotero-bridgeflow .zbf-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
 #zotero-prefpane-zotero-bridgeflow .zbf-settings-footer {
   margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--zbf-p-divider);
   color: var(--zbf-p-muted); font-size: 12px;
+}
+
+/* Color Pill Editor & Heatmap Controls */
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr)); gap: 6px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-item {
+  --zbf-pill-color: #ffd400;
+  display: flex; align-items: center; gap: 4px; min-width: 0;
+  padding: 3px 6px 3px 5px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--zbf-pill-color) 42%, var(--zbf-p-border));
+  background: color-mix(in srgb, var(--zbf-pill-color) 11%, transparent);
+  cursor: pointer; transition: border-color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-item:hover,
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-item:focus-within {
+  border-color: var(--zbf-p-accent);
+  background: color-mix(in srgb, var(--zbf-pill-color) 16%, Field);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--zbf-p-accent) 16%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-dot {
+  appearance: none; -moz-appearance: none;
+  width: 15px; height: 15px; padding: 0; border-radius: 50%; flex: none;
+  border: 1px solid rgba(0, 0, 0, 0.22); background: transparent; cursor: pointer;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-dot::-moz-color-swatch {
+  border: none; border-radius: 50%;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-input {
+  box-sizing: border-box; flex: 1 1 0;
+  min-width: 0 !important; width: 100%; min-height: 22px !important; padding: 1px 2px !important;
+  border: none !important; border-radius: 4px; background: transparent !important;
+  color: var(--zbf-p-text); font-size: 12px !important; font-weight: 500;
+  text-overflow: ellipsis; cursor: pointer; outline: none;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-input:focus {
+  background: Field !important; cursor: text;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-input {
+  width: 44px; height: 30px; padding: 2px; border-radius: 5px;
+  border: 1px solid var(--zbf-p-border); background: Field; cursor: pointer;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-range-input {
+  width: 140px; accent-color: var(--zbf-p-accent); cursor: pointer;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-mono-pill {
+  padding: 2px 8px; border-radius: 5px; border: 1px solid var(--zbf-p-border);
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: var(--zbf-p-muted);
+}
+
+/* Slim Disabled Subsystem Notice & Compact Checkbox Grids */
+#zotero-prefpane-zotero-bridgeflow .zbf-disabled-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
+  padding: 8px 14px; border-radius: 8px;
+  border: 1px solid light-dark(#fde68a, rgba(251, 191, 36, 0.3));
+  background: light-dark(#fefce8, rgba(251, 191, 36, 0.1));
+  color: light-dark(#854d0e, #fcd34d); font-size: 13px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-disabled-banner[hidden] { display: none !important; }
+#zotero-prefpane-zotero-bridgeflow .zbf-check-grid-2 {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-check-grid-3 {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-adv-details {
+  border-top: 1px solid var(--zbf-p-divider); padding-top: 8px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-adv-summary {
+  font-size: 12.5px; font-weight: 500; color: var(--zbf-p-muted); cursor: pointer; user-select: none;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-adv-summary:hover { color: var(--zbf-p-accent); }
+#zotero-prefpane-zotero-bridgeflow .zbf-adv-details .zbf-field-grid-2 { margin-top: 10px; }
+@media (max-width: 560px) {
+  #zotero-prefpane-zotero-bridgeflow .zbf-check-grid-2,
+  #zotero-prefpane-zotero-bridgeflow .zbf-check-grid-3 { grid-template-columns: minmax(0, 1fr); }
 }

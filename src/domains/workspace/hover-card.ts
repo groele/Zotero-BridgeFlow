@@ -2,7 +2,7 @@ import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
-import { formatReadingProgress } from './tab-actions-helpers.ts';
+import { buildReadingHeatmapBuckets, formatReadingProgress } from '../../services/reading-stats.ts';
 import type { TrackedTab } from './types.ts';
 
 export function formatRelativeTimeZh(ts: number): string {
@@ -92,16 +92,41 @@ export class WorkspaceHoverCard {
 		if (rel) statusParts.push(`上次阅读：${rel}`);
 
 		const reader = !tab.virtual && tab.tabID ? (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
-		const pageIdx = reader?.state?.pageIndex;
-		const numPages = reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
-		const prog = formatReadingProgress(this.store.state.readingProgress[tab.key]);
+		const ir = reader?._internalReader;
+		const app = ir?._primaryView?._iframeWindow?.PDFViewerApplication;
+		const pageIdx = typeof app?.page === 'number' && app.page > 0
+			? app.page - 1
+			: (ir?._state?.primaryViewStats?.pageIndex ?? ir?._state?.primaryViewState?.pageIndex ?? reader?.state?.pageIndex);
+		const numPages = app?.pagesCount || ir?._state?.primaryViewStats?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+		const storedProg = this.store.state.readingProgress[tab.key];
+		const prog = formatReadingProgress(storedProg);
 		if (typeof pageIdx === 'number' && pageIdx >= 0) {
-			statusParts.push(typeof numPages === 'number' && numPages > 0 ? `第 ${pageIdx + 1} / ${numPages} 页` : `第 ${pageIdx + 1} 页`);
+			const total = typeof numPages === 'number' && numPages > 0 ? numPages : (storedProg?.totalPages || 0);
+			const dur = storedProg?.readSeconds && storedProg.readSeconds > 0 ? ` · ${prog.text.split(' · ')[0]}` : '';
+			statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
 		} else if (prog.text) {
 			statusParts.push(prog.text);
 		}
+		let peakNote = '';
+		if (storedProg?.pageSeconds) {
+			let peakPage = '';
+			let peakSec = 0;
+			for (const [p, sec] of Object.entries(storedProg.pageSeconds)) {
+				if (sec > peakSec) { peakSec = sec; peakPage = p; }
+			}
+			if (peakPage && peakSec > 0) {
+				peakNote = `最常停留 P${peakPage} (${Math.round(peakSec)}s)`;
+				statusParts.push(peakNote);
+			}
+		}
 		const itemObj = tab.itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(tab.itemID) : null;
-		const annots = itemObj?.isAttachment?.() && typeof itemObj?.getAnnotations === 'function' ? itemObj.getAnnotations()?.length : undefined;
+		let annots: number | undefined;
+		try {
+			const isFile = itemObj?.isFileAttachment ? itemObj.isFileAttachment() : itemObj?.isAttachment?.();
+			if (isFile && typeof itemObj?.getAnnotations === 'function') {
+				annots = itemObj.getAnnotations()?.length;
+			}
+		} catch { /* ignore linked URL attachments */ }
 		if (typeof annots === 'number' && annots > 0) {
 			statusParts.push(`批注 ${annots} 条`);
 		}
@@ -111,6 +136,25 @@ export class WorkspaceHoverCard {
 			footEl.className = 'zbf-hc-meta';
 			footEl.textContent = statusParts.join(' · ');
 			card.appendChild(footEl);
+		}
+		const bucketCount = storedProg?.totalPages && storedProg.totalPages < 16 ? storedProg.totalPages : 16;
+		const heat = buildReadingHeatmapBuckets(storedProg, bucketCount);
+		if (heat.length) {
+			const bar = createWorkspaceElement(this.doc, 'div');
+			bar.className = 'zbf-hc-heatbar';
+			bar.style.gridTemplateColumns = `repeat(${heat.length}, 1fr)`;
+			const heatColor = String(this.prefs.get('workspace.readingHeatmap.color') || '').trim();
+			const heatOpacity = Math.max(20, Math.min(95, Number(this.prefs.get('workspace.readingHeatmap.opacity') || 42))) / 100;
+			if (heatColor) bar.style.setProperty('--zbf-heat-accent', heatColor);
+			bar.title = peakNote ? `按页阅读热力分布 · ${peakNote}` : '按页阅读时长热力分布';
+			for (const ratio of heat) {
+				const cell = createWorkspaceElement(this.doc, 'span');
+				cell.className = 'zbf-hc-heatcell';
+				cell.style.opacity = String(ratio > 0 ? Math.max(0.24, Math.min(1, ratio * (0.45 + heatOpacity * 0.85))) : 0.12);
+				if (ratio > 0) cell.setAttribute('data-active', 'true');
+				bar.appendChild(cell);
+			}
+			card.appendChild(bar);
 		}
 
 		host.appendChild(card);

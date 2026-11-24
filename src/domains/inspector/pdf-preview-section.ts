@@ -1,23 +1,23 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { Disposable } from '../../kernel/types.ts';
+import type { Disposable, ReaderNeighborsPayload } from '../../kernel/types.ts';
 import { normalizeToRegularItemAsync, resolvePdfAttachments, type ResolvedPdfAttachment } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import {
+	activateNeighborComparison, attachNeighborCompareButtons, syncNeighborCompareButtons,
+	type NeighborCompareControls, type NeighborSide,
+} from './pdf-compare-helpers.ts';
+import { bindPreviewToolbar, setupPreviewResizeObserver } from './pdf-preview-events.ts';
 import { ensurePdfPreviewStyles, removePdfPreviewStyles } from './pdf-preview-styles.ts';
 import {
 	PreviewFocus, applyPreviewLayoutMode, applyStatusMessage, bindPreviewSidenavClick, type CompareState,
-	createCompareBar, createToolBtn as toolBtn, createXhtmlEl as el, ensureSectionConnected,
-	evictDistantPageCanvases, openPageJumpInput, syncCompareBar,
+	createCompareBar, createToolBtn as toolBtn, createXhtmlEl as el, ensureSectionConnected, syncCompareBar,
 } from './pdf-preview-ui.ts';
-import { openPdfInReader, pickCompareAttachment } from './pdf-renderer.ts';
+import { pickCompareAttachment } from './pdf-renderer.ts';
 import {
-	nearestPreviewPage, computeOwnerAttachmentSignature, disposePreviewDocument, invalidateVisibleSlots, jumpToPreviewPage,
-	loadAttachmentPreviewDoc, loadItemPreviewAttachments, syncPreviewControls, type PreviewState,
+	disposePreviewDocument, invalidateVisibleSlots, loadAttachmentPreviewDoc,
+	loadItemPreviewAttachments, syncPreviewControls, type PreviewState,
 } from './pdf-viewport-manager.ts';
-
-const MIN_ZOOM = 0.6;
-const MAX_ZOOM = 2.0;
-const ZOOM_STEP = 0.2;
 
 type SectionUpdate = { body: HTMLElement; item?: any; tabType?: string; setEnabled?: (enabled: boolean) => void; setSectionSummary?: (summary: string) => void };
 type SectionInitProps = SectionUpdate & { doc?: Document };
@@ -25,8 +25,11 @@ type SectionInitProps = SectionUpdate & { doc?: Document };
 export class PdfPreviewSectionController {
 	private unregisterFn: Disposable | null = null;
 	private prefSub: Disposable | null = null;
+	private neighborSub: Disposable | null = null;
+	private latestNeighbors: ReaderNeighborsPayload | null = null;
 	private focus = new PreviewFocus();
 	private readonly states = new Map<HTMLElement, PreviewState>();
+	private readonly neighborControls = new Map<HTMLElement, NeighborCompareControls>();
 	private readonly listeners = new Map<HTMLElement, AbortController>();
 	private readonly kernel: PluginKernel;
 	private readonly services: ServiceContainer;
@@ -67,17 +70,31 @@ export class PdfPreviewSectionController {
 				getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.pdfPreview.position'), 'zotero-editpane-related'),
 			});
 		}
+		if (!this.neighborSub) {
+			this.neighborSub = this.kernel.bus.on('workspace:reader-neighbors-updated', (payload) => {
+				this.latestNeighbors = payload;
+				const allowNeighbor = this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable');
+				for (const [b, st] of this.states.entries()) {
+					const ctrl = this.neighborControls.get(b);
+					if (ctrl) syncNeighborCompareButtons(ctrl, st.compareUI.bar, st.compare.tabType, st.attachments.length, allowNeighbor ? payload : null);
+				}
+			});
+			this.kernel.bus.emit('workspace:reader-neighbors-query', {});
+		}
 		if (!this.prefSub) {
 			this.prefSub = this.kernel.prefs.observeKeys(
-				['inspector.pdfPreview.mode', 'inspector.pdfPreview.defaultZoom', 'inspector.pdfPreview.showPageBadge', 'inspector.pdfPreview.enable'],
+				['inspector.pdfPreview.mode', 'inspector.pdfPreview.defaultZoom', 'inspector.pdfPreview.showPageBadge', 'inspector.pdfPreview.enable', 'inspector.pdfPreview.neighborCompareEnable'],
 				(changedKey) => {
 					const isFull = this.kernel.prefs.get('inspector.pdfPreview.mode') === 'full' && this.kernel.prefs.get('inspector.pdfPreview.enable');
 					const showBadge = this.kernel.prefs.get('inspector.pdfPreview.showPageBadge');
 					const defaultZoom = Math.round(this.kernel.prefs.get('inspector.pdfPreview.defaultZoom')) / 100;
-					for (const st of this.states.values()) {
+					const allowNeighbor = this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable');
+					for (const [b, st] of this.states.entries()) {
 						if (changedKey === 'inspector.pdfPreview.mode' || changedKey === 'inspector.pdfPreview.enable') this.focus.set(st, isFull);
 						st.root.setAttribute('data-show-badge', showBadge ? 'true' : 'false');
 						if (changedKey === 'inspector.pdfPreview.defaultZoom') st.zoom = defaultZoom;
+						const ctrl = this.neighborControls.get(b);
+						if (ctrl) syncNeighborCompareButtons(ctrl, st.compareUI.bar, st.compare.tabType, st.attachments.length, allowNeighbor ? this.latestNeighbors : null);
 						syncPreviewControls(st);
 						invalidateVisibleSlots(st, this.onRenderError);
 					}
@@ -96,6 +113,10 @@ export class PdfPreviewSectionController {
 		this.services.panePositions.setTarget('pdf-preview', null);
 		this.prefSub?.();
 		this.prefSub = null;
+		this.neighborSub?.();
+		this.neighborSub = null;
+		this.latestNeighbors = null;
+		this.neighborControls.clear();
 		for (const state of this.states.values()) {
 			if (state.resizeTimer !== null) state.win.clearTimeout?.(state.resizeTimer);
 			state.resizeObserver?.disconnect();
@@ -157,6 +178,8 @@ export class PdfPreviewSectionController {
 		attSelect.className = 'ztf-pdf-att-select';
 		const compare: CompareState = { mode: 'sibling', pickedAttachmentID: null, currentAttachmentID: 0, tabType: tabType || 'library' };
 		const compareUI = createCompareBar(doc, controller.signal, () => state.compare, (nextMode, nextPickedID) => {
+			const ctrl = this.neighborControls.get(body);
+			if (ctrl) ctrl.activeSide = null;
 			state.compare.mode = nextMode;
 			state.compare.pickedAttachmentID = nextPickedID;
 			const chosen = pickCompareAttachment(
@@ -170,10 +193,26 @@ export class PdfPreviewSectionController {
 				state.attSelect.value = String(chosen.id);
 			}
 			syncCompareBar(compareUI, state.compare, state.attachments, chosen?.id || 0);
+			const allowNeighbor = this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable');
+			if (ctrl) syncNeighborCompareButtons(ctrl, compareUI.bar, state.compare.tabType, state.attachments.length, allowNeighbor ? this.latestNeighbors : null);
 			if (chosen && chosen.attachment !== state.attachment) {
 				void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
 			}
 		});
+		const neighborCtrl = attachNeighborCompareButtons(doc, compareUI.bar, controller.signal, (side: NeighborSide) => {
+			if (neighborCtrl.activeSide === side) {
+				neighborCtrl.activeSide = null;
+				syncNeighborCompareButtons(neighborCtrl, compareUI.bar, state.compare.tabType, state.attachments.length, this.latestNeighbors);
+				const fallback = pickCompareAttachment(
+					{ ownerID: state.ownerID, currentAttachmentID: state.compare.currentAttachmentID, entries: state.attachments },
+					state.compare.mode, state.compare.pickedAttachmentID, state.compare.tabType === 'reader' ? 'reader' : 'library',
+				);
+				if (fallback && fallback.attachment !== state.attachment) void loadAttachmentPreviewDoc(state, fallback.attachment, this.onRenderError);
+				return;
+			}
+			void activateNeighborComparison(state, neighborCtrl, side, this.latestNeighbors, this.onRenderError);
+		});
+		this.neighborControls.set(body, neighborCtrl);
 		toolbar.append(navGroup, zoomGroup, attSelect, compareUI.bar);
 		const statusEl = el(doc, 'div');
 		statusEl.className = 'ztf-pdf-status';
@@ -206,76 +245,24 @@ export class PdfPreviewSectionController {
 				if (!active) this.services.panePositions.observeAndQueue(body);
 			},
 		);
-		this.bindToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal);
-		this.setupResizeObserver(state);
+		bindPreviewToolbar(state, zoomOutBtn, zoomInBtn, modeBtn, controller.signal, {
+			isDblClickOpen: this.isDblClickOpen,
+			onToggleFullMode: (st) => {
+				this.focus.set(st, !st.fullActive);
+				if (!st.fullActive) this.services.panePositions.observeAndQueue(st.body);
+				invalidateVisibleSlots(st, this.onRenderError);
+			},
+			getLatestNeighbors: () => (this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable') ? this.latestNeighbors : null),
+			getNeighborCtrl: (b) => this.neighborControls.get(b),
+			onRenderError: this.onRenderError,
+		});
+		setupPreviewResizeObserver(state, this.onRenderError);
 		syncPreviewControls(state);
 		this.renderSection(props);
 	}
 
 	private isSectionEnabled(tabType?: string): boolean {
 		return Boolean(this.kernel.prefs.get('inspector.pdfPreview.enable') && (!tabType || tabType === 'library' || tabType === 'reader'));
-	}
-
-	private bindToolbar(state: PreviewState, zoomOutBtn: HTMLButtonElement, zoomInBtn: HTMLButtonElement, modeBtn: HTMLButtonElement, signal: AbortSignal): void {
-		const opts = { signal };
-		state.prevBtn.addEventListener('click', () => jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError), opts);
-		state.nextBtn.addEventListener('click', () => jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError), opts);
-		zoomOutBtn.addEventListener('click', () => this.setZoom(state, state.zoom - ZOOM_STEP), opts);
-		zoomInBtn.addEventListener('click', () => this.setZoom(state, state.zoom + ZOOM_STEP), opts);
-		state.zoomLabel.addEventListener('click', () => this.setZoom(state, 1), opts);
-		modeBtn.addEventListener('click', () => {
-			this.focus.set(state, !state.fullActive);
-			if (!state.fullActive) this.services.panePositions.observeAndQueue(state.body);
-			invalidateVisibleSlots(state, this.onRenderError);
-		}, opts);
-		state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
-		const selectAttachmentById = (attId: number) => {
-			const chosen = state.attachments.find((entry) => entry.id === attId);
-			if (!chosen) return;
-			const prevId = Number(state.compare.pickedAttachmentID || state.attachment?.id || 0);
-			if (prevId && prevId !== chosen.id) state.compare.lastAttachmentID = prevId;
-			state.compare.pickedAttachmentID = chosen.id;
-			state.attSelect.value = String(chosen.id);
-			syncCompareBar(state.compareUI, state.compare, state.attachments, chosen.id);
-			if (chosen.attachment !== state.attachment) {
-				void loadAttachmentPreviewDoc(state, chosen.attachment, this.onRenderError);
-			}
-		};
-		state.attSelect.addEventListener('change', () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
-		state.doc.addEventListener('zbf:pdf-folder-attachment-selected', ((ev: CustomEvent) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))) as EventListener, opts);
-		state.pageLabel.addEventListener('click', () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, this.onRenderError)), opts);
-		state.viewportEl.addEventListener('scroll', () => this.updateCurrentPageFromScroll(state), opts);
-		state.viewportEl.addEventListener('dblclick', (event: MouseEvent) => {
-			if (!state.attachment || !this.isDblClickOpen()) return;
-			event.preventDefault?.();
-			event.stopPropagation?.();
-			const card = (event.target as Element | null)?.closest?.('[data-page-number]');
-			void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.('data-page-number')) || state.currentPage || 1);
-		}, opts);
-		state.viewportEl.addEventListener('keydown', (event: KeyboardEvent) => {
-			if (!state.numPages) return;
-			const k = event.key;
-			if (k === 'PageDown' || k === 'ArrowRight') { event.preventDefault?.(); jumpToPreviewPage(state, state.currentPage + 1, this.onRenderError); }
-			else if (k === 'PageUp' || k === 'ArrowLeft') { event.preventDefault?.(); jumpToPreviewPage(state, state.currentPage - 1, this.onRenderError); }
-			else if (k === 'Home' || k === 'End') { event.preventDefault?.(); jumpToPreviewPage(state, k === 'Home' ? 1 : state.numPages, this.onRenderError); }
-			else if ((event.ctrlKey || event.metaKey) && k === '0') { event.preventDefault?.(); this.setZoom(state, 1); }
-		}, opts);
-		state.viewportEl.addEventListener('wheel', (e: WheelEvent) => {
-			if (e.ctrlKey || e.metaKey) { e.preventDefault(); this.setZoom(state, state.zoom + (e.deltaY < 0 ? 0.1 : -0.1)); }
-		}, opts);
-	}
-
-	private setupResizeObserver(state: PreviewState): void {
-		const RO = (state.win as Window & typeof globalThis).ResizeObserver;
-		if (!RO) return;
-		state.resizeObserver = new RO(() => {
-			const width = state.viewportEl.clientWidth || state.body.clientWidth || 0;
-			if (!width || !state.pdfDoc || Math.abs(width - state.lastWidth) < 8) return;
-			state.lastWidth = width;
-			if (state.resizeTimer !== null) state.win.clearTimeout(state.resizeTimer);
-			state.resizeTimer = state.win.setTimeout(() => { state.resizeTimer = null; invalidateVisibleSlots(state, this.onRenderError); }, 120);
-		});
-		state.resizeObserver.observe(state.viewportEl);
 	}
 
 	private onDestroy(body: HTMLElement): void {
@@ -287,6 +274,7 @@ export class PdfPreviewSectionController {
 			disposePreviewDocument(state, true);
 		}
 		this.states.delete(body);
+		this.neighborControls.delete(body);
 		this.listeners.get(body)?.abort();
 		this.listeners.delete(body);
 	}
@@ -314,7 +302,7 @@ export class PdfPreviewSectionController {
 		applyPreviewLayoutMode(state.body, state.root, state.customSection, state.fullActive);
 		const nextTabType = tabType || 'library';
 		const isAtt = Boolean(item?.isAttachment?.() || item?.isPDFAttachment?.() || item?.itemType === 'attachment');
-		const nextAttIdsKey = computeOwnerAttachmentSignature(item);
+		const nextAttIdsKey = `${Number(item?.id || 0)}:${(item?.parentItem?.getAttachments?.() || item?.getAttachments?.() || []).join(',')}`;
 		const itemChanged = item !== state.item || nextTabType !== state.compare.tabType || nextAttIdsKey !== state.attIdsKey;
 		state.compare.tabType = nextTabType;
 		state.attIdsKey = nextAttIdsKey;
@@ -329,30 +317,18 @@ export class PdfPreviewSectionController {
 		state.compare.mode = 'sibling';
 		state.compare.pickedAttachmentID = isAtt ? (Number(item?.id) || null) : (sameOwner ? state.compare.pickedAttachmentID : null);
 		state.compare.currentAttachmentID = 0;
+		const ctrl = this.neighborControls.get(body);
+		if (ctrl) ctrl.activeSide = null;
+		const allowNeighbor = this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable');
 		syncCompareBar(state.compareUI, state.compare, [], 0);
+		if (ctrl) syncNeighborCompareButtons(ctrl, state.compareUI.bar, nextTabType, 0, allowNeighbor ? this.latestNeighbors : null);
 		state.item = item ?? null;
-		void loadItemPreviewAttachments(state, state.item, this.onRenderError);
+		void loadItemPreviewAttachments(state, state.item, this.onRenderError).then(() => {
+			if (ctrl && state.body.isConnected) {
+				const allow = this.kernel.prefs.get('inspector.pdfPreview.neighborCompareEnable');
+				syncNeighborCompareButtons(ctrl, state.compareUI.bar, state.compare.tabType, state.attachments.length, allow ? this.latestNeighbors : null);
+			}
+		});
 		return enabled;
-	}
-
-	private setZoom(state: PreviewState, nextZoom: number): void {
-		const clamped = Math.round(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, nextZoom)) * 100) / 100;
-		if (clamped === state.zoom) return;
-		state.zoom = clamped;
-		syncPreviewControls(state);
-		invalidateVisibleSlots(state, this.onRenderError);
-	}
-
-	private updateCurrentPageFromScroll(state: PreviewState): void {
-		if (!state.slots.length) return;
-		const top = state.viewportEl.scrollTop + (state.slots[0]?.card.offsetTop || 0);
-		const best = nearestPreviewPage(state.slots, top);
-		if (best !== state.currentPage) {
-			state.currentPage = best;
-			const attID = Number(state.attachment?.id) || 0;
-			if (attID > 0) state.pageByAttachment.set(attID, best);
-			syncPreviewControls(state);
-			evictDistantPageCanvases(state.slots, state.currentPage);
-		}
 	}
 }

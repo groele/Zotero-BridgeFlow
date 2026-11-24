@@ -30,7 +30,9 @@ export class CopyHistoryBridge implements BridgeModule {
 
 				if (ev.itemIDs.length === 1) {
 					const itemID = ev.itemIDs[0];
+					if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
 					const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
+					if (item?.deleted || item?.isTrashed?.()) return;
 					this.services.history.record({
 						text: ev.text,
 						libraryID: Number(item?.libraryID || 1),
@@ -46,7 +48,9 @@ export class CopyHistoryBridge implements BridgeModule {
 				if (lines.length === ev.itemIDs.length) {
 					for (let i = 0; i < ev.itemIDs.length; i++) {
 						const itemID = ev.itemIDs[i];
+						if (!Number.isSafeInteger(itemID) || itemID <= 0) continue;
 						const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
+						if (item?.deleted || item?.isTrashed?.()) continue;
 						this.services.history.record({
 							text: lines[i],
 							libraryID: Number(item?.libraryID || 1),

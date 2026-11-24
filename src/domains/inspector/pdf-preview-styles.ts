@@ -48,7 +48,7 @@ export const PREVIEW_CSS = `
 	border-color: var(--accent-blue30, rgba(64, 114, 229, 0.35)) !important;
 }
 .ztf-pdf-compare-bar {
-	display: flex; align-items: center; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
+	display: flex; align-items: center; flex-wrap: wrap; gap: 3px; flex: 1 1 100%; min-inline-size: 0;
 	padding-top: 3px; margin-top: 2px;
 	border-top: 1px dashed var(--fill-quinary, color-mix(in srgb, currentColor 8%, transparent));
 }
@@ -59,7 +59,7 @@ export const PREVIEW_CSS = `
 	font-variant-numeric: tabular-nums;
 }
 .ztf-pdf-compare-nav { flex-shrink: 0; padding: 0 3px !important; }
-.ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; }
+.ztf-pdf-compare-btn { font-size: 11px !important; padding: 0 6px !important; flex-shrink: 0; max-inline-size: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ztf-pdf-compare-btn[data-active="true"] {
 	color: var(--accent-blue, #4072e5) !important;
 	background: var(--accent-blue10, rgba(64, 114, 229, 0.14)) !important;

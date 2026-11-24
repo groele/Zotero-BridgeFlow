@@ -199,6 +199,16 @@ export class PdfFolderSectionController {
 		if (!item || this.openingFolders.has(win) || !this.kernel.prefs.get('inspector.pdfFolder.enable')) return;
 		this.openingFolders.add(win);
 		void this.revealAttachmentFolder(item, win)
+			.then((ok) => {
+				if (ok) return;
+				const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
+				for (const st of this.states.values()) {
+					if (st.body.ownerDocument === win.document && (st.selectedAttachment === item || st.item === item)) {
+						st.meta.textContent = zh ? '未找到本地附件文件（可能尚未下载或已被移动）' : 'Local attachment file not found (may not be synced locally)';
+						st.meta.title = st.meta.textContent;
+					}
+				}
+			})
 			.catch((error) => this.kernel.logger.error('pdf-folder', error))
 			.finally(() => this.openingFolders.delete(win));
 	}

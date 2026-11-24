@@ -13,12 +13,16 @@ export function createFloatingPopup(doc: Document, anchor: HTMLElement, event?: 
 	const winW = doc.defaultView?.innerWidth || 1200;
 	const winH = doc.defaultView?.innerHeight || 800;
 	const popW = pop.offsetWidth || minWidth;
+	const popH = Math.min(pop.offsetHeight || 260, winH - 16);
 	const rawX = hasMouse
 		? event!.clientX + 2
 		: (rect.left > winW * 0.55 ? rect.right - popW : rect.left);
-	const rawY = hasMouse ? event!.clientY + 6 : rect.bottom + 6;
+	let rawY = hasMouse ? event!.clientY + 6 : rect.bottom + 6;
+	if (rawY + popH > winH - 8) {
+		rawY = hasMouse ? event!.clientY - popH - 6 : rect.top - popH - 6;
+	}
 	const left = Math.max(8, Math.min(rawX, winW - popW - 12));
-	const top = Math.max(8, Math.min(rawY, winH - 300));
+	const top = Math.max(8, Math.min(rawY, winH - popH - 8));
 	pop.style.left = `${left}px`;
 	pop.style.top = `${top}px`;
 	return pop;

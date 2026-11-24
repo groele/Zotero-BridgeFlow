@@ -59,6 +59,19 @@ export interface OpenItemRequestPayload {
 	readonly assignToActiveGroup?: boolean;
 }
 
+export interface ReaderNeighborRef {
+	readonly tabID: string;
+	readonly itemID: number;
+	readonly parentItemID: number;
+	readonly title: string;
+}
+
+export interface ReaderNeighborsPayload {
+	readonly activeTabID: string;
+	readonly left?: ReaderNeighborRef;
+	readonly right?: ReaderNeighborRef;
+}
+
 export interface SpotlightItemResult {
 	readonly id: string;
 	readonly category: 'tab' | 'collection' | 'citation' | 'command';
@@ -96,6 +109,11 @@ export interface BridgeFlowEventMap {
 	'workspace:open-item-request': OpenItemRequestPayload;
 	'workspace:groups-updated': { readonly groups: readonly WorkspaceGroupSummary[] };
 	'workspace:groups-query': { readonly requester?: string };
+	'workspace:reader-neighbors-updated': ReaderNeighborsPayload;
+	'workspace:reader-neighbors-query': { readonly win?: Window };
+	'workspace:remark-changed': { readonly itemID: number; readonly parentItemID: number; readonly remark: string };
+	'visual-notes:open-matrix': { readonly win: Window; readonly title: string; readonly itemIDs: readonly number[] };
+	'visual-notes:reading-updated': { readonly keys?: readonly string[] };
 	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
 	'word:insert-result': WordInsertResultPayload;
 	'word:refresh-request': { readonly requestId?: string; readonly win?: Window };
@@ -110,7 +128,7 @@ export interface BridgeFlowEventMap {
 export type BridgeFlowEventName = keyof BridgeFlowEventMap;
 
 export interface DomainModule {
-	readonly id: 'workspace' | 'inspector' | 'word-cite';
+	readonly id: 'workspace' | 'inspector' | 'word-cite' | 'visual-notes';
 	readonly enabledPref: string;
 	start(): void | Promise<void>;
 	stop(): void;

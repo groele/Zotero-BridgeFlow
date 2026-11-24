@@ -90,10 +90,21 @@ export class CitationLookupSectionController {
 		const container = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
 		container.className = 'viewflow-lookup-container';
 
+		const inputWrap = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
+		inputWrap.className = 'viewflow-lookup-input-wrap';
+
 		const input = doc.createElementNS('http://www.w3.org/1999/xhtml', 'input') as HTMLInputElement;
 		input.type = 'text';
 		input.className = 'viewflow-lookup-input';
 		input.setAttribute('data-l10n-id', 'zbf-lookup-input');
+
+		const clearBtn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button') as HTMLButtonElement;
+		clearBtn.type = 'button';
+		clearBtn.className = 'viewflow-lookup-clear';
+		clearBtn.textContent = '✕';
+		clearBtn.title = '清空引文输入';
+		clearBtn.hidden = true;
+		inputWrap.append(input, clearBtn);
 
 		const btnRow = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div') as HTMLDivElement;
 		btnRow.className = 'viewflow-lookup-actions';
@@ -123,7 +134,7 @@ export class CitationLookupSectionController {
 		retryBtn.textContent = '重试保存缓存';
 		cacheNotice.append(cacheMsg, retryBtn);
 
-		container.append(input, btnRow, cacheNotice, statusDiv);
+		container.append(inputWrap, btnRow, cacheNotice, statusDiv);
 		body.append(container);
 
 		const syncCacheStatus = () => {
@@ -215,8 +226,18 @@ export class CitationLookupSectionController {
 			}
 		};
 
+		const syncClear = () => { clearBtn.hidden = !input.value; };
+		const resetInput = () => {
+			cancelPaste();
+			request++;
+			input.value = '';
+			syncClear();
+			clearLookupResult(statusDiv);
+		};
+		clearBtn.onclick = () => { resetInput(); input.focus(); };
 		input.oninput = () => {
 			request++;
+			syncClear();
 			clearLookupResult(statusDiv);
 			if (!input.value.trim()) cancelPaste();
 		};
@@ -225,6 +246,7 @@ export class CitationLookupSectionController {
 			cancelPaste();
 			pasteTimer = setTimeout(() => {
 				pasteTimer = undefined;
+				syncClear();
 				if (input.value.trim()) void executeLookup(input.value);
 			}, 0);
 		};
@@ -234,16 +256,14 @@ export class CitationLookupSectionController {
 				cancelPaste();
 				void executeLookup(input.value);
 			} else if (key === 'Escape') {
-				cancelPaste();
-				request++;
-				input.value = '';
-				clearLookupResult(statusDiv);
+				resetInput();
 			}
 		};
 		clipBtn.onclick = () => {
 			const clipText = readSystemClipboardText();
 			if (clipText) {
 				input.value = clipText;
+				syncClear();
 				void executeLookup(clipText);
 				return;
 			}

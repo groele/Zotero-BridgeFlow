@@ -9,11 +9,12 @@ import type {
 	WorkspaceGroupSummary,
 } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
-import { normalizeToRegularItem } from '../../services/item-resolution.ts';
 import { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
+import { ReaderNeighborPublisher } from './reader-neighbors.ts';
 import { WorkspaceStateStore } from './state-store.ts';
 import { WorkspaceTabController } from './tab-controller.ts';
 import { invalidateTabProjectionCache } from './tab-projection.ts';
+import { buildWorkspaceGroupSummaries } from './workspace-group-emitter.ts';
 import { WorkspaceWindowUI } from './workspace-ui.ts';
 
 const WATCHED_WORKSPACE_PREFS = [
@@ -51,6 +52,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	public readonly spotlight: WorkspaceSpotlightEngine;
 
 	private readonly kernel: PluginKernel;
+	private readonly neighbors: ReaderNeighborPublisher;
 	private readonly disposables = new DisposableStack();
 	private readonly windows = new Map<Window, WorkspaceWindowUI>();
 	private active = false;
@@ -60,7 +62,10 @@ export class WorkspaceDomainModule implements DomainModule {
 	private autoGroupTimer: ReturnType<typeof setTimeout> | null = null;
 	private pendingAutoGroup = new Set<string>();
 	private lastRollingAt = 0;
-	private viewedDirty = false;
+	private lastReadingTickAt = Date.now();
+	private lastActivityAt = Date.now();
+	private readingDirty = false;
+	private readonly lastReaderByWin = new WeakMap<Window, { tabID: string; key: string; page: number; total: number }>();
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastGroupFingerprint = '';
 
@@ -69,6 +74,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.store = new WorkspaceStateStore(kernel.prefs);
 		this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard, kernel.bus);
 		this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
+		this.neighbors = new ReaderNeighborPublisher(kernel.bus);
 	}
 
 	async start(): Promise<void> {
@@ -77,10 +83,15 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.disposables.reset();
 		this.store.load();
 		void this.store.initDiskCache().then((merged) => {
-			if (merged && this.active) this.refreshAllWindows();
+			if (merged && this.active) {
+				this.kernel.bus.emit('visual-notes:reading-updated', {});
+				this.refreshAllWindows();
+			}
 		});
 
-		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
+		this.disposables.add(this.store.onChange(() => {
+			this.queueRefresh();
+		}));
 
 		this.disposables.add(
 			this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()),
@@ -102,12 +113,18 @@ export class WorkspaceDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
+			this.kernel.bus.on('workspace:reader-neighbors-query', ({ win }) => {
+				const targetWin = win || this.getTargetWindow();
+				if (this.active && targetWin) this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin), true);
+			}),
+		);
+
+		this.disposables.add(
 			this.kernel.notifier.subscribe(['tab', 'collection', 'item'], ({ event, type, ids }) => {
 				if (type === 'tab') {
 					this.handleTabEvent(event, ids.map(String));
-				} else if (event === 'modify' || event === 'add' || event === 'delete') {
+				} else if (event === 'modify' || event === 'add' || event === 'delete' || event === 'trash' || event === 'restore') {
 					invalidateTabProjectionCache();
-					if (type === 'item') this.spotlight.invalidateLibraryIndex();
 					this.queueRefresh(32);
 				}
 			}),
@@ -118,46 +135,29 @@ export class WorkspaceDomainModule implements DomainModule {
 		}
 		this.emitGroupSummaries(true);
 
+		this.lastReadingTickAt = Date.now();
+		this.lastActivityAt = Date.now();
 		this.maintenanceTimer = setInterval(() => this.runPeriodicMaintenance(), 60_000);
-		this.readingTimer = setInterval(() => {
-			for (const win of this.windows.keys()) {
-				if (this.tabs.trackReadingProgress(win, 15)) {
-					this.viewedDirty = true;
-				}
-			}
-			if (this.viewedDirty && this.kernel.prefs.get('workspace.verticalTabSubtitleMode') === 'lastViewed') {
-				this.queueRefresh(50);
-			}
-		}, 15_000);
+		this.readingTimer = setInterval(() => this.flushReadingProgress(1), 15_000);
 	}
 
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
-		if (this.refreshTimer !== null) {
-			clearTimeout(this.refreshTimer);
-			this.refreshTimer = null;
-		}
-		if (this.maintenanceTimer !== null) {
-			clearInterval(this.maintenanceTimer);
-			this.maintenanceTimer = null;
-		}
-		if (this.readingTimer !== null) {
-			clearInterval(this.readingTimer);
-			this.readingTimer = null;
-		}
-		if (this.autoGroupTimer !== null) {
-			clearTimeout(this.autoGroupTimer);
-			this.autoGroupTimer = null;
-		}
-		for (const ui of this.windows.values()) {
-			ui.destroy();
-		}
+		if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		if (this.maintenanceTimer !== null) { clearInterval(this.maintenanceTimer); this.maintenanceTimer = null; }
+		if (this.readingTimer !== null) { clearInterval(this.readingTimer); this.readingTimer = null; }
+		if (this.autoGroupTimer !== null) { clearTimeout(this.autoGroupTimer); this.autoGroupTimer = null; }
+		for (const ui of this.windows.values()) ui.destroy();
 		this.windows.clear();
 		this.pendingAutoGroup.clear();
-		if (this.viewedDirty) { this.viewedDirty = false; this.store.save(true); }
-		else { void this.store.diskCache.flushNow(this.store.state); }
+		if (this.readingDirty) { this.readingDirty = false; void this.store.readingCache.flushNow(this.store.state); }
+		else { void this.store.readingCache.flushNow(this.store.state); }
+		void this.store.notesCache.flushNow(this.store.state);
+		this.store.notesCache.dispose();
+		this.store.readingCache.dispose();
 		this.store.diskCache.dispose();
+		this.neighbors.reset();
 		this.disposables.disposeAll();
 	}
 
@@ -167,9 +167,13 @@ export class WorkspaceDomainModule implements DomainModule {
 
 	onMainWindowLoad(win: Window): void {
 		if (!this.active || this.windows.has(win)) return;
-		const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight);
+		const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight, () => {
+			this.lastActivityAt = Date.now();
+		});
 		ui.setCitationBadges(this.latestBadges);
 		this.windows.set(win, ui);
+		const snap = this.tabs.resolveActiveReaderSnapshot(win);
+		if (snap) this.lastReaderByWin.set(win, snap);
 	}
 
 	onMainWindowUnload(win: Window): void {
@@ -177,6 +181,37 @@ export class WorkspaceDomainModule implements DomainModule {
 		if (!ui) return;
 		ui.destroy();
 		this.windows.delete(win);
+		this.lastReaderByWin.delete(win);
+	}
+
+	private flushReadingProgress(minElapsed = 1, usePreviousReader = false): void {
+		const now = Date.now();
+		const elapsed = Math.min(30, Math.floor((now - this.lastReadingTickAt) / 1000));
+		if (elapsed < minElapsed) return;
+		this.lastReadingTickAt = now;
+		let updated = false;
+		for (const win of this.windows.keys()) {
+			if ((win as any).closed) continue;
+			const prev = usePreviousReader ? this.lastReaderByWin.get(win) : undefined;
+			const didUpdate = prev
+				? this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+					overrideKey: prev.key, overrideLastPage: prev.page, overrideTotalPages: prev.total,
+					idleCutoffMs: 180_000, lastActivityAt: this.lastActivityAt, now,
+				})
+				: this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+					idleCutoffMs: 180_000, lastActivityAt: this.lastActivityAt, now,
+					onPageChanged: () => { this.lastActivityAt = now; },
+				});
+			if (didUpdate) { this.readingDirty = true; updated = true; }
+			const snap = this.tabs.resolveActiveReaderSnapshot(win);
+			if (snap) this.lastReaderByWin.set(win, snap);
+			else this.lastReaderByWin.delete(win);
+		}
+		if (updated) {
+			this.store.readingCache.scheduleSave(this.store.state);
+			this.kernel.bus.emit('visual-notes:reading-updated', {});
+			if (this.kernel.prefs.get('workspace.verticalTabSubtitleMode') === 'lastViewed') this.queueRefresh(50);
+		}
 	}
 
 	private queueRefresh(delayMs = 16): void {
@@ -188,47 +223,24 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	refreshAllWindows(): void {
-		for (const ui of this.windows.values()) {
-			ui.render();
+		for (const [win, ui] of [...this.windows.entries()]) {
+			if ((win as any).closed) {
+				ui.destroy();
+				this.windows.delete(win);
+				continue;
+			}
+			try { ui.render(); } catch (err) { this.kernel.logger.error('workspace:render', err); }
+		}
+		const targetWin = this.getTargetWindow();
+		if (targetWin && !(targetWin as any).closed) {
+			try { this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin)); } catch { /* ignore */ }
 		}
 		this.emitGroupSummaries();
 	}
 
 	private emitGroupSummaries(force = false): void {
 		if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === '') return;
-		const tabParentByKey = new Map<string, number>();
-		for (const win of this.windows.keys()) {
-			for (const tab of this.tabs.buildTrackedTabs(win)) {
-				const pid = Number(tab.parentItemID || tab.itemID || 0);
-				if (pid > 0) tabParentByKey.set(tab.key, pid);
-			}
-		}
-		const hostItems = (globalThis as any).Zotero?.Items;
-		const resolveRegularId = (rawId: number): number => {
-			if (!Number.isSafeInteger(rawId) || rawId <= 0) return 0;
-			const zItem = hostItems?.get?.(rawId);
-			if (!zItem) return rawId;
-			const reg = normalizeToRegularItem(zItem);
-			return Number(reg?.id || 0);
-		};
-		const groups: WorkspaceGroupSummary[] = [];
-		for (const group of this.store.state.groups) {
-			const seen = new Set<number>();
-			for (const key of group.memberKeys) {
-				let rawId = tabParentByKey.get(key) || 0;
-				if (!rawId) {
-					const vm = this.store.state.virtualMembers[key];
-					if (vm) rawId = Number(vm.parentItemID || vm.itemID || 0);
-				}
-				if (!rawId) {
-					const m = key.match(/^item:(\d+)/);
-					if (m) rawId = Number(m[1]);
-				}
-				const resolved = resolveRegularId(rawId);
-				if (resolved > 0) seen.add(resolved);
-			}
-			groups.push({ groupId: group.id, groupName: group.name, itemIDs: [...seen] });
-		}
+		const groups: WorkspaceGroupSummary[] = buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store);
 		const fp = groups.map((g) => `${g.groupId}:${g.groupName}:${g.itemIDs.join(',')}`).join('|');
 		if (!force && fp === this.lastGroupFingerprint) return;
 		this.lastGroupFingerprint = fp;
@@ -237,7 +249,6 @@ export class WorkspaceDomainModule implements DomainModule {
 
 	setCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
 		this.latestBadges = new Map(badges);
-		this.spotlight.setWordCitationBadges(badges);
 		for (const ui of this.windows.values()) {
 			ui.setCitationBadges(badges);
 		}
@@ -268,6 +279,12 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	private handleTabEvent(event: string, tabIDs: readonly string[]): void {
+		if (event === 'select' || event === 'close') {
+			this.flushReadingProgress(2, true);
+			this.lastActivityAt = Date.now();
+		} else if (event === 'add') {
+			this.lastActivityAt = Date.now();
+		}
 		for (const win of this.windows.keys()) {
 			const tracked = this.tabs.buildTrackedTabs(win);
 
@@ -276,7 +293,7 @@ export class WorkspaceDomainModule implements DomainModule {
 				if (!tab) continue;
 				if (event === 'select' || event === 'add') {
 					this.store.touchViewed(tab.key);
-					this.viewedDirty = true;
+					this.readingDirty = true;
 					this.store.removeVirtualMember(tab.key);
 					if (tab.sleeping) this.store.setSleeping(tab.key, false);
 					if (tab.groupId && this.store.state.collapsed.includes(tab.groupId)) {
@@ -284,6 +301,9 @@ export class WorkspaceDomainModule implements DomainModule {
 					}
 				}
 			}
+			const snap = this.tabs.resolveActiveReaderSnapshot(win);
+			if (snap) this.lastReaderByWin.set(win, snap);
+			else this.lastReaderByWin.delete(win);
 		}
 
 		if (event === 'add' && this.kernel.prefs.get('workspace.newTabMode') === 'collection') {
@@ -306,9 +326,9 @@ export class WorkspaceDomainModule implements DomainModule {
 		for (const win of this.windows.keys()) {
 			if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
 		}
-		if (this.viewedDirty) {
-			this.viewedDirty = false;
-			this.store.save();
+		if (this.readingDirty) {
+			this.readingDirty = false;
+			void this.store.readingCache.flushNow(this.store.state);
 		}
 		if (this.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - this.lastRollingAt > 900_000) {
 			const openKeys = [...new Set([...this.windows.keys()].flatMap(win => this.tabs.openKeys(win)))];

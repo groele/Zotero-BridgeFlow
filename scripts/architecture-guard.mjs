@@ -166,8 +166,8 @@ check('Fluent FTL symmetry (en-US <-> zh-CN) & zero duplicates', () => {
 	}
 });
 
-// 8. Preferences XHTML zero hardcoded CJK text & tabbed layout structure
-check('Preferences XHTML zero hardcoded CJK & valid tabbed structure', () => {
+// 8. Preferences XHTML zero hardcoded CJK text & subsystem horizontal tabs
+check('Preferences XHTML zero hardcoded CJK & subsystem horizontal tabs', () => {
 	const xhtmlPath = path.join(root, 'prefs.xhtml');
 	if (!fs.existsSync(xhtmlPath)) throw new Error('Missing prefs.xhtml');
 	const text = fs.readFileSync(xhtmlPath, 'utf8');
@@ -175,10 +175,12 @@ check('Preferences XHTML zero hardcoded CJK & valid tabbed structure', () => {
 	if (/[\u4e00-\u9fff]/.test(stripped)) {
 		throw new Error('Hardcoded Chinese text found in prefs.xhtml; all labels must use data-l10n-id');
 	}
-	const tabCount = (stripped.match(/role="tab"/g) || []).length;
-	const panelCount = (stripped.match(/class="zbf-tabpanel"/g) || []).length;
-	if (tabCount < 4 || tabCount !== panelCount) {
-		throw new Error(`Expected matching >= 4 tabs (${tabCount}) and panels (${panelCount}) in prefs.xhtml`);
+	const tabTags = [...stripped.matchAll(/<html:button\b[^>]*role="tab"[^>]*>/g)].map((m) => m[0]);
+	const panelTags = [...stripped.matchAll(/<html:section\b[^>]*role="tabpanel"[^>]*>/g)].map((m) => m[0]);
+	const selectedCount = tabTags.filter((tag) => /aria-selected="true"/.test(tag)).length;
+	const visiblePanels = panelTags.filter((tag) => !/\bhidden\s*=/.test(tag)).length;
+	if (tabTags.length !== 6 || panelTags.length !== 6 || selectedCount !== 1 || visiblePanels !== 1) {
+		throw new Error(`Expected 6 horizontal subsystem tabs & panels with 1 active (tabs=${tabTags.length}, panels=${panelTags.length}, selected=${selectedCount}, visible=${visiblePanels})`);
 	}
 });
 

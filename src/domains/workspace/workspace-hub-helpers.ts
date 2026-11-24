@@ -37,6 +37,7 @@ export async function importWorkspaceJsonInteractive(
 	win: Window,
 	store: WorkspaceStateStore,
 	onImported: () => void,
+	onInvalid?: () => void,
 ): Promise<void> {
 	const ZoteroObj = (globalThis as any).Zotero;
 	try {
@@ -49,6 +50,7 @@ export async function importWorkspaceJsonInteractive(
 			if (rv === fp.returnOK && fp.file) {
 				const content = await ZoteroObj.File.getContentsAsync(fp.file);
 				if (content && store.importJson(String(content))) onImported();
+				else if (content) onInvalid?.();
 				return;
 			}
 			return;
@@ -57,6 +59,7 @@ export async function importWorkspaceJsonInteractive(
 
 	openTextPromptModal(win, '导入工作区 JSON', '请在此粘贴工作区 JSON 内容...', '', (raw) => {
 		if (raw && store.importJson(raw)) onImported();
+		else if (raw?.trim()) onInvalid?.();
 	});
 }
 
@@ -79,6 +82,8 @@ export function renderPublicationSuggestionsSection(
 		const card = createWorkspaceElement(doc, 'div');
 		card.className = 'zbf-hub-card';
 
+		const topRow = createWorkspaceElement(doc, 'div');
+		topRow.className = 'zbf-hub-card-top';
 		const info = createWorkspaceElement(doc, 'div');
 		info.className = 'zbf-hub-card-info';
 		const nameEl = createWorkspaceElement(doc, 'div');
@@ -98,7 +103,8 @@ export function renderPublicationSuggestionsSection(
 			for (const k of sug.keys) store.assignToGroup(k, group.id);
 			onApplied();
 		});
-		card.append(info, applyBtn);
+		topRow.append(info, applyBtn);
+		card.appendChild(topRow);
 		wrap.appendChild(card);
 	}
 	return wrap;

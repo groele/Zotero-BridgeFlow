@@ -13,12 +13,25 @@ export class WorkspaceSpotlightPanel {
 	private readonly win: Window;
 	private readonly doc: Document;
 	private readonly engine: WorkspaceSpotlightEngine;
-	private backdrop: HTMLElement | null = null;
 	private panelEl: HTMLElement | null = null;
 	private inputEl: HTMLInputElement | null = null;
 	private listEl: HTMLElement | null = null;
 	private results: SpotlightItemResult[] = [];
 	private activeIndex = 0;
+	private rows: HTMLElement[] = [];
+	private timer = 0;
+	private readonly dismissOutside = (event: Event) => {
+		if (this.panelEl && !event.composedPath().includes(this.panelEl)
+			&& !event.composedPath().some(node => (node as Element).getAttribute?.('data-action') === 'search')) this.close();
+	};
+
+	private scheduleResults(delay: number): void {
+		this.win.clearTimeout(this.timer);
+		this.timer = this.win.setTimeout(() => {
+			this.timer = 0;
+			if (this.inputEl) this.renderResults(this.inputEl.value);
+		}, delay);
+	}
 	private readonly collapsedSections = new Set<string>(['groups']);
 
 	constructor(win: Window, engine: WorkspaceSpotlightEngine) {
@@ -28,7 +41,7 @@ export class WorkspaceSpotlightPanel {
 	}
 
 	isOpen(): boolean {
-		return Boolean(this.backdrop?.isConnected);
+		return Boolean(this.panelEl?.isConnected);
 	}
 
 	open(initialQuery = '', anchor?: HTMLElement | null): void {
@@ -45,12 +58,6 @@ export class WorkspaceSpotlightPanel {
 		const host = this.doc.documentElement || this.doc.body;
 		if (!host) return;
 
-		const backdrop = createWorkspaceElement(this.doc, 'div');
-		backdrop.id = 'zbf-spotlight-backdrop';
-		backdrop.addEventListener('mousedown', (e) => {
-			if (e.target === backdrop) this.close();
-		});
-
 		const panel = createWorkspaceElement(this.doc, 'div');
 		panel.id = 'zbf-spotlight-panel';
 
@@ -61,29 +68,50 @@ export class WorkspaceSpotlightPanel {
 		const input = createWorkspaceElement(this.doc, 'input') as HTMLInputElement;
 		input.id = 'zbf-spotlight-input';
 		input.type = 'search';
-		input.placeholder = '查找已打开文献、备注，或输入 @ 搜全库、> 执行操作…';
+		input.placeholder = '查找打开的标签、备注、分组或会话；输入 > 查看命令…';
 		input.value = initialQuery;
-		input.addEventListener('input', () => {
+		const clearBtn = createWorkspaceElement(this.doc, 'button') as HTMLButtonElement;
+		clearBtn.type = 'button';
+		clearBtn.className = 'zbf-spot-clear';
+		clearBtn.textContent = '✕';
+		clearBtn.title = '清空搜索';
+		clearBtn.hidden = !initialQuery;
+		clearBtn.addEventListener('click', () => {
+			input.value = '';
+			clearBtn.hidden = true;
 			this.activeIndex = 0;
-			this.renderResults(input.value);
+			this.renderResults('');
+			input.focus();
+		});
+		input.addEventListener('input', () => {
+			clearBtn.hidden = !input.value;
+			this.activeIndex = 0;
+			this.results = [];
+			this.rows = [];
+			this.listEl?.replaceChildren();
+			this.scheduleResults(75);
 		});
 		input.addEventListener('keydown', (e) => this.handleKeydown(e as KeyboardEvent));
-		inputWrap.appendChild(input);
+		inputWrap.append(input, clearBtn);
 
 		const list = createWorkspaceElement(this.doc, 'div');
 		list.id = 'zbf-spotlight-list';
 
-		panel.append(inputWrap, list);
-		backdrop.appendChild(panel);
-		host.appendChild(backdrop);
+		const footer = createWorkspaceElement(this.doc, 'div');
+		footer.className = 'zbf-spot-footer';
+		footer.textContent = '↑↓ 选择 · Enter 打开/执行 · > 命令模式 · Esc 关闭';
 
-		this.backdrop = backdrop;
+		panel.append(inputWrap, list, footer);
+		host.appendChild(panel);
+
 		this.panelEl = panel;
 		this.inputEl = input;
 		this.listEl = list;
 		this.positionNearAnchor(anchor);
-		this.renderResults(initialQuery);
-		this.win.setTimeout(() => { input.focus(); input.select(); }, 10);
+		input.focus();
+		input.select();
+		this.doc.addEventListener('pointerdown', this.dismissOutside, true);
+		this.scheduleResults(16);
 	}
 
 	toggle(anchor?: HTMLElement | null): void {
@@ -92,12 +120,14 @@ export class WorkspaceSpotlightPanel {
 	}
 
 	close(): void {
-		this.backdrop?.remove();
-		this.backdrop = null;
+		this.doc.removeEventListener('pointerdown', this.dismissOutside, true);
+		this.win.clearTimeout(this.timer);
+		this.panelEl?.remove();
 		this.panelEl = null;
 		this.inputEl = null;
 		this.listEl = null;
 		this.results = [];
+		this.rows = [];
 	}
 
 	destroy(): void {
@@ -141,7 +171,7 @@ export class WorkspaceSpotlightPanel {
 			if (it.id.startsWith('closed:')) closedTabs.push(it);
 			else if (it.id.startsWith('group:')) groups.push(it);
 			else if (it.id.startsWith('session:')) sessions.push(it);
-			else if (it.id.startsWith('lib:')) library.push(it);
+			else if (it.id.startsWith('lib:') || it.id.startsWith('recent-added:')) library.push(it);
 			else if (it.category === 'citation' || it.id.startsWith('word-cite:')) wordCites.push(it);
 			else if (it.category === 'command' || it.id.startsWith('cmd:')) commands.push(it);
 			else openTabs.push(it);
@@ -168,21 +198,23 @@ export class WorkspaceSpotlightPanel {
 
 	private renderResults(rawQuery: string): void {
 		if (!this.listEl) return;
-		this.listEl.textContent = '';
+		const fragment = this.doc.createDocumentFragment();
 		const all = this.engine.query(rawQuery, this.win);
 		const hasQuery = rawQuery.trim().length > 0;
 		const sections = this.partitionSections(all);
 
 		if (!sections.length) {
 			this.results = [];
+			this.rows = [];
 			const empty = createWorkspaceElement(this.doc, 'div');
 			empty.className = 'zbf-spotlight-empty';
-			empty.textContent = '没有匹配的文献或操作。试试输入 @ 搜索全部文库，或输入 > 筛选命令。';
-			this.listEl.appendChild(empty);
+			empty.textContent = hasQuery ? '没有匹配项。搜索整库请使用 Zotero 主文库搜索框。' : '当前没有打开的阅读标签。输入分组、会话名称，或输入 > 查看命令。';
+			this.listEl.replaceChildren(empty);
 			return;
 		}
 
 		const visible: SpotlightItemResult[] = [];
+		this.rows = [];
 		let rowIdx = 0;
 
 		for (const sec of sections) {
@@ -201,7 +233,7 @@ export class WorkspaceSpotlightPanel {
 				else this.collapsedSections.add(sec.key);
 				this.renderResults(this.inputEl?.value || '');
 			});
-			this.listEl.appendChild(secHead);
+			fragment.appendChild(secHead);
 
 			if (collapsed) continue;
 			for (const item of sec.items) {
@@ -210,8 +242,8 @@ export class WorkspaceSpotlightPanel {
 
 				const row = createWorkspaceElement(this.doc, 'div');
 				row.setAttribute('role', 'option');
-				row.className = `zbf-spot-row${idx === this.activeIndex ? ' active' : ''}`;
-				row.addEventListener('mouseenter', () => this.setActive(idx));
+				row.className = 'zbf-spot-row';
+				row.addEventListener('mouseenter', () => this.setActive(idx, false));
 				row.addEventListener('click', () => {
 					this.close();
 					void Promise.resolve(item.action());
@@ -240,21 +272,25 @@ export class WorkspaceSpotlightPanel {
 					subEl.textContent = item.subtitle;
 					row.appendChild(subEl);
 				}
-				this.listEl.appendChild(row);
+				fragment.appendChild(row);
+				this.rows.push(row);
 			}
 		}
+		this.listEl.replaceChildren(fragment);
 		this.results = visible;
 		this.activeIndex = Math.min(this.activeIndex, Math.max(0, this.results.length - 1));
+		this.rows[this.activeIndex]?.classList.add('active');
 	}
 
-	private setActive(idx: number): void {
+	private setActive(idx: number, scroll = true): void {
 		if (!this.results.length || !this.listEl) return;
-		this.activeIndex = (idx + this.results.length) % this.results.length;
-		const rows = Array.from(this.listEl.querySelectorAll('.zbf-spot-row')) as HTMLElement[];
-		for (let i = 0; i < rows.length; i++) {
-			rows[i].classList.toggle('active', i === this.activeIndex);
+		const next = (idx + this.results.length) % this.results.length;
+		if (next !== this.activeIndex) {
+			this.rows[this.activeIndex]?.classList.remove('active');
+			this.rows[next]?.classList.add('active');
+			this.activeIndex = next;
 		}
-		rows[this.activeIndex]?.scrollIntoView?.({ block: 'nearest' });
+		if (scroll) this.rows[next]?.scrollIntoView?.({ block: 'nearest' });
 	}
 
 	private handleKeydown(e: KeyboardEvent): void {

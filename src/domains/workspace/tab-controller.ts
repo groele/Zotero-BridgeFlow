@@ -15,10 +15,12 @@ import {
 	openItemAttachmentOrNote,
 	restoreSessionTabsAndLayout,
 	revealAttachmentFile,
+	readReaderPageMetrics,
 	selectItemInLibrary,
 	trackActiveReaderProgress,
 	type ClosedTabRecord,
 	type PublicationGroupSuggestion,
+	type ReadingTrackOptions,
 } from './tab-actions-helpers.ts';
 import type { TabCloseOptions, TrackedTab, WorkspaceSession } from './types.ts';
 
@@ -316,7 +318,27 @@ export class WorkspaceTabController {
 		);
 	}
 
-	trackReadingProgress(win: Window, elapsedSeconds: number): boolean {
-		return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds);
+	resolveActiveReaderSnapshot(win: Window): { tabID: string; key: string; page: number; total: number } | null {
+		const selectedID = String((win as any).Zotero_Tabs?.selectedID || '');
+		if (!selectedID || selectedID === 'zotero-pane') return null;
+		const current = this.buildTrackedTabs(win).find((t) => !t.virtual && t.tabID === selectedID);
+		if (!current || current.key.startsWith('tab:') || !current.type.startsWith('reader')) return null;
+		const { page, total } = readReaderPageMetrics(selectedID);
+		return { tabID: selectedID, key: current.key, page, total };
+	}
+
+	trackReadingProgress(win: Window, elapsedSeconds: number, options?: ReadingTrackOptions): boolean {
+		return trackActiveReaderProgress(win, this.store, this.buildTrackedTabs(win), elapsedSeconds, options);
+	}
+
+	openGroupAnnotationMatrix(win: Window, groupId?: string): void {
+		const group = groupId ? this.store.state.groups.find((g) => g.id === groupId) : null;
+		const tracked = this.buildTrackedTabs(win).filter((t) => (!groupId || t.groupId === groupId) && (t.parentItemID > 0 || t.itemID > 0));
+		const itemIDs = [...new Set(tracked.map((t) => t.parentItemID || t.itemID))];
+		this.bus?.emit('visual-notes:open-matrix', {
+			win,
+			title: group?.name || '已开文献',
+			itemIDs,
+		});
 	}
 }

@@ -115,11 +115,12 @@ export class WordCiteDomainModule implements DomainModule {
 		this.disposables.add(
 			this.kernel.bus.on('word:refresh-request', async ({ requestId }) => {
 				if (!this.active) return;
+				const docName = this.tracker.getActiveSession()?.displayName || '';
 				const ok = await refreshActiveWordDocument(this.kernel);
 				if (ok) {
 					void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error('word-cite:poll', err));
 				}
-				this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: '' });
+				this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: docName });
 			}),
 		);
 

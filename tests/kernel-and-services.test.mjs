@@ -8,6 +8,9 @@ import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 import { UnifiedClipboardService } from '../src/services/clipboard-service.ts';
 import { CslFormattingEngine } from '../src/services/csl-engine.ts';
+import { CitationLookupEngine } from '../src/domains/inspector/citation-lookup-engine.ts';
+import { focusOrOpenTrackedItem } from '../src/domains/workspace/tab-actions-helpers.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
 import { deduplicateRegularItems, normalizeToRegularItem } from '../src/services/item-resolution.ts';
 
 function createMemoryPrefs(initial = {}) {
@@ -144,5 +147,91 @@ test('CslFormattingEngine + ClipboardService + CitationHistoryStore roundtrip', 
 
 	const found = history.lookupExact('Attention Is All You Need');
 	assert.equal(found?.itemID, 42);
+
+	// Token-overlap fuzzy matching + dash normalization on citation history
+	history.record({
+		text: 'Vaswani, A. (2017). Attention Is All You Need \u2014 Advances in Neural Processing, 30, 5998-6008.',
+		libraryID: 1,
+		itemKey: 'KEY002',
+		itemID: 99,
+		title: 'Attention Is All You Need',
+		style: 'apa',
+	});
+	const fuzzyHits = history.searchFuzzy('Vaswani 2017 Neural Processing 5998-6008');
+	assert.equal(fuzzyHits[0]?.itemID, 99);
+
+	// ClipboardService catches CSL formatting errors cleanly instead of rejecting
+	const brokenClipboard = new UnifiedClipboardService({
+		formatItems: async () => { throw new Error('missing csl style'); },
+	}, bus);
+	assert.equal(await brokenClipboard.copyItems([item], { source: 'tab-menu' }), false);
+
+	// CitationLookupEngine falls back cleanly to weightedSearch with group libraryID when physical search yields empty
+	let capturedLibId = null;
+	const groupItem = {
+		id: 505,
+		deleted: false,
+		firstCreator: 'Zhang',
+		isRegularItem: () => true,
+		getField: (f) => ({
+			title: 'Basin Water Balance Under Changing Climate',
+			publicationTitle: 'Journal of Hydrology',
+			year: '2023',
+			pages: '100-112',
+			volume: '999', // mismatch with parsed query volume so physical filter returns []
+		}[f] || ''),
+	};
+	globalThis.Zotero = {
+		Search: class { addCondition() {} async search() { return []; } },
+		Libraries: { userLibraryID: 1 },
+		Items: {
+			getAll: async (libID) => { capturedLibId = libID; return [groupItem]; },
+			getAsync: async () => null,
+			get: () => null,
+		},
+	};
+	const lookupEngine = new CitationLookupEngine(new CitationHistoryStore());
+	const rich = await lookupEngine.resolveRich('Journal of Hydrology, 2023, 620, 100-112', { libraryID: 9, useHistory: false });
+	assert.equal(capturedLibId, 9);
+	assert.equal(rich.candidates[0]?.itemID, 505);
+
+	// PluginKernel hot-toggles visual-notes domain when modules.visualNotes.enable flips
+	const vnPrefs = createMemoryPrefs({
+		'modules.workspace.enable': false,
+		'modules.visualNotes.enable': true,
+		'modules.inspector.enable': false,
+		'modules.wordCite.enable': false,
+	});
+	const kernel = new PluginKernel({ prefAdapter: vnPrefs.adapter });
+	let vnActive = false;
+	kernel.registerDomain({
+		id: 'visual-notes',
+		enabledPref: 'modules.visualNotes.enable',
+		isActive: () => vnActive,
+		start: () => { vnActive = true; },
+		stop: () => { vnActive = false; },
+	});
+	await kernel.start();
+	assert.equal(vnActive, true);
+	kernel.prefs.set('modules.visualNotes.enable', false);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(vnActive, false);
+	kernel.prefs.set('modules.visualNotes.enable', true);
+	await new Promise((r) => setTimeout(r, 10));
+	assert.equal(vnActive, true);
+	kernel.shutdown();
+
+	// focusOrOpenTrackedItem resolves parent regular item -> getBestAttachment() instead of opening parent ID directly
+	const openedReaderIDs = [];
+	const parentPdf = { id: 888, deleted: false, isAttachment: () => true, isFileAttachment: () => true, fileExists: async () => true };
+	const parentReg = { id: 777, deleted: false, isNote: () => false, isAttachment: () => false, getBestAttachment: async () => parentPdf };
+	globalThis.Zotero = {
+		Items: { get: (id) => (id === 777 ? parentReg : id === 888 ? parentPdf : null) },
+		Reader: { open: async (id) => { openedReaderIDs.push(id); } },
+	};
+	const wsStore = new WorkspaceStateStore(kernel.prefs);
+	const openedOutcome = await focusOrOpenTrackedItem({ Zotero_Tabs: { _tabs: [] } }, wsStore, [], { itemID: 777 }, () => {});
+	assert.equal(openedOutcome, 'opened');
+	assert.deepEqual(openedReaderIDs, [888]);
 	delete globalThis.Zotero;
 });
