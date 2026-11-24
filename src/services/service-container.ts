@@ -3,6 +3,7 @@ import { CitationHistoryStore } from './citation-history-store.ts';
 import { UnifiedClipboardService } from './clipboard-service.ts';
 import { CslFormattingEngine } from './csl-engine.ts';
 import { invalidateResolvedItemCache } from './item-resolution.ts';
+import { ItemRatingsDiskCache, setActiveRatingsCache } from './item-ratings-cache.ts';
 import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
@@ -11,6 +12,7 @@ export class ServiceContainer {
 	public readonly csl: CslFormattingEngine;
 	public readonly clipboard: UnifiedClipboardService;
 	public readonly history: CitationHistoryStore;
+	public readonly ratings: ItemRatingsDiskCache;
 	public readonly itemPanes: ItemPaneRegistryService;
 	public readonly panePositions: ItemPanePositionCoordinator;
 	public readonly win32: Win32BridgeService;
@@ -22,6 +24,8 @@ export class ServiceContainer {
 		this.csl = new CslFormattingEngine(kernel.prefs);
 		this.clipboard = new UnifiedClipboardService(this.csl, kernel.bus);
 		this.history = new CitationHistoryStore();
+		this.ratings = new ItemRatingsDiskCache();
+		setActiveRatingsCache(this.ratings);
 		this.itemPanes = new ItemPaneRegistryService();
 		this.panePositions = new ItemPanePositionCoordinator();
 		this.win32 = new Win32BridgeService();
@@ -29,7 +33,7 @@ export class ServiceContainer {
 
 	async init(): Promise<void> {
 		this.syncHistoryConfig();
-		await this.history.init();
+		await Promise.all([this.history.init(), this.ratings.init()]);
 
 		this.kernel.disposables.add(
 			this.kernel.notifier.subscribe(['item'], (ev) => {
@@ -57,17 +61,20 @@ export class ServiceContainer {
 	}
 
 	syncHistoryConfig(): void {
+		const customDir = this.kernel.prefs.get('inspector.lookup.cacheDirectory');
 		this.history.configure({
-			customDir: this.kernel.prefs.get('inspector.lookup.cacheDirectory'),
+			customDir,
 			maxEntries: this.kernel.prefs.get('inspector.lookup.cacheMaxEntries'),
 			ttlDays: this.kernel.prefs.get('inspector.lookup.cacheTtlDays'),
 		});
+		this.ratings.configure(customDir);
 	}
 
 	dispose(): void {
 		this.panePositions.dispose();
 		this.itemPanes.unregisterAll();
 		this.history.dispose();
+		this.ratings.dispose();
 		this.csl.clearCache();
 		this.win32.dispose();
 	}

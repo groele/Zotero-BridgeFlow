@@ -45,7 +45,12 @@ export function matrixEl(doc: Document, tag: string): HTMLElement {
 }
 
 export function ensureMatrixStyles(doc: Document): void {
-	if (doc.getElementById(MATRIX_STYLE_ID)) return;
+	if (!doc) return;
+	const existing = doc.getElementById(MATRIX_STYLE_ID);
+	if (existing) {
+		if (existing.textContent !== MATRIX_CSS) existing.textContent = MATRIX_CSS;
+		return;
+	}
 	const style = matrixEl(doc, 'style') as HTMLStyleElement;
 	style.id = MATRIX_STYLE_ID;
 	style.textContent = MATRIX_CSS;

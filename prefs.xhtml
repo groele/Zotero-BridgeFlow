@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" src="chrome://zotero-bridgeflow/content/assets/bridgeflow.svg" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.4.3"}'>v0.4.3</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.5.11"}'>v0.5.11</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -212,9 +212,6 @@
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableHoverPreview" native="true" data-l10n-id="zbf-pref-ws-hover"/>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSpotlight" native="true" data-l10n-id="zbf-pref-ws-spotlight"/>
-						<html:div id="zbf-sub-spotlight" class="zbf-sub-stack">
-							<button id="zbf-btn-ws-open-spotlight" native="true" data-l10n-id="zbf-btn-ws-open-spotlight"/>
-						</html:div>
 					</html:div>
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableTabContextMenu" native="true" data-l10n-id="zbf-pref-ws-tabmenu"/>
@@ -259,6 +256,73 @@
 							</html:div>
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.annotationColumn.enable" native="true" data-l10n-id="zbf-pref-ws-ann-col"/>
+						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.statusColumn.enable" native="true" data-l10n-id="zbf-pref-vn-status-col"/>
+						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.ratingColumn.enable" native="true" data-l10n-id="zbf-pref-vn-rating-col"/>
+						<html:div id="zbf-sub-rating-cfg" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-vn-rating-storage" control="zbf-sel-rating-storage"/>
+								<menulist id="zbf-sel-rating-storage" native="true" preference="extensions.zotero.bridgeflow.visualNotes.ratingStorage">
+									<menupopup>
+										<menuitem value="cache" data-l10n-id="zbf-opt-rating-cache"/>
+										<menuitem value="extra" data-l10n-id="zbf-opt-rating-extra"/>
+										<menuitem value="tag" data-l10n-id="zbf-opt-rating-tag"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+						</html:div>
+					</html:div>
+				</html:div>
+				<html:div class="zbf-card">
+					<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-vn-gallery"/>
+					<html:div class="zbf-item-group">
+						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.enable" native="true" data-l10n-id="zbf-pref-vn-gallery-enable"/>
+						<html:div id="zbf-sub-gallery-cfg" class="zbf-sub-stack">
+							<html:div class="zbf-field-grid-2">
+								<html:div class="zbf-field-card">
+									<label data-l10n-id="zbf-pref-gallery-width" control="zbf-gallery-width"/>
+									<html:input id="zbf-gallery-width" class="zbf-num-input" type="number" min="140" max="440" value="220" data-zbf-pref="visualNotes.gallery.cardWidth"/>
+								</html:div>
+								<html:div class="zbf-field-card">
+									<label data-l10n-id="zbf-pref-gallery-height" control="zbf-gallery-height"/>
+									<html:input id="zbf-gallery-height" class="zbf-num-input" type="number" min="0" max="360" value="0" data-zbf-pref="visualNotes.gallery.coverHeight"/>
+								</html:div>
+							</html:div>
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-vn-gallery-mode" control="zbf-sel-gallery-mode"/>
+								<menulist id="zbf-sel-gallery-mode" native="true" preference="extensions.zotero.bridgeflow.visualNotes.gallery.defaultMode">
+									<menupopup>
+										<menuitem value="gallery" data-l10n-id="zbf-opt-gallery-grid"/>
+										<menuitem value="board" data-l10n-id="zbf-opt-gallery-board"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-vn-gallery-group" control="zbf-sel-gallery-group"/>
+								<menulist id="zbf-sel-gallery-group" native="true" preference="extensions.zotero.bridgeflow.visualNotes.gallery.groupBy">
+									<menupopup>
+										<menuitem value="status" data-l10n-id="zbf-opt-gal-grp-status"/>
+										<menuitem value="rating" data-l10n-id="zbf-opt-gal-grp-rating"/>
+										<menuitem value="readState" data-l10n-id="zbf-opt-gal-grp-read"/>
+										<menuitem value="year" data-l10n-id="zbf-opt-gal-grp-year"/>
+										<menuitem value="publication" data-l10n-id="zbf-opt-gal-grp-pub"/>
+										<menuitem value="itemType" data-l10n-id="zbf-opt-gal-grp-type"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-vn-gallery-density" control="zbf-sel-gallery-density"/>
+								<menulist id="zbf-sel-gallery-density" native="true" preference="extensions.zotero.bridgeflow.visualNotes.gallery.cardDensity">
+									<menupopup>
+										<menuitem value="comfortable" data-l10n-id="zbf-opt-density-comfortable"/>
+										<menuitem value="compact" data-l10n-id="zbf-opt-density-compact"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showBriefNote" native="true" data-l10n-id="zbf-pref-vn-gallery-brief"/>
+							<html:div class="zbf-actions">
+								<button id="zbf-btn-open-gallery" native="true" data-l10n-id="zbf-btn-open-gallery"/>
+							</html:div>
+						</html:div>
 					</html:div>
 				</html:div>
 				<html:div class="zbf-card">
@@ -277,15 +341,33 @@
 					</html:div>
 					<html:div class="zbf-item-group">
 						<html:div class="zbf-inline-field">
-							<label data-l10n-id="zbf-pref-ins-ann-color-grid"/>
-							<button id="zbf-btn-reset-ann-colors" native="true" data-l10n-id="zbf-btn-reset-ann-colors"/>
+							<label data-l10n-id="zbf-pref-ins-ann-color-count" control="zbf-sel-ann-color-count"/>
+							<html:div class="zbf-actions">
+								<menulist id="zbf-sel-ann-color-count" native="true" data-zbf-pref="inspector.annotations.enabledColors">
+									<menupopup>
+										<menuitem value="3" data-l10n-id="zbf-opt-ann-colors-3"/>
+										<menuitem value="5" data-l10n-id="zbf-opt-ann-colors-5"/>
+										<menuitem value="8" data-l10n-id="zbf-opt-ann-colors-8"/>
+										<menuitem value="custom" data-l10n-id="zbf-opt-ann-colors-custom"/>
+									</menupopup>
+								</menulist>
+								<button id="zbf-btn-reset-ann-colors" native="true" data-l10n-id="zbf-btn-reset-ann-colors"/>
+							</html:div>
 						</html:div>
+						<label class="zbf-field-hint" data-l10n-id="zbf-pref-ins-ann-color-grid"/>
 						<html:div id="zbf-ann-color-grid" class="zbf-color-label-grid" data-zbf-pref="inspector.annotations.colorLabels"/>
 					</html:div>
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableAnnotationMatrix" native="true" data-l10n-id="zbf-pref-ws-matrix"/>
+						<checkbox preference="extensions.zotero.bridgeflow.visualNotes.collectionHub.enable" native="true" data-l10n-id="zbf-pref-vn-hub-enable"/>
+						<html:div id="zbf-sub-hub-cfg" class="zbf-sub-stack">
+							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.collectionHub.separateWindow" native="true" data-l10n-id="zbf-pref-hub-window"/>
+							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.collectionHub.ignoreFigureTable" native="true" data-l10n-id="zbf-pref-vn-hub-ignore-fig"/>
+							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.collectionHub.preferCommentOverQuote" native="true" data-l10n-id="zbf-pref-vn-hub-prefer-comment"/>
+						</html:div>
 						<html:div class="zbf-actions">
 							<button id="zbf-btn-open-matrix" native="true" data-l10n-id="zbf-btn-open-matrix"/>
+							<button id="zbf-btn-open-collection-hub" native="true" data-l10n-id="zbf-btn-open-collection-hub"/>
 						</html:div>
 					</html:div>
 				</html:div>
@@ -547,10 +629,20 @@
 						<html:div class="zbf-actions">
 							<button id="zbf-clear-cache" native="true" data-l10n-id="zbf-btn-clear-cache"/>
 							<button id="zbf-clear-workspace-state" native="true" data-l10n-id="zbf-btn-clear-workspace"/>
+						</html:div>
+						<html:div class="zbf-actions">
 							<button id="zbf-btn-export-reading" native="true" data-l10n-id="zbf-btn-export-reading"/>
 							<button id="zbf-clear-reading-notes" native="true" data-l10n-id="zbf-btn-clear-reading"/>
+						</html:div>
+						<html:div class="zbf-actions">
 							<button id="zbf-btn-export-brief-notes" native="true" data-l10n-id="zbf-btn-export-brief-notes"/>
 							<button id="zbf-clear-brief-notes" native="true" data-l10n-id="zbf-btn-clear-brief-notes"/>
+						</html:div>
+						<html:div class="zbf-actions">
+							<button id="zbf-btn-export-ratings" native="true" data-l10n-id="zbf-btn-export-ratings"/>
+							<button id="zbf-clear-ratings-cache" native="true" data-l10n-id="zbf-btn-clear-ratings"/>
+						</html:div>
+						<html:div class="zbf-actions">
 							<button id="zbf-reset-defaults" native="true" data-l10n-id="zbf-btn-reset-defaults"/>
 						</html:div>
 					</html:div>

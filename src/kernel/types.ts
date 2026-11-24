@@ -113,6 +113,8 @@ export interface BridgeFlowEventMap {
 	'workspace:reader-neighbors-query': { readonly win?: Window };
 	'workspace:remark-changed': { readonly itemID: number; readonly parentItemID: number; readonly remark: string };
 	'visual-notes:open-matrix': { readonly win: Window; readonly title: string; readonly itemIDs: readonly number[] };
+	'visual-notes:open-hub': { readonly win: Window; readonly initialTab?: 'annotations' | 'notes' };
+	'visual-notes:toggle-gallery': { readonly win: Window; readonly mode?: 'gallery' | 'board' };
 	'visual-notes:reading-updated': { readonly keys?: readonly string[] };
 	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
 	'word:insert-result': WordInsertResultPayload;

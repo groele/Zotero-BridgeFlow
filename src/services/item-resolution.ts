@@ -274,16 +274,18 @@ interface CachedPrimaryFields {
 	creatorYear: string;
 }
 
-const MAX_ITEM_FIELD_CACHE = 800;
+const MAX_ITEM_FIELD_CACHE = 5000;
 const itemFieldCache = new Map<number, CachedPrimaryFields>();
 const titleMarkupCache = new Map<string, string>();
 
+function setBoundedMap<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+	if (map.has(key)) map.delete(key);
+	else if (map.size >= max) { const old = map.keys().next().value; if (old !== undefined) map.delete(old); }
+	map.set(key, value);
+}
+
 export function invalidateResolvedItemCache(itemIDs?: Iterable<number>): void {
-	if (!itemIDs) {
-		itemFieldCache.clear();
-		titleMarkupCache.clear();
-		return;
-	}
+	if (!itemIDs) { itemFieldCache.clear(); titleMarkupCache.clear(); return; }
 	for (const id of itemIDs) itemFieldCache.delete(Number(id));
 }
 
@@ -293,20 +295,15 @@ export function getCachedPrimaryItemFields(item: any, fallbackTitle = ''): Cache
 	const stamp = String(primary?.dateModified || primary?.version || '');
 	if (id > 0 && stamp) {
 		const hit = itemFieldCache.get(id);
-		if (hit && hit.stamp === stamp) return hit;
+		if (hit && hit.stamp === stamp) { itemFieldCache.delete(id); itemFieldCache.set(id, hit); return hit; }
 	}
 	const title = safeGetItemField(primary, 'title') || stripItemTitleMarkup(fallbackTitle);
 	const shortTitle = safeGetItemField(primary, 'shortTitle') || title;
-	const source = safeGetItemField(primary, 'publicationTitle')
-		|| safeGetItemField(primary, 'proceedingsTitle')
-		|| safeGetItemField(primary, 'bookTitle')
-		|| safeGetItemField(primary, 'repository');
+	const source = safeGetItemField(primary, 'publicationTitle') || safeGetItemField(primary, 'proceedingsTitle')
+		|| safeGetItemField(primary, 'bookTitle') || safeGetItemField(primary, 'repository');
 	const creatorYear = formatCreatorYear(primary);
 	const entry: CachedPrimaryFields = { stamp, title, shortTitle, source, creatorYear };
-	if (id > 0 && stamp && title) {
-		if (itemFieldCache.size >= MAX_ITEM_FIELD_CACHE) itemFieldCache.clear();
-		itemFieldCache.set(id, entry);
-	}
+	if (id > 0 && stamp && title) setBoundedMap(itemFieldCache, id, entry, MAX_ITEM_FIELD_CACHE);
 	return entry;
 }
 
@@ -323,8 +320,7 @@ export function stripItemTitleMarkup(value: string): string {
 			out = (typeof r === 'string' ? r : String(r?.textContent ?? raw)).replace(/<[^>]*>/g, '').trim();
 		} catch { /* fallback to regex */ }
 	}
-	if (titleMarkupCache.size >= MAX_ITEM_FIELD_CACHE) titleMarkupCache.clear();
-	titleMarkupCache.set(raw, out);
+	setBoundedMap(titleMarkupCache, raw, out, MAX_ITEM_FIELD_CACHE);
 	return out;
 }
 

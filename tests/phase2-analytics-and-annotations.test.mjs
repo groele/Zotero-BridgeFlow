@@ -86,12 +86,12 @@ test('Phase 2.1: ReadingColumnsController formats read time and annotation color
 
 	const cols = new ReadingColumnsController({ prefs, info: { id: 'bridgeflow@test' } }, store);
 	assert.equal(cols.getReadTimeDisplay(parentItem), '3m · p.3/10');
-	assert.equal(cols.getAnnotationSummaryDisplay(parentItem), '3 (方法:2 创新:1)');
+	assert.equal(cols.getAnnotationSummaryDisplay(parentItem), '3 (Method:2 Finding:1)');
 
 	const semantics = parseColorSemantics('{"#ff6666":"核心方法"}');
 	const collected = collectItemAnnotations([parentItem], semantics);
 	assert.equal(collected.length, 3);
-	assert.equal(collected[0].colorLabel, '创新'); // page 1 sorts before page 2
+	assert.equal(collected[0].colorLabel, 'Finding'); // page 1 sorts before page 2
 	assert.equal(collected[1].colorLabel, '核心方法');
 	delete globalThis.Zotero;
 });
@@ -202,23 +202,66 @@ test('Phase 2.3: Zotero 10 reader page tracking, disk cache merge & title heatma
 	assert.match(grad, /239, 68, 68/);
 	assert.match(grad, /0\.600/);
 
-	// Array-pair color semantics & PDF Reader selection popup decoration
+	// Array-pair color semantics & PDF Reader selection popup decoration (hides duplicate unlabeled swatches cleanly)
 	const arrSem = parseColorSemantics('[["Background","#ffd400"],["Method","#ff6666"]]');
 	assert.equal(arrSem['#ffd400'], 'Background');
 	assert.equal(arrSem['#ff6666'], 'Method');
-	const fakeBtn = {
-		attrs: new Map(),
-		children: [],
-		querySelector: (sel) => (sel.includes('fill') ? { getAttribute: () => '#ffd400' } : null),
-		appendChild(node) { this.children.push(node); },
-		setAttribute(k, v) { this.attrs.set(k, v); },
+	const makePopupBtn = (hex, parent, selected = false) => {
+		const attrs = new Map();
+		const btn = {
+			parentElement: parent,
+			attrs,
+			children: [],
+			classList: { contains: (c) => selected && c === 'active' },
+			querySelector: (sel) => {
+				if (sel.includes('fill')) return { getAttribute: () => hex };
+				if (sel.includes('zbf-popup-color-name')) return btn.children[0] || null;
+				return null;
+			},
+			appendChild(node) { this.children.push(node); },
+			setAttribute(k, v) { attrs.set(k, v); },
+			getAttribute(k) { return attrs.get(k) ?? null; },
+			removeAttribute(k) { attrs.delete(k); },
+			hasAttribute(k) { return attrs.has(k); },
+		};
+		return btn;
 	};
+	const groupEl = {};
+	const defSem = parseColorSemantics('');
+	const popupBtns = [
+		makePopupBtn('#ffd400', groupEl),
+		makePopupBtn('#ff6666', groupEl),
+		makePopupBtn('#5fb236', groupEl),
+		makePopupBtn('#2ea8e5', groupEl),
+		makePopupBtn('#a28ae5', groupEl),
+		makePopupBtn('#e56eee', groupEl),
+		makePopupBtn('#f19837', groupEl),
+		makePopupBtn('#aaaaaa', groupEl),
+	];
 	const fakeReaderDoc = {
-		querySelectorAll: (sel) => (sel.includes('.color-button') ? [fakeBtn] : []),
-		createElementNS: (_ns, tag) => ({ tagName: tag, className: '', textContent: '' }),
+		querySelectorAll: (sel) => (sel.includes('.color-button') ? popupBtns : []),
+		createElementNS: (_ns, tag) => ({ tagName: tag, className: '', textContent: '', remove() {} }),
 	};
-	assert.equal(decorateSelectionPopupDoc(fakeReaderDoc, arrSem), 1);
-	assert.equal(fakeBtn.children[0].textContent, 'Background');
+	assert.equal(decorateSelectionPopupDoc(fakeReaderDoc, defSem), 5);
+	assert.deepEqual(
+		popupBtns.filter((b) => b.getAttribute('data-zbf-dedup-hidden') !== 'true').map((b) => b.children[0]?.textContent),
+		['Context', 'Method', 'Gap', 'Finding', 'Evidence'],
+	);
+	assert.equal(popupBtns[4].getAttribute('data-zbf-dedup-hidden'), null);
+	assert.equal(popupBtns[5].getAttribute('data-zbf-dedup-hidden'), 'true');
+	assert.equal(popupBtns[6].getAttribute('data-zbf-dedup-hidden'), 'true');
+	assert.equal(popupBtns[7].getAttribute('data-zbf-dedup-hidden'), 'true');
+	// Switching user enabled palette to 3 colors or 8 colors updates popup cleanly
+	assert.equal(decorateSelectionPopupDoc(fakeReaderDoc, defSem, new Set(['#ffd400', '#ff6666', '#2ea8e5'])), 3);
+	assert.equal(decorateSelectionPopupDoc(fakeReaderDoc, defSem, new Set(Object.keys(defSem))), 8);
+	// Active disabled swatch stays visible with its label on existing annotations
+	const activeExtraBtn = makePopupBtn('#e56eee', {}, true);
+	assert.equal(decorateSelectionPopupDoc({
+		querySelectorAll: (sel) => (sel.includes('.color-button') ? [makePopupBtn('#2ea8e5', activeExtraBtn.parentElement), activeExtraBtn] : []),
+		createElementNS: (_ns, tag) => ({ tagName: tag, className: '', textContent: '', remove() {} }),
+	}, defSem), 2);
+	assert.equal(activeExtraBtn.getAttribute('data-zbf-dedup-hidden'), null);
+	assert.equal(activeExtraBtn.children[0]?.textContent, 'Quote');
 
 	// Pretty-printed multi-line JSON formatting for workspace & citation caches
 	const writtenJson = {};
@@ -463,10 +506,16 @@ test('Phase 2.5: hover card sub-60s duration formatting & ReadingColumnsControll
 	hc.destroy();
 
 	const cols = new ReadingColumnsController({ prefs, info: { id: 'bridgeflow@test' } }, store);
-	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
-	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (Method:1)');
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (Method:1)');
 	assert.equal(annQueries, 1);
 	cols.refreshColumns();
-	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (Method:1)');
 	assert.equal(annQueries, 2);
+
+	const { getHeatmapGradientCacheSize } = await import('../src/domains/visual-notes/title-heatmap.ts');
+	for (let k = 1; k <= 5010; k++) {
+		buildTitleHeatmapGradient({ readSeconds: k * 10, totalPages: 10, pageSeconds: { [String((k % 10) + 1)]: k * 10 } });
+	}
+	assert.equal(getHeatmapGradientCacheSize(), 5000);
 });

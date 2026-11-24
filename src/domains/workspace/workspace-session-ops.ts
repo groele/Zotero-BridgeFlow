@@ -50,7 +50,8 @@ export async function hydrateWorkspaceDiskCaches(store: {
 		await store.diskCache.flushNow(pickWorkspaceLayoutState(store.state));
 		return true;
 	}
-	if (layoutChanged || (!diskLayout && !store.readOnlyGuard)) store.save(Boolean(layoutChanged));
+	if (layoutChanged) store.save(true);
+	else if (!diskLayout && !store.readOnlyGuard) store.diskCache.scheduleSave(pickWorkspaceLayoutState(store.state), true);
 	if (readingChanged || store.readingCache.loadedFromLegacy || (!diskReading && Object.keys(store.state.readingProgress).length)) {
 		await store.readingCache.flushNow(store.state);
 	}

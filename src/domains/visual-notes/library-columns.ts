@@ -1,7 +1,16 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import { collectItemAnnotations, parseColorSemantics } from '../../services/annotation-utils.ts';
 import { formatReadingProgress, type TabReadingProgress } from '../../services/reading-stats.ts';
+import { closeVisualColumnPopover } from './column-popover-styles.ts';
 import { readItemRemarkWithFallback, type VisualNotesDataSource } from './data-source.ts';
+import {
+	buildAnnotationCell,
+	buildReadTimeCell,
+	type AnnotationSummaryRecord,
+	type ReadingColumnCallbacks,
+} from './library-column-cells.ts';
+
+export type { ReadingColumnCallbacks };
 
 interface StoreLike {
 	state: {
@@ -21,7 +30,7 @@ function makeSourceFromStore(store?: StoreLike): VisualNotesDataSource | undefin
 
 function registerTreeColumn(registeredKeys: Set<string>, descriptor: Record<string, unknown>, isActive: () => boolean): boolean {
 	const manager = (globalThis as any).Zotero?.ItemTreeManager;
-	const regFn = manager?.registerColumns || manager?.registerColumn;
+	const regFn = manager?.registerColumn || manager?.registerColumns;
 	if (typeof regFn !== 'function') return false;
 	try {
 		const res = regFn.call(manager, descriptor);
@@ -34,7 +43,8 @@ function registerTreeColumn(registeredKeys: Set<string>, descriptor: Record<stri
 		if (res && typeof (res as Promise<unknown>).then === 'function') {
 			void (res as Promise<unknown>).then(recordKey).catch(() => {});
 		} else {
-			recordKey(res);
+			if (typeof res !== 'string' || !res) return false;
+			registeredKeys.add(res);
 		}
 		return true;
 	} catch {
@@ -48,12 +58,19 @@ function flushUnregisterColumns(registeredKeys: Set<string>): void {
 	registeredKeys.clear();
 	const manager = (globalThis as any).Zotero?.ItemTreeManager;
 	try {
-		if (typeof manager?.unregisterColumns === 'function') {
-			void Promise.resolve(manager.unregisterColumns(keys)).catch(() => {});
-		} else if (typeof manager?.unregisterColumn === 'function') {
+		if (typeof manager?.unregisterColumn === 'function') {
 			for (const k of keys) void Promise.resolve(manager.unregisterColumn(k)).catch(() => {});
+		} else if (typeof manager?.unregisterColumns === 'function') {
+			void Promise.resolve(manager.unregisterColumns(keys)).catch(() => {});
 		}
 	} catch { /* ignore */ }
+}
+
+function resolveRowContext(index: number, treeDoc?: Document): { win: Window | null; doc: Document | null; item: any } {
+	const win: Window | null = treeDoc?.defaultView || (globalThis as any).Zotero?.getMainWindow?.() || null;
+	const doc = win?.document || null;
+	const item = (win as any)?.ZoteroPane?.itemsView?.getRow?.(index)?.ref || null;
+	return { win, doc, item };
 }
 
 export class RemarkColumnController {
@@ -85,6 +102,8 @@ export class RemarkColumnController {
 			dataKey: 'bridgeflowRemark',
 			label: zh ? '简记' : 'Brief Note',
 			enabledTreeIDs: ['main'],
+			showInColumnPicker: true,
+			columnPickerSubMenu: false,
 			zoteroPersist: ['width', 'hidden', 'sortDirection'],
 			pluginID: this.kernel.info.id,
 			dataProvider: (item: any) => this.getDisplayForItem(item),
@@ -97,7 +116,7 @@ export class RemarkColumnController {
 	}
 
 	refresh(): void {
-		if (!this.active) return;
+		if (!this.active || !this.registeredKeys.size) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();
 		} catch { /* ignore */ }
@@ -110,12 +129,18 @@ export class ReadingColumnsController {
 	private activeAnnotations = false;
 	private readonly kernel: PluginKernel;
 	private dataSource?: VisualNotesDataSource;
+	private readonly callbacks?: ReadingColumnCallbacks;
 	private cachedColorRaw = '';
 	private cachedSemantics = parseColorSemantics(undefined);
-	private readonly annSummaryCache = new Map<string, string>();
+	private readonly annSummaryCache = new Map<string, AnnotationSummaryRecord>();
 
-	constructor(kernel: PluginKernel, storeOrSource?: StoreLike | VisualNotesDataSource) {
+	constructor(
+		kernel: PluginKernel,
+		storeOrSource?: StoreLike | VisualNotesDataSource,
+		callbacks?: ReadingColumnCallbacks,
+	) {
 		this.kernel = kernel;
+		this.callbacks = callbacks;
 		this.dataSource = storeOrSource && 'getReadingProgress' in storeOrSource
 			? storeOrSource
 			: makeSourceFromStore(storeOrSource);
@@ -138,12 +163,14 @@ export class ReadingColumnsController {
 	unregisterAll(): void {
 		this.activeReadTime = false;
 		this.activeAnnotations = false;
+		const wins: Window[] = (globalThis as any).Zotero?.getMainWindows?.() || [];
+		for (const w of wins) closeVisualColumnPopover(w?.document);
 		flushUnregisterColumns(this.registeredKeys);
 	}
 
 	refreshColumns(): void {
 		this.annSummaryCache.clear();
-		if (!this.activeReadTime && !this.activeAnnotations) return;
+		if ((!this.activeReadTime && !this.activeAnnotations) || !this.registeredKeys.size) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();
 		} catch { /* ignore */ }
@@ -174,8 +201,8 @@ export class ReadingColumnsController {
 		return formatReadingProgress(this.getReadProgressForItem(item)).text;
 	}
 
-	getAnnotationSummaryDisplay(item: any): string {
-		if (!item) return '';
+	getAnnotationSummaryRecord(item: any): AnnotationSummaryRecord {
+		if (!item) return { total: 0, formatted: '', buckets: [] };
 		const rawColor = String(this.kernel.prefs.get('inspector.annotations.colorLabels') || '');
 		if (rawColor !== this.cachedColorRaw) {
 			this.cachedColorRaw = rawColor;
@@ -187,27 +214,40 @@ export class ReadingColumnsController {
 		const cacheKey = itemID > 0 && stamp ? `${itemID}:${stamp}` : '';
 		if (cacheKey) {
 			const hit = this.annSummaryCache.get(cacheKey);
-			if (hit !== undefined) return hit;
+			if (hit !== undefined) {
+				this.annSummaryCache.delete(cacheKey);
+				this.annSummaryCache.set(cacheKey, hit);
+				return hit;
+			}
 		}
 		const collected = collectItemAnnotations([item], this.cachedSemantics);
 		let formatted = '';
+		const buckets: { hex: string; label: string; count: number }[] = [];
 		if (collected.length) {
-			const counts = new Map<string, number>();
+			const counts = new Map<string, { hex: string; label: string; count: number }>();
 			for (const a of collected) {
-				counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+				const prev = counts.get(a.colorLabel);
+				if (prev) prev.count++;
+				else counts.set(a.colorLabel, { hex: a.color || '#64748b', label: a.colorLabel, count: 1 });
 			}
-			const top = [...counts.entries()]
-				.sort((a, b) => b[1] - a[1])
-				.slice(0, 3)
-				.map(([lbl, n]) => `${lbl}:${n}`)
-				.join(' ');
+			buckets.push(...[...counts.values()].sort((a, b) => b.count - a.count));
+			const top = buckets.slice(0, 3).map((b) => `${b.label}:${b.count}`).join(' ');
 			formatted = `${collected.length} (${top})`;
 		}
+		const record: AnnotationSummaryRecord = { total: collected.length, formatted, buckets };
 		if (cacheKey) {
-			if (this.annSummaryCache.size >= 600) this.annSummaryCache.clear();
-			this.annSummaryCache.set(cacheKey, formatted);
+			if (this.annSummaryCache.has(cacheKey)) this.annSummaryCache.delete(cacheKey);
+			else if (this.annSummaryCache.size >= 5000) {
+				const oldest = this.annSummaryCache.keys().next().value;
+				if (oldest !== undefined) this.annSummaryCache.delete(oldest);
+			}
+			this.annSummaryCache.set(cacheKey, record);
 		}
-		return formatted;
+		return record;
+	}
+
+	getAnnotationSummaryDisplay(item: any): string {
+		return this.getAnnotationSummaryRecord(item).formatted;
 	}
 
 	private registerReadTimeColumn(): void {
@@ -216,9 +256,26 @@ export class ReadingColumnsController {
 			dataKey: 'bridgeflowReadTime',
 			label: zh ? '阅读时长' : 'Read Time',
 			enabledTreeIDs: ['main'],
+			showInColumnPicker: true,
+			columnPickerSubMenu: false,
+			minWidth: 88,
 			zoteroPersist: ['width', 'hidden', 'sortDirection'],
 			pluginID: this.kernel.info.id,
 			dataProvider: (item: any) => this.getReadTimeDisplay(item),
+			renderCell: (index: number, _data: string, column: { className?: string }, _first: boolean, treeDoc?: Document) => {
+				const { win, doc, item } = resolveRowContext(index, treeDoc);
+				if (!doc) return {} as HTMLElement;
+				return buildReadTimeCell({
+					win,
+					doc,
+					item,
+					prog: item ? this.getReadProgressForItem(item) : undefined,
+					className: column?.className,
+					zh,
+					heatColor: String(this.kernel.prefs.get('workspace.readingHeatmap.color') || '#0d9488'),
+					callbacks: this.callbacks,
+				});
+			},
 		}, () => this.activeReadTime);
 	}
 
@@ -228,9 +285,26 @@ export class ReadingColumnsController {
 			dataKey: 'bridgeflowAnnotations',
 			label: zh ? '标注分布' : 'Annotations',
 			enabledTreeIDs: ['main'],
+			showInColumnPicker: true,
+			columnPickerSubMenu: false,
+			minWidth: 94,
 			zoteroPersist: ['width', 'hidden', 'sortDirection'],
 			pluginID: this.kernel.info.id,
 			dataProvider: (item: any) => this.getAnnotationSummaryDisplay(item),
+			renderCell: (index: number, _data: string, column: { className?: string }, _first: boolean, treeDoc?: Document) => {
+				const { win, doc, item } = resolveRowContext(index, treeDoc);
+				if (!doc) return {} as HTMLElement;
+				return buildAnnotationCell({
+					win,
+					doc,
+					item,
+					summary: item ? this.getAnnotationSummaryRecord(item) : null,
+					className: column?.className,
+					zh,
+					semantics: this.cachedSemantics,
+					callbacks: this.callbacks,
+				});
+			},
 		}, () => this.activeAnnotations);
 	}
 }

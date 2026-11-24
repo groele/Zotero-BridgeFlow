@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.4.3 - Preferences controller. */
+/* Zotero BridgeFlow v0.5.11 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -45,6 +45,32 @@
     "workspace.readingHeatmap.opacity": { defaultValue: 42, min: 10, max: 90 },
     "workspace.annotationColumn.enable": { defaultValue: true },
     "visualNotes.infoBriefNote.enable": { defaultValue: true },
+    "visualNotes.statusColumn.enable": { defaultValue: true },
+    "visualNotes.ratingColumn.enable": { defaultValue: true },
+    "visualNotes.ratingStorage": {
+      defaultValue: "cache",
+      enumValues: ["cache", "extra", "tag"]
+    },
+    "visualNotes.gallery.enable": { defaultValue: true },
+    "visualNotes.gallery.defaultMode": {
+      defaultValue: "gallery",
+      enumValues: ["gallery", "board"]
+    },
+    "visualNotes.gallery.groupBy": {
+      defaultValue: "status",
+      enumValues: ["status", "rating", "readState", "year", "publication", "itemType"]
+    },
+    "visualNotes.gallery.cardWidth": { defaultValue: 220, min: 140, max: 440 },
+    "visualNotes.gallery.coverHeight": { defaultValue: 0, min: 0, max: 360 },
+    "visualNotes.gallery.cardDensity": {
+      defaultValue: "comfortable",
+      enumValues: ["comfortable", "compact"]
+    },
+    "visualNotes.gallery.showBriefNote": { defaultValue: true },
+    "visualNotes.collectionHub.separateWindow": { defaultValue: false },
+    "visualNotes.collectionHub.enable": { defaultValue: true },
+    "visualNotes.collectionHub.ignoreFigureTable": { defaultValue: false },
+    "visualNotes.collectionHub.preferCommentOverQuote": { defaultValue: false },
     "workspace.remarkDisplayMode": {
       defaultValue: "both",
       enumValues: ["both", "remark", "title"]
@@ -111,6 +137,7 @@
     "inspector.annotations.mergeEnable": { defaultValue: true },
     "inspector.annotations.popupLabelsEnable": { defaultValue: true },
     "inspector.annotations.colorLabels": { defaultValue: "" },
+    "inspector.annotations.enabledColors": { defaultValue: "" },
     "inspector.pdfFolder.enable": { defaultValue: true },
     "inspector.pdfFolder.position": {
       defaultValue: "zotero-editpane-related",
@@ -287,14 +314,26 @@
 
   // src/services/annotation-utils.ts
   var DEFAULT_ANNOTATION_COLORS = {
-    "#ffd400": "背景",
-    "#ff6666": "方法",
-    "#5fb236": "不足",
-    "#2ea8e5": "创新",
-    "#a28ae5": "结论",
-    "#e56eee": "引用",
-    "#f19837": "数据",
-    "#aaaaaa": "备注"
+    "#ffd400": "Context",
+    "#ff6666": "Method",
+    "#5fb236": "Gap",
+    "#2ea8e5": "Finding",
+    "#a28ae5": "Evidence",
+    "#e56eee": "Quote",
+    "#f19837": "Idea",
+    "#aaaaaa": "Note"
+  };
+  var DEFAULT_ENABLED_ANNOTATION_COLORS = [
+    "#ffd400",
+    "#ff6666",
+    "#5fb236",
+    "#2ea8e5",
+    "#a28ae5"
+  ];
+  var ANNOTATION_COLOR_PRESETS = {
+    "3": ["#ffd400", "#ff6666", "#2ea8e5"],
+    "5": DEFAULT_ENABLED_ANNOTATION_COLORS,
+    "8": Object.keys(DEFAULT_ANNOTATION_COLORS)
   };
   function normalizeHexColor(color) {
     const clean = String(color || "").trim().toLowerCase();
@@ -331,9 +370,69 @@
     }
     return merged;
   }
+  function parseEnabledAnnotationColors(raw) {
+    const clean = String(raw || "").trim();
+    if (!clean) return new Set(DEFAULT_ENABLED_ANNOTATION_COLORS);
+    const out = /* @__PURE__ */ new Set();
+    const pushHex = (val) => {
+      const hex = normalizeHexColor(String(val || ""));
+      if (/^#[0-9a-f]{6}$/.test(hex)) out.add(hex);
+    };
+    if (clean.startsWith("[")) {
+      try {
+        const parsed = JSON.parse(clean);
+        if (Array.isArray(parsed)) parsed.forEach(pushHex);
+      } catch {
+      }
+    } else {
+      for (const token of clean.split(/[\s,;]+/)) pushHex(token);
+    }
+    return out.size ? out : new Set(DEFAULT_ENABLED_ANNOTATION_COLORS);
+  }
+  function serializeEnabledAnnotationColors(colors) {
+    const unique = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const raw of colors) {
+      const hex = normalizeHexColor(raw);
+      if (/^#[0-9a-f]{6}$/.test(hex) && !seen.has(hex)) {
+        seen.add(hex);
+        unique.push(hex);
+      }
+    }
+    if (!unique.length) return "";
+    const isDefault = unique.length === DEFAULT_ENABLED_ANNOTATION_COLORS.length && DEFAULT_ENABLED_ANNOTATION_COLORS.every((hex) => seen.has(hex));
+    return isDefault ? "" : unique.join(",");
+  }
 
   // src/prefs-color-editor.ts
   var XHTML_NS = "http://www.w3.org/1999/xhtml";
+  function detectColorPresetValue(enabled) {
+    for (const key of ["3", "5", "8"]) {
+      const list = ANNOTATION_COLOR_PRESETS[key];
+      if (enabled.size === list.length && list.every((hex) => enabled.has(hex))) return key;
+    }
+    return "custom";
+  }
+  function syncPresetMenulist(doc, enabled) {
+    const ml = doc.getElementById("zbf-sel-ann-color-count");
+    if (!ml) return;
+    const val = detectColorPresetValue(enabled);
+    try {
+      ml.value = val;
+    } catch {
+    }
+    ml.setAttribute?.("value", val);
+    const items = Array.from(ml.querySelectorAll?.("menuitem") || []);
+    const matched = items.find((it) => it.getAttribute("value") === val);
+    if (matched) {
+      try {
+        ml.selectedItem = matched;
+      } catch {
+      }
+      const lbl = matched.getAttribute("label") || (matched.textContent || "").trim();
+      if (lbl) ml.setAttribute?.("label", lbl);
+    }
+  }
   function parseSlotPairs(rawJson) {
     const raw = rawJson.trim();
     if (!raw.startsWith("[")) return null;
@@ -376,12 +475,13 @@
     }
     return Object.keys(custom).length ? JSON.stringify(custom) : "";
   }
-  function syncAnnotationColorInputs(doc, rawJson) {
+  function syncAnnotationColorInputs(doc, rawJson, rawEnabled) {
     const grid = doc.getElementById("zbf-ann-color-grid");
     if (!grid) return;
     const trimmed = rawJson.trim();
     const pairs = parseSlotPairs(trimmed);
     const merged = parseColorSemantics(trimmed);
+    const enabled = parseEnabledAnnotationColors(rawEnabled);
     const defaultEntries = Object.entries(DEFAULT_ANNOTATION_COLORS);
     const extraEntries = Object.entries(merged).filter(([hex]) => !(hex in DEFAULT_ANNOTATION_COLORS));
     const activeEl = doc.activeElement;
@@ -390,11 +490,11 @@
     grid.querySelectorAll(".zbf-color-label-item").forEach((row) => {
       const swatch = row.querySelector?.('input[type="color"]');
       const input = row.querySelector?.("input[data-zbf-color]");
+      const toggle = row.querySelector?.('input[type="checkbox"]');
       const [defHex, defLabel] = defaultEntries[idx] || ["", ""];
       const pair = pairs?.[idx];
       idx += 1;
       if (!input) return;
-      if (activeEl && (activeEl === input || activeEl === swatch)) return;
       let effectiveHex = defHex;
       if (pair) {
         effectiveHex = pair[0];
@@ -403,6 +503,14 @@
         if (currentHex in merged) effectiveHex = currentHex;
         else if (!(defHex in merged) && extraEntries[extraIdx]) effectiveHex = extraEntries[extraIdx++][0];
       }
+      const isEnabled = enabled.has(effectiveHex);
+      if (toggle) {
+        toggle.checked = isEnabled;
+        if (isEnabled) toggle.setAttribute("checked", "true");
+        else toggle.removeAttribute("checked");
+      }
+      row.classList?.toggle?.("is-muted", !isEnabled);
+      if (activeEl && (activeEl === input || activeEl === swatch)) return;
       const val = pair?.[1] || merged[effectiveHex] || defLabel;
       if (swatch) {
         swatch.value = effectiveHex;
@@ -414,14 +522,34 @@
       input.value = val;
       input.setAttribute("value", val);
     });
+    syncPresetMenulist(doc, enabled);
   }
   function initAnnotationColorEditor(doc, prefs, onSaved) {
     const grid = doc.getElementById("zbf-ann-color-grid");
     if (!grid || grid.childElementCount > 0) return;
     const rawStr = String(prefs.get("inspector.annotations.colorLabels") || "");
+    const rawEnabled = String(prefs.get("inspector.annotations.enabledColors") || "");
+    const enabledSet = parseEnabledAnnotationColors(rawEnabled);
     const pairs = parseSlotPairs(rawStr);
     const merged = parseColorSemantics(rawStr);
     const extraEntries = Object.entries(merged).filter(([hex]) => !(hex in DEFAULT_ANNOTATION_COLORS));
+    const commitEnabledFromGrid = () => {
+      const activeHexes = [];
+      grid.querySelectorAll(".zbf-color-label-item").forEach((item) => {
+        const cb = item.querySelector?.('input[type="checkbox"]');
+        const inp = item.querySelector?.("input[data-zbf-color]");
+        const hex = normalizeHexColor(inp?.getAttribute("data-zbf-color"));
+        const on = Boolean(cb?.checked);
+        item.classList?.toggle?.("is-muted", !on);
+        if (on && hex) activeHexes.push(hex);
+      });
+      if (!activeHexes.length) return false;
+      const serialized = serializeEnabledAnnotationColors(activeHexes);
+      prefs.set("inspector.annotations.enabledColors", serialized);
+      syncPresetMenulist(doc, new Set(activeHexes));
+      onSaved();
+      return true;
+    };
     let idx = 0;
     let extraIdx = 0;
     for (const [defHex, defLabel] of Object.entries(DEFAULT_ANNOTATION_COLORS)) {
@@ -431,8 +559,9 @@
       if (!pair && rawStr && extraEntries[extraIdx] && !rawStr.toLowerCase().includes(defHex)) {
         hex = extraEntries[extraIdx++][0];
       }
+      const isEnabled = enabledSet.has(hex);
       const row = doc.createElementNS(XHTML_NS, "div");
-      row.className = "zbf-color-label-item";
+      row.className = isEnabled ? "zbf-color-label-item" : "zbf-color-label-item is-muted";
       row.style?.setProperty?.("--zbf-pill-color", hex);
       const swatch = doc.createElementNS(XHTML_NS, "input");
       swatch.type = "color";
@@ -449,6 +578,12 @@
       input.value = merged[hex] || defLabel;
       input.setAttribute("value", input.value);
       input.title = "点击编辑颜色语义标签";
+      const toggle = doc.createElementNS(XHTML_NS, "input");
+      toggle.type = "checkbox";
+      toggle.className = "zbf-color-label-toggle";
+      toggle.checked = isEnabled;
+      if (isEnabled) toggle.setAttribute("checked", "true");
+      toggle.title = "在 PDF 选词弹窗中启用/隐藏此颜色";
       const commit = (fallbackEmpty) => {
         if (fallbackEmpty && !input.value.trim()) input.value = defLabel;
         const allInputs = Array.from(grid.querySelectorAll("input[data-zbf-color]"));
@@ -462,6 +597,7 @@
         swatch.title = `${nextHex}（点击自定义颜色）`;
         row.style?.setProperty?.("--zbf-pill-color", nextHex);
         commit(true);
+        if (toggle.checked) commitEnabledFromGrid();
       };
       swatch.addEventListener("input", applyColor);
       swatch.addEventListener("change", applyColor);
@@ -482,11 +618,33 @@
           input.blur?.();
         }
       });
+      toggle.addEventListener("click", (ev) => ev.stopPropagation());
+      toggle.addEventListener("change", () => {
+        if (!commitEnabledFromGrid()) {
+          toggle.checked = true;
+          row.classList?.remove?.("is-muted");
+        }
+      });
       row.addEventListener("click", (ev) => {
         if (ev.target === row) input.focus();
       });
-      row.append(swatch, input);
+      row.append(swatch, input, toggle);
       grid.appendChild(row);
+    }
+    const presetSel = doc.getElementById("zbf-sel-ann-color-count");
+    if (presetSel) {
+      const onPreset = () => {
+        const val = String(presetSel.selectedItem?.getAttribute?.("value") ?? presetSel.value ?? "");
+        if (val !== "3" && val !== "5" && val !== "8") return;
+        const presetColors = ANNOTATION_COLOR_PRESETS[val];
+        const serialized = serializeEnabledAnnotationColors(presetColors);
+        prefs.set("inspector.annotations.enabledColors", serialized);
+        syncAnnotationColorInputs(doc, String(prefs.get("inspector.annotations.colorLabels") || ""), serialized);
+        onSaved();
+      };
+      presetSel.addEventListener("command", onPreset);
+      presetSel.addEventListener("change", onPreset);
+      syncPresetMenulist(doc, enabledSet);
     }
   }
 
@@ -545,6 +703,9 @@
     setSubtreeDisabled(doc.getElementById("zbf-group-workspace"), !wsOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-visualnotes"), !vnOn);
     setSubtreeDisabled(doc.getElementById("zbf-sub-reading-heatmap"), !vnOn || !prefs.get("workspace.readingTitleHeatmap.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-rating-cfg"), !vnOn || !prefs.get("visualNotes.ratingColumn.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-gallery-cfg"), !vnOn || !prefs.get("visualNotes.gallery.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-hub-cfg"), !vnOn || !prefs.get("visualNotes.collectionHub.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
     setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
@@ -560,7 +721,6 @@
     setSubtreeDisabled(doc.getElementById("zbf-sub-sleep-cfg"), !wsOn || !prefs.get("workspace.enableTabSleep"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-stale-days"), !wsOn || !prefs.get("workspace.enableStaleSuggestions"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-remark-cfg"), !wsOn || !prefs.get("workspace.enableTabRemarks"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-spotlight"), !wsOn || !prefs.get("workspace.enableSpotlight"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-tabmenu"), !wsOn || !prefs.get("workspace.enableTabContextMenu"));
     const matrixBtn = doc.getElementById("zbf-btn-open-matrix");
     if (matrixBtn) {
@@ -571,6 +731,16 @@
       }
       if (dis) matrixBtn.setAttribute("disabled", "true");
       else matrixBtn.removeAttribute("disabled");
+    }
+    const hubBtn = doc.getElementById("zbf-btn-open-collection-hub");
+    if (hubBtn) {
+      const dis = !vnOn || !prefs.get("visualNotes.collectionHub.enable");
+      try {
+        hubBtn.disabled = dis;
+      } catch {
+      }
+      if (dis) hubBtn.setAttribute("disabled", "true");
+      else hubBtn.removeAttribute("disabled");
     }
     const cslOn = insOn && Boolean(prefs.get("inspector.cslPreview.enable"));
     setSubtreeDisabled(doc.getElementById("zbf-sub-csl"), !cslOn);
@@ -674,6 +844,24 @@
       app?.visualNotes?.refreshLibraryViews?.();
       setStatusFeedback(doc, "zbf-prefs-status-notes-cleared", "✓ 已清空本地简记缓存文件");
     });
+    bindActionBtn(doc.getElementById("zbf-btn-export-ratings"), () => {
+      void exportJsonBackup(
+        "导出文献星级评价备份 (JSON)",
+        `BridgeFlow-ItemRatings-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`,
+        getApp()?.services?.ratings?.exportJson?.(),
+        "zbf-prefs-status-ratings-exported",
+        "✓ 已导出星级评价 JSON 备份"
+      );
+    });
+    bindActionBtn(doc.getElementById("zbf-clear-ratings-cache"), () => {
+      if (targetWin?.confirm && !targetWin.confirm("确定要清空本地独立缓存 item-ratings.json 中的文献星级评价吗？（不影响工作区、简记及 Zotero 原生字段）")) {
+        return;
+      }
+      const app = getApp();
+      app?.services?.ratings?.clearAll?.(true);
+      app?.visualNotes?.refreshLibraryViews?.();
+      setStatusFeedback(doc, "zbf-prefs-status-ratings-cleared", "✓ 已清空本地星级评价缓存文件");
+    });
     bindActionBtn(doc.getElementById("zbf-reset-defaults"), () => {
       prefs.resetAllDefaults();
       syncAll();
@@ -695,12 +883,6 @@
       getApp()?.workspace?.refreshAllWindows?.();
       setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
     });
-    bindActionBtn(doc.getElementById("zbf-btn-ws-open-spotlight"), () => {
-      const mw = getMainWin();
-      mw?.focus?.();
-      getApp()?.kernel?.bus?.emit("inspector:lookup-clipboard", { win: mw || void 0 });
-      setStatusFeedback(doc, "zbf-prefs-status-spotlight", "✓ 已在主窗口唤起 Spotlight 面板");
-    });
     bindActionBtn(doc.getElementById("zbf-btn-csl-refresh"), () => {
       void getApp()?.inspector?.refreshAllPreviews?.();
       setStatusFeedback(doc, "zbf-prefs-status-csl-refreshed", "✓ 已刷新侧栏 CSL 预览与协同面板");
@@ -708,7 +890,8 @@
     initAnnotationColorEditor(doc, prefs, () => setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效"));
     bindActionBtn(doc.getElementById("zbf-btn-reset-ann-colors"), () => {
       prefs.set("inspector.annotations.colorLabels", "");
-      syncAnnotationColorInputs(doc, "");
+      prefs.set("inspector.annotations.enabledColors", "");
+      syncAnnotationColorInputs(doc, "", "");
       syncAll();
       setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
     });
@@ -719,6 +902,20 @@
       mw.focus?.();
       if (app.visualNotes?.openCurrentMatrix) app.visualNotes.openCurrentMatrix(mw);
       else app.workspace?.tabs?.openGroupAnnotationMatrix?.(mw);
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-open-collection-hub"), () => {
+      const mw = getMainWin();
+      const app = getApp();
+      if (!mw || !app) return;
+      mw.focus?.();
+      app.visualNotes?.openCollectionHub?.(mw);
+    });
+    bindActionBtn(doc.getElementById("zbf-btn-open-gallery"), () => {
+      const mw = getMainWin();
+      const app = getApp();
+      if (!mw || !app) return;
+      mw.focus?.();
+      app.visualNotes?.galleryBoard?.toggleWindowGallery?.(mw);
     });
     bindActionBtn(doc.getElementById("zbf-btn-pdf-reset-zoom"), () => {
       prefs.set("inspector.pdfPreview.defaultZoom", 100);
@@ -823,8 +1020,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.4.3" }));
-        versionEl.textContent = `v${"0.4.3"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.5.11" }));
+        versionEl.textContent = `v${"0.5.11"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");
@@ -893,7 +1090,11 @@
             heatRange.value = op;
             heatRange.setAttribute("value", op);
           }
-          syncAnnotationColorInputs(doc, String(prefs.get("inspector.annotations.colorLabels") || ""));
+          syncAnnotationColorInputs(
+            doc,
+            String(prefs.get("inspector.annotations.colorLabels") || ""),
+            String(prefs.get("inspector.annotations.enabledColors") || "")
+          );
           updatePreferenceDependencies(doc, prefs);
         } catch {
           cleanup();
@@ -966,7 +1167,11 @@
         heatOpacityRange.addEventListener("change", syncRange);
       }
       bindPreferenceActions(doc, targetWin, prefs, syncAll);
-      syncAnnotationColorInputs(doc, String(prefs.get("inspector.annotations.colorLabels") || ""));
+      syncAnnotationColorInputs(
+        doc,
+        String(prefs.get("inspector.annotations.colorLabels") || ""),
+        String(prefs.get("inspector.annotations.enabledColors") || "")
+      );
       let stylesRequested = false;
       const ensureStyles = () => {
         if (stylesRequested) return;

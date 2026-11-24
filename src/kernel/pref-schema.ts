@@ -52,6 +52,32 @@ export const PREF_SCHEMA = {
 	'workspace.readingHeatmap.opacity': { defaultValue: 42, min: 10, max: 90 },
 	'workspace.annotationColumn.enable': { defaultValue: true },
 	'visualNotes.infoBriefNote.enable': { defaultValue: true },
+	'visualNotes.statusColumn.enable': { defaultValue: true },
+	'visualNotes.ratingColumn.enable': { defaultValue: true },
+	'visualNotes.ratingStorage': {
+		defaultValue: 'cache',
+		enumValues: ['cache', 'extra', 'tag'],
+	},
+	'visualNotes.gallery.enable': { defaultValue: true },
+	'visualNotes.gallery.defaultMode': {
+		defaultValue: 'gallery',
+		enumValues: ['gallery', 'board'],
+	},
+	'visualNotes.gallery.groupBy': {
+		defaultValue: 'status',
+		enumValues: ['status', 'rating', 'readState', 'year', 'publication', 'itemType'],
+	},
+	'visualNotes.gallery.cardWidth': { defaultValue: 220, min: 140, max: 440 },
+	'visualNotes.gallery.coverHeight': { defaultValue: 0, min: 0, max: 360 },
+	'visualNotes.gallery.cardDensity': {
+		defaultValue: 'comfortable',
+		enumValues: ['comfortable', 'compact'],
+	},
+	'visualNotes.gallery.showBriefNote': { defaultValue: true },
+	'visualNotes.collectionHub.separateWindow': { defaultValue: false },
+	'visualNotes.collectionHub.enable': { defaultValue: true },
+	'visualNotes.collectionHub.ignoreFigureTable': { defaultValue: false },
+	'visualNotes.collectionHub.preferCommentOverQuote': { defaultValue: false },
 	'workspace.remarkDisplayMode': {
 		defaultValue: 'both',
 		enumValues: ['both', 'remark', 'title'],
@@ -119,6 +145,7 @@ export const PREF_SCHEMA = {
 	'inspector.annotations.mergeEnable': { defaultValue: true },
 	'inspector.annotations.popupLabelsEnable': { defaultValue: true },
 	'inspector.annotations.colorLabels': { defaultValue: '' },
+	'inspector.annotations.enabledColors': { defaultValue: '' },
 	'inspector.pdfFolder.enable': { defaultValue: true },
 	'inspector.pdfFolder.position': {
 		defaultValue: 'zotero-editpane-related',

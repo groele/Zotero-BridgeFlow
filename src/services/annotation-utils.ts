@@ -1,12 +1,26 @@
 export const DEFAULT_ANNOTATION_COLORS: Readonly<Record<string, string>> = {
-	'#ffd400': '背景',
-	'#ff6666': '方法',
-	'#5fb236': '不足',
-	'#2ea8e5': '创新',
-	'#a28ae5': '结论',
-	'#e56eee': '引用',
-	'#f19837': '数据',
-	'#aaaaaa': '备注',
+	'#ffd400': 'Context',
+	'#ff6666': 'Method',
+	'#5fb236': 'Gap',
+	'#2ea8e5': 'Finding',
+	'#a28ae5': 'Evidence',
+	'#e56eee': 'Quote',
+	'#f19837': 'Idea',
+	'#aaaaaa': 'Note',
+};
+
+export const DEFAULT_ENABLED_ANNOTATION_COLORS: readonly string[] = [
+	'#ffd400',
+	'#ff6666',
+	'#5fb236',
+	'#2ea8e5',
+	'#a28ae5',
+];
+
+export const ANNOTATION_COLOR_PRESETS: Readonly<Record<'3' | '5' | '8', readonly string[]>> = {
+	'3': ['#ffd400', '#ff6666', '#2ea8e5'],
+	'5': DEFAULT_ENABLED_ANNOTATION_COLORS,
+	'8': Object.keys(DEFAULT_ANNOTATION_COLORS),
 };
 
 export interface CollectedAnnotation {
@@ -61,6 +75,41 @@ export function parseColorSemantics(rawJson?: string | null): Record<string, str
 export function resolveColorLabel(color: string | null | undefined, semantics: Readonly<Record<string, string>>): string {
 	const hex = normalizeHexColor(color);
 	return (hex && semantics[hex]) || hex || '未分类';
+}
+
+export function parseEnabledAnnotationColors(raw?: string | null): Set<string> {
+	const clean = String(raw || '').trim();
+	if (!clean) return new Set(DEFAULT_ENABLED_ANNOTATION_COLORS);
+	const out = new Set<string>();
+	const pushHex = (val: unknown) => {
+		const hex = normalizeHexColor(String(val || ''));
+		if (/^#[0-9a-f]{6}$/.test(hex)) out.add(hex);
+	};
+	if (clean.startsWith('[')) {
+		try {
+			const parsed = JSON.parse(clean);
+			if (Array.isArray(parsed)) parsed.forEach(pushHex);
+		} catch { /* fallback */ }
+	} else {
+		for (const token of clean.split(/[\s,;]+/)) pushHex(token);
+	}
+	return out.size ? out : new Set(DEFAULT_ENABLED_ANNOTATION_COLORS);
+}
+
+export function serializeEnabledAnnotationColors(colors: Iterable<string>): string {
+	const unique: string[] = [];
+	const seen = new Set<string>();
+	for (const raw of colors) {
+		const hex = normalizeHexColor(raw);
+		if (/^#[0-9a-f]{6}$/.test(hex) && !seen.has(hex)) {
+			seen.add(hex);
+			unique.push(hex);
+		}
+	}
+	if (!unique.length) return '';
+	const isDefault = unique.length === DEFAULT_ENABLED_ANNOTATION_COLORS.length
+		&& DEFAULT_ENABLED_ANNOTATION_COLORS.every((hex) => seen.has(hex));
+	return isDefault ? '' : unique.join(',');
 }
 
 function joinAnnotationText(parts: readonly string[]): string {

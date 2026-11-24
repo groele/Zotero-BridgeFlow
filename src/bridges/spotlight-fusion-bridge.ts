@@ -93,7 +93,35 @@ export class SpotlightFusionBridge implements BridgeModule {
 						}
 					}
 
-					// 4. Clear citation caches command
+					// 4. Visual Notes Gallery / Kanban & Collection Notes Hub quick commands
+					if (this.kernel.prefs.get('modules.visualNotes.enable')) {
+						if (this.kernel.prefs.get('visualNotes.gallery.enable') && (!term || 'gallery kanban board 画廊 看板 卡片'.includes(term))) {
+							out.push({
+								id: 'cmd:toggle-gallery-board',
+								category: 'command',
+								title: '> 切换文献画廊 / 多维看板视图',
+								subtitle: '在主文献列表与卡片画廊、状态/星级拖拽看板间切换',
+								badge: '画廊',
+								action: () => {
+									this.kernel.bus.emit('visual-notes:toggle-gallery', { win });
+								},
+							});
+						}
+						if (this.kernel.prefs.get('visualNotes.collectionHub.enable') && (!term || 'notes hub annotations 笔记 标注 汇总 简记'.includes(term))) {
+							out.push({
+								id: 'cmd:open-collection-hub',
+								category: 'command',
+								title: '> 打开当前分类集中笔记与标注管理中心',
+								subtitle: '集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记',
+								badge: '汇总',
+								action: () => {
+									this.kernel.bus.emit('visual-notes:open-hub', { win });
+								},
+							});
+						}
+					}
+
+					// 5. Clear citation caches command
 					if (!term || 'clear cache 清空缓存'.includes(term)) {
 						out.push({
 							id: 'cmd:clear-citation-cache',

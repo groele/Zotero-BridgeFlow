@@ -4,6 +4,7 @@ import {
 	DEFAULT_ANNOTATION_COLORS,
 	normalizeHexColor,
 	parseColorSemantics,
+	parseEnabledAnnotationColors,
 } from '../../services/annotation-utils.ts';
 
 const STYLE_ID = 'zbf-reader-color-labels-style';
@@ -11,16 +12,26 @@ const LABEL_CLASS = 'zbf-popup-color-name';
 const COLOR_KEYS = Object.keys(DEFAULT_ANNOTATION_COLORS);
 const POPUP_CSS = `
 .selection-popup, .annotation-popup { max-width: 480px !important; }
-.selection-popup .colors, .annotation-popup .colors { flex-wrap: wrap !important; justify-content: flex-start !important; gap: 5px 10px !important; }
+.selection-popup .colors, .annotation-popup .colors { flex-wrap: wrap !important; justify-content: flex-start !important; gap: 4px 6px !important; }
 .selection-popup .colors .color-button, .annotation-popup .colors .color-button {
-  width: auto !important; min-width: 20px; height: 22px !important;
-  padding: 2px 6px !important; display: inline-flex !important;
-  align-items: center !important; gap: 5px !important; border-radius: 5px !important;
-  transition: background-color 0.12s ease !important;
+  width: auto !important; min-width: 20px; height: 24px !important;
+  padding: 2px 7px !important; display: inline-flex !important;
+  align-items: center !important; gap: 5px !important; border-radius: 6px !important;
+  transition: background-color 0.14s ease, transform 0.12s cubic-bezier(0.22,1,0.36,1) !important;
+}
+.selection-popup .colors .color-button:hover, .annotation-popup .colors .color-button:hover {
+  background-color: rgba(79, 70, 229, 0.08) !important;
+}
+.selection-popup .colors .color-button:active, .annotation-popup .colors .color-button:active {
+  transform: scale(0.95) !important;
+}
+.selection-popup .colors .color-button[data-zbf-dedup-hidden="true"],
+.annotation-popup .colors .color-button[data-zbf-dedup-hidden="true"] {
+  display: none !important;
 }
 .selection-popup .colors .color-button svg, .annotation-popup .colors .color-button svg { flex: none; }
 .${LABEL_CLASS} {
-  font-size: 12px; line-height: 1.2; color: var(--fill-primary, currentColor);
+  font-size: 12px; font-weight: 500; line-height: 1.2; color: var(--fill-primary, currentColor);
   white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
 }
 `;
@@ -44,21 +55,45 @@ export function resolvePopupButtonColor(btn: Element, index: number): string {
 	return COLOR_KEYS[index] || '';
 }
 
+function isSelectedColorButton(btn: Element): boolean {
+	try {
+		if (btn.classList?.contains?.('active') || btn.classList?.contains?.('selected')) return true;
+		if (btn.getAttribute?.('aria-pressed') === 'true' || btn.getAttribute?.('aria-checked') === 'true') return true;
+		if (btn.getAttribute?.('data-selected') === 'true' || btn.hasAttribute?.('checked')) return true;
+	} catch { /* ignore */ }
+	return false;
+}
+
 export function decorateSelectionPopupDoc(
 	readerDoc: Document,
 	semantics: Readonly<Record<string, string>>,
+	enabledColors?: ReadonlySet<string>,
 ): number {
 	const buttons = readerDoc.querySelectorAll?.('.selection-popup .colors .color-button, .annotation-popup .colors .color-button');
 	if (!buttons || !buttons.length) return 0;
+	const activeSet = enabledColors && enabledColors.size > 0 ? enabledColors : parseEnabledAnnotationColors('');
+	const groups = new Map<Element | null, Set<string>>();
 	let updated = 0;
 	buttons.forEach((btn: Element, index: number) => {
 		const hex = resolvePopupButtonColor(btn, index);
 		const label = (hex && semantics[hex]) || '';
 		let span = btn.querySelector?.(`.${LABEL_CLASS}`) as HTMLElement | null;
+		const group = btn.parentElement ?? null;
+		const seen = groups.get(group) || new Set<string>();
+		groups.set(group, seen);
+		const disabledByPalette = Boolean(hex) && !activeSet.has(hex);
+		const isDup = !label || seen.has(label);
+		if ((disabledByPalette || isDup) && !isSelectedColorButton(btn)) {
+			span?.remove?.();
+			btn.setAttribute?.('data-zbf-dedup-hidden', 'true');
+			return;
+		}
+		btn.removeAttribute?.('data-zbf-dedup-hidden');
 		if (!label) {
 			span?.remove?.();
 			return;
 		}
+		seen.add(label);
 		if (!span) {
 			const htmlNs = 'http://www.w3.org/1999/xhtml';
 			span = (typeof readerDoc.createElementNS === 'function'
@@ -68,7 +103,7 @@ export function decorateSelectionPopupDoc(
 			btn.appendChild(span);
 		}
 		if (span.textContent !== label) span.textContent = label;
-		btn.setAttribute('title', label);
+
 		updated += 1;
 	});
 	return updated;
@@ -77,6 +112,7 @@ export function decorateSelectionPopupDoc(
 export function clearSelectionPopupDoc(readerDoc: Document): void {
 	readerDoc.getElementById?.(STYLE_ID)?.remove?.();
 	readerDoc.querySelectorAll?.(`.${LABEL_CLASS}`).forEach((el: Element) => el.remove?.());
+	readerDoc.querySelectorAll?.('[data-zbf-dedup-hidden]').forEach((el: Element) => el.removeAttribute?.('data-zbf-dedup-hidden'));
 }
 
 export class ReaderPopupLabelsController {
@@ -96,6 +132,10 @@ export class ReaderPopupLabelsController {
 
 	private getSemantics(): Record<string, string> {
 		return parseColorSemantics(String(this.kernel.prefs.get('inspector.annotations.colorLabels') || ''));
+	}
+
+	private getEnabledColors(): Set<string> {
+		return parseEnabledAnnotationColors(String(this.kernel.prefs.get('inspector.annotations.enabledColors') || ''));
 	}
 
 	start(): void {
@@ -131,8 +171,9 @@ export class ReaderPopupLabelsController {
 		}
 		this.scanOpenReaders();
 		const sem = this.getSemantics();
+		const enabled = this.getEnabledColors();
 		for (const doc of this.attachedDocs.keys()) {
-			decorateSelectionPopupDoc(doc, sem);
+			decorateSelectionPopupDoc(doc, sem, enabled);
 		}
 	}
 
@@ -149,7 +190,9 @@ export class ReaderPopupLabelsController {
 			headOrRoot.appendChild(styleEl);
 		}
 
-		const apply = () => decorateSelectionPopupDoc(readerDoc, this.getSemantics());
+		const sheet = readerDoc.getElementById?.(STYLE_ID);
+		if (sheet && sheet.textContent !== POPUP_CSS) sheet.textContent = POPUP_CSS;
+		const apply = () => decorateSelectionPopupDoc(readerDoc, this.getSemantics(), this.getEnabledColors());
 		apply();
 
 		const Obs = (readerDoc.defaultView as any)?.MutationObserver || (globalThis as any).MutationObserver;

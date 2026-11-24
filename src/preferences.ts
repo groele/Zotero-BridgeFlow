@@ -136,7 +136,11 @@ const BridgeFlowPreferences = {
 					heatRange.value = op;
 					heatRange.setAttribute('value', op);
 				}
-				syncAnnotationColorInputs(doc, String(prefs.get('inspector.annotations.colorLabels') || ''));
+				syncAnnotationColorInputs(
+					doc,
+					String(prefs.get('inspector.annotations.colorLabels') || ''),
+					String(prefs.get('inspector.annotations.enabledColors') || ''),
+				);
 				updatePreferenceDependencies(doc, prefs);
 			} catch { cleanup(); }
 		};
@@ -210,7 +214,11 @@ const BridgeFlowPreferences = {
 		}
 
 		bindPreferenceActions(doc, targetWin, prefs, syncAll);
-		syncAnnotationColorInputs(doc, String(prefs.get('inspector.annotations.colorLabels') || ''));
+		syncAnnotationColorInputs(
+			doc,
+			String(prefs.get('inspector.annotations.colorLabels') || ''),
+			String(prefs.get('inspector.annotations.enabledColors') || ''),
+		);
 		let stylesRequested = false;
 		const ensureStyles = () => {
 			if (stylesRequested) return;

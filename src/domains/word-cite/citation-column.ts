@@ -30,7 +30,7 @@ export class CitationColumnController {
 	register(): void {
 		if (this.active) return;
 		const manager = (globalThis as any).Zotero?.ItemTreeManager;
-		const regFn = manager?.registerColumns || manager?.registerColumn;
+		const regFn = manager?.registerColumn || manager?.registerColumns;
 		if (typeof regFn !== 'function') return;
 		this.active = true;
 
@@ -81,12 +81,12 @@ export class CitationColumnController {
 		this.registeredKeys.clear();
 		const manager = (globalThis as any).Zotero?.ItemTreeManager;
 		try {
-			if (typeof manager?.unregisterColumns === 'function') {
-				void Promise.resolve(manager.unregisterColumns(keys)).catch(() => {});
-			} else if (typeof manager?.unregisterColumn === 'function') {
+			if (typeof manager?.unregisterColumn === 'function') {
 				for (const k of keys) {
 					void Promise.resolve(manager.unregisterColumn(k)).catch(() => {});
 				}
+			} else if (typeof manager?.unregisterColumns === 'function') {
+				void Promise.resolve(manager.unregisterColumns(keys)).catch(() => {});
 			}
 		} catch { /* ignore */ }
 	}

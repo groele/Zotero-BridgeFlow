@@ -152,16 +152,16 @@ test('Phase 3: annotation boolean query && / || and matrix Markdown/CSV/HTML/Not
 	};
 
 	const matrix = buildAnnotationMatrix([item1, item2], '', {});
-	assert.deepEqual(matrix.columns, ['方法', '不足']);
+	assert.deepEqual(matrix.columns, ['Method', 'Gap']);
 	assert.equal(matrix.rows.length, 2);
 	assert.equal(matrix.totalAnnotations, 3);
 
 	const md = renderMatrixMarkdown(matrix, '检索对比');
-	assert.match(md, /\| 文献 \| 方法 \| 不足 \|/);
+	assert.match(md, /\| 文献 \| Method \| Gap \|/);
 	assert.match(md, /\[p\.3\] Dual encoder（评注：Fast）/);
 
 	const csv = renderMatrixCsv(matrix);
-	assert.match(csv, /文献,作者年份,方法,不足/);
+	assert.match(csv, /文献,作者年份,Method,Gap/);
 	assert.match(csv, /DPR,Karpukhin 2020/);
 
 	const html = renderMatrixHtmlNote(matrix, '检索对比');
@@ -280,7 +280,7 @@ test('Phase 3: Settings page color editor, dependency isolation, and prefs.js co
 
 	doc.activeElement = null;
 	syncAnnotationColorInputs(doc, '');
-	assert.equal(firstColorInput.value, '背景');
+	assert.equal(firstColorInput.value, 'Context');
 	assert.equal(firstSwatch.value, '#ffd400');
 	assert.equal(buildColorLabelsJsonFromInputs(grid.querySelectorAll('data-zbf-color')), '');
 
@@ -294,16 +294,14 @@ test('Phase 3: Settings page color editor, dependency isolation, and prefs.js co
 	const subPdf = subtree('zbf-sub-pdf-preview');
 	const cardAnn = subtree('zbf-card-annotations');
 	const subRemark = subtree('zbf-sub-remark-cfg');
-	const subSpot = subtree('zbf-sub-spotlight');
 	const subHeat = subtree('zbf-sub-reading-heatmap');
 	const btnMatrix = subtree('zbf-btn-open-matrix');
-	doc.body.append(subPdf, cardAnn, subRemark, subSpot, subHeat, btnMatrix);
+	doc.body.append(subPdf, cardAnn, subRemark, subHeat, btnMatrix);
 
 	prefs.set('modules.inspector.enable', true);
 	prefs.set('modules.visualNotes.enable', true);
 	prefs.set('inspector.pdfPreview.enable', false);
 	prefs.set('workspace.enableTabRemarks', false);
-	prefs.set('workspace.enableSpotlight', false);
 	prefs.set('workspace.readingTitleHeatmap.enable', false);
 	prefs.set('workspace.enableAnnotationMatrix', false);
 	updatePreferenceDependencies(doc, prefs);
@@ -311,7 +309,6 @@ test('Phase 3: Settings page color editor, dependency isolation, and prefs.js co
 	assert.equal(subPdf.getAttribute('data-disabled'), 'true');
 	assert.equal(cardAnn.getAttribute('data-disabled'), 'false');
 	assert.equal(subRemark.getAttribute('data-disabled'), 'true');
-	assert.equal(subSpot.getAttribute('data-disabled'), 'true');
 	assert.equal(subHeat.getAttribute('data-disabled'), 'true');
 	assert.equal(btnMatrix.getAttribute('disabled'), 'true');
 

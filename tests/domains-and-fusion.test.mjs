@@ -571,6 +571,8 @@ test('WordCite switches: dragCite=false still allows Plan C & menus; column.enab
 			'workspace.remarkColumn.enable': false,
 			'workspace.readingColumn.enable': false,
 			'workspace.annotationColumn.enable': false,
+			'visualNotes.statusColumn.enable': false,
+			'visualNotes.ratingColumn.enable': false,
 		}).adapter,
 	});
 	app.init({ id: 'bridgeflow@test', version: '0.1.4', rootURI: 'chrome://test/' });

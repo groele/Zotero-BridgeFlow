@@ -186,16 +186,31 @@
 }
 
 /* Color Pill Editor & Heatmap Controls */
+#zotero-prefpane-zotero-bridgeflow .zbf-field-hint {
+  margin: 0; font-size: 12.5px; color: var(--zbf-p-muted);
+}
 #zotero-prefpane-zotero-bridgeflow .zbf-color-label-grid {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(122px, 1fr)); gap: 6px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(134px, 1fr)); gap: 6px;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-color-label-item {
   --zbf-pill-color: #ffd400;
-  display: flex; align-items: center; gap: 4px; min-width: 0;
-  padding: 3px 6px 3px 5px; border-radius: 8px;
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  padding: 3px 6px 3px 6px; border-radius: 8px;
   border: 1px solid color-mix(in srgb, var(--zbf-pill-color) 42%, var(--zbf-p-border));
   background: color-mix(in srgb, var(--zbf-pill-color) 11%, transparent);
-  cursor: pointer; transition: border-color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease;
+  cursor: pointer; transition: border-color 0.14s ease, background-color 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-item.is-muted {
+  opacity: 0.48;
+  border-style: dashed;
+  background: color-mix(in srgb, currentColor 2%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-item.is-muted:hover {
+  opacity: 0.78;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-color-label-toggle {
+  width: 14px; height: 14px; margin: 0; flex: none;
+  accent-color: var(--zbf-p-accent); cursor: pointer;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-color-label-item:hover,
 #zotero-prefpane-zotero-bridgeflow .zbf-color-label-item:focus-within {

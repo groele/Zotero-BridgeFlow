@@ -10,16 +10,63 @@ export interface TitleHeatmapOptions {
 
 const DEFAULT_RGB = '13, 148, 136';
 const HEATMAP_STYLE_ID = 'zbf-title-heatmap-style';
-const MAX_GRADIENT_CACHE = 500;
+const MAX_GRADIENT_CACHE = 5000;
 const heatmapGradientCache = new Map<string, string>();
+
+function setGradientCache(key: string, value: string): void {
+	if (heatmapGradientCache.has(key)) heatmapGradientCache.delete(key);
+	else if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) {
+		const oldest = heatmapGradientCache.keys().next().value;
+		if (oldest !== undefined) heatmapGradientCache.delete(oldest);
+	}
+	heatmapGradientCache.set(key, value);
+}
 const HEATMAP_CSS = `
 .virtualized-table .cell-text[data-zbf-heatmap="1"] {
-  border-radius: 3px; background-repeat: no-repeat; box-decoration-break: clone;
+  border-radius: 4px;
+  padding-inline: 4px;
+  margin-inline: -4px;
+  background-repeat: no-repeat;
+  box-decoration-break: clone;
+  transition: filter 0.14s ease;
+}
+.virtualized-table .row:hover .cell-text[data-zbf-heatmap="1"] {
+  filter: saturate(1.12);
 }
 .virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"] {
   --zbf-heat-rgb: 255, 255, 255 !important;
 }
+@media (prefers-reduced-motion: reduce) {
+  .virtualized-table .cell-text[data-zbf-heatmap="1"] { transition: none !important; }
+}
 `;
+
+export function formatTitleHeatmapTooltip(
+	baseTitle: string,
+	progress?: TabReadingProgress,
+	zh = true,
+): string {
+	if (!progress) return baseTitle;
+	const secs = Math.max(0, Math.floor(Number(progress.readSeconds) || 0));
+	const dur = secs < 60 ? (secs > 0 ? `${secs}s` : '') : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60) || ''}m`);
+	let peakPage = 0;
+	let peakSec = 0;
+	for (const [k, v] of Object.entries(progress.pageSeconds || {})) {
+		const p = Number(k);
+		const s = Number(v);
+		if (p > 0 && s > peakSec) { peakPage = p; peakSec = s; }
+	}
+	const parts: string[] = [];
+	if (dur) parts.push(dur);
+	if (progress.lastPage) parts.push(progress.totalPages ? `p.${progress.lastPage}/${progress.totalPages}` : `p.${progress.lastPage}`);
+	if (peakPage > 0) {
+		const pDur = peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`;
+		parts.push(zh ? `峰值 p.${peakPage} (${pDur})` : `Peak p.${peakPage} (${pDur})`);
+	}
+	if (!parts.length) return baseTitle;
+	const summary = zh ? `阅读热图：${parts.join(' · ')}` : `Reading Heatmap: ${parts.join(' · ')}`;
+	return baseTitle ? `${baseTitle}\n${summary}` : summary;
+}
 
 export function hexToRgbTuple(hex: string | null | undefined): string {
 	const raw = String(hex || '').trim().replace(/^#/, '');
@@ -38,6 +85,10 @@ function formatStopPct(idx: number, total: number): string {
 	return `${((idx / total) * 100).toFixed(2)}%`;
 }
 
+export function getHeatmapGradientCacheSize(): number {
+	return heatmapGradientCache.size;
+}
+
 export function buildTitleHeatmapGradient(
 	progress?: TabReadingProgress,
 	options: TitleHeatmapOptions = {},
@@ -49,12 +100,15 @@ export function buildTitleHeatmapGradient(
 
 	const cacheKey = `${Number(progress?.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ''}|${options.opacityPercent ?? ''}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(',')}`;
 	const cached = heatmapGradientCache.get(cacheKey);
-	if (cached !== undefined) return cached;
+	if (cached !== undefined) {
+		heatmapGradientCache.delete(cacheKey);
+		heatmapGradientCache.set(cacheKey, cached);
+		return cached;
+	}
 
 	const buckets = buildReadingHeatmapBuckets(progress, bucketCount);
 	if (!buckets.length || !buckets.some((v) => v > 0)) {
-		if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
-		heatmapGradientCache.set(cacheKey, '');
+		setGradientCache(cacheKey, '');
 		return '';
 	}
 
@@ -79,8 +133,7 @@ export function buildTitleHeatmapGradient(
 		i = end;
 	}
 	const out = `linear-gradient(to right, ${stops.join(', ')})`;
-	if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
-	heatmapGradientCache.set(cacheKey, out);
+	setGradientCache(cacheKey, out);
 	return out;
 }
 
@@ -99,6 +152,10 @@ export function clearTitleHeatmapFromCell(cell: Element | null | undefined): voi
 		textEl.style.removeProperty('--zbf-heat-rgb');
 	} else if (textEl.style) {
 		textEl.style.backgroundImage = '';
+	}
+	if (textEl.getAttribute?.('data-zbf-heatmap-title') === '1') {
+		textEl.removeAttribute?.('title');
+		textEl.removeAttribute?.('data-zbf-heatmap-title');
 	}
 	textEl.removeAttribute?.('data-zbf-heatmap');
 }
@@ -120,6 +177,15 @@ export function applyTitleHeatmapToCell(
 	}
 	if (textEl.getAttribute?.('data-zbf-heatmap') !== '1') {
 		textEl.setAttribute?.('data-zbf-heatmap', '1');
+	}
+	if (typeof textEl.setAttribute === 'function') {
+		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
+		const baseTitle = String(textEl.textContent || '').trim();
+		const tip = formatTitleHeatmapTooltip(baseTitle, progress, zh);
+		if (tip) {
+			textEl.setAttribute('title', tip);
+			textEl.setAttribute('data-zbf-heatmap-title', '1');
+		}
 	}
 	return true;
 }
