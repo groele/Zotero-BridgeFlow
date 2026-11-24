@@ -1,19 +1,9 @@
+import type { VirtualColumnSpec, VirtualItemSpec } from './gallery-height-index.ts';
+export type { VirtualColumnSpec, VirtualItemSpec } from './gallery-height-index.ts';
 import { computeMasonryColumnCount, GalleryHeightIndex, moveGalleryKeys } from './gallery-height-index.ts';
 import { galEl } from './gallery-styles.ts';
 
 export { computeMasonryColumnCount, GalleryHeightIndex, moveGalleryKeys };
-
-export interface VirtualItemSpec<T> {
-	readonly id: number;
-	readonly key: string;
-	readonly data: T;
-}
-
-export interface VirtualColumnSpec<T> {
-	readonly value: string;
-	readonly items: readonly VirtualItemSpec<T>[];
-	readonly createShell: () => { root: HTMLElement; list: HTMLElement; headingHeight?: number };
-}
 
 interface InternalEntry<T> {
 	readonly id: number;
@@ -32,6 +22,7 @@ interface InternalColumn<T> {
 	readonly heights: GalleryHeightIndex;
 	items: InternalEntry<T>[];
 	headingHeight: number;
+	visibleRows?: string;
 	root?: HTMLElement;
 	list?: HTMLElement;
 }
@@ -154,6 +145,7 @@ export function createGalleryVirtualLayout<T>(options: {
 			if (!entry || !card.isConnected) continue;
 			const h = rec.borderBoxSize?.[0]?.blockSize ?? card.offsetHeight;
 			if (h > 0 && columns[entry.colIndex]?.heights.measure(entry.row, h)) {
+				columns[entry.colIndex].visibleRows = undefined;
 				measured.set(entry.token, h);
 				dirty = true;
 			}
@@ -201,7 +193,7 @@ export function createGalleryVirtualLayout<T>(options: {
 	function refresh(): void {
 		if (!active) return;
 		if (!board) {
-			const availW = Math.max(240, (scroll.clientWidth || lastWidth || 960) - 24);
+			const availW = Math.max(240, scroll.clientWidth ? scroll.clientWidth - 24 : lastWidth);
 			if (Math.abs(availW - lastWidth) > 2) {
 				lastWidth = availW;
 				const nextCount = computeMasonryColumnCount(availW, options.cardMinWidth, gap);
@@ -242,10 +234,19 @@ export function createGalleryVirtualLayout<T>(options: {
 			if (!wanted.has(tok)) forgetCard(tok, card);
 		}
 
+		const visibleByColumn = columns.map(() => [] as InternalEntry<T>[]);
+		for (const token of wanted) {
+			const entry = entries.get(token);
+			if (entry) visibleByColumn[entry.colIndex].push(entry);
+		}
 		for (const col of columns) {
 			const list = col.list!;
+			const vis = visibleByColumn[col.colIndex].sort((a, b) => a.row - b.row);
+			const rows = vis.map((entry) => entry.row).join(',');
+			if (col.visibleRows === rows) continue;
+			col.visibleRows = rows;
 			clearSpacers(list);
-			const vis = col.items.filter((e) => wanted.has(e.token));
+			let nextNode = list.firstElementChild;
 			for (const entry of vis) {
 				let card = mounted.get(entry.token);
 				const isNew = !card;
@@ -255,13 +256,8 @@ export function createGalleryVirtualLayout<T>(options: {
 					card.dataset.itemId = String(entry.id);
 					mounted.set(entry.token, card);
 				}
-				const nextSibling = Array.from(list.children).find((node) => {
-					const other = entries.get((node as HTMLElement).dataset?.virtualKey || '');
-					return other && other.colIndex === col.colIndex && other.row > entry.row;
-				});
-				if (card.parentElement !== list || card.nextElementSibling !== (nextSibling ?? null)) {
-					list.insertBefore(card, nextSibling ?? null);
-				}
+				if (card === nextNode) nextNode = card.nextElementSibling;
+				else list.insertBefore(card, nextNode);
 				if (isNew) {
 					resizeObs?.observe(card, { box: 'border-box' });
 					options.onCardMounted?.(card, { id: entry.id, data: entry.data });
@@ -289,7 +285,7 @@ export function createGalleryVirtualLayout<T>(options: {
 	content.style.overflowAnchor = 'none';
 	scroll.addEventListener('scroll', schedule, { passive: true });
 	resizeObs?.observe(scroll);
-	refresh();
+	if (scroll.isConnected) refresh();
 
 	return {
 		get orderIDs() { return orderIDs; },

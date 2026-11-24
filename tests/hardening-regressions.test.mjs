@@ -59,6 +59,11 @@ test('runWordCommand enforces busy guard and cleans up state after completion', 
 		await new Promise((r) => setTimeout(r, 15));
 		const second = await runWordCommand(kernel, 'addEditCitation', async (invoke) => invoke());
 		assert.equal(second, 'busy');
+		const clock = Date.now;
+		try {
+			Date.now = () => clock() + 91_000;
+			assert.equal(await runWordCommand(kernel, 'addEditCitation', async invoke => invoke()), 'busy');
+		} finally { Date.now = clock; }
 
 		releaseExec();
 		const firstRes = await first;
@@ -112,13 +117,14 @@ test('configurePdfCoverCacheDirectory routes clearPdfCoverCache to custom direct
 		globalThis.Zotero = { DataDirectory: { dir: 'C:/DefaultZotero' } };
 		globalThis.PathUtils = { join: (...parts) => parts.join('/') };
 		globalThis.IOUtils = {
+			getChildren: async (dir) => [dir + '/1-ATT12345-480.json', dir + '/unrelated.json'],
 			remove: async (p) => { removedPaths.push(p); },
 		};
 
 		configurePdfCoverCacheDirectory('D:/CustomCacheRoot');
 		const ok = await clearPdfCoverCache();
 		assert.equal(ok, true);
-		assert.deepEqual(removedPaths, ['D:/CustomCacheRoot/covers']);
+		assert.deepEqual(removedPaths, ['D:/CustomCacheRoot/covers/1-ATT12345-480.json']);
 
 		configurePdfCoverCacheDirectory('');
 	} finally {

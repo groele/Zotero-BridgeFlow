@@ -22,6 +22,7 @@ export class WordIntegrationPoller {
 	private idleRounds = 0;
 	private readonly emptyStreakBySession = new Map<string, number>();
 	private readonly docPathBySession = new Map<string, string>();
+	private readonly updating = new WeakSet<object>();
 	private pendingCmdDocHint = '';
 
 	private readonly kernel: PluginKernel;
@@ -40,7 +41,7 @@ export class WordIntegrationPoller {
 		this.idleRounds = 0;
 		this.emptyStreakBySession.clear();
 		this.installHooks();
-		void this.pollOnce();
+		void this.pollOnce().catch((err) => this.kernel.logger.error('word-cite:poll', err));
 		this.scheduleNext();
 	}
 
@@ -65,6 +66,7 @@ export class WordIntegrationPoller {
 	async pollOnce(allowDuringExec = false, committedSession?: any): Promise<boolean> {
 		if (this.polling || (!allowDuringExec && this.execDepth > 0)) return false;
 		const integration = (globalThis as any).Zotero?.Integration;
+		if (!allowDuringExec && integration?.currentDoc) return false;
 		const sessionsMap = integration?.sessions;
 		if (!sessionsMap && !committedSession) return false;
 
@@ -80,7 +82,7 @@ export class WordIntegrationPoller {
 			}
 			if (committedSession && typeof committedSession === 'object') {
 				const sid = String(committedSession.sessionID || 'word-active');
-				if (!merged.has(sid)) merged.set(sid, committedSession);
+				merged.set(sid, committedSession);
 			}
 			const entries = [...merged.entries()];
 			const activeIDs = new Set<string>();
@@ -98,33 +100,23 @@ export class WordIntegrationPoller {
 				const sessionID = String(rawID);
 				activeIDs.add(sessionID);
 
-				await this.ensureConsistentSnapshot(session);
-				if (this.stopEpoch !== epoch) return false;
-
-				const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session);
+				const ready = await this.ensureConsistentSnapshot(session);
+				if (this.stopEpoch !== epoch || (!allowDuringExec && (this.execDepth > 0 || integration?.currentDoc))) return false;
 				const prevTracked = this.tracker.getSession(sessionID);
-
-				if (!parsed.length && !orphans.length && prevTracked && (prevTracked.itemCitations.size > 0 || prevTracked.orphans.length > 0)) {
-					const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
-					this.emptyStreakBySession.set(sessionID, streak);
-					if (streak < 2) {
-						rawSessions.push({
-							sessionID,
-							documentPath: prevTracked.documentPath,
-							citations: [...prevTracked.itemCitations.entries()].map(([itemID, info]) => ({
-								itemID,
-								ordinal: info.ordinal,
-								shortText: info.shortText,
-								occurrences: info.occurrences,
-							})),
-							orphans: prevTracked.orphans,
-						});
-						continue;
-					}
-				} else if (parsed.length > 0 || orphans.length > 0) {
-					this.emptyStreakBySession.delete(sessionID);
+				const { citations: parsed, orphans } = ready
+					? extractSessionCitationsWithOrphans(session) : { citations: [], orphans: [] };
+				const empty = parsed.length === 0 && orphans.length === 0;
+				const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
+				if (ready && empty) this.emptyStreakBySession.set(sessionID, streak);
+				else this.emptyStreakBySession.delete(sessionID);
+				if (!ready || (empty && streak < 2 && prevTracked)) {
+					if (prevTracked) rawSessions.push({
+						sessionID, documentPath: prevTracked.documentPath,
+						citations: [...prevTracked.itemCitations].map(([itemID, info]) => ({ itemID, ...info })),
+						orphans: prevTracked.orphans,
+					});
+					continue;
 				}
-
 				const docPath = this.resolveSessionDocumentPath(sessionID, session, entries.length);
 				rawSessions.push({ sessionID, documentPath: docPath, citations: parsed, orphans });
 			}
@@ -132,7 +124,7 @@ export class WordIntegrationPoller {
 			for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
 			for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
 
-			if (this.stopEpoch !== epoch) return false;
+			if (this.stopEpoch !== epoch || (!allowDuringExec && (this.execDepth > 0 || integration?.currentDoc))) return false;
 			const changed = this.tracker.syncSessions(rawSessions);
 			if (changed) { this.idleRounds = 0; if (this.running) this.scheduleItemsViewRefresh(); }
 			else { this.idleRounds = Math.min(10, this.idleRounds + 1); }
@@ -142,21 +134,24 @@ export class WordIntegrationPoller {
 		}
 	}
 
-	private async ensureConsistentSnapshot(session: any): Promise<void> {
-		if (typeof session.updateFromDocument !== 'function') return;
+	private async ensureConsistentSnapshot(session: any): Promise<boolean> {
+		if (this.updating.has(session)) return false;
+		if (typeof session.updateFromDocument !== 'function') return true;
 		const byIdx = session.citationsByIndex;
 		const byItem = session.citationsByItemID;
 		const missingObj = !byIdx || typeof byIdx !== 'object' || !byItem || typeof byItem !== 'object';
 		const mismatch = !missingObj && ((Object.keys(byIdx).length === 0) !== (Object.keys(byItem).length === 0));
-		if (!missingObj && !mismatch) return;
+		if (!missingObj && !mismatch) return true;
 		let guard: ReturnType<typeof setTimeout> | undefined;
 		try {
-			const updatePromise = Promise.resolve(session.updateFromDocument(0)).catch(() => { /* ignore late busy doc */ });
-			await Promise.race([
+			this.updating.add(session);
+			const updatePromise = Promise.resolve().then(() => session.updateFromDocument(0))
+				.then(() => true, () => false).finally(() => this.updating.delete(session));
+			return await Promise.race([
 				updatePromise,
-				new Promise<void>((resolve) => { guard = setTimeout(resolve, 4000); }),
+				new Promise<boolean>((resolve) => { guard = setTimeout(() => resolve(false), 4000); }),
 			]);
-		} catch { /* ignore busy doc */ } finally {
+		} finally {
 			if (guard !== undefined) clearTimeout(guard);
 		}
 	}
@@ -188,7 +183,7 @@ export class WordIntegrationPoller {
 		const cached = this.docPathBySession.get(sessionID);
 		if (cached && !cached.startsWith('window-title:')) return cached;
 
-		if (this.win32) {
+		if (this.win32 && totalSessions === 1) {
 			const probed = this.win32.probeWordWindowTitles();
 			const fg = probed.foregroundTitle ? extractDocumentBaseName(`window-title:${probed.foregroundTitle}`) : '';
 			if (fg && fg !== 'Untitled Word Document' && (totalSessions === 1 || !cached)) {
@@ -213,7 +208,7 @@ export class WordIntegrationPoller {
 	}
 
 	private scheduleItemsViewRefresh(): void {
-		if (this.viewRefreshTimer !== null) return;
+		if (this.viewRefreshTimer !== null || !this.kernel.prefs.get('wordCite.column.enable')) return;
 		const delay = this.kernel.prefs.get('wordCite.itemsViewRefreshDebounceMs');
 		this.viewRefreshTimer = setTimeout(() => {
 			this.viewRefreshTimer = null;
@@ -276,7 +271,7 @@ export class WordIntegrationPoller {
 						this.pendingCmdDocHint = '';
 						this.idleRounds = 0;
 						if (this.postExecTimer !== null) clearTimeout(this.postExecTimer);
-						this.postExecTimer = setTimeout(() => { this.postExecTimer = null; if (this.running) void this.pollOnce(); }, 150) as unknown as number;
+						this.postExecTimer = setTimeout(() => { this.postExecTimer = null; if (this.running) void this.pollOnce().catch((err) => this.kernel.logger.error('word-cite:poll', err)); }, 150) as unknown as number;
 					}
 				},
 			);

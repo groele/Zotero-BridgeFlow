@@ -1,3 +1,15 @@
+export interface VirtualItemSpec<T> {
+	readonly id: number;
+	readonly key: string;
+	readonly data: T;
+}
+
+export interface VirtualColumnSpec<T> {
+	readonly value: string;
+	readonly items: readonly VirtualItemSpec<T>[];
+	readonly createShell: () => { root: HTMLElement; list: HTMLElement; headingHeight?: number };
+}
+
 export class GalleryHeightIndex {
 	public readonly length: number;
 	public readonly gap: number;

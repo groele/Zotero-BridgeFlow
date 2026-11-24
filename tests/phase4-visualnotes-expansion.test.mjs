@@ -440,12 +440,12 @@ test('Phase 4.7: Dedicated item-ratings.json disk cache stores ratings without m
 	const cache = new ItemRatingsDiskCache();
 	setActiveRatingsCache(cache);
 	try {
-		// Initial startup bootstraps empty item-ratings.json on disk
+		// The cache is created when the first rating is recorded.
 		await cache.init();
 		const mainPath = cache.getFilePath();
 		const bakPath = cache.getBackupFilePath();
-		assert.match(mainPath, /bridgeflow-cache[\\/]item-ratings\.json$/);
-		assert.ok(files.has(mainPath), 'item-ratings.json should be created on init');
+		assert.match(mainPath, /bridgeflow-cache[\\/]ratings[\\/]item-ratings\.json$/);
+		assert.ok(!files.has(mainPath), 'an empty ratings cache should not write at startup');
 
 		let saveTxCalls = 0;
 		const cleanItem = createFakeRegularItem({ id: 901, extra: 'DOI: 10.1000/clean' });
@@ -453,6 +453,9 @@ test('Phase 4.7: Dedicated item-ratings.json disk cache stores ratings without m
 		const origSave = cleanItem.saveTx;
 		cleanItem.saveTx = async () => { saveTxCalls++; return origSave(); };
 
+		// Write one revision so the next save can preserve its previous state.
+		cache.setRating(cleanItem, 3);
+		await cache.flushNow();
 		// Writing a 4-star rating in cache mode leaves Extra & tags completely untouched
 		const changed = await setItemRating(cleanItem, 4, 'cache');
 		assert.equal(changed, true);

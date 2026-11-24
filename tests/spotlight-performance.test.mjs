@@ -22,7 +22,8 @@ test('shared custom root recovers a legacy default snapshot and writes a compact
 	await migrated.flushNow(restored);
 	const history = new CitationHistoryStore();
 	history.configure({ customDir: 'shared' });
-	assert.equal(migrated.getDirectoryPath(), history.getDirectoryPath());
+	assert.equal(migrated.getDirectoryPath(), 'shared/workspace');
+	assert.equal(history.getDirectoryPath(), 'shared/citations');
 	assert.ok(files.has(migrated.getFilePath()));
 	assert.ok(files.has(primary.getFilePath()));
 	history.dispose();

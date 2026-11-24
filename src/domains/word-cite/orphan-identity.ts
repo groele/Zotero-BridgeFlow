@@ -80,7 +80,7 @@ export function buildOrphanIdentity(
 	const stableCslId = rawCslId && !isEphemeralSurrogateId(rawCslId, sessionID) ? rawCslId : '';
 	const { author, year } = extractFirstAuthorAndYear(itemData);
 	const normTitle = normalizeMetaToken(itemData?.title || itemData?.['container-title']);
-	const fpAlias = normTitle ? `fp:${normTitle}|${normalizeMetaToken(author)}|${year}` : '';
+	const fpAlias = normTitle && author && year ? `fp:${normTitle}|${normalizeMetaToken(author)}|${year}` : '';
 
 	let key = '';
 	if (Number.isSafeInteger(itemID) && itemID > 0) key = `id:${itemID}`;
@@ -105,14 +105,14 @@ export function isForeignUserItemUri(uri: string, zoteroObj: any): boolean {
 		const currentUid = typeof zoteroObj?.Users?.getCurrentUserID === 'function'
 			? String(zoteroObj.Users.getCurrentUserID() || '').trim()
 			: '';
-		return Boolean(currentUid && userMatch[1] !== currentUid);
+		return !currentUid || userMatch[1] !== currentUid;
 	}
 	const localMatch = uri.match(/^https?:\/\/zotero\.org\/users\/local\/([A-Za-z0-9]+)\/items\/([A-Za-z0-9]+)\/?$/i);
 	if (localMatch) {
 		const ownLocal = typeof zoteroObj?.Users?.getLocalUserKey === 'function'
 			? String(zoteroObj.Users.getLocalUserKey() || '').trim()
 			: '';
-		return Boolean(ownLocal && localMatch[1] !== ownLocal);
+		return !ownLocal || localMatch[1] !== ownLocal;
 	}
 	return false;
 }
@@ -199,7 +199,7 @@ export function classifySyncSafeRelinkUris(
 
 		if (groupId) {
 			const groupLibId = Number(zoteroObj?.Groups?.getLibraryIDFromGroupID?.(Number(groupId)) ?? 0);
-			const editable = groupLibId > 0 && zoteroObj?.Libraries?.get?.(groupLibId)?.editable !== false;
+			const editable = groupLibId > 0 && zoteroObj?.Libraries?.get?.(groupLibId)?.editable === true;
 			if (groupLibId === targetLibraryID && editable) {
 				pushSafe(`http://zotero.org/groups/${groupId}/items/${itemKey}`);
 			} else {
@@ -214,7 +214,7 @@ export function classifySyncSafeRelinkUris(
 		}
 
 		if (userId) {
-			if (!hasUsersApi || (currentUid && userId === currentUid)) {
+			if (currentUid && userId === currentUid) {
 				pushSafe(`http://zotero.org/users/${userId}/items/${itemKey}`);
 			} else {
 				foreignSkipped = true;
@@ -223,7 +223,7 @@ export function classifySyncSafeRelinkUris(
 		}
 
 		if (localKey) {
-			if (ownLocalKey && localKey !== ownLocalKey) {
+			if (!ownLocalKey || localKey !== ownLocalKey) {
 				foreignSkipped = true;
 			} else if (currentUid) {
 				pushSafe(`http://zotero.org/users/${currentUid}/items/${itemKey}`);
@@ -304,10 +304,19 @@ export function mergeOrphanMetadata(
 	const mergedUris = uris.length
 		? [...new Set([...(existing.uris || []), ...uris])]
 		: existing.uris;
-	const mergedData = existing.itemData || rawData;
+	let mergedData = existing.itemData || rawData;
+	if (existing.itemData && rawData) {
+		const combined = { ...rawData };
+		for (const [key, value] of Object.entries(existing.itemData)) {
+			if (value != null && value !== '' && !(Array.isArray(value) && !value.length)) {
+				Object.defineProperty(combined, key, { value, enumerable: true, writable: true, configurable: true });
+			}
+		}
+		mergedData = combined;
+	}
 	const mergedAuthorYear = existing.authorYear || formatCslAuthorYear(rawData);
 	const candidateTitle = String(rawData?.title || rawData?.['container-title'] || '').trim();
-	const mergedTitle = existing.title.startsWith('Citation ') && candidateTitle ? candidateTitle : existing.title;
+	const mergedTitle = (existing.title.startsWith('Citation ') || /^#\d+$/.test(existing.title)) && candidateTitle ? candidateTitle : existing.title;
 	const mergedId = existing.itemID || (Number.isSafeInteger(itemID) && itemID > 0 ? itemID : undefined);
 	return {
 		...existing,

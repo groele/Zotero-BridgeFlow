@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.7 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -412,6 +412,10 @@
       });
       this.disposeStoreListener = this.workspace.store.onChange((change) => {
         if (!this.active || change === "session") return;
+        if (change === "reading") {
+          this.visualNotes.refreshLibraryViews(void 0, true);
+          return;
+        }
         this.syncChangedRemarksToExtra();
         this.visualNotes.refreshLibraryViews();
       });
@@ -773,10 +777,14 @@
 
   // src/domains/inspector/citation-lookup-parser.ts
   function extractIdentifier(input) {
-    const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)\b/i);
+    const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
     const arxivMatch = input.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || input.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
     return {
-      doi: doiMatch ? doiMatch[1].replace(/[.,;)]+$/, "") : void 0,
+      doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, "").replace(/\)+$/, (trailing) => {
+        const opens = (doiMatch[1].match(/\(/g) || []).length;
+        const closes = (doiMatch[1].match(/\)/g) || []).length;
+        return trailing.slice(0, Math.max(0, trailing.length - Math.max(0, closes - opens)));
+      }).toLowerCase() : void 0,
       arxiv: arxivMatch ? arxivMatch[1] : void 0
     };
   }
@@ -890,43 +898,24 @@
     };
     return matchTokens(pubNorm) || matchTokens(abbrNorm);
   }
-  async function queryPhysicalCandidates(parsed, libraryID) {
+  async function queryPhysicalCandidates(parsed, libraryID, signal) {
     const host2 = globalThis.Zotero;
-    if (!host2?.Items) return [];
-    const runSearch = async (libID) => {
-      if (!host2.Search) return [];
-      try {
-        const s = new host2.Search();
-        if (libID !== void 0 && libID !== null) s.libraryID = libID;
-        if (parsed.doi) {
-          s.addCondition("DOI", "is", parsed.doi);
-        } else if (parsed.arxiv && !parsed.journalText) {
-          s.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
-        } else {
-          s.addCondition("itemType", "is", "journalArticle");
-          if (parsed.year) {
-            try {
-              s.addCondition("date", "contains", String(parsed.year));
-            } catch {
-            }
-          }
-        }
-        return await s.search() || [];
-      } catch {
-        return [];
-      }
-    };
-    let ids = await runSearch(libraryID);
-    if (!ids.length && libraryID !== void 0) ids = await runSearch(void 0);
-    if (ids.length && host2.Items.getAsync) {
-      const items = await host2.Items.getAsync(ids).catch(() => []);
-      return Array.isArray(items) ? items : items ? [items] : [];
+    if (!host2?.Items || !host2.Search || signal?.aborted) return [];
+    const scope = libraryID ?? host2.Libraries?.userLibraryID;
+    const search = new host2.Search();
+    if (scope != null) search.libraryID = scope;
+    if (parsed.doi) {
+      search.addCondition("DOI", "is", parsed.doi);
+    } else if (parsed.arxiv && !parsed.journalText) {
+      search.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
+    } else {
+      search.addCondition("itemType", "is", "journalArticle");
+      if (parsed.year) search.addCondition("date", "contains", String(parsed.year));
     }
-    if (typeof host2.Items.getAll === "function") {
-      const targetLib = libraryID ?? host2.Libraries?.userLibraryID ?? 1;
-      return await host2.Items.getAll(targetLib, true, false).catch(() => []) || [];
-    }
-    return [];
+    const ids = await search.search();
+    if (signal?.aborted || !ids?.length) return [];
+    const loaded = typeof host2.Items.getAsync === "function" ? await host2.Items.getAsync(ids) : ids.map((id) => host2.Items.get?.(id));
+    return (Array.isArray(loaded) ? loaded : [loaded]).filter((item) => item && (scope == null || item.libraryID == null || item.libraryID === scope));
   }
   function expandEndPage(first, last) {
     if (!first || !last) return last;
@@ -940,7 +929,7 @@
     const matched = candidates.filter((item) => {
       if (!item || item.deleted || !item.isRegularItem?.()) return false;
       if (parsed.doi) {
-        const itemDoi = safeGetItemField(item, "DOI").trim().toLowerCase();
+        const itemDoi = extractIdentifier(safeGetItemField(item, "DOI")).doi;
         return itemDoi === parsed.doi.toLowerCase();
       }
       if (parsed.arxiv && !parsed.journalText) {
@@ -988,11 +977,9 @@
   }
 
   // src/domains/inspector/citation-lookup-engine.ts
-  var DOI_REGEX = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)\b/i;
   var YEAR_REGEX = /\b(19|20)\d{2}\b/;
   function extractDoi(input) {
-    const match = String(input || "").match(DOI_REGEX);
-    return match ? match[1].replace(/[.,;)\]]+$/, "").toLowerCase() : "";
+    return extractIdentifier(String(input || "")).doi || "";
   }
   function extractYear(input) {
     const match = String(input || "").match(YEAR_REGEX);
@@ -1005,12 +992,17 @@
     }
     async resolveRich(rawQuery, options = {}) {
       const query = String(rawQuery || "").trim();
-      if (!query) return { parsed: null, historyMatched: false, candidates: [] };
+      const empty = { parsed: null, historyMatched: false, candidates: [] };
+      const { signal } = options;
+      if (!query || signal?.aborted) return empty;
+      const parsed = parseCompactCitation(query);
+      const inScope = (libraryID) => options.libraryID == null || options.libraryID === libraryID;
       if (options.useHistory !== false) {
-        const exact = this.history.lookupExact(query);
-        if (exact) {
-          const liveItem = await this.resolveLiveItem(exact.itemID);
-          if (liveItem || options.libraryItems) {
+        const exact = this.history.lookupExact(query, options.libraryID);
+        if (exact && inScope(exact.libraryID)) {
+          const liveItem = await this.resolveLiveItem(exact);
+          if (signal?.aborted) return empty;
+          if (liveItem && (!parsed?.doi || verifyAndFilterCandidates([liveItem], parsed).length) || options.libraryItems) {
             return {
               parsed: null,
               historyMatched: true,
@@ -1018,11 +1010,13 @@
             };
           }
         }
-        const fuzzy = this.history.searchFuzzy(query, 5);
+        const fuzzy = parsed?.doi || parsed?.arxiv ? [] : await this.history.searchFuzzyAsync(query, 5, options.libraryID, signal);
+        if (signal?.aborted) return empty;
         if (fuzzy.length) {
           const liveHits = [];
           for (const rec of fuzzy) {
-            const liveItem = await this.resolveLiveItem(rec.itemID);
+            const liveItem = await this.resolveLiveItem(rec);
+            if (signal?.aborted) return empty;
             if (liveItem) {
               liveHits.push({
                 itemID: rec.itemID,
@@ -1040,9 +1034,9 @@
           }
         }
       }
-      const parsed = parseCompactCitation(query);
       if (parsed && !options.libraryItems) {
-        const physical = await queryPhysicalCandidates(parsed, options.libraryID);
+        const physical = await queryPhysicalCandidates(parsed, options.libraryID, signal);
+        if (signal?.aborted) return empty;
         const verified = verifyAndFilterCandidates(physical, parsed);
         if (verified.length) {
           return {
@@ -1058,37 +1052,49 @@
           };
         }
       }
-      const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID);
+      if (parsed?.arxiv && !parsed.journalText && !parsed.doi) {
+        return { parsed, historyMatched: false, candidates: [] };
+      }
+      const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID, signal);
       return { parsed, historyMatched: false, candidates: weighted };
     }
     async lookup(rawQuery, libraryItems) {
       const outcome = await this.resolveRich(rawQuery, { useHistory: true, libraryItems });
       return [...outcome.candidates];
     }
-    async resolveLiveItem(itemID) {
+    async resolveLiveItem({ itemID, itemKey, libraryID }) {
       const hostItems = globalThis.Zotero?.Items;
       if (!hostItems) return null;
       const item = typeof hostItems.getAsync === "function" ? await hostItems.getAsync(itemID).catch(() => null) : hostItems.get?.(itemID);
-      if (!item || item.deleted || item.isTrashed?.() || !item.isRegularItem?.()) return null;
+      if (!isRegularValidItem(item)) return null;
+      if (item.libraryID != null && item.libraryID !== libraryID) return null;
+      if (item.key && itemKey && item.key !== itemKey) return null;
       return item;
     }
-    async weightedSearch(query, libraryItems, libraryID) {
+    async weightedSearch(query, libraryItems, libraryID, signal) {
       const candidates = libraryItems ?? await this.fetchLocalLibraryItems(libraryID);
       const targetDoi = extractDoi(query);
       const targetYear = extractYear(query);
       const lowerQuery = query.toLowerCase();
       const results = [];
       const seen = /* @__PURE__ */ new Set();
+      let deadline = performance.now() + 6;
       for (const item of candidates) {
-        if (!isRegularValidItem(item)) continue;
+        if (signal?.aborted) return [];
+        if (performance.now() >= deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          if (signal?.aborted) return [];
+          deadline = performance.now() + 6;
+        }
+        if (!isRegularValidItem(item) || libraryID != null && item.libraryID != null && item.libraryID !== libraryID) continue;
         const id = Number(item.id || 0);
         if (!id || seen.has(id)) continue;
         const title = safeGetItemField(item, "title") || String(item.title || "");
-        const doi = (safeGetItemField(item, "DOI") || String(item.DOI || "")).trim().toLowerCase();
-        if (targetDoi && doi && doi === targetDoi) {
-          seen.add(id);
-          results.push({ itemID: id, title, score: 98, source: "doi", item });
-          return results;
+        seen.add(id);
+        if (targetDoi) {
+          const doi = extractDoi(safeGetItemField(item, "DOI") || String(item.DOI || ""));
+          if (doi === targetDoi) results.push({ itemID: id, title, score: 98, source: "doi", item });
+          continue;
         }
         let score = 0;
         const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
@@ -1102,7 +1108,6 @@
         if (creator && creator.length >= 2 && lowerQuery.includes(creator)) score += 20;
         if (title && title.length >= 8 && lowerQuery.includes(title.toLowerCase().slice(0, 24))) score += 45;
         if (score >= 45) {
-          seen.add(id);
           results.push({ itemID: id, title, score: Math.min(95, score), source: "library-weighted", item });
         }
       }
@@ -1813,6 +1818,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       };
       syncCacheStatus();
       let request = 0;
+      let lookupController;
       let pasteTimer;
       const cancelPaste = () => {
         if (pasteTimer !== void 0) clearTimeout(pasteTimer);
@@ -1820,12 +1826,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       };
       this.cleanups.set(body, () => {
         request++;
+        lookupController?.abort();
         cancelPaste();
         offCacheStatus();
       });
       const resolveItem = (candidate) => candidate.item || globalThis.Zotero?.Items?.get?.(candidate.itemID) || null;
       const executeLookup = async (textToSearch) => {
         const current = ++request;
+        lookupController?.abort();
+        const controller = new (doc.defaultView?.AbortController ?? AbortController)();
+        lookupController = controller;
         const isActive = () => current === request && body.isConnected && input.value.trim() === textToSearch.trim();
         if (!textToSearch.trim()) {
           clearLookupResult(statusDiv);
@@ -1847,6 +1857,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           const libraryID = pane?.getSelectedLibraryIDs?.()?.[0] ?? globalThis.Zotero?.Libraries?.userLibraryID;
           const outcome = await this.engine.resolveRich(textToSearch, {
             libraryID,
+            signal: controller.signal,
             useHistory: this.kernel.prefs.get("inspector.lookup.historyEnable")
           });
           if (!isActive()) return;
@@ -1858,10 +1869,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             const hit = outcome.candidates[0];
             if (outcome.historyMatched) {
               renderLookupItemCard(doc, statusDiv, hit, "已匹配文献", "zbf-lookup-state-matched", cb);
-            } else {
+            } else if (hit.source === "physical-exact" || hit.source === "doi") {
               await this.locateInLibrary(hit.itemID);
               if (!isActive()) return;
               renderLookupItemCard(doc, statusDiv, hit, "已定位文献", "zbf-lookup-state-located", cb);
+            } else {
+              renderLookupCandidatesList(doc, statusDiv, outcome.candidates, cb);
             }
             return;
           }
@@ -1887,6 +1900,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const resetInput = () => {
         cancelPaste();
         request++;
+        lookupController?.abort();
         input.value = "";
         syncClear();
         clearLookupResult(statusDiv);
@@ -1897,6 +1911,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       };
       input.oninput = () => {
         request++;
+        lookupController?.abort();
         syncClear();
         clearLookupResult(statusDiv);
         if (!input.value.trim()) cancelPaste();
@@ -4073,6 +4088,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       restoredCount,
       importedCount,
       skippedCount,
+      ambiguousCount = 0,
       existingCount = 0,
       relinkedCount = 0,
       foreignSkippedCount = 0,
@@ -4085,7 +4101,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!totalRecovered) {
       return {
         tone: "warn",
-        text: zh ? "⚠ 未能恢复缺失引文（缺少可用备份元数据）" : "⚠ No orphan citations could be recovered (missing embedded metadata)"
+        text: ambiguousCount ? zh ? `有 ${ambiguousCount} 篇引文对应多条文库记录，请核对后重试。` : `${ambiguousCount} citation(s) matched multiple library items. Review the matches and retry.` : zh ? "⚠ 未能恢复缺失引文（缺少可用备份元数据）" : "⚠ No orphan citations could be recovered (missing embedded metadata)"
       };
     }
     const parts = [];
@@ -4095,27 +4111,30 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       chips.push({ text: zh ? `回收站还原 ${restoredCount} 篇` : `Trash ${restoredCount}`, variant: "ok" });
     }
     if (importedCount > 0) {
-      parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}` : `Imported ${importedCount}${collectionName ? ` to "${collectionName}"` : ""}`);
+      parts.push(zh ? `已反向导入 ${importedCount} 篇` : `Imported ${importedCount}`);
       chips.push({ text: zh ? `备份重建 ${importedCount} 篇` : `Rebuilt ${importedCount}`, variant: "info" });
     }
     if (existingCount > 0) {
-      parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
+      parts.push(zh ? `已复用库内匹配文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
       chips.push({ text: zh ? `复用已有 ${existingCount} 篇` : `Matched ${existingCount}`, variant: "info" });
     }
     if (refreshed) {
-      parts.push(zh ? "已自动刷新并重连 Word" : "auto-refreshed & relinked in Word");
-      chips.push({ text: zh ? "↻ Word 已重连" : "↻ Word Relinked", variant: "ok" });
+      parts.push(zh ? "已执行 Word 刷新，请核对文内引文" : "Word refreshed; verify the document citations");
+      chips.push({ text: zh ? "↻ Word 已刷新" : "↻ Word Refreshed", variant: "ok" });
     } else if (relinkedCount > 0) {
-      parts.push(zh ? "点 Word「刷新」即自动重连" : "click Refresh in Word to relink");
+      parts.push(zh ? "请在目标 Word 文档刷新并核对引文" : "click Refresh in Word to relink");
       chips.push({ text: zh ? "待刷新重连 Word" : "Needs Word Refresh", variant: "warn" });
     }
     if (foreignSkippedCount > 0) {
       parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
       chips.push({ text: zh ? `外部账号隔离 ${foreignSkippedCount} 篇` : `External ${foreignSkippedCount}`, variant: "warn" });
     }
-    if (skippedCount > 0) {
+    if (ambiguousCount > 0) {
+      chips.push({ text: zh ? `候选不唯一 ${ambiguousCount} 篇` : `Ambiguous ${ambiguousCount}`, variant: "warn" });
+    }
+    if (skippedCount > ambiguousCount) {
       parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
-      chips.push({ text: zh ? `无备份跳过 ${skippedCount} 篇` : `Skipped ${skippedCount}`, variant: "warn" });
+      chips.push({ text: zh ? `其他跳过 ${skippedCount - ambiguousCount} 篇` : `Other skipped ${skippedCount - ambiguousCount}`, variant: "warn" });
     }
     const actions = [];
     if (!refreshed && relinkedCount > 0) {
@@ -4136,7 +4155,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       });
     }
     const headline = zh ? `✓ 已成功找回 ${totalRecovered} 篇缺失引文` : `✓ Recovered ${totalRecovered} missing citation(s)`;
-    const subnote = collectionName ? zh ? `已同步至「${collectionName}」` : `Synced to "${collectionName}"` : void 0;
+    const subnote = collectionName ? zh ? `目标文集「${collectionName}」` : `Target collection "${collectionName}"` : void 0;
     return {
       tone: "ok",
       text: `✓ ${parts.join(zh ? "；" : "; ")}`,
@@ -4846,7 +4865,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
         }, { signal: controller.signal });
       };
       click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? void 0, st));
-      click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), win: win ?? void 0 }));
+      click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
       click(st.docBtn, () => this.cycleWordSession());
       click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
       click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", { sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
@@ -4872,7 +4891,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
       const win = st.root.ownerDocument?.defaultView ?? void 0;
       if (act.kind === "refresh-word") {
         if (this.pendingRequest) return;
-        this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), win });
+        this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), sessionID: act.sessionID, win });
         return;
       }
       if (act.kind === "locate-recovered" && act.itemIDs?.length) {
@@ -5500,6 +5519,16 @@ ${ORPHAN_AND_RECEIPT_CSS}
   function cacheFile(directory, name) {
     return globalThis.PathUtils?.join(directory, name) ?? directory + "/" + name;
   }
+  function cacheSection(section, custom) {
+    return cacheFile(cacheDirectory(custom), section);
+  }
+  function cacheReadPaths(section, file, backup2, custom) {
+    const roots = /* @__PURE__ */ new Set([cacheDirectory(custom), cacheDirectory()]);
+    return [...roots].flatMap((root) => {
+      const folder = cacheFile(root, section);
+      return [cacheFile(folder, file), cacheFile(folder, backup2), cacheFile(root, file), cacheFile(root, backup2)];
+    });
+  }
 
   // src/services/safe-io.ts
   async function readTextOutcome(path) {
@@ -5526,14 +5555,88 @@ ${ORPHAN_AND_RECEIPT_CSS}
       return false;
     }
   }
-  async function copyToBackup(path, backupPath) {
-    const ioUtils = globalThis.IOUtils;
-    if (typeof ioUtils?.copy !== "function" || typeof ioUtils?.exists !== "function") return;
-    try {
-      if (await ioUtils.exists(path)) await ioUtils.copy(path, backupPath);
-    } catch {
+
+  // src/services/durable-cache-file.ts
+  var DurableCacheFile = class {
+    writes = Promise.resolve(true);
+    previous = "";
+    backedUpAt;
+    writeBlocked = false;
+    loading;
+    directory;
+    path;
+    backup;
+    paths;
+    needsMigration = false;
+    lastError = "";
+    constructor(section, name, root) {
+      const file = `${name}.json`, backup2 = `${name}.bak.json`;
+      this.directory = cacheSection(section, root);
+      this.path = cacheFile(this.directory, file);
+      this.backup = cacheFile(this.directory, backup2);
+      this.paths = cacheReadPaths(section, file, backup2, root);
     }
-  }
+    load(parse2, legacyPaths = []) {
+      const reading = this.read(parse2, legacyPaths);
+      this.loading = reading;
+      return reading;
+    }
+    async read(parse2, legacyPaths) {
+      this.writeBlocked = false;
+      this.needsMigration = false;
+      this.previous = "";
+      this.backedUpAt = void 0;
+      for (const path of /* @__PURE__ */ new Set([...this.paths, ...legacyPaths])) {
+        const outcome = await readTextOutcome(path);
+        if (outcome.status === "missing") continue;
+        if (outcome.status === "error") {
+          this.writeBlocked = true;
+          this.lastError = "Cache could not be read";
+          continue;
+        }
+        try {
+          const value = parse2(outcome.text, path);
+          if (path === this.path) this.previous = outcome.text;
+          this.needsMigration = path !== this.path;
+          if (!this.writeBlocked) this.lastError = "";
+          return value;
+        } catch {
+          if (path === this.path && !await quarantineFile(path)) {
+            this.writeBlocked = true;
+            this.lastError = "Damaged cache could not be preserved";
+          }
+        }
+      }
+      return null;
+    }
+    write(serialize, backupInterval = 0, replaceBackup = false) {
+      const run = async () => {
+        await this.loading;
+        const io = globalThis.IOUtils;
+        if (!io?.writeUTF8) return true;
+        if (this.writeBlocked) return false;
+        try {
+          const text2 = serialize();
+          if (text2 === this.previous && !replaceBackup) return true;
+          await io.makeDirectory?.(this.directory, { ignoreExisting: true, createAncestors: true });
+          if (replaceBackup || this.previous && (this.backedUpAt === void 0 || Date.now() - this.backedUpAt >= backupInterval)) {
+            await io.writeUTF8(this.backup, replaceBackup ? text2 : this.previous, { tmpPath: this.backup + ".tmp" });
+            this.backedUpAt = Date.now();
+          }
+          await io.writeUTF8(this.path, text2, { tmpPath: this.path + ".tmp" });
+          this.previous = text2;
+          this.needsMigration = false;
+          this.lastError = "";
+          return true;
+        } catch (err) {
+          this.lastError = String(err);
+          return false;
+        }
+      };
+      this.writes = this.writes.then(run, run);
+      return this.writes;
+    }
+  };
 
   // src/services/item-ratings-cache.ts
   var FORMAT_ID = "zotero-bridgeflow-item-ratings";
@@ -5568,43 +5671,41 @@ ${ORPHAN_AND_RECEIPT_CSS}
   var ItemRatingsDiskCache = class {
     ratings = {};
     flushTimer = null;
-    flushing = null;
-    lastWrittenJson = "";
-    lastError = "";
-    directory;
+    file;
+    root;
     initialized = false;
-    readFailed = false;
     constructor(customDir = "") {
-      this.directory = cacheDirectory(customDir);
+      this.root = customDir;
+      this.file = new DurableCacheFile("ratings", "item-ratings", customDir);
     }
     configure(customDir = "") {
-      const nextDir = cacheDirectory(customDir);
-      if (nextDir !== this.directory) {
-        this.directory = nextDir;
-        this.lastWrittenJson = "";
+      if (!this.initialized && customDir !== this.root) {
+        this.root = customDir;
+        this.file = new DurableCacheFile("ratings", "item-ratings", customDir);
       }
     }
+    get lastError() {
+      return this.file.lastError;
+    }
     getDirectoryPath() {
-      return this.directory;
+      return this.file.directory;
     }
     getFilePath() {
-      return cacheFile(this.directory, "item-ratings.json");
+      return this.file.path;
     }
     getBackupFilePath() {
-      return cacheFile(this.directory, "item-ratings.bak.json");
+      return this.file.backup;
     }
     async init() {
       this.initialized = true;
-      this.readFailed = false;
       const disk = await this.loadFromDisk();
       if (disk) {
         for (const [k, v] of Object.entries(disk)) {
           if (!(k in this.ratings)) this.ratings[k] = v;
         }
+        if (this.file.needsMigration) await this.flushNow();
         return true;
       }
-      if (this.readFailed) return false;
-      await this.flushNow();
       return false;
     }
     hasEntry(item) {
@@ -5677,66 +5778,15 @@ ${ORPHAN_AND_RECEIPT_CSS}
         void this.flushNow();
       }, 180);
     }
-    async flushNow() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return true;
-      const payload = this.exportJson();
-      const run = async () => {
-        if (this.readFailed) {
-          this.lastError = "existing ratings file unreadable; write skipped";
-          return false;
-        }
-        if (payload === this.lastWrittenJson) return true;
-        try {
-          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-          const mainPath = this.getFilePath();
-          const bakPath = this.getBackupFilePath();
-          if (this.lastWrittenJson) {
-            try {
-              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
-            } catch {
-            }
-          }
-          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
-          this.lastWrittenJson = payload;
-          this.lastError = "";
-          return true;
-        } catch (err) {
-          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
-          return false;
-        }
-      };
-      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-      return this.flushing;
+    flushNow() {
+      return this.file.write(() => this.exportJson());
     }
-    async loadFromDisk() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-      const candidates = [this.getFilePath(), this.getBackupFilePath()];
-      if (this.directory !== cacheDirectory()) {
-        candidates.push(
-          cacheFile(cacheDirectory(), "item-ratings.json"),
-          cacheFile(cacheDirectory(), "item-ratings.bak.json")
-        );
-      }
-      for (const p of candidates) {
-        const outcome = await readTextOutcome(p);
-        if (outcome.status === "missing") continue;
-        if (outcome.status === "error") {
-          this.readFailed = true;
-          continue;
-        }
-        if (!outcome.text) continue;
-        const parsed = parseRatingsPayload(outcome.text);
-        if (!parsed) {
-          await quarantineFile(p);
-          continue;
-        }
-        this.lastWrittenJson = p === this.getFilePath() ? outcome.text : "";
-        this.readFailed = false;
+    loadFromDisk() {
+      return this.file.load((text2) => {
+        const parsed = parseRatingsPayload(text2);
+        if (!parsed) throw new Error("Invalid ratings file");
         return parsed;
-      }
-      return null;
+      });
     }
     isInitialized() {
       return this.initialized;
@@ -9565,6 +9615,8 @@ ${ORPHAN_AND_RECEIPT_CSS}
     const itemType = String(ref.itemType || globalThis.Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || "journalArticle");
     const tags = extractCleanTags(ref, excludedStatusTag);
     const status = getItemStatus(ref, excludedStatusTag);
+    let attachmentID;
+    let abstractExcerpt;
     const built = {
       title,
       creator,
@@ -9573,8 +9625,12 @@ ${ORPHAN_AND_RECEIPT_CSS}
       itemType,
       itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : "") || itemType,
       dateModified: String(ref.dateModified || ""),
-      pdfAttachmentID: resolvePrimaryPdfAttachmentID(ref),
-      abstractExcerpt: safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620),
+      get pdfAttachmentID() {
+        return attachmentID ??= resolvePrimaryPdfAttachmentID(ref);
+      },
+      get abstractExcerpt() {
+        return abstractExcerpt ??= safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620);
+      },
       tags,
       status,
       baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ""} ${tags.join(" ")}`.toLowerCase()
@@ -9598,6 +9654,80 @@ ${ORPHAN_AND_RECEIPT_CSS}
     { pillBg: "#e0f2fe", pillFg: "#075985", surface: "rgba(14,165,233,0.045)" },
     { pillBg: "#f3e8ff", pillFg: "#6b21a8", surface: "rgba(168,85,247,0.045)" }
   ];
+  var GalleryCard = class {
+    item;
+    itemID;
+    dateModified;
+    deps;
+    zh;
+    fields;
+    note;
+    stars;
+    progress;
+    constructor(item, id, deps, zh) {
+      this.item = item;
+      this.itemID = id;
+      this.dateModified = String(item.dateModified || "");
+      this.deps = deps;
+      this.zh = zh;
+    }
+    get stat() {
+      return this.fields ??= resolveCachedCardStatic(this.item, this.itemID, this.zh, this.deps.excludedStatusTag);
+    }
+    get reading() {
+      if (this.progress === void 0) this.progress = this.deps.getReadProgress(this.item) ?? null;
+      return this.progress;
+    }
+    get title() {
+      return this.stat.title;
+    }
+    get creator() {
+      return this.stat.creator;
+    }
+    get year() {
+      return this.stat.year;
+    }
+    get venue() {
+      return this.stat.venue;
+    }
+    get itemType() {
+      return this.stat.itemType;
+    }
+    get itemTypeLabel() {
+      return this.stat.itemTypeLabel;
+    }
+    get pdfAttachmentID() {
+      return this.stat.pdfAttachmentID;
+    }
+    get abstractExcerpt() {
+      return this.stat.abstractExcerpt;
+    }
+    get tags() {
+      return this.stat.tags;
+    }
+    get status() {
+      return this.stat.status;
+    }
+    get rating() {
+      return this.stars ??= getItemRating(this.item, this.deps.ratingStorage);
+    }
+    get briefNote() {
+      return this.note ??= this.deps.getBriefNote(this.item);
+    }
+    get readSeconds() {
+      return Number(this.reading?.readSeconds || 0);
+    }
+    get readRatio() {
+      const p = this.reading;
+      return p?.totalPages && p.totalPages > 0 && p.lastPage ? Math.min(1, Math.max(0, p.lastPage / p.totalPages)) : 0;
+    }
+    get readText() {
+      return formatReadingProgress(this.reading ?? void 0).text;
+    }
+    get searchLower() {
+      return this.briefNote ? this.stat.baseSearchLower + " " + this.briefNote.toLowerCase() : this.stat.baseSearchLower;
+    }
+  };
   function extractGalleryCards(win, deps) {
     const zh = deps.zh ?? Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
     const view = win?.ZoteroPane?.itemsView;
@@ -9617,37 +9747,13 @@ ${ORPHAN_AND_RECEIPT_CSS}
       if (!itemID || seen.has(itemID)) continue;
       seen.add(itemID);
       rawItems.push(ref);
-      const stat = resolveCachedCardStatic(ref, itemID, zh, deps.excludedStatusTag);
-      const prog = deps.getReadProgress(ref);
-      const readRatio = prog?.totalPages && prog.totalPages > 0 && prog.lastPage ? Math.min(1, Math.max(0, prog.lastPage / prog.totalPages)) : 0;
-      const briefNote = deps.getBriefNote(ref);
-      cards.push({
-        item: ref,
-        itemID,
-        title: stat.title,
-        creator: stat.creator,
-        year: stat.year,
-        venue: stat.venue,
-        itemType: stat.itemType,
-        itemTypeLabel: stat.itemTypeLabel,
-        dateModified: stat.dateModified,
-        pdfAttachmentID: stat.pdfAttachmentID,
-        abstractExcerpt: stat.abstractExcerpt,
-        tags: stat.tags,
-        status: stat.status,
-        rating: getItemRating(ref, deps.ratingStorage),
-        briefNote,
-        readSeconds: Number(prog?.readSeconds || 0),
-        readRatio,
-        readText: formatReadingProgress(prog).text,
-        searchLower: briefNote ? `${stat.baseSearchLower} ${briefNote.toLowerCase()}` : stat.baseSearchLower
-      });
+      cards.push(new GalleryCard(ref, itemID, deps, zh));
     }
     return { cards, rawItems };
   }
   function filterAndSortGalleryCards(cards, query, sortField) {
     const q = String(query || "").trim().toLowerCase();
-    const filtered = q ? cards.filter((c) => `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ""} ${c.briefNote} ${c.tags.join(" ")}`.toLowerCase().includes(q)) : [...cards];
+    const filtered = q ? cards.filter((c) => (c.searchLower ?? `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ""} ${c.briefNote} ${c.tags.join(" ")}`.toLowerCase()).includes(q)) : [...cards];
     filtered.sort((a, b) => {
       if (sortField === "year") return (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title);
       if (sortField === "rating") return b.rating - a.rating || b.readSeconds - a.readSeconds || a.title.localeCompare(b.title);
@@ -10214,18 +10320,21 @@ ${ORPHAN_AND_RECEIPT_CSS}
 
   // src/services/pdf-cover-service.ts
   var MEM_CACHE_LIMIT = 512;
+  var MEM_CACHE_BASE64_LIMIT = 16 * 1024 * 1024;
   var META_MAP_LIMIT = 1024;
   var MAX_COVER_BYTES = 4 * 1024 * 1024;
   var TARGET_COVER_WIDTH = 480;
   var FAIL_COOLDOWN_MS = 45e3;
   var memCoverCache = /* @__PURE__ */ new Map();
-  var attPathByID = /* @__PURE__ */ new Map();
+  var memCacheSize = 0;
   var touchedAt = /* @__PURE__ */ new Map();
   var writingPaths = /* @__PURE__ */ new Set();
   var failedRetryAt = /* @__PURE__ */ new Map();
   var configuredCoverCacheDir = "";
   var lastSweepAt = 0;
   var sweepingPromise = null;
+  var clearing;
+  var pendingWrites = /* @__PURE__ */ new Set();
   function setBounded(map, key, val, limit = META_MAP_LIMIT) {
     if (map.has(key)) map.delete(key);
     else if (map.size >= limit) {
@@ -10237,19 +10346,27 @@ ${ORPHAN_AND_RECEIPT_CSS}
   function configurePdfCoverCacheDirectory(customDir = "") {
     configuredCoverCacheDir = String(customDir || "").trim();
   }
-  function setMemLru(attID, url) {
-    if (memCoverCache.has(attID)) memCoverCache.delete(attID);
-    else if (memCoverCache.size >= MEM_CACHE_LIMIT) {
-      const oldest = memCoverCache.keys().next().value;
-      if (oldest !== void 0) memCoverCache.delete(oldest);
-    }
-    memCoverCache.set(attID, url);
+  function removeMemCover(key) {
+    memCacheSize -= memCoverCache.get(key)?.length || 0;
+    memCoverCache.delete(key);
   }
-  function getCachedPdfCoverSync(attID) {
-    const hit = memCoverCache.get(attID);
+  function setMemLru(attID, width, url) {
+    const key = `${attID}:${width}`;
+    removeMemCover(key);
+    memCoverCache.set(key, url);
+    memCacheSize += url.length;
+    while (memCoverCache.size > MEM_CACHE_LIMIT || memCacheSize > MEM_CACHE_BASE64_LIMIT) {
+      const oldest = memCoverCache.keys().next().value;
+      if (!oldest) break;
+      removeMemCover(oldest);
+    }
+  }
+  function getCachedPdfCoverSync(attID, width = TARGET_COVER_WIDTH) {
+    const key = `${attID}:${width}`;
+    const hit = memCoverCache.get(key);
     if (!hit) return null;
-    memCoverCache.delete(attID);
-    memCoverCache.set(attID, hit);
+    memCoverCache.delete(key);
+    memCoverCache.set(key, hit);
     return hit;
   }
   function getCoversDir(customDir = "") {
@@ -10264,7 +10381,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     }
   }
   function isValidJpegDataUrl(url) {
-    return typeof url === "string" && url.length > 32 && url.length <= MAX_COVER_BYTES && url.startsWith("data:image/");
+    return typeof url === "string" && url.length > 32 && url.length <= MAX_COVER_BYTES && url.startsWith("data:image/jpeg;base64,");
   }
   async function locateAttachmentPdf(attID, width) {
     try {
@@ -10276,7 +10393,6 @@ ${ORPHAN_AND_RECEIPT_CSS}
       if (!pdfPath || !ioUtils?.stat) return null;
       const stat = await ioUtils.stat(pdfPath);
       if (stat.type !== "regular" || !Number.isFinite(stat.lastModified) || !Number.isFinite(stat.size)) return null;
-      setBounded(attPathByID, attID, pdfPath);
       return {
         key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
         path: pdfPath,
@@ -10286,8 +10402,11 @@ ${ORPHAN_AND_RECEIPT_CSS}
       return null;
     }
   }
+  function isBridgeFlowCoverFile(name) {
+    return /^(?:cover-v\d+-\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
+  }
   function triggerCoverCacheSweep() {
-    if (sweepingPromise || Date.now() - lastSweepAt < 36e5) return;
+    if (clearing || sweepingPromise || Date.now() - lastSweepAt < 36e5) return;
     const dir = getCoversDir();
     const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
     if (!dir || typeof ioUtils?.getChildren !== "function") return;
@@ -10299,8 +10418,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
         if (writingPaths.has(p)) continue;
         const name = String(p.split(/[\\/]/).pop() || "");
         const isLegacyTxt = /^cover-v\d+-\d+\.txt$/i.test(name);
-        const isJson = /\.json(?:\.[^.]+\.tmp)?$/i.test(name);
-        if (!isLegacyTxt && !isJson) continue;
+        if (!isBridgeFlowCoverFile(name)) continue;
         try {
           const st = await ioUtils.stat(p);
           if (st.type === "regular") {
@@ -10362,7 +10480,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     }
   }
   var defaultScrollIdle = createGalleryScrollIdle(100);
-  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 3);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
   var ioQueue = createGalleryWorkQueue(async () => {
   }, 8);
   var activeJobs = /* @__PURE__ */ new Map();
@@ -10376,12 +10494,13 @@ ${ORPHAN_AND_RECEIPT_CSS}
     const callerSignal = opts.signal ?? makeAbortController(doc?.defaultView).signal;
     const priority = opts.priority ?? (() => 0);
     if (!attID || callerSignal.aborted) return Promise.resolve(null);
-    const mem = getCachedPdfCoverSync(attID);
+    if (clearing) return clearing.then(() => requestGalleryPdfCover(opts));
+    const mem = getCachedPdfCoverSync(attID, width);
     if (mem) return Promise.resolve(mem);
-    const cooldown = failedRetryAt.get(attID) || 0;
-    if (cooldown > Date.now()) return Promise.resolve(null);
-    if (cooldown) failedRetryAt.delete(attID);
     const jobKey = `${attID}:${width}`;
+    const cooldown = failedRetryAt.get(jobKey) || 0;
+    if (cooldown > Date.now()) return Promise.resolve(null);
+    if (cooldown) failedRetryAt.delete(jobKey);
     let job = activeJobs.get(jobKey);
     if (!job) {
       const controller = makeAbortController(doc?.defaultView);
@@ -10389,13 +10508,16 @@ ${ORPHAN_AND_RECEIPT_CSS}
       const rank = () => Math.max(0, ...[...subscribers].filter((s) => !s.signal.aborted).map((s) => s.priority()));
       const promise = (async () => {
         const sig = controller.signal;
-        const hint = await ioQueue(() => locateAttachmentPdf(attID, width), sig, rank);
-        if (sig.aborted) return null;
+        const cached = await ioQueue(async () => {
+          const hint2 = await locateAttachmentPdf(attID, width);
+          const cover = hint2 && !sig.aborted ? await readDiskEnvelope(hint2.key) : null;
+          return { hint: hint2, cover };
+        }, sig, rank);
+        if (!cached || sig.aborted) return null;
+        const { hint, cover: cand } = cached;
         if (hint) {
-          const cand = await ioQueue(() => readDiskEnvelope(hint.key), sig, rank);
-          if (sig.aborted) return null;
           if (cand && (cand.stamp === hint.stamp || !cand.stamp && cand.revision)) {
-            setMemLru(attID, cand.url);
+            setMemLru(attID, width, cand.url);
             return cand.url;
           }
         }
@@ -10415,13 +10537,16 @@ ${ORPHAN_AND_RECEIPT_CSS}
             sig.removeEventListener("abort", onParentAbort);
           }
         }, sig, rank);
+        if (sig.aborted) return null;
         if (!isValidJpegDataUrl(rendered)) {
-          if (!sig.aborted) setBounded(failedRetryAt, attID, Date.now() + FAIL_COOLDOWN_MS);
+          setBounded(failedRetryAt, jobKey, Date.now() + FAIL_COOLDOWN_MS);
           return null;
         }
-        setMemLru(attID, rendered);
+        setMemLru(attID, width, rendered);
         if (hint && !sig.aborted) {
-          void writeDiskEnvelope(hint.key, { revision: `stamp:${hint.stamp}`, stamp: hint.stamp, url: rendered });
+          const write = writeDiskEnvelope(hint.key, { revision: `stamp:${hint.stamp}`, stamp: hint.stamp, url: rendered });
+          pendingWrites.add(write);
+          void write.then(() => pendingWrites.delete(write), () => pendingWrites.delete(write));
         }
         return rendered;
       })().catch(() => null).finally(() => {
@@ -10431,13 +10556,13 @@ ${ORPHAN_AND_RECEIPT_CSS}
       activeJobs.set(jobKey, job);
     }
     const currentJob = job;
-    const sub = { signal: callerSignal, priority, onPreview: opts.onPreview };
+    const sub = { signal: callerSignal, priority };
     currentJob.subscribers.add(sub);
     const onCallerAbort = () => {
       currentJob.subscribers.delete(sub);
       if (!currentJob.subscribers.size) {
         currentJob.controller.abort();
-        activeJobs.delete(jobKey);
+        if (activeJobs.get(jobKey) === currentJob) activeJobs.delete(jobKey);
       }
     };
     callerSignal.addEventListener("abort", onCallerAbort, { once: true });
@@ -10602,6 +10727,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
       if (syncUrl) {
         const img = galEl(doc, "img");
         img.className = "zbf-gal-cover-img";
+        img.decoding = "async";
         img.src = syncUrl;
         img.setAttribute("data-loaded", "true");
         cover.appendChild(img);
@@ -11078,6 +11204,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     coverEl.querySelector(".zbf-gal-cover-abstract, .zbf-gal-cover-fallback")?.remove();
     const img = galEl(doc, "img");
     img.className = "zbf-gal-cover-img";
+    img.decoding = "async";
     img.src = url;
     img.setAttribute("data-loaded", "true");
     coverEl.insertBefore(img, coverEl.firstChild);
@@ -11085,6 +11212,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
   function createViewportCoverHydrator(viewport, doc) {
     const tasks = /* @__PURE__ */ new Map();
     const tracked = /* @__PURE__ */ new Set();
+    const priorities = /* @__PURE__ */ new WeakMap();
     let disposed = false;
     let observer = null;
     const cancelCard = (card) => {
@@ -11107,33 +11235,17 @@ ${ORPHAN_AND_RECEIPT_CSS}
       }
       const ctrl = makeAbortController(doc.defaultView);
       tasks.set(card, ctrl);
-      const computePriority = () => {
-        const vr = viewport.getBoundingClientRect?.();
-        const cr = card.getBoundingClientRect?.();
-        if (!vr || !cr) return 10;
-        const dist = Math.abs((cr.top + cr.bottom) / 2 - (vr.top + vr.bottom) / 2);
-        return Math.max(1, Math.round(2e3 - dist));
-      };
       void requestGalleryPdfCover({
         attID,
         doc,
         signal: ctrl.signal,
-        priority: computePriority,
-        onPreview: (previewUrl) => {
-          if (!disposed && !ctrl.signal.aborted) applyCoverUrl(coverEl, doc, previewUrl);
-        }
+        priority: () => priorities.get(card) ?? 1
       }).then((url) => {
         if (tasks.get(card) === ctrl) tasks.delete(card);
         if (!disposed && !ctrl.signal.aborted && url) applyCoverUrl(coverEl, doc, url);
       }).catch(() => {
         if (tasks.get(card) === ctrl) tasks.delete(card);
       });
-    };
-    const isNearViewport = (card) => {
-      const vr = viewport.getBoundingClientRect?.();
-      const cr = card.getBoundingClientRect?.();
-      if (!vr || !cr || vr.width === 0 && vr.height === 0) return true;
-      return cr.bottom >= vr.top - 300 && cr.top <= vr.bottom + 300 && cr.right >= vr.left - 220 && cr.left <= vr.right + 220;
     };
     const trySyncCover = (card) => {
       const coverEl = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
@@ -11155,10 +11267,14 @@ ${ORPHAN_AND_RECEIPT_CSS}
         if (disposed) return;
         for (const entry of entries) {
           const card = entry.target;
-          if (entry.isIntersecting) startCard(card);
-          else if (!card.contains(doc.activeElement)) cancelCard(card);
+          if (entry.isIntersecting) {
+            const rect = entry.boundingClientRect;
+            const root = entry.rootBounds;
+            priorities.set(card, root ? Math.max(1, Math.round(2e3 - Math.abs((rect.top + rect.bottom - root.top - root.bottom) / 2))) : 1);
+            startCard(card);
+          } else if (!card.contains(doc.activeElement)) cancelCard(card);
         }
-      }, { root: viewport, rootMargin: "280px 180px" });
+      }, { root: viewport, rootMargin: "260px 120px", threshold: [0, 0.5, 1] });
       observer = obs;
       for (const c of tracked) {
         if (c.isConnected) obs.observe(c);
@@ -11175,14 +11291,14 @@ ${ORPHAN_AND_RECEIPT_CSS}
         tracked.add(card);
         const obs = ensureObserver();
         if (obs && card.isConnected) obs.observe(card);
-        if (viewport.isConnected && card.isConnected && (!obs || isNearViewport(card))) startCard(card);
+        if (viewport.isConnected && card.isConnected && !obs) startCard(card);
       },
       activate() {
         if (disposed) return;
         const obs = ensureObserver();
         for (const c of tracked) {
           if (!c.isConnected || trySyncCover(c)) continue;
-          if (!obs || isNearViewport(c)) startCard(c);
+          if (!obs) startCard(c);
         }
       },
       unobserveCard(card) {
@@ -11409,6 +11525,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
         if (!entry || !card.isConnected) continue;
         const h = rec.borderBoxSize?.[0]?.blockSize ?? card.offsetHeight;
         if (h > 0 && columns[entry.colIndex]?.heights.measure(entry.row, h)) {
+          columns[entry.colIndex].visibleRows = void 0;
           measured.set(entry.token, h);
           dirty = true;
         }
@@ -11455,7 +11572,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     function refresh() {
       if (!active) return;
       if (!board) {
-        const availW = Math.max(240, (scroll.clientWidth || lastWidth || 960) - 24);
+        const availW = Math.max(240, scroll.clientWidth ? scroll.clientWidth - 24 : lastWidth);
         if (Math.abs(availW - lastWidth) > 2) {
           lastWidth = availW;
           const nextCount = computeMasonryColumnCount(availW, options.cardMinWidth, gap);
@@ -11492,10 +11609,19 @@ ${ORPHAN_AND_RECEIPT_CSS}
       for (const [tok, card] of [...mounted.entries()]) {
         if (!wanted.has(tok)) forgetCard(tok, card);
       }
+      const visibleByColumn = columns.map(() => []);
+      for (const token of wanted) {
+        const entry = entries.get(token);
+        if (entry) visibleByColumn[entry.colIndex].push(entry);
+      }
       for (const col of columns) {
         const list = col.list;
+        const vis = visibleByColumn[col.colIndex].sort((a, b) => a.row - b.row);
+        const rows = vis.map((entry) => entry.row).join(",");
+        if (col.visibleRows === rows) continue;
+        col.visibleRows = rows;
         clearSpacers(list);
-        const vis = col.items.filter((e) => wanted.has(e.token));
+        let nextNode = list.firstElementChild;
         for (const entry of vis) {
           let card = mounted.get(entry.token);
           const isNew = !card;
@@ -11505,13 +11631,8 @@ ${ORPHAN_AND_RECEIPT_CSS}
             card.dataset.itemId = String(entry.id);
             mounted.set(entry.token, card);
           }
-          const nextSibling = Array.from(list.children).find((node) => {
-            const other = entries.get(node.dataset?.virtualKey || "");
-            return other && other.colIndex === col.colIndex && other.row > entry.row;
-          });
-          if (card.parentElement !== list || card.nextElementSibling !== (nextSibling ?? null)) {
-            list.insertBefore(card, nextSibling ?? null);
-          }
+          if (card === nextNode) nextNode = card.nextElementSibling;
+          else list.insertBefore(card, nextNode);
           if (isNew) {
             resizeObs?.observe(card, { box: "border-box" });
             options.onCardMounted?.(card, { id: entry.id, data: entry.data });
@@ -11538,7 +11659,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     content.style.overflowAnchor = "none";
     scroll.addEventListener("scroll", schedule, { passive: true });
     resizeObs?.observe(scroll);
-    refresh();
+    if (scroll.isConnected) refresh();
     return {
       get orderIDs() {
         return orderIDs;
@@ -11609,7 +11730,6 @@ ${ORPHAN_AND_RECEIPT_CSS}
     const { doc, zh, sorted } = opts;
     const viewport = galEl(doc, "div");
     viewport.className = "zbf-gal-viewport";
-    const cardByID = new Map(sorted.map((c) => [c.itemID, c]));
     const gap = opts.density === "compact" ? 8 : 11;
     const estimateHeight = opts.density === "compact" ? 210 : 254;
     if (opts.mode === "gallery" && !sorted.length) {
@@ -11656,6 +11776,8 @@ ${ORPHAN_AND_RECEIPT_CSS}
         hydrator.dispose();
       } };
     }
+    const cardByID = new Map(sorted.map((c) => [c.itemID, c]));
+    let columnDragging = false;
     const board = galEl(doc, "div");
     board.className = "zbf-gal-board";
     viewport.appendChild(board);
@@ -11680,11 +11802,13 @@ ${ORPHAN_AND_RECEIPT_CSS}
         head.draggable = true;
         head.addEventListener("dragstart", (ev) => {
           ev.stopPropagation();
+          columnDragging = true;
           notifyGalleryCoverScroll(true);
           layoutRef?.setDragging(true);
           ev.dataTransfer?.setData("text/zbf-col-key", col.key);
         });
         head.addEventListener("dragend", () => {
+          columnDragging = false;
           notifyGalleryCoverScroll(false);
           layoutRef?.setDragging(false);
         });
@@ -11764,6 +11888,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
       onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl)
     });
     return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => {
+      if (columnDragging) notifyGalleryCoverScroll(false);
       layoutRef?.destroy();
       hydrator.dispose();
     } };
@@ -13479,17 +13604,19 @@ ${summary}` : summary;
         if (this.active) this.refreshLibraryViews(scoped);
       }, delayMs);
     }
-    refreshLibraryViews(affectedIDs) {
+    refreshLibraryViews(affectedIDs, readingOnly = false) {
       if (!this.active) return;
       if (this.refreshTimer !== null) {
         clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
       }
       this.readingColumns.clearCache(affectedIDs);
-      this.statusRatingColumns.clearCache(affectedIDs);
-      clearGalleryCardCache(affectedIDs);
-      clearExtraRemarkCache(affectedIDs);
-      this.infoBriefNote.refresh();
+      if (!readingOnly) {
+        this.statusRatingColumns.clearCache(affectedIDs);
+        clearGalleryCardCache(affectedIDs);
+        clearExtraRemarkCache(affectedIDs);
+        this.infoBriefNote.refresh();
+      }
       this.titleHeatmap.refreshWindows();
       this.galleryBoard.refreshWindows();
     }
@@ -13957,27 +14084,26 @@ ${summary}` : summary;
       }
       return null;
     }
+    async eraseOwnedLeaf(col) {
+      if (!col || typeof col.hasChildCollections !== "function" || col.hasChildCollections(true)) return;
+      if (!col._isBridgeFlowCollection) {
+        await col.loadDataType?.("relations");
+        const markers = col.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION);
+        if (!Array.isArray(markers) || !markers.includes(TEMP_COLLECTION_MARKER)) return;
+      }
+      await col.eraseTx();
+    }
     async purgeStaleCollections() {
-      const ZoteroObj = globalThis.Zotero;
-      const colsApi = ZoteroObj?.Collections;
-      const libraryID = ZoteroObj?.Libraries?.userLibraryID;
-      if (typeof colsApi?.getByLibrary !== "function" || !libraryID) return;
-      const all = colsApi.getByLibrary(libraryID, true, true) || [];
-      const activeKeys = new Set([...this.sessionCollections.values()].map((c) => c?.key).filter(Boolean));
-      const persistedKeys = new Set(this.trackedCollectionKeys);
-      for (const col of all) {
-        if (!col || activeKeys.has(col.key)) continue;
+      const host2 = globalThis.Zotero;
+      const api = host2?.Collections;
+      const libraryID = host2?.Libraries?.userLibraryID;
+      if (!libraryID || typeof api?.getByLibraryAndKey !== "function") return;
+      for (const key of [...this.trackedCollectionKeys]) {
         try {
-          if (persistedKeys.has(col.key)) {
-            await col.eraseTx?.();
-            this.trackedCollectionKeys.delete(col.key);
-            continue;
-          }
-          await col.loadDataType?.("relations");
-          if (isCitationCollectionRef(col, persistedKeys)) {
-            await col.eraseTx?.();
-            this.trackedCollectionKeys.delete(col.key);
-          }
+          if (this.getSessionIdByCollectionKey(key)) continue;
+          const col = api.getByLibraryAndKey(libraryID, key);
+          await this.eraseOwnedLeaf(col);
+          this.trackedCollectionKeys.delete(key);
         } catch (err) {
           this.kernel.logger.error("word-cite:purge-collection", err);
         }
@@ -13998,7 +14124,7 @@ ${summary}` : summary;
       this.windowDisposers.clear();
       for (const col of this.sessionCollections.values()) {
         try {
-          await col?.eraseTx?.();
+          await this.eraseOwnedLeaf(col);
           if (col?.key) this.trackedCollectionKeys.delete(col.key);
         } catch (err) {
           this.kernel.logger.error("word-cite:erase-collection", err);
@@ -14014,7 +14140,7 @@ ${summary}` : summary;
       if (!enabled) {
         for (const [sid, col] of this.sessionCollections) {
           try {
-            await col?.eraseTx?.();
+            await this.eraseOwnedLeaf(col);
             if (col?.key) this.trackedCollectionKeys.delete(col.key);
           } catch {
           }
@@ -14027,7 +14153,7 @@ ${summary}` : summary;
       for (const [sid, col] of this.sessionCollections) {
         if (!activeIDs.has(sid)) {
           try {
-            await col?.eraseTx?.();
+            await this.eraseOwnedLeaf(col);
             if (col?.key) this.trackedCollectionKeys.delete(col.key);
           } catch {
           }
@@ -14208,9 +14334,7 @@ ${summary}` : summary;
   };
 
   // src/domains/word-cite/word-command.ts
-  var commandInFlight = false;
-  var commandStartedAt = 0;
-  var activeCommandToken = 0;
+  var inFlight = /* @__PURE__ */ new WeakSet();
   async function runWordCommand(kernel, command, run) {
     const host2 = globalThis.Zotero;
     const integration = host2?.Integration;
@@ -14219,13 +14343,7 @@ ${summary}` : summary;
     if (typeof integration?.execCommand !== "function" || typeof integration.getApplication !== "function" || typeof iface?.[command] !== "function") {
       return "unavailable";
     }
-    if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 9e4) {
-      commandInFlight = false;
-      commandStartedAt = 0;
-      activeCommandToken = 0;
-    }
-    if (commandInFlight || integration.currentDoc) return "busy";
-    const token = ++activeCommandToken;
+    if (inFlight.has(integration) || integration.currentDoc) return "busy";
     const isMac = host2.isMac === true;
     const agent = isMac ? "MacWord16" : "WinWord";
     const docId = isMac ? "/Applications/Microsoft Word.app/" : null;
@@ -14237,8 +14355,7 @@ ${summary}` : summary;
       const UserCancelled = host2.Exception?.UserCancelled;
       return typeof UserCancelled === "function" && error instanceof UserCancelled;
     };
-    commandInFlight = true;
-    commandStartedAt = Date.now();
+    inFlight.add(integration);
     try {
       disposers.push(kernel.runtime.patch(
         integration,
@@ -14297,11 +14414,7 @@ ${summary}` : summary;
       return "unavailable";
     } finally {
       for (const dispose of disposers.reverse()) dispose();
-      if (activeCommandToken === token) {
-        commandInFlight = false;
-        commandStartedAt = 0;
-        activeCommandToken = 0;
-      }
+      inFlight.delete(integration);
     }
   }
 
@@ -14441,8 +14554,14 @@ ${summary}` : summary;
       if (verifyDrop) win32.clearLastDroppedWordTarget();
     }
   }
-  async function refreshActiveWordDocument(kernel) {
-    return await runWordCommand(kernel, "refresh", async (invoke) => invoke()) === "completed";
+  async function refreshActiveWordDocument(kernel, expectedSessionID) {
+    let invoked = false;
+    const result = await runWordCommand(kernel, "refresh", async (invoke, session2) => {
+      if (expectedSessionID && session2?.sessionID !== expectedSessionID) return;
+      invoked = true;
+      return invoke();
+    });
+    return invoked && result === "completed";
   }
 
   // src/domains/word-cite/drag-cite-controller.ts
@@ -14641,7 +14760,7 @@ ${summary}` : summary;
     const stableCslId = rawCslId && !isEphemeralSurrogateId(rawCslId, sessionID) ? rawCslId : "";
     const { author, year } = extractFirstAuthorAndYear(itemData);
     const normTitle = normalizeMetaToken(itemData?.title || itemData?.["container-title"]);
-    const fpAlias = normTitle ? `fp:${normTitle}|${normalizeMetaToken(author)}|${year}` : "";
+    const fpAlias = normTitle && author && year ? `fp:${normTitle}|${normalizeMetaToken(author)}|${year}` : "";
     let key = "";
     if (Number.isSafeInteger(itemID) && itemID > 0) key = `id:${itemID}`;
     else if (uris.length > 0) key = `uri:${uris[0]}`;
@@ -14660,12 +14779,12 @@ ${summary}` : summary;
     const userMatch = uri.match(/^https?:\/\/zotero\.org\/users\/(\d+)\/items\/([A-Za-z0-9]+)\/?$/i);
     if (userMatch) {
       const currentUid = typeof zoteroObj?.Users?.getCurrentUserID === "function" ? String(zoteroObj.Users.getCurrentUserID() || "").trim() : "";
-      return Boolean(currentUid && userMatch[1] !== currentUid);
+      return !currentUid || userMatch[1] !== currentUid;
     }
     const localMatch = uri.match(/^https?:\/\/zotero\.org\/users\/local\/([A-Za-z0-9]+)\/items\/([A-Za-z0-9]+)\/?$/i);
     if (localMatch) {
       const ownLocal = typeof zoteroObj?.Users?.getLocalUserKey === "function" ? String(zoteroObj.Users.getLocalUserKey() || "").trim() : "";
-      return Boolean(ownLocal && localMatch[1] !== ownLocal);
+      return !ownLocal || localMatch[1] !== ownLocal;
     }
     return false;
   }
@@ -14734,7 +14853,7 @@ ${summary}` : summary;
       const [, localKey, userId, groupId, itemKey] = match;
       if (groupId) {
         const groupLibId = Number(zoteroObj?.Groups?.getLibraryIDFromGroupID?.(Number(groupId)) ?? 0);
-        const editable = groupLibId > 0 && zoteroObj?.Libraries?.get?.(groupLibId)?.editable !== false;
+        const editable = groupLibId > 0 && zoteroObj?.Libraries?.get?.(groupLibId)?.editable === true;
         if (groupLibId === targetLibraryID && editable) {
           pushSafe(`http://zotero.org/groups/${groupId}/items/${itemKey}`);
         } else {
@@ -14747,7 +14866,7 @@ ${summary}` : summary;
         continue;
       }
       if (userId) {
-        if (!hasUsersApi || currentUid && userId === currentUid) {
+        if (currentUid && userId === currentUid) {
           pushSafe(`http://zotero.org/users/${userId}/items/${itemKey}`);
         } else {
           foreignSkipped = true;
@@ -14755,7 +14874,7 @@ ${summary}` : summary;
         continue;
       }
       if (localKey) {
-        if (ownLocalKey && localKey !== ownLocalKey) {
+        if (!ownLocalKey || localKey !== ownLocalKey) {
           foreignSkipped = true;
         } else if (currentUid) {
           pushSafe(`http://zotero.org/users/${currentUid}/items/${itemKey}`);
@@ -14814,10 +14933,19 @@ ${summary}` : summary;
   }
   function mergeOrphanMetadata(existing, uris, rawData, itemID) {
     const mergedUris = uris.length ? [.../* @__PURE__ */ new Set([...existing.uris || [], ...uris])] : existing.uris;
-    const mergedData = existing.itemData || rawData;
+    let mergedData = existing.itemData || rawData;
+    if (existing.itemData && rawData) {
+      const combined = { ...rawData };
+      for (const [key, value] of Object.entries(existing.itemData)) {
+        if (value != null && value !== "" && !(Array.isArray(value) && !value.length)) {
+          Object.defineProperty(combined, key, { value, enumerable: true, writable: true, configurable: true });
+        }
+      }
+      mergedData = combined;
+    }
     const mergedAuthorYear = existing.authorYear || formatCslAuthorYear(rawData);
     const candidateTitle = String(rawData?.title || rawData?.["container-title"] || "").trim();
-    const mergedTitle = existing.title.startsWith("Citation ") && candidateTitle ? candidateTitle : existing.title;
+    const mergedTitle = (existing.title.startsWith("Citation ") || /^#\d+$/.test(existing.title)) && candidateTitle ? candidateTitle : existing.title;
     const mergedId = existing.itemID || (Number.isSafeInteger(itemID) && itemID > 0 ? itemID : void 0);
     return {
       ...existing,
@@ -14899,7 +15027,7 @@ ${summary}` : summary;
     if (title.length < 6) return "";
     const { author, year } = extractFirstAuthorAndYear(data);
     const normAuthor = normCompareToken(author);
-    if (!normAuthor && !year) return "";
+    if (!normAuthor || !year) return "";
     return `meta:${libraryID}:${title}|${normAuthor}|${year}`;
   }
   function readCandidateField(item, field) {
@@ -14929,54 +15057,40 @@ ${summary}` : summary;
     if (cslDoi && candDoi && cslDoi !== candDoi) return false;
     const { author, year } = extractFirstAuthorAndYear(cslData);
     const normAuthor = normCompareToken(author);
-    if (!normAuthor && !year) return false;
+    if (!normAuthor || !year) return false;
     const candDateRaw = readCandidateField(candidate, "year") || readCandidateField(candidate, "date");
     const candYear = candDateRaw.match(/\d{4}/)?.[0] || "";
-    if (year && candYear && year !== candYear) return false;
+    if (year !== candYear || !candYear) return false;
     const candCreator = readCandidateFirstSurname(candidate);
-    if (normAuthor && candCreator) {
-      const surnameOk = candCreator === normAuthor || candCreator.startsWith(`${normAuthor} `) || candCreator.startsWith(`${normAuthor},`);
-      if (!surnameOk) return false;
-    }
-    return Boolean(year && candYear === year || normAuthor && candCreator);
+    return candCreator === normAuthor || candCreator.startsWith(`${normAuthor} `) || candCreator.startsWith(`${normAuthor},`);
   }
-  async function findExistingLibraryItem(libraryID, cslData, doi) {
+  async function findExistingLibraryItems(libraryID, cslData, doi) {
     const host2 = globalThis.Zotero;
-    if (typeof host2?.Search !== "function") return null;
+    if (typeof host2?.Search !== "function") return [];
     const runFieldSearch = async (field, value) => {
-      if (!value) return [];
-      try {
-        const s = new host2.Search();
-        s.libraryID = libraryID;
-        s.addCondition(field, "is", value);
-        const ids = await s.search();
-        const out = [];
-        for (const id of ids || []) {
-          const cand = await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id);
-          if (cand && !cand.deleted && cand.isRegularItem?.() !== false) out.push(cand);
-        }
-        return out;
-      } catch {
-        return [];
+      const search = new host2.Search();
+      search.libraryID = libraryID;
+      search.addCondition(field, "is", value);
+      const ids = await search.search();
+      const out = [];
+      for (const id of ids || []) {
+        const candidate = await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id);
+        if (candidate && !candidate.deleted && !candidate.isTrashed?.() && candidate.isRegularItem?.() !== false && (candidate.libraryID == null || candidate.libraryID === libraryID)) out.push(candidate);
       }
+      return out;
     };
     if (doi) {
-      const byNormDoi = await runFieldSearch("DOI", doi);
-      if (byNormDoi.length > 0) return byNormDoi[0];
       const rawDoi = String(cslData?.DOI || "").trim();
+      const normalized = await runFieldSearch("DOI", doi);
       if (rawDoi && rawDoi.toLowerCase() !== doi) {
-        const byRawDoi = await runFieldSearch("DOI", rawDoi);
-        if (byRawDoi.length > 0) return byRawDoi[0];
+        const raw = await runFieldSearch("DOI", rawDoi);
+        normalized.push(...raw);
       }
+      return [...new Map(normalized.map((item) => [item.id, item])).values()];
     }
-    const rawTitle = String(cslData?.title || "").trim();
-    if (cslData && normCompareToken(rawTitle).length >= 6) {
-      const byTitle = await runFieldSearch("title", rawTitle);
-      for (const cand of byTitle) {
-        if (matchesExactTitleAuthorYear(cand, cslData, doi)) return cand;
-      }
-    }
-    return null;
+    const title = String(cslData?.title || "").trim();
+    if (!cslData || !buildBatchMetadataKey(libraryID, cslData)) return [];
+    return (await runFieldSearch("title", title)).filter((item) => matchesExactTitleAuthorYear(item, cslData, ""));
   }
   function setFieldIfEmpty(item, field, value) {
     if (typeof item?.setField !== "function") return;
@@ -15047,11 +15161,11 @@ ${summary}` : summary;
   function resolveOrphanLibraryID(orphan, fallbackLibraryID) {
     const host2 = globalThis.Zotero;
     for (const uri of orphan.uris || []) {
-      const match = String(uri).match(/\/groups\/(\d+)\/items\//);
+      const match = String(uri).match(/^https?:\/\/zotero\.org\/groups\/(\d+)\/items\/[A-Za-z0-9]+\/?$/i);
       if (!match) continue;
       try {
         const libraryID = host2?.Groups?.getLibraryIDFromGroupID?.(Number(match[1]));
-        if (Number.isSafeInteger(libraryID) && libraryID > 0 && host2?.Libraries?.get?.(libraryID)?.editable !== false) {
+        if (Number.isSafeInteger(libraryID) && libraryID > 0 && host2?.Libraries?.get?.(libraryID)?.editable === true) {
           return libraryID;
         }
       } catch {
@@ -15078,22 +15192,45 @@ ${summary}` : summary;
       } catch {
       }
     }
-    let attached = false;
+    const linkedUris = [];
     for (const uri of safeUris) {
       if (!uri || uri === selfUri) continue;
       try {
         if (targetItem.hasRelation?.(predicate, uri)) {
-          attached = true;
+          linkedUris.push(uri);
           continue;
         }
         const added = targetItem.addRelation(predicate, uri);
-        if (added !== false) attached = true;
+        if (added !== false) linkedUris.push(uri);
       } catch {
       }
     }
-    return { attached, safeUris, foreignSkipped };
+    const aliases = (orphan.uris || []).filter((raw) => {
+      const canonical = classifySyncSafeRelinkUris([raw], targetLibraryID, userLibraryID, zoteroObj).safeUris[0];
+      return linkedUris.includes(canonical);
+    });
+    return { attached: linkedUris.length > 0, safeUris: [...linkedUris, ...aliases], foreignSkipped };
   }
-  async function importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, targetCollectionID) {
+  async function findLinkedItems(orphan, libraryID, userLibraryID, host2) {
+    const { safeUris } = classifySyncSafeRelinkUris(orphan.uris, libraryID, userLibraryID, host2);
+    const originalUris = (orphan.uris || []).filter((uri) => classifySyncSafeRelinkUris([uri], libraryID, userLibraryID, host2).safeUris.length > 0);
+    const items = /* @__PURE__ */ new Map();
+    for (const uri of /* @__PURE__ */ new Set([...safeUris, ...originalUris])) {
+      const id = resolveItemIdFromUris([uri], host2, host2.Items);
+      const direct = id ? await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id) : null;
+      const replacements = await host2.Relations?.getByPredicateAndObject?.(
+        "item",
+        host2.Relations.replacedItemPredicate || "dc:replaces",
+        uri
+      );
+      for (const item of [direct, ...replacements || []]) {
+        if (!item?.id || !isRegularValidItem(item) || item.inTrash === true || item.libraryID !== libraryID) continue;
+        items.set(item.id, item);
+      }
+    }
+    return [...items.values()];
+  }
+  async function importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, committedLinks, targetCollectionID) {
     const ZoteroObj = globalThis.Zotero;
     const ItemCtor = ZoteroObj?.Item;
     if (typeof ItemCtor !== "function") return { outcome: "failed", relinked: false, foreignSkipped: false };
@@ -15101,8 +15238,14 @@ ${summary}` : summary;
     const targetLibraryID = resolveOrphanLibraryID(orphan, userLibraryID);
     const doi = normalizeDoi(data?.DOI);
     const batchDoiKey = doi ? `doi:${targetLibraryID}:${doi}` : "";
-    const batchMetaKey = buildBatchMetadataKey(targetLibraryID, data);
-    const duplicate = (batchDoiKey ? batchItemCache.get(batchDoiKey) : null) || (batchMetaKey ? batchItemCache.get(batchMetaKey) : null) || await findExistingLibraryItem(targetLibraryID, data, doi);
+    const batchMetaKey = doi ? "" : buildBatchMetadataKey(targetLibraryID, data);
+    const ambiguous = { outcome: "ambiguous", relinked: false, foreignSkipped: false };
+    const linked = await findLinkedItems(orphan, targetLibraryID, userLibraryID, ZoteroObj);
+    if (linked.length > 1) return ambiguous;
+    const cached = batchItemCache.get(batchDoiKey || batchMetaKey);
+    const candidates = linked.length ? linked : cached ? [cached] : await findExistingLibraryItems(targetLibraryID, data, doi);
+    if (candidates.length > 1) return ambiguous;
+    const duplicate = candidates[0];
     if (duplicate) {
       const dupLibID = duplicate.libraryID ?? userLibraryID;
       const relRes2 = await attachSyncSafeRelinkRelations(duplicate, orphan, dupLibID, userLibraryID, ZoteroObj);
@@ -15120,11 +15263,13 @@ ${summary}` : summary;
       const dupId = Number(duplicate.id || 0);
       if (batchDoiKey) batchItemCache.set(batchDoiKey, duplicate);
       if (batchMetaKey) batchItemCache.set(batchMetaKey, duplicate);
-      if (relRes2.attached && dupId > 0) rememberRelinkedItemUris(orphan.uris || relRes2.safeUris, dupId);
+      if (relRes2.attached && dupId > 0) {
+        for (const uri of relRes2.safeUris) committedLinks.set(uri, dupId);
+      }
       return {
         outcome: "existing",
         ...dupId > 0 ? { itemID: dupId } : {},
-        relinked: relRes2.attached,
+        relinked: relRes2.attached || linked.length === 1,
         foreignSkipped: relRes2.foreignSkipped
       };
     }
@@ -15134,7 +15279,7 @@ ${summary}` : summary;
     }
     const csl = data;
     const rawType = String(csl.type || "article-journal").trim();
-    const itemType = CSL_TO_ZOTERO_TYPE[rawType] || "journalArticle";
+    const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : "journalArticle";
     const item = new ItemCtor(itemType);
     item.libraryID = targetLibraryID;
     populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, ZoteroObj);
@@ -15149,7 +15294,9 @@ ${summary}` : summary;
     const resolvedNewId = Number(item.id || savedId || 0);
     if (batchDoiKey) batchItemCache.set(batchDoiKey, item);
     if (batchMetaKey) batchItemCache.set(batchMetaKey, item);
-    if (relRes.attached && resolvedNewId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, resolvedNewId);
+    if (relRes.attached && resolvedNewId > 0) {
+      for (const uri of relRes.safeUris) committedLinks.set(uri, resolvedNewId);
+    }
     return {
       outcome: "imported",
       ...resolvedNewId > 0 ? { itemID: resolvedNewId } : {},
@@ -15161,7 +15308,7 @@ ${summary}` : summary;
     const ZoteroObj = globalThis.Zotero;
     const hostItems = ZoteroObj?.Items;
     const userLibraryID = Number(ZoteroObj?.Libraries?.userLibraryID ?? 1);
-    const keyFilter = options?.keys?.length ? new Set(options.keys) : null;
+    const keyFilter = options?.keys ? new Set(options.keys) : null;
     const targets = keyFilter ? orphans.filter((o) => keyFilter.has(o.key)) : orphans;
     const hasDbTx = typeof ZoteroObj?.DB?.executeTransaction === "function";
     const saveInTx = async (item, opts) => {
@@ -15179,21 +15326,27 @@ ${summary}` : summary;
     let skippedCount = 0;
     let existingCount = 0;
     let relinkedCount = 0;
+    let ambiguousCount = 0;
     let foreignSkippedCount = 0;
     const restoredIDs = /* @__PURE__ */ new Set();
-    const recoveredItemIDs = [];
+    const recoveredItemIDs = /* @__PURE__ */ new Set();
     const pushRecoveredID = (id) => {
-      if (id && Number.isSafeInteger(id) && id > 0 && !recoveredItemIDs.includes(id)) {
-        recoveredItemIDs.push(id);
+      if (id && Number.isSafeInteger(id) && id > 0) {
+        recoveredItemIDs.add(id);
       }
     };
     const batchItemCache = /* @__PURE__ */ new Map();
+    const committedLinks = /* @__PURE__ */ new Map();
     await runBatch(async () => {
       for (const orphan of targets) {
         if (orphan.kind === "trashed" && orphan.itemID) {
           if (restoredIDs.has(orphan.itemID)) continue;
           const existing = typeof hostItems?.getAsync === "function" ? await hostItems.getAsync(orphan.itemID) : hostItems?.get?.(orphan.itemID);
-          if (existing) {
+          if (existing && existing.isRegularItem?.() !== false && (!orphan.uris?.length || resolveItemIdFromUris(orphan.uris, ZoteroObj, hostItems) === orphan.itemID)) {
+            if (ZoteroObj.Libraries?.get?.(existing.libraryID)?.editable === false) {
+              skippedCount++;
+              continue;
+            }
             existing.deleted = false;
             const itemLibID = existing.libraryID ?? userLibraryID;
             if (options?.targetCollectionID && typeof existing.addToCollection === "function" && itemLibID === userLibraryID) {
@@ -15210,15 +15363,19 @@ ${summary}` : summary;
             continue;
           }
         }
-        const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, options?.targetCollectionID);
+        const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, committedLinks, options?.targetCollectionID);
         pushRecoveredID(res.itemID);
         if (res.relinked) relinkedCount += 1;
         if (res.foreignSkipped) foreignSkippedCount += 1;
         if (res.outcome === "imported") importedCount += 1;
         else if (res.outcome === "existing") existingCount += 1;
-        else skippedCount += 1;
+        else {
+          skippedCount += 1;
+          if (res.outcome === "ambiguous") ambiguousCount += 1;
+        }
       }
     });
+    for (const [uri, id] of committedLinks) rememberRelinkedItemUris([uri], id);
     return {
       restoredCount,
       importedCount,
@@ -15226,7 +15383,8 @@ ${summary}` : summary;
       ...existingCount ? { existingCount } : {},
       ...relinkedCount ? { relinkedCount } : {},
       ...foreignSkippedCount ? { foreignSkippedCount } : {},
-      ...recoveredItemIDs.length ? { recoveredItemIDs } : {},
+      ...recoveredItemIDs.size ? { recoveredItemIDs: [...recoveredItemIDs] } : {},
+      ...ambiguousCount ? { ambiguousCount } : {},
       ...options?.collectionName ? { collectionName: options.collectionName } : {}
     };
   }
@@ -15438,7 +15596,7 @@ ${summary}` : summary;
       const parts = [`active=${this.activeSessionID || ""}`];
       for (const ses of this.sessions.values()) {
         const items = [...ses.itemCitations.entries()].sort((a, b) => a[0] - b[0]).map(([id, c]) => `${id}:${c.ordinal}:${c.occurrences ?? 1}:${c.shortText}`).join(",");
-        const orphans = ses.orphans.map((o) => `${o.key}:${o.kind}:${o.ordinal}:${o.shortText}`).join(",");
+        const orphans = JSON.stringify(ses.orphans.map((o) => [o.key, o.kind, o.ordinal, o.shortText, o.title, o.authorYear, o.itemID, o.uris, o.itemData]));
         parts.push(`${ses.sessionID}|${ses.displayName}|${items}|${orphans}`);
       }
       return parts.join(";");
@@ -15611,6 +15769,7 @@ ${summary}` : summary;
     const orphanMap = /* @__PURE__ */ new Map();
     const orphanAliasToKey = /* @__PURE__ */ new Map();
     const orphanItemIDs = /* @__PURE__ */ new Set();
+    const conflictingIDs = /* @__PURE__ */ new Set();
     const orderQueue = [];
     const statusCache2 = /* @__PURE__ */ new Map();
     let fallbackSeq = 1;
@@ -15709,11 +15868,15 @@ ${summary}` : summary;
           const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
           let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
           let inspected = inspectItemById(resolvedID);
-          if (inspected.status === "missing" && uris.length > 0 && hasItemLookup) {
-            const uriResolvedID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
-            if (uriResolvedID > 0) {
-              resolvedID = uriResolvedID;
-              inspected = inspectItemById(resolvedID);
+          if (uris.length && hasItemLookup) {
+            const canonical = inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === "function" ? String(zoteroObj.URI.getItemURI(inspected.zotItem)).replace(/^https:/i, "http:") : "";
+            if (!canonical || !uris.some((uri) => uri.replace(/^https:/i, "http:").replace(/\/+$/, "") === canonical)) {
+              const uriID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
+              if ((uriID || canonical) && uriID !== resolvedID) {
+                conflictingIDs.add(resolvedID);
+                resolvedID = uriID;
+                inspected = inspectItemById(resolvedID);
+              }
             }
           }
           const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
@@ -15729,6 +15892,7 @@ ${summary}` : summary;
     if (byItem && typeof byItem === "object") {
       for (const [rawID, list] of Object.entries(byItem)) {
         const itemID = Number(rawID);
+        if (conflictingIDs.has(itemID)) continue;
         const knownOrdinal = lookupKnownOrdinal({ id: rawID }, citeprocOrdinals, itemID, void 0);
         for (const entry of Array.isArray(list) ? list : [list]) {
           if (!entry) continue;
@@ -15791,6 +15955,7 @@ ${summary}` : summary;
     idleRounds = 0;
     emptyStreakBySession = /* @__PURE__ */ new Map();
     docPathBySession = /* @__PURE__ */ new Map();
+    updating = /* @__PURE__ */ new WeakSet();
     pendingCmdDocHint = "";
     kernel;
     tracker;
@@ -15806,7 +15971,7 @@ ${summary}` : summary;
       this.idleRounds = 0;
       this.emptyStreakBySession.clear();
       this.installHooks();
-      void this.pollOnce();
+      void this.pollOnce().catch((err) => this.kernel.logger.error("word-cite:poll", err));
       this.scheduleNext();
     }
     stop() {
@@ -15837,6 +16002,7 @@ ${summary}` : summary;
     async pollOnce(allowDuringExec = false, committedSession) {
       if (this.polling || !allowDuringExec && this.execDepth > 0) return false;
       const integration = globalThis.Zotero?.Integration;
+      if (!allowDuringExec && integration?.currentDoc) return false;
       const sessionsMap = integration?.sessions;
       if (!sessionsMap && !committedSession) return false;
       this.polling = true;
@@ -15849,7 +16015,7 @@ ${summary}` : summary;
         }
         if (committedSession && typeof committedSession === "object") {
           const sid = String(committedSession.sessionID || "word-active");
-          if (!merged.has(sid)) merged.set(sid, committedSession);
+          merged.set(sid, committedSession);
         }
         const entries = [...merged.entries()];
         const activeIDs = /* @__PURE__ */ new Set();
@@ -15860,36 +16026,29 @@ ${summary}` : summary;
           if (!/(WinWord|MacWord|Word)/i.test(agent)) continue;
           const sessionID = String(rawID);
           activeIDs.add(sessionID);
-          await this.ensureConsistentSnapshot(session2);
-          if (this.stopEpoch !== epoch) return false;
-          const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session2);
+          const ready = await this.ensureConsistentSnapshot(session2);
+          if (this.stopEpoch !== epoch || !allowDuringExec && (this.execDepth > 0 || integration?.currentDoc)) return false;
           const prevTracked = this.tracker.getSession(sessionID);
-          if (!parsed.length && !orphans.length && prevTracked && (prevTracked.itemCitations.size > 0 || prevTracked.orphans.length > 0)) {
-            const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
-            this.emptyStreakBySession.set(sessionID, streak);
-            if (streak < 2) {
-              rawSessions.push({
-                sessionID,
-                documentPath: prevTracked.documentPath,
-                citations: [...prevTracked.itemCitations.entries()].map(([itemID, info]) => ({
-                  itemID,
-                  ordinal: info.ordinal,
-                  shortText: info.shortText,
-                  occurrences: info.occurrences
-                })),
-                orphans: prevTracked.orphans
-              });
-              continue;
-            }
-          } else if (parsed.length > 0 || orphans.length > 0) {
-            this.emptyStreakBySession.delete(sessionID);
+          const { citations: parsed, orphans } = ready ? extractSessionCitationsWithOrphans(session2) : { citations: [], orphans: [] };
+          const empty = parsed.length === 0 && orphans.length === 0;
+          const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
+          if (ready && empty) this.emptyStreakBySession.set(sessionID, streak);
+          else this.emptyStreakBySession.delete(sessionID);
+          if (!ready || empty && streak < 2 && prevTracked) {
+            if (prevTracked) rawSessions.push({
+              sessionID,
+              documentPath: prevTracked.documentPath,
+              citations: [...prevTracked.itemCitations].map(([itemID, info]) => ({ itemID, ...info })),
+              orphans: prevTracked.orphans
+            });
+            continue;
           }
           const docPath = this.resolveSessionDocumentPath(sessionID, session2, entries.length);
           rawSessions.push({ sessionID, documentPath: docPath, citations: parsed, orphans });
         }
         for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
         for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
-        if (this.stopEpoch !== epoch) return false;
+        if (this.stopEpoch !== epoch || !allowDuringExec && (this.execDepth > 0 || integration?.currentDoc)) return false;
         const changed = this.tracker.syncSessions(rawSessions);
         if (changed) {
           this.idleRounds = 0;
@@ -15903,23 +16062,23 @@ ${summary}` : summary;
       }
     }
     async ensureConsistentSnapshot(session2) {
-      if (typeof session2.updateFromDocument !== "function") return;
+      if (this.updating.has(session2)) return false;
+      if (typeof session2.updateFromDocument !== "function") return true;
       const byIdx = session2.citationsByIndex;
       const byItem = session2.citationsByItemID;
       const missingObj = !byIdx || typeof byIdx !== "object" || !byItem || typeof byItem !== "object";
       const mismatch = !missingObj && Object.keys(byIdx).length === 0 !== (Object.keys(byItem).length === 0);
-      if (!missingObj && !mismatch) return;
+      if (!missingObj && !mismatch) return true;
       let guard;
       try {
-        const updatePromise = Promise.resolve(session2.updateFromDocument(0)).catch(() => {
-        });
-        await Promise.race([
+        this.updating.add(session2);
+        const updatePromise = Promise.resolve().then(() => session2.updateFromDocument(0)).then(() => true, () => false).finally(() => this.updating.delete(session2));
+        return await Promise.race([
           updatePromise,
           new Promise((resolve) => {
-            guard = setTimeout(resolve, 4e3);
+            guard = setTimeout(() => resolve(false), 4e3);
           })
         ]);
-      } catch {
       } finally {
         if (guard !== void 0) clearTimeout(guard);
       }
@@ -15963,7 +16122,7 @@ ${summary}` : summary;
       }
       const cached = this.docPathBySession.get(sessionID);
       if (cached && !cached.startsWith("window-title:")) return cached;
-      if (this.win32) {
+      if (this.win32 && totalSessions === 1) {
         const probed = this.win32.probeWordWindowTitles();
         const fg = probed.foregroundTitle ? extractDocumentBaseName(`window-title:${probed.foregroundTitle}`) : "";
         if (fg && fg !== "Untitled Word Document" && (totalSessions === 1 || !cached)) {
@@ -15986,7 +16145,7 @@ ${summary}` : summary;
       return extractSessionCitationsWithOrphans(session2).citations;
     }
     scheduleItemsViewRefresh() {
-      if (this.viewRefreshTimer !== null) return;
+      if (this.viewRefreshTimer !== null || !this.kernel.prefs.get("wordCite.column.enable")) return;
       const delay = this.kernel.prefs.get("wordCite.itemsViewRefreshDebounceMs");
       this.viewRefreshTimer = setTimeout(() => {
         this.viewRefreshTimer = null;
@@ -16050,7 +16209,7 @@ ${summary}` : summary;
               if (this.postExecTimer !== null) clearTimeout(this.postExecTimer);
               this.postExecTimer = setTimeout(() => {
                 this.postExecTimer = null;
-                if (this.running) void this.pollOnce();
+                if (this.running) void this.pollOnce().catch((err) => this.kernel.logger.error("word-cite:poll", err));
               }, 150);
             }
           }
@@ -16166,10 +16325,11 @@ ${summary}` : summary;
         })
       );
       this.disposables.add(
-        this.kernel.bus.on("word:refresh-request", async ({ requestId }) => {
+        this.kernel.bus.on("word:refresh-request", async ({ requestId, sessionID }) => {
           if (!this.active) return;
-          const docName = this.tracker.getActiveSession()?.displayName || "";
-          const ok = await refreshActiveWordDocument(this.kernel);
+          const session2 = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
+          const docName = session2?.displayName || "";
+          const ok = (!sessionID || !!session2) && await refreshActiveWordDocument(this.kernel, sessionID);
           if (ok) {
             void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error("word-cite:poll", err));
           }
@@ -16208,7 +16368,7 @@ ${summary}` : summary;
             });
             return;
           }
-          const targetSession = (sessionID ? this.tracker.getSession(sessionID) : void 0) || this.tracker.getActiveSession();
+          const targetSession = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
           if (!targetSession || !targetSession.orphans.length) {
             this.kernel.bus.emit("word:recover-orphans-result", {
               requestId,
@@ -16223,14 +16383,14 @@ ${summary}` : summary;
             const col = this.collections.getSessionCollection(targetSession.sessionID);
             const result = await recoverOrphanCitations(targetSession.orphans, {
               targetCollectionID: typeof col?.id === "number" ? col.id : void 0,
-              collectionName: col?.name ? String(col.name) : targetSession.displayName,
+              collectionName: col?.name ? String(col.name) : void 0,
               keys: keys2
             });
             const changed = result.restoredCount > 0 || result.importedCount > 0 || (result.existingCount ?? 0) > 0 || (result.relinkedCount ?? 0) > 0;
             let refreshed = false;
             if (changed) {
               if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
-                refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
+                refreshed = await refreshActiveWordDocument(this.kernel, targetSession.sessionID).catch((err) => {
                   this.kernel.logger.error("word-cite:recover-refresh", err);
                   return false;
                 });
@@ -16253,7 +16413,7 @@ ${summary}` : summary;
               restoredCount: 0,
               importedCount: 0,
               skippedCount: targetSession.orphans.length,
-              error: tLocale("恢复缺失引文时发生数据库错误，事务已安全回滚。", "Failed to recover orphan citations; transaction safely rolled back.")
+              error: tLocale("恢复未完成，请重新检查文库和缺失引文后重试。", "Recovery did not complete. Recheck the library and remaining citations before retrying.")
             });
           } finally {
             this.recoveringOrphans = false;
@@ -16293,13 +16453,14 @@ ${summary}` : summary;
       const all = this.tracker.getAllSessions();
       if (all.length <= 1) return true;
       const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
-      if (!fgTitle) return true;
+      if (!fgTitle) return false;
+      const title = extractDocumentBaseName(fgTitle).toLowerCase();
       const matches = all.filter((ses) => {
         const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
         const stem = base.replace(/\.(docx?|rtf)$/i, "");
-        return Boolean(base && (fgTitle.includes(base) || stem && fgTitle.includes(stem)));
+        return title === base || title === stem;
       });
-      return matches.length === 0 || matches.some((m) => m.sessionID === targetSessionID);
+      return matches.length === 1 && matches[0].sessionID === targetSessionID;
     }
     showSpotlightRecoverToast(docName, res) {
       try {
@@ -16309,8 +16470,8 @@ ${summary}` : summary;
         const pw = new PW();
         pw.changeHeadline(tLocale("Zotero BridgeFlow · 缺失引文找回", "Zotero BridgeFlow · Citation Recovery"));
         pw.addDescription(total > 0 ? tLocale(
-          `「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? "并自动重连 Word" : "（请在 Word 点击刷新完成重连）"}。`,
-          `Recovered ${total} citation(s) for "${docName}"${res.refreshed ? " and relinked in Word" : ""}.`
+          `「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? "，已执行 Word 刷新" : "（请在目标 Word 文档核对并刷新引文）"}。`,
+          `Recovered ${total} citation(s) for "${docName}"${res.refreshed ? " and refreshed Word" : ""}.`
         ) : tLocale("未能自动恢复缺失引文（缺少内嵌备份元数据）。", "No orphan citations could be recovered."));
         pw.show();
         pw.startCloseTimer(4500);
@@ -17197,21 +17358,24 @@ ${summary}` : summary;
   // src/domains/workspace/workspace-disk-cache.ts
   var WorkspaceDiskCache = class {
     flushTimer = null;
-    flushing = null;
-    lastWrittenJson = "";
-    lastError = "";
+    file;
     constructor(privateDirectory = "") {
-      this.directory = cacheDirectory(privateDirectory);
+      this.file = new DurableCacheFile("workspace", "workspace-snapshots", privateDirectory);
     }
-    directory;
+    get lastError() {
+      return this.file.lastError;
+    }
+    get loadedFromLegacy() {
+      return this.file.needsMigration;
+    }
     getDirectoryPath() {
-      return this.directory;
+      return this.file.directory;
     }
     getFilePath() {
-      return cacheFile(this.directory, "workspace-snapshots.json");
+      return this.file.path;
     }
     getBackupFilePath() {
-      return cacheFile(this.directory, "workspace-snapshots.bak.json");
+      return this.file.backup;
     }
     scheduleSave(state, immediate = false, serialized) {
       const ioUtils = globalThis.IOUtils;
@@ -17229,60 +17393,21 @@ ${summary}` : summary;
         void this.flushNow(state, serialized);
       }, 320);
     }
-    async flushNow(state, _serialized) {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return true;
-      const payload = `${JSON.stringify({ format: "zotero-bridgeflow-workspace", version: 2, state }, null, 2)}
-`;
-      const run = async () => {
-        if (payload === this.lastWrittenJson) return true;
-        try {
-          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-          const mainPath = this.getFilePath();
-          const bakPath = this.getBackupFilePath();
-          if (this.lastWrittenJson) {
-            try {
-              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
-            } catch {
-            }
-          }
-          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
-          this.lastWrittenJson = payload;
-          this.lastError = "";
-          return true;
-        } catch (err) {
-          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
-          return false;
-        }
-      };
-      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-      return this.flushing;
+    flushNow(state, _serialized) {
+      return this.file.write(() => JSON.stringify({
+        format: "zotero-bridgeflow-workspace",
+        version: 2,
+        state
+      }));
     }
-    async loadFromDisk() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-      const paths = [this.getFilePath(), this.getBackupFilePath()];
-      if (this.directory !== cacheDirectory()) {
-        paths.push(cacheFile(cacheDirectory(), "workspace-snapshots.json"), cacheFile(cacheDirectory(), "workspace-snapshots.bak.json"));
-      }
-      for (const candidatePath of paths) {
+    loadFromDisk() {
+      return this.file.load((text2) => {
         try {
-          if (!await ioUtils.exists(candidatePath)) continue;
-          const raw = await ioUtils.readUTF8(candidatePath);
-          if (!raw) continue;
-          try {
-            const parsed = readBackup(raw);
-            this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : "";
-            return parsed;
-          } catch {
-            const parsed = readWorkspace(raw);
-            this.lastWrittenJson = candidatePath === this.getFilePath() ? raw : "";
-            return parsed;
-          }
+          return readBackup(text2);
         } catch {
+          return readWorkspace(text2);
         }
-      }
-      return null;
+      });
     }
     /**
      * Merges durable disk state into memory state so saved sessions, virtual members,
@@ -17384,22 +17509,26 @@ ${summary}` : summary;
   // src/domains/workspace/reading-progress-cache.ts
   var ReadingProgressDiskCache = class {
     flushTimer = null;
-    flushing = null;
-    lastWrittenJson = "";
-    lastError = "";
-    loadedFromLegacy = false;
-    directory;
+    file;
+    root;
     constructor(privateDirectory = "") {
-      this.directory = cacheDirectory(privateDirectory);
+      this.root = privateDirectory;
+      this.file = new DurableCacheFile("reading", "reading-progress", privateDirectory);
+    }
+    get lastError() {
+      return this.file.lastError;
+    }
+    get loadedFromLegacy() {
+      return this.file.needsMigration;
     }
     getDirectoryPath() {
-      return this.directory;
+      return this.file.directory;
     }
     getFilePath() {
-      return cacheFile(this.directory, "reading-progress.json");
+      return this.file.path;
     }
     getBackupFilePath() {
-      return cacheFile(this.directory, "reading-progress.bak.json");
+      return this.file.backup;
     }
     scheduleSave(state, immediate = false) {
       const ioUtils = globalThis.IOUtils;
@@ -17417,74 +17546,16 @@ ${summary}` : summary;
         void this.flushNow(state);
       }, 320);
     }
-    async flushNow(state) {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return true;
-      const payload = `${JSON.stringify({
+    flushNow(state) {
+      return this.file.write(() => JSON.stringify({
         format: "zotero-bridgeflow-reading-progress",
         version: 1,
         state: pickReadingProgressState(state)
-      }, null, 2)}
-`;
-      const run = async () => {
-        if (payload === this.lastWrittenJson) return true;
-        try {
-          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-          const mainPath = this.getFilePath();
-          const bakPath = this.getBackupFilePath();
-          if (this.lastWrittenJson) {
-            try {
-              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
-            } catch {
-            }
-          }
-          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
-          this.lastWrittenJson = payload;
-          this.lastError = "";
-          return true;
-        } catch (err) {
-          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
-          return false;
-        }
-      };
-      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-      return this.flushing;
+      }), 6e5);
     }
-    async loadFromDisk() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-      this.loadedFromLegacy = false;
-      const primaryPaths = [this.getFilePath(), this.getBackupFilePath()];
-      if (this.directory !== cacheDirectory()) {
-        primaryPaths.push(cacheFile(cacheDirectory(), "reading-progress.json"), cacheFile(cacheDirectory(), "reading-progress.bak.json"));
-      }
-      for (const p of primaryPaths) {
-        try {
-          if (!await ioUtils.exists(p)) continue;
-          const raw = await ioUtils.readUTF8(p);
-          if (!raw) continue;
-          const parsed = readReadingProgressBackup(raw);
-          this.lastWrittenJson = p === this.getFilePath() ? raw : "";
-          return parsed;
-        } catch {
-        }
-      }
-      const legacyPaths = [cacheFile(this.directory, "reading-notes.json"), cacheFile(this.directory, "reading-notes.bak.json")];
-      if (this.directory !== cacheDirectory()) {
-        legacyPaths.push(cacheFile(cacheDirectory(), "reading-notes.json"), cacheFile(cacheDirectory(), "reading-notes.bak.json"));
-      }
-      for (const lp of legacyPaths) {
-        try {
-          if (!await ioUtils.exists(lp)) continue;
-          const raw = await ioUtils.readUTF8(lp);
-          if (!raw) continue;
-          const parsed = readReadingNotesBackup(raw);
-          this.loadedFromLegacy = true;
-          return pickReadingProgressState(parsed);
-        } catch {
-        }
-      }
-      return null;
+    loadFromDisk() {
+      const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
+      return this.file.load((text2, path) => legacy.includes(path) ? pickReadingProgressState(readReadingNotesBackup(text2)) : readReadingProgressBackup(text2), legacy);
     }
     mergeDurableState(current, disk) {
       let changed = false;
@@ -17538,22 +17609,26 @@ ${summary}` : summary;
   // src/domains/workspace/brief-notes-cache.ts
   var BriefNotesDiskCache = class {
     flushTimer = null;
-    flushing = null;
-    lastWrittenJson = "";
-    lastError = "";
-    loadedFromLegacy = false;
-    directory;
+    file;
+    root;
     constructor(privateDirectory = "") {
-      this.directory = cacheDirectory(privateDirectory);
+      this.root = privateDirectory;
+      this.file = new DurableCacheFile("reading", "brief-notes", privateDirectory);
+    }
+    get lastError() {
+      return this.file.lastError;
+    }
+    get loadedFromLegacy() {
+      return this.file.needsMigration;
     }
     getDirectoryPath() {
-      return this.directory;
+      return this.file.directory;
     }
     getFilePath() {
-      return cacheFile(this.directory, "brief-notes.json");
+      return this.file.path;
     }
     getBackupFilePath() {
-      return cacheFile(this.directory, "brief-notes.bak.json");
+      return this.file.backup;
     }
     scheduleSave(state, immediate = false) {
       const ioUtils = globalThis.IOUtils;
@@ -17571,74 +17646,16 @@ ${summary}` : summary;
         void this.flushNow(state);
       }, 240);
     }
-    async flushNow(state) {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return true;
-      const payload = `${JSON.stringify({
+    flushNow(state) {
+      return this.file.write(() => JSON.stringify({
         format: "zotero-bridgeflow-brief-notes",
         version: 1,
         state: pickBriefNotesState(state)
-      }, null, 2)}
-`;
-      const run = async () => {
-        if (payload === this.lastWrittenJson) return true;
-        try {
-          await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-          const mainPath = this.getFilePath();
-          const bakPath = this.getBackupFilePath();
-          if (this.lastWrittenJson) {
-            try {
-              await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + ".tmp" });
-            } catch {
-            }
-          }
-          await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + ".tmp" });
-          this.lastWrittenJson = payload;
-          this.lastError = "";
-          return true;
-        } catch (err) {
-          this.lastError = err instanceof Error ? err.message : String(err || "write failed");
-          return false;
-        }
-      };
-      this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-      return this.flushing;
+      }));
     }
-    async loadFromDisk() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-      this.loadedFromLegacy = false;
-      const primaryPaths = [this.getFilePath(), this.getBackupFilePath()];
-      if (this.directory !== cacheDirectory()) {
-        primaryPaths.push(cacheFile(cacheDirectory(), "brief-notes.json"), cacheFile(cacheDirectory(), "brief-notes.bak.json"));
-      }
-      for (const p of primaryPaths) {
-        try {
-          if (!await ioUtils.exists(p)) continue;
-          const raw = await ioUtils.readUTF8(p);
-          if (!raw) continue;
-          const parsed = readBriefNotesBackup(raw);
-          this.lastWrittenJson = p === this.getFilePath() ? raw : "";
-          return parsed;
-        } catch {
-        }
-      }
-      const legacyPaths = [cacheFile(this.directory, "reading-notes.json"), cacheFile(this.directory, "reading-notes.bak.json")];
-      if (this.directory !== cacheDirectory()) {
-        legacyPaths.push(cacheFile(cacheDirectory(), "reading-notes.json"), cacheFile(cacheDirectory(), "reading-notes.bak.json"));
-      }
-      for (const lp of legacyPaths) {
-        try {
-          if (!await ioUtils.exists(lp)) continue;
-          const raw = await ioUtils.readUTF8(lp);
-          if (!raw) continue;
-          const parsed = readReadingNotesBackup(raw);
-          this.loadedFromLegacy = true;
-          return pickBriefNotesState(parsed);
-        } catch {
-        }
-      }
-      return null;
+    loadFromDisk() {
+      const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
+      return this.file.load((text2, path) => legacy.includes(path) ? pickBriefNotesState(readReadingNotesBackup(text2)) : readBriefNotesBackup(text2), legacy);
     }
     mergeDurableState(current, disk) {
       let changed = false;
@@ -17708,7 +17725,7 @@ ${summary}` : summary;
       await store.diskCache.flushNow(pickWorkspaceLayoutState(store.state));
       return true;
     }
-    if (layoutChanged) store.save(true);
+    if (layoutChanged || store.diskCache.loadedFromLegacy) store.save(true);
     else if (!diskLayout && !store.readOnlyGuard) store.diskCache.scheduleSave(pickWorkspaceLayoutState(store.state), true);
     if (readingChanged || store.readingCache.loadedFromLegacy || !diskReading && Object.keys(store.state.readingProgress).length) {
       await store.readingCache.flushNow(store.state);
@@ -17855,7 +17872,7 @@ ${summary}` : summary;
     }
     saveReadingProgress(immediateDisk = false) {
       this.readingCache.scheduleSave(this.state, immediateDisk);
-      this.emitChange();
+      this.emitChange("reading");
     }
     saveBriefNotes(immediateDisk = false) {
       this.notesCache.scheduleSave(this.state, immediateDisk);
@@ -23387,10 +23404,11 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     config = { maxEntries: 2e3, ttlDays: 90 };
     initialized = false;
     dirty = false;
+    file;
     writes = Promise.resolve(true);
+    clearRevision = 0;
+    savedClearRevision = 0;
     saveTimer = null;
-    writeBlocked = false;
-    lastBackupAt = 0;
     saveFailed = false;
     statusListeners = /* @__PURE__ */ new Set();
     onStatusChange(listener) {
@@ -23398,10 +23416,13 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return () => this.statusListeners.delete(listener);
     }
     async retrySave() {
-      if (this.writeBlocked) {
+      if (this.saveFailed) {
+        await this.writes;
         await this.loadFromDisk();
-        if (!this.writeBlocked) this.dirty = true;
+        this.pruneExpired();
+        this.enforceEviction();
       }
+      this.dirty = true;
       return this.flushToDisk();
     }
     configure(partial) {
@@ -23413,6 +23434,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       }
       if (!this.initialized && partial.customDir !== void 0) {
         this.config.customDir = partial.customDir.trim() || void 0;
+        this.file = void 0;
       }
       this.pruneExpired();
       this.enforceEviction();
@@ -23420,20 +23442,24 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     get count() {
       return this.records.size;
     }
+    get disk() {
+      return this.file ??= new DurableCacheFile("citations", "citation-history", this.config.customDir);
+    }
     getDirectoryPath() {
-      return cacheDirectory(this.config.customDir);
+      return this.disk.directory;
     }
     getFilePath() {
-      return cacheFile(this.getDirectoryPath(), "citation-history.json");
+      return this.disk.path;
     }
     getBackupFilePath() {
-      return cacheFile(this.getDirectoryPath(), "citation-history.bak.json");
+      return this.disk.backup;
     }
     record(entry) {
       const key = normalizeCitationKey(entry.text);
       if (!key) return null;
       const now = Date.now();
-      const existing = this.records.get(key);
+      const id = `${entry.libraryID}:${key}`;
+      const existing = this.records.get(id);
       const record2 = {
         ...entry,
         key,
@@ -23441,109 +23467,119 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         lastAccessedAt: now,
         hitCount: (existing?.hitCount ?? 0) + 1
       };
-      this.records.delete(key);
-      this.records.set(key, record2);
+      this.records.delete(id);
+      this.records.set(id, record2);
       this.dirty = true;
       this.enforceEviction();
       this.scheduleSave();
       return record2;
     }
-    lookupExact(query) {
+    lookupExact(query, libraryID) {
       const key = normalizeCitationKey(query);
       if (!key) return null;
-      const rec = this.records.get(key);
-      if (!rec) return null;
-      if (Date.now() - (rec.lastAccessedAt || rec.copiedAt) >= this.config.ttlDays * 864e5) {
-        this.records.delete(key);
-        return null;
-      }
-      rec.lastAccessedAt = Date.now();
-      rec.hitCount += 1;
-      this.dirty = true;
-      this.scheduleSave(5e3);
-      return rec;
-    }
-    searchFuzzy(query, limit = 5) {
-      const norm = normalizeCitationKey(query);
-      if (!norm) return [];
-      const qTokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((t) => t.length >= 2);
-      const scored = [];
-      for (const rec of this.records.values()) {
-        if (rec.key === norm) {
-          scored.push({ rec, score: 100 });
-        } else if (rec.key.includes(norm) || norm.includes(rec.key)) {
-          scored.push({ rec, score: 70 });
-        } else if (qTokens.length >= 3) {
-          let hits = 0;
-          for (const tok of qTokens) if (rec.key.includes(tok)) hits++;
-          const ratio = hits / qTokens.length;
-          if (hits >= 3 && ratio >= 0.6) scored.push({ rec, score: Math.round(45 + ratio * 20) });
+      let record2;
+      if (libraryID !== void 0) record2 = this.records.get(`${libraryID}:${key}`);
+      else {
+        for (const candidate of this.records.values()) {
+          if (candidate.key === key && (!record2 || candidate.lastAccessedAt >= record2.lastAccessedAt)) record2 = candidate;
         }
       }
-      scored.sort((a, b) => b.score - a.score || b.rec.hitCount - a.rec.hitCount);
-      return scored.slice(0, limit).map((s) => s.rec);
+      if (!record2) return null;
+      const id = `${record2.libraryID}:${key}`;
+      this.records.delete(id);
+      if (this.isExpired(record2)) return null;
+      record2.lastAccessedAt = Date.now();
+      record2.hitCount++;
+      this.records.set(id, record2);
+      return record2;
+    }
+    *rankFuzzy(query, limit, libraryID) {
+      const norm = normalizeCitationKey(query);
+      const best = [];
+      if (!norm || limit <= 0) return [];
+      const tokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((token) => token.length >= 2);
+      const oldest = Date.now() - this.config.ttlDays * 864e5;
+      let count2 = 0;
+      for (const rec of this.records.values()) {
+        if (++count2 % 256 === 0) yield;
+        if (libraryID !== void 0 && libraryID !== rec.libraryID || rec.lastAccessedAt <= oldest) continue;
+        let score = 0;
+        if (rec.key === norm) score = 100;
+        else if (rec.key.includes(norm) || norm.includes(rec.key)) score = 70;
+        else if (tokens.length >= 3) {
+          let hits = 0;
+          for (const token of tokens) if (rec.key.includes(token)) hits++;
+          if (hits >= 3 && hits / tokens.length >= 0.6) score = Math.round(45 + hits / tokens.length * 20);
+        }
+        if (!score) continue;
+        const index = best.findIndex((hit) => score > hit.score || score === hit.score && rec.hitCount > hit.rec.hitCount);
+        if (index >= 0) best.splice(index, 0, { rec, score });
+        else if (best.length < limit) best.push({ rec, score });
+        if (best.length > limit) best.pop();
+      }
+      return best.map((hit) => hit.rec);
+    }
+    searchFuzzy(query, limit = 5, libraryID) {
+      const search = this.rankFuzzy(query, limit, libraryID);
+      while (true) {
+        const step = search.next();
+        if (step.done) return step.value;
+      }
+    }
+    async searchFuzzyAsync(query, limit, libraryID, signal) {
+      const search = this.rankFuzzy(query, limit, libraryID);
+      let start = performance.now();
+      while (!signal?.aborted) {
+        const step = search.next();
+        if (step.done) return step.value;
+        if (performance.now() - start >= 6) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          start = performance.now();
+        }
+      }
+      return [];
     }
     clear() {
       this.records.clear();
+      this.clearRevision++;
       this.dirty = true;
       this.scheduleSave();
     }
-    historyLoadPaths() {
-      const paths = [this.getFilePath(), this.getBackupFilePath()];
-      if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), "citation-history.json"));
-      const dataDir = globalThis.Zotero?.DataDirectory?.dir;
-      const pathUtils = globalThis.PathUtils;
-      if (!this.config.customDir && dataDir && pathUtils?.join) {
-        paths.push(pathUtils.join(dataDir, "viewflow-cache", "viewflow-history.json"));
-      }
-      return paths;
-    }
-    /** Loads records from the first readable file. Unreadable (locked) files block writes; corrupt files are quarantined. */
     async loadFromDisk() {
-      const paths = this.historyLoadPaths();
-      let loaded = false;
-      let readFailed = false;
-      for (const filePath of paths) {
-        const outcome = await readTextOutcome(filePath);
-        if (outcome.status === "missing") continue;
-        if (outcome.status === "error") {
-          readFailed = true;
-          continue;
-        }
-        if (!outcome.text.trim()) continue;
-        let parsed;
-        try {
-          parsed = JSON.parse(outcome.text);
-        } catch {
-          await quarantineFile(filePath);
-          continue;
-        }
-        const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
-        for (const raw of list) {
-          if (!raw?.text || !raw?.itemID) continue;
+      const dataDir = globalThis.Zotero?.DataDirectory?.dir;
+      const legacy = dataDir ? [cacheFile(cacheFile(dataDir, "viewflow-cache"), "viewflow-history.json")] : [];
+      const diskRecords = await this.disk.load((text2) => {
+        const parsed = JSON.parse(text2);
+        const list = Array.isArray(parsed) ? parsed : parsed?.records;
+        if (!Array.isArray(list)) throw new Error("Invalid citation cache");
+        return list;
+      }, legacy);
+      if (!this.clearRevision) {
+        for (const raw of diskRecords || []) {
+          const itemID = Number(raw?.itemID);
+          const libraryID = Number(raw?.libraryID ?? 1);
+          if (typeof raw?.text !== "string" || !Number.isSafeInteger(itemID) || itemID <= 0 || !Number.isSafeInteger(libraryID) || libraryID <= 0) continue;
           const key = normalizeCitationKey(raw.text);
-          if (this.records.has(key)) continue;
-          this.records.set(key, {
+          const id = `${libraryID}:${key}`;
+          if (!key || this.records.has(id)) continue;
+          this.records.set(id, {
             key,
-            text: String(raw.text),
-            libraryID: Number(raw.libraryID || 1),
+            libraryID,
+            itemID,
+            text: raw.text,
             itemKey: String(raw.itemKey || ""),
-            itemID: Number(raw.itemID),
             title: String(raw.title || ""),
             style: String(raw.style || ""),
-            copiedAt: Number(raw.copiedAt || Date.now()),
-            lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
-            hitCount: Number(raw.hitCount || 1)
+            copiedAt: Number(raw.copiedAt) || Date.now(),
+            lastAccessedAt: Number(raw.lastAccessedAt) || Number(raw.copiedAt) || Date.now(),
+            hitCount: Number(raw.hitCount) || 1
           });
         }
-        loaded = true;
-        if (filePath !== paths[0]) {
-          this.dirty = true;
-          this.scheduleSave();
-        }
-        break;
       }
-      this.writeBlocked = readFailed && !loaded;
+      if (this.disk.needsMigration) {
+        this.dirty = true;
+        this.scheduleSave();
+      }
     }
     async init() {
       if (this.initialized) return;
@@ -23553,6 +23589,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       await this.loadFromDisk();
       this.pruneExpired();
       this.enforceEviction();
+      if (this.disk.needsMigration) await this.flushToDisk();
     }
     dispose() {
       if (this.dirty) void this.flushToDisk();
@@ -23561,26 +23598,17 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         this.saveTimer = null;
       }
     }
+    isExpired(record2) {
+      return Date.now() - record2.lastAccessedAt >= this.config.ttlDays * 864e5;
+    }
     pruneExpired() {
-      const now = Date.now();
-      const ttlMs = this.config.ttlDays * 864e5;
-      for (const [k, rec] of this.records.entries()) {
-        if (now - (rec.lastAccessedAt || rec.copiedAt) >= ttlMs) {
-          this.records.delete(k);
-        }
-      }
+      for (const [id, record2] of this.records) if (this.isExpired(record2)) this.records.delete(id);
     }
     enforceEviction() {
-      if (this.records.size <= this.config.maxEntries) return;
-      const entries = [...this.records.values()];
-      entries.sort((a, b) => {
-        const scoreA = a.lastAccessedAt + a.hitCount * 36e5;
-        const scoreB = b.lastAccessedAt + b.hitCount * 36e5;
-        return scoreA - scoreB;
-      });
-      const overflow = this.records.size - this.config.maxEntries;
-      for (let i = 0; i < overflow; i++) {
-        this.records.delete(entries[i].key);
+      while (this.records.size > this.config.maxEntries) {
+        const oldest = this.records.keys().next().value;
+        if (oldest === void 0) break;
+        this.records.delete(oldest);
       }
     }
     scheduleSave(delayMs = 400) {
@@ -23597,50 +23625,26 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return this.writes;
     }
     async writeRecords() {
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.writeUTF8) return true;
-      if (this.writeBlocked) {
-        this.dirty = true;
-        this.saveFailed = true;
+      if (!this.dirty) return true;
+      this.dirty = false;
+      const revision = this.clearRevision;
+      const ok = await this.disk.write(
+        () => JSON.stringify({ version: 1, records: [...this.records.values()] }),
+        6e5,
+        revision !== this.savedClearRevision
+      );
+      if (!ok) this.dirty = true;
+      else this.savedClearRevision = revision;
+      if (this.saveFailed === ok) {
+        this.saveFailed = !ok;
         for (const fn of this.statusListeners) {
           try {
             fn();
           } catch {
           }
         }
-        return false;
       }
-      try {
-        await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-        if (Date.now() - this.lastBackupAt > 6e5) {
-          this.lastBackupAt = Date.now();
-          await copyToBackup(this.getFilePath(), this.getBackupFilePath());
-        }
-        const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}
-`;
-        this.dirty = false;
-        await ioUtils.writeUTF8(this.getFilePath(), payload, { tmpPath: this.getFilePath() + ".tmp" });
-        if (this.saveFailed) {
-          this.saveFailed = false;
-          for (const fn of this.statusListeners) {
-            try {
-              fn();
-            } catch {
-            }
-          }
-        }
-        return true;
-      } catch {
-        this.dirty = true;
-        this.saveFailed = true;
-        for (const fn of this.statusListeners) {
-          try {
-            fn();
-          } catch {
-          }
-        }
-        return false;
-      }
+      return ok;
     }
   };
 

@@ -15,12 +15,16 @@ export interface ParsedCitation {
 }
 
 export function extractIdentifier(input: string): { doi?: string; arxiv?: string } {
-	const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)\b/i);
+	const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
 	const arxivMatch =
 		input.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) ||
 		input.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
 	return {
-		doi: doiMatch ? doiMatch[1].replace(/[.,;)]+$/, '') : undefined,
+		doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, '').replace(/\)+$/, trailing => {
+			const opens = (doiMatch[1].match(/\(/g) || []).length;
+			const closes = (doiMatch[1].match(/\)/g) || []).length;
+			return trailing.slice(0, Math.max(0, trailing.length - Math.max(0, closes - opens)));
+		}).toLowerCase() : undefined,
 		arxiv: arxivMatch ? arxivMatch[1] : undefined,
 	};
 }
@@ -157,40 +161,27 @@ export function isJournalMatch(queryJournal: string, pubTitle: string, abbr: str
 	return matchTokens(pubNorm) || matchTokens(abbrNorm);
 }
 
-export async function queryPhysicalCandidates(parsed: ParsedCitation, libraryID?: number): Promise<any[]> {
+export async function queryPhysicalCandidates(parsed: ParsedCitation, libraryID?: number, signal?: AbortSignal): Promise<any[]> {
 	const host = (globalThis as any).Zotero;
-	if (!host?.Items) return [];
-	const runSearch = async (libID?: number): Promise<number[]> => {
-		if (!host.Search) return [];
-		try {
-			const s = new host.Search();
-			if (libID !== undefined && libID !== null) s.libraryID = libID;
-			if (parsed.doi) {
-				s.addCondition('DOI', 'is', parsed.doi);
-			} else if (parsed.arxiv && !parsed.journalText) {
-				s.addCondition('quicksearch-everything', 'contains', parsed.arxiv.replace(/v\d+$/, ''));
-			} else {
-				s.addCondition('itemType', 'is', 'journalArticle');
-				if (parsed.year) {
-					try { s.addCondition('date', 'contains', String(parsed.year)); } catch { /* ignore */ }
-				}
-			}
-			return (await s.search()) || [];
-		} catch {
-			return [];
-		}
-	};
-	let ids = await runSearch(libraryID);
-	if (!ids.length && libraryID !== undefined) ids = await runSearch(undefined);
-	if (ids.length && host.Items.getAsync) {
-		const items = await host.Items.getAsync(ids).catch(() => []);
-		return Array.isArray(items) ? items : (items ? [items] : []);
+	if (!host?.Items || !host.Search || signal?.aborted) return [];
+	const scope = libraryID ?? host.Libraries?.userLibraryID;
+	const search = new host.Search();
+	if (scope != null) search.libraryID = scope;
+	if (parsed.doi) {
+		search.addCondition('DOI', 'is', parsed.doi);
+	} else if (parsed.arxiv && !parsed.journalText) {
+		search.addCondition('quicksearch-everything', 'contains', parsed.arxiv.replace(/v\d+$/, ''));
+	} else {
+		search.addCondition('itemType', 'is', 'journalArticle');
+		if (parsed.year) search.addCondition('date', 'contains', String(parsed.year));
 	}
-	if (typeof host.Items.getAll === 'function') {
-		const targetLib = libraryID ?? host.Libraries?.userLibraryID ?? 1;
-		return (await host.Items.getAll(targetLib, true, false).catch(() => [])) || [];
-	}
-	return [];
+	const ids: number[] = await search.search();
+	if (signal?.aborted || !ids?.length) return [];
+	const loaded = typeof host.Items.getAsync === 'function'
+		? await host.Items.getAsync(ids)
+		: ids.map(id => host.Items.get?.(id));
+	return (Array.isArray(loaded) ? loaded : [loaded]).filter(item => item
+		&& (scope == null || item.libraryID == null || item.libraryID === scope));
 }
 
 function expandEndPage(first?: string, last?: string): string | undefined {
@@ -206,7 +197,7 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 	const matched = candidates.filter((item) => {
 		if (!item || item.deleted || !item.isRegularItem?.()) return false;
 		if (parsed.doi) {
-			const itemDoi = safeGetItemField(item, 'DOI').trim().toLowerCase();
+			const itemDoi = extractIdentifier(safeGetItemField(item, 'DOI')).doi;
 			return itemDoi === parsed.doi.toLowerCase();
 		}
 		if (parsed.arxiv && !parsed.journalText) {

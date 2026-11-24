@@ -271,11 +271,11 @@ test('Phase 2.3: Zotero 10 reader page tracking, disk cache merge & title heatma
 		writeUTF8: async (p, content) => { writtenJson[p] = content; },
 	};
 	await diskCache.flushNow(store.state);
-	assert.match(writtenJson[diskCache.getFilePath()], /\n\s+"format": "zotero-bridgeflow-workspace"/);
+	assert.equal(JSON.parse(writtenJson[diskCache.getFilePath()]).format, 'zotero-bridgeflow-workspace');
 	const hist = new CitationHistoryStore();
 	hist.record({ text: 'Doe 2026', libraryID: 1, itemKey: 'K1', itemID: 1, title: 'T', style: 'apa' });
 	await hist.retrySave();
-	assert.match(writtenJson[hist.getFilePath()], /\n\s+"version": 1/);
+	assert.equal(JSON.parse(writtenJson[hist.getFilePath()]).version, 1);
 	globalThis.IOUtils = prevIO;
 
 	const makeCell = (withText = true) => {

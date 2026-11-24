@@ -5,7 +5,7 @@ import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { ServiceContainer } from '../src/services/service-container.ts';
 import { WordCiteDomainModule } from '../src/domains/word-cite/module.ts';
 import { extractSessionCitationsWithOrphans } from '../src/domains/word-cite/orphan-extraction.ts';
-import { clearRelinkedItemUris } from '../src/domains/word-cite/orphan-identity.ts';
+import { clearRelinkedItemUris, classifySyncSafeRelinkUris, resolveItemIdFromUris } from '../src/domains/word-cite/orphan-identity.ts';
 import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery.ts';
 import { SpotlightFusionBridge } from '../src/bridges/spotlight-fusion-bridge.ts';
 import { WorkspaceDomainModule } from '../src/domains/workspace/module.ts';
@@ -265,6 +265,7 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 
 	let txCount = 0;
 	let refreshCalls = 0;
+	let nativeSessionID = 's1';
 	let toastCount = 0;
 	const trashedItem = createItemStub(203, { title: 'Trashed Paper With PDF', deleted: true, inTrash: true, key: 'TR203' });
 	const existingDoiItem = createItemStub(209, { title: 'Existing DOI Paper', deleted: false, key: 'EX209' });
@@ -356,7 +357,7 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 			async execCommand(_agent, cmd) {
 				const app = this.getApplication('WinWord', cmd, null);
 				const doc = await app.getActiveDocument();
-				await new this.Interface(app, doc, {})[cmd]();
+				await new this.Interface(app, doc, { sessionID: nativeSessionID })[cmd]();
 			},
 		},
 		Prefs: { get: () => '', set: () => {}, registerObserver: () => 0, unregisterObserver: () => {} },
@@ -460,6 +461,13 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 		assert.equal(res.foreignSkippedCount, 1, 'foreign co-author URI excluded from dc:replaces');
 		assert.equal(res.refreshed, true, 'active Word document automatically refreshed after recovery');
 		assert.equal(refreshCalls, 1);
+		nativeSessionID = 'another-document';
+		const guarded = await new Promise(resolve => {
+			kernel.bus.on('word:refresh-result', resolve);
+			kernel.bus.emit('word:refresh-request', { requestId: 'stale-receipt', sessionID: 's1' });
+		});
+		assert.equal(guarded.ok, false);
+		assert.equal(refreshCalls, 1);
 
 		// Verify Trash restore
 		assert.equal(trashedItem.deleted, false);
@@ -497,8 +505,8 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 		assert.equal(receipt.tone, 'ok');
 		assert.match(receipt.text, /已从回收站还原 1 篇/);
 		assert.match(receipt.text, /已反向导入 2 篇/);
-		assert.match(receipt.text, /已复用库内同 DOI 文献 1 篇/);
-		assert.match(receipt.text, /已自动刷新并重连 Word/);
+		assert.match(receipt.text, /已复用库内匹配文献 1 篇/);
+		assert.match(receipt.text, /已执行 Word 刷新，请核对文内引文/);
 		assert.match(receipt.text, /1 篇外部账号引文未写跨库映射/);
 
 		const doiOnlyReceipt = formatRecoverReceipt({
@@ -510,7 +518,7 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 			refreshed: false,
 		}, true);
 		assert.equal(doiOnlyReceipt.tone, 'ok', 'DOI-only match must report success, not warning');
-		assert.match(doiOnlyReceipt.text, /点 Word「刷新」即自动重连/);
+		assert.match(doiOnlyReceipt.text, /请在目标 Word 文档刷新并核对引文/);
 	} finally {
 		mod.stop();
 		clearRelinkedItemUris();
@@ -568,6 +576,7 @@ test('recoverOrphanCitations deduplicates identical DOIs within the same recover
 	const saved = [];
 	let seq = 800;
 	globalThis.Zotero = {
+		Users: { getCurrentUserID: () => 1 },
 		Libraries: { userLibraryID: 1 },
 		Relations: { replacedItemPredicate: 'dc:replaces' },
 		Item: class {
@@ -647,6 +656,7 @@ test('v0.6.4: non-DOI exact title+author+year dedup, schema-aware CSL fields, se
 		isWin: true,
 		Item: SchemaAwareItem,
 		Relations: { replacedItemPredicate: 'dc:replaces' },
+		Users: { getCurrentUserID: () => 1 },
 		Libraries: { userLibraryID: 1, get: () => ({ editable: true }) },
 		Search: class {
 			constructor() { this.conds = []; }
@@ -799,4 +809,111 @@ test('v0.6.4: non-DOI exact title+author+year dedup, schema-aware CSL fields, se
 		clearRelinkedItemUris();
 		globalThis.Zotero = prevZotero;
 	}
+});
+
+test('A foreign citation with a colliding local ID remains missing in both Word indexes', () => {
+	const prev = globalThis.Zotero;
+	const uri = 'http://zotero.org/users/99/items/FOREIGN1';
+	try {
+		globalThis.Zotero = {
+			Users: { getCurrentUserID: () => 1 },
+			Items: { get: () => createItemStub(44) },
+			URI: { getItemURI: () => 'http://zotero.org/users/1/items/LOCAL001', getURIItemID: () => 44 },
+		};
+		const result = extractSessionCitationsWithOrphans({
+			citationsByIndex: [{ citationItems: [{ id: 44, uris: [uri], itemData: { title: 'Foreign paper' } }] }],
+			citationsByItemID: { 44: [{}] },
+		});
+		assert.equal(result.citations.length, 0);
+		assert.equal(result.orphans[0].kind, 'missing');
+		assert.equal(result.orphans[0].itemID, undefined);
+		assert.deepEqual(classifySyncSafeRelinkUris([uri, 'http://zotero.org/users/local/UNKNOWN/items/K'], 1, 1, {}).safeUris, []);
+	} finally { globalThis.Zotero = prev; }
+});
+
+test('Empty selection, conflicting DOIs and transaction commit failures preserve citation identity', async () => {
+	const prev = globalThis.Zotero;
+	const items = [];
+	const uri = 'http://zotero.org/users/1/items/OLDENTRY';
+	try {
+		globalThis.Zotero = {
+			Users: { getCurrentUserID: () => 1 }, Libraries: { userLibraryID: 1 },
+			Items: { get: id => items.find(item => item.id === id) },
+			DB: { executeTransaction: fn => fn() },
+			Item: class {
+				setField() {} addRelation() { return true; }
+				async save() { this.id = items.push(this); return this.id; }
+			},
+		};
+		const orphan = DOI => ({
+			kind: 'missing', key: DOI, title: 'Shared title', uris: [uri],
+			itemData: { title: 'Shared title', DOI, author: [{family:'Lee'}], issued:{'date-parts':[[2025]]} },
+		});
+		const batch = [orphan('10.1234/a'), { ...orphan('10.1234/b'), uris: [] }];
+		await recoverOrphanCitations(batch, {keys: []});
+		assert.equal(items.length, 0);
+		assert.equal((await recoverOrphanCitations(batch)).importedCount, 2);
+		clearRelinkedItemUris();
+		globalThis.Zotero.DB.executeTransaction = async fn => { await fn(); throw Error('commit failure'); };
+		await assert.rejects(recoverOrphanCitations(batch), /commit failure/);
+		assert.equal(resolveItemIdFromUris([uri], globalThis.Zotero, globalThis.Zotero.Items), 0);
+	} finally { clearRelinkedItemUris(); globalThis.Zotero = prev; }
+});
+
+test('Startup cleanup only erases recorded BridgeFlow leaf collections', async () => {
+	const { WordCitationCollectionManager } = await import('../src/domains/word-cite/citation-collections.ts');
+	const { TEMP_COLLECTION_MARKER } = await import('../src/domains/word-cite/collection-tree-order.ts');
+	const prev = globalThis.Zotero;
+	const erased = [], visited = [];
+	const lookup = (key, markers, children) => ({
+		key, name: 'Manuscript.docx', hasChildCollections: () => children,
+		getRelationsByPredicate: () => markers, eraseTx: async () => erased.push(key),
+	});
+	const entries = [
+		lookup('user', [], false), lookup('owned', [TEMP_COLLECTION_MARKER], false),
+		lookup('parent', [TEMP_COLLECTION_MARKER], true), lookup('other', ['BridgeFlow'], false),
+		lookup('unrecorded', [], false),
+	];
+	try {
+		globalThis.Zotero = {
+			Prefs: { get: () => JSON.stringify(entries.slice(0,4).map(e => e.key)), set() {} },
+			Libraries: {userLibraryID: 1},
+			Collections: { getByLibraryAndKey: (_, key) => { visited.push(key); return entries.find(e => e.key === key); } },
+		};
+		await new WordCitationCollectionManager(new PluginKernel()).purgeStaleCollections();
+		assert.deepEqual(erased, ['owned']);
+		assert.ok(!visited.includes('unrecorded'));
+	} finally { globalThis.Zotero = prev; }
+});
+
+test('Persisted Zotero replacement is reused without CSL, and ambiguous DOI does not write', async () => {
+	const prev = globalThis.Zotero;
+	const uri = 'http://zotero.org/users/1/items/OLD12345';
+	const rows = [createItemStub(11), createItemStub(12)];
+	let searchIDs = [];
+	let created = 0;
+	globalThis.Zotero = {
+		Users: { getCurrentUserID: () => 1 },
+		Libraries: { userLibraryID: 1 },
+		Items: { getAsync: async id => rows.find(row => row.id === id) },
+		Relations: { getByPredicateAndObject: async (_, __, object) => object === uri ? [rows[0]] : [] },
+		Search: class { addCondition() {} async search() { return searchIDs; } },
+		Item: class { constructor() { created++; } },
+	};
+	try {
+		clearRelinkedItemUris();
+		const orphan = { key: 'old', kind: 'missing', title: 'Paper', uris: [uri] };
+		const reused = await recoverOrphanCitations([orphan]);
+		assert.deepEqual(reused.recoveredItemIDs, [11]);
+		assert.equal(reused.relinkedCount, 1);
+		searchIDs = [11,12];
+		const ambiguous = await recoverOrphanCitations([{ ...orphan, uris: [], itemData: { DOI: '10.1234/shared' } }]);
+		assert.equal(ambiguous.ambiguousCount, 1);
+		assert.equal(ambiguous.skippedCount, 1);
+		assert.equal(created, 0);
+		assert.match(formatRecoverReceipt(ambiguous, true).text, /多条文库记录/);
+		globalThis.Zotero.Search = class { addCondition() {} async search() { throw Error('read failed'); } };
+		await assert.rejects(recoverOrphanCitations([{ ...orphan, uris: [], itemData: { DOI: '10.1234/shared' } }]), /read failed/);
+		assert.equal(created, 0);
+	} finally { clearRelinkedItemUris(); globalThis.Zotero = prev; }
 });

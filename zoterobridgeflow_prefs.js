@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.4 - Preferences controller. */
+/* Zotero BridgeFlow v0.6.7 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -841,11 +841,15 @@
   }
 
   // src/services/pdf-cover-service.ts
+  var MEM_CACHE_BASE64_LIMIT = 16 * 1024 * 1024;
   var MAX_COVER_BYTES = 4 * 1024 * 1024;
   var memCoverCache = /* @__PURE__ */ new Map();
-  var fingerprints = /* @__PURE__ */ new Map();
+  var memCacheSize = 0;
   var failedRetryAt = /* @__PURE__ */ new Map();
   var configuredCoverCacheDir = "";
+  var sweepingPromise = null;
+  var clearing;
+  var pendingWrites = /* @__PURE__ */ new Set();
   function getCoversDir(customDir = "") {
     try {
       const zotero = globalThis.Zotero;
@@ -857,26 +861,36 @@
       return null;
     }
   }
+  function isBridgeFlowCoverFile(name) {
+    return /^(?:cover-v\d+-\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
+  }
   var defaultScrollIdle = createGalleryScrollIdle(100);
-  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 3);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
   var ioQueue = createGalleryWorkQueue(async () => {
   }, 8);
   var activeJobs = /* @__PURE__ */ new Map();
-  async function clearPdfCoverCache(customDir = "") {
+  function clearPdfCoverCache(customDir = "") {
+    if (clearing) return clearing;
     memCoverCache.clear();
+    memCacheSize = 0;
     failedRetryAt.clear();
-    fingerprints.clear();
     for (const job of activeJobs.values()) job.controller.abort();
     activeJobs.clear();
-    try {
-      const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
-      const coversDir = getCoversDir(customDir);
-      if (!coversDir || !ioUtils?.remove) return false;
-      await ioUtils.remove(coversDir, { recursive: true, ignoreAbsent: true });
+    clearing = (async () => {
+      await Promise.allSettled([...pendingWrites, sweepingPromise]);
+      const io = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+      const dir = getCoversDir(customDir);
+      if (!dir || !io?.getChildren || !io?.remove) return false;
+      if (io.exists && !await io.exists(dir)) return true;
+      const paths = await io.getChildren(dir);
+      for (const path of paths) {
+        if (isBridgeFlowCoverFile(path.split(/[\\/]/).pop() || "")) await io.remove(path, { ignoreAbsent: true });
+      }
       return true;
-    } catch {
-      return false;
-    }
+    })().catch(() => false).finally(() => {
+      clearing = void 0;
+    });
+    return clearing;
   }
 
   // src/prefs-helpers.ts
@@ -1098,7 +1112,7 @@
       if (targetWin?.confirm && !targetWin.confirm("确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。")) {
         return;
       }
-      void clearPdfCoverCache(prefs.get("inspector.lookup.cacheDirectory")).then(() => {
+      void clearPdfCoverCache().then(() => {
         getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
         setStatusFeedback(doc, "zbf-prefs-status-covers-cleared", "✓ 已清空画廊 PDF 封面缩略图缓存");
       });
@@ -1264,8 +1278,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.4" }));
-        versionEl.textContent = `v${"0.6.4"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.7" }));
+        versionEl.textContent = `v${"0.6.7"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

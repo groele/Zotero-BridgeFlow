@@ -58,16 +58,59 @@ const SOFT_TINTS = [
 	{ pillBg: '#f3e8ff', pillFg: '#6b21a8', surface: 'rgba(168,85,247,0.045)' },
 ] as const;
 
-export function extractGalleryCards(
-	win: Window,
-	deps: {
-		zh?: boolean;
-		excludedStatusTag: string;
-		ratingStorage: RatingStorageLocation;
-		getBriefNote: (item: any) => string;
-		getReadProgress: (item: any) => TabReadingProgress | undefined;
-	},
-): { cards: GalleryCardModel[]; rawItems: any[] } {
+type GalleryDependencies = {
+	zh?: boolean;
+	excludedStatusTag: string;
+	ratingStorage: RatingStorageLocation;
+	getBriefNote: (item: any) => string;
+	getReadProgress: (item: any) => TabReadingProgress | undefined;
+};
+
+class GalleryCard implements GalleryCardModel {
+	readonly item: any;
+	readonly itemID: number;
+	readonly dateModified: string;
+	private readonly deps: GalleryDependencies;
+	private readonly zh: boolean;
+	private fields?: ReturnType<typeof resolveCachedCardStatic>;
+	private note?: string;
+	private stars?: number;
+	private progress?: TabReadingProgress | null;
+
+	constructor(item: any, id: number, deps: GalleryDependencies, zh: boolean) {
+		this.item = item;
+		this.itemID = id;
+		this.dateModified = String(item.dateModified || '');
+		this.deps = deps;
+		this.zh = zh;
+	}
+	private get stat() { return this.fields ??= resolveCachedCardStatic(this.item, this.itemID, this.zh, this.deps.excludedStatusTag); }
+	private get reading() {
+		if (this.progress === undefined) this.progress = this.deps.getReadProgress(this.item) ?? null;
+		return this.progress;
+	}
+	get title() { return this.stat.title; }
+	get creator() { return this.stat.creator; }
+	get year() { return this.stat.year; }
+	get venue() { return this.stat.venue; }
+	get itemType() { return this.stat.itemType; }
+	get itemTypeLabel() { return this.stat.itemTypeLabel; }
+	get pdfAttachmentID() { return this.stat.pdfAttachmentID; }
+	get abstractExcerpt() { return this.stat.abstractExcerpt; }
+	get tags() { return this.stat.tags; }
+	get status() { return this.stat.status; }
+	get rating() { return this.stars ??= getItemRating(this.item, this.deps.ratingStorage); }
+	get briefNote() { return this.note ??= this.deps.getBriefNote(this.item); }
+	get readSeconds() { return Number(this.reading?.readSeconds || 0); }
+	get readRatio() {
+		const p = this.reading;
+		return p?.totalPages && p.totalPages > 0 && p.lastPage ? Math.min(1, Math.max(0, p.lastPage / p.totalPages)) : 0;
+	}
+	get readText() { return formatReadingProgress(this.reading ?? undefined).text; }
+	get searchLower() { return this.briefNote ? this.stat.baseSearchLower + ' ' + this.briefNote.toLowerCase() : this.stat.baseSearchLower; }
+}
+
+export function extractGalleryCards(win: Window, deps: GalleryDependencies): { cards: GalleryCardModel[]; rawItems: any[] } {
 	const zh = deps.zh ?? Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 	const view = (win as any)?.ZoteroPane?.itemsView;
 	const hostItems = (globalThis as any).Zotero?.Items;
@@ -88,34 +131,7 @@ export function extractGalleryCards(
 		seen.add(itemID);
 		rawItems.push(ref);
 
-		const stat = resolveCachedCardStatic(ref, itemID, zh, deps.excludedStatusTag);
-		const prog = deps.getReadProgress(ref);
-		const readRatio = prog?.totalPages && prog.totalPages > 0 && prog.lastPage
-			? Math.min(1, Math.max(0, prog.lastPage / prog.totalPages))
-			: 0;
-
-		const briefNote = deps.getBriefNote(ref);
-		cards.push({
-			item: ref,
-			itemID,
-			title: stat.title,
-			creator: stat.creator,
-			year: stat.year,
-			venue: stat.venue,
-			itemType: stat.itemType,
-			itemTypeLabel: stat.itemTypeLabel,
-			dateModified: stat.dateModified,
-			pdfAttachmentID: stat.pdfAttachmentID,
-			abstractExcerpt: stat.abstractExcerpt,
-			tags: stat.tags,
-			status: stat.status,
-			rating: getItemRating(ref, deps.ratingStorage),
-			briefNote,
-			readSeconds: Number(prog?.readSeconds || 0),
-			readRatio,
-			readText: formatReadingProgress(prog).text,
-			searchLower: briefNote ? `${stat.baseSearchLower} ${briefNote.toLowerCase()}` : stat.baseSearchLower,
-		});
+		cards.push(new GalleryCard(ref, itemID, deps, zh));
 	}
 	return { cards, rawItems };
 }
@@ -127,7 +143,7 @@ export function filterAndSortGalleryCards(
 ): GalleryCardModel[] {
 	const q = String(query || '').trim().toLowerCase();
 	const filtered = q
-		? cards.filter((c) => `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ''} ${c.briefNote} ${c.tags.join(' ')}`.toLowerCase().includes(q))
+		? cards.filter((c) => (c.searchLower ?? `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ''} ${c.briefNote} ${c.tags.join(' ')}`.toLowerCase()).includes(q))
 		: [...cards];
 
 	filtered.sort((a, b) => {

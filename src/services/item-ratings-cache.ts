@@ -1,5 +1,4 @@
-import { cacheDirectory, cacheFile } from './cache-directory.ts';
-import { quarantineFile, readTextOutcome } from './safe-io.ts';
+import { DurableCacheFile } from './durable-cache-file.ts';
 
 export interface ItemRatingsFilePayload {
 	readonly format: 'zotero-bridgeflow-item-ratings';
@@ -43,48 +42,44 @@ function parseRatingsPayload(raw: string): Record<string, number> | null {
 
 /**
  * Dedicated durable local cache for item star ratings:
- * - Writes `<ZoteroDataDir>/bridgeflow-cache/item-ratings.json` + `.bak.json`.
+ * - Writes `<ZoteroDataDir>/bridgeflow-cache/ratings/item-ratings.json` + `.bak.json`.
  * - Keeps user Zotero item Extra fields and tags clean unless the user opts into Extra/Tag mode.
  */
 export class ItemRatingsDiskCache {
 	private ratings: Record<string, number> = {};
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
-	private flushing: Promise<boolean> | null = null;
-	private lastWrittenJson = '';
-	public lastError = '';
-	private directory: string;
+	private file: DurableCacheFile;
+	private root: string;
 	private initialized = false;
-	private readFailed = false;
 
 	constructor(customDir = '') {
-		this.directory = cacheDirectory(customDir);
+		this.root = customDir;
+		this.file = new DurableCacheFile('ratings', 'item-ratings', customDir);
 	}
 
 	configure(customDir = ''): void {
-		const nextDir = cacheDirectory(customDir);
-		if (nextDir !== this.directory) {
-			this.directory = nextDir;
-			this.lastWrittenJson = '';
+		if (!this.initialized && customDir !== this.root) {
+			this.root = customDir;
+			this.file = new DurableCacheFile('ratings', 'item-ratings', customDir);
 		}
 	}
 
-	getDirectoryPath(): string { return this.directory; }
-	getFilePath(): string { return cacheFile(this.directory, 'item-ratings.json'); }
-	getBackupFilePath(): string { return cacheFile(this.directory, 'item-ratings.bak.json'); }
+	get lastError(): string { return this.file.lastError; }
+	getDirectoryPath(): string { return this.file.directory; }
+	getFilePath(): string { return this.file.path; }
+	getBackupFilePath(): string { return this.file.backup; }
 
 	async init(): Promise<boolean> {
 		this.initialized = true;
-		this.readFailed = false;
 		const disk = await this.loadFromDisk();
 		if (disk) {
 			for (const [k, v] of Object.entries(disk)) {
 				if (!(k in this.ratings)) this.ratings[k] = v;
 			}
+			if (this.file.needsMigration) await this.flushNow();
 			return true;
 		}
-		// An unreadable (locked) file must never be replaced by an empty ratings payload.
-		if (this.readFailed) return false;
-		await this.flushNow();
+		// Create the destination on first mutation.
 		return false;
 	}
 
@@ -164,57 +159,16 @@ export class ItemRatingsDiskCache {
 		}, 180);
 	}
 
-	async flushNow(): Promise<boolean> {
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.writeUTF8) return true;
-		const payload = this.exportJson();
-
-		const run = async (): Promise<boolean> => {
-			if (this.readFailed) { this.lastError = 'existing ratings file unreadable; write skipped'; return false; }
-			if (payload === this.lastWrittenJson) return true;
-			try {
-				await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-				const mainPath = this.getFilePath();
-				const bakPath = this.getBackupFilePath();
-				if (this.lastWrittenJson) {
-					try { await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + '.tmp' }); } catch { /* ignore */ }
-				}
-				await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + '.tmp' });
-				this.lastWrittenJson = payload;
-				this.lastError = '';
-				return true;
-			} catch (err) {
-				this.lastError = err instanceof Error ? err.message : String(err || 'write failed');
-				return false;
-			}
-		};
-		this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-		return this.flushing;
+	flushNow(): Promise<boolean> {
+		return this.file.write(() => this.exportJson());
 	}
 
-	async loadFromDisk(): Promise<Record<string, number> | null> {
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-
-		const candidates = [this.getFilePath(), this.getBackupFilePath()];
-		if (this.directory !== cacheDirectory()) {
-			candidates.push(
-				cacheFile(cacheDirectory(), 'item-ratings.json'),
-				cacheFile(cacheDirectory(), 'item-ratings.bak.json'),
-			);
-		}
-		for (const p of candidates) {
-			const outcome = await readTextOutcome(p);
-			if (outcome.status === 'missing') continue;
-			if (outcome.status === 'error') { this.readFailed = true; continue; }
-			if (!outcome.text) continue;
-			const parsed = parseRatingsPayload(outcome.text);
-			if (!parsed) { await quarantineFile(p); continue; }
-			this.lastWrittenJson = p === this.getFilePath() ? outcome.text : '';
-			this.readFailed = false;
+	loadFromDisk(): Promise<Record<string, number> | null> {
+		return this.file.load(text => {
+			const parsed = parseRatingsPayload(text);
+			if (!parsed) throw new Error('Invalid ratings file');
 			return parsed;
-		}
-		return null;
+		});
 	}
 
 	isInitialized(): boolean {

@@ -233,7 +233,7 @@ export function bindPreferenceActions(
 		if (targetWin?.confirm && !targetWin.confirm('确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。')) {
 			return;
 		}
-		void clearPdfCoverCache(prefs.get('inspector.lookup.cacheDirectory')).then(() => {
+		void clearPdfCoverCache().then(() => {
 			getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
 			setStatusFeedback(doc, 'zbf-prefs-status-covers-cleared', '✓ 已清空画廊 PDF 封面缩略图缓存');
 		});

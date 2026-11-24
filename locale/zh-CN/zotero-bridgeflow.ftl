@@ -235,7 +235,7 @@ zbf-pref-ins-lookup-enable =
     .label = 启用紧凑引文反向逆查面板
 zbf-pref-ins-lookup-history =
     .label = 记录本机复制引文历史用于秒级反查
-zbf-pref-ins-cache-dir = BridgeFlow 独立缓存目录（分文件存放 citation-history.json、workspace-snapshots.json、reading-progress.json、brief-notes.json 与 item-ratings.json，重启后生效；留空使用默认目录）
+zbf-pref-ins-cache-dir = BridgeFlow 缓存根目录（引文、工作区、阅读、评分和封面分子目录保存，重启后生效。留空使用默认目录）
 zbf-pref-ins-cache-max = 缓存容量上限（条）
 zbf-pref-ins-cache-ttl = 缓存保留天数
 

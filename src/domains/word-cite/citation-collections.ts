@@ -1,7 +1,6 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
 import {
-	isCitationCollectionRef,
 	patchCollectionsViewForWindow,
 	reorderViewCollections,
 	TEMP_COLLECTION_KEYS_PREF,
@@ -152,29 +151,27 @@ export class WordCitationCollectionManager {
 		return null;
 	}
 
+	private async eraseOwnedLeaf(col: any): Promise<void> {
+		if (!col || typeof col.hasChildCollections !== 'function' || col.hasChildCollections(true)) return;
+		if (!col._isBridgeFlowCollection) {
+			await col.loadDataType?.('relations');
+			const markers = col.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION);
+			if (!Array.isArray(markers) || !markers.includes(TEMP_COLLECTION_MARKER)) return;
+		}
+		await col.eraseTx();
+	}
+
 	async purgeStaleCollections(): Promise<void> {
-		const ZoteroObj = (globalThis as any).Zotero;
-		const colsApi = ZoteroObj?.Collections;
-		const libraryID = ZoteroObj?.Libraries?.userLibraryID;
-		if (typeof colsApi?.getByLibrary !== 'function' || !libraryID) return;
-
-		const all: any[] = colsApi.getByLibrary(libraryID, true, true) || [];
-		const activeKeys = new Set([...this.sessionCollections.values()].map((c) => c?.key).filter(Boolean));
-		const persistedKeys = new Set(this.trackedCollectionKeys);
-
-		for (const col of all) {
-			if (!col || activeKeys.has(col.key)) continue;
+		const host = (globalThis as any).Zotero;
+		const api = host?.Collections;
+		const libraryID = host?.Libraries?.userLibraryID;
+		if (!libraryID || typeof api?.getByLibraryAndKey !== 'function') return;
+		for (const key of [...this.trackedCollectionKeys]) {
 			try {
-				if (persistedKeys.has(col.key)) {
-					await col.eraseTx?.();
-					this.trackedCollectionKeys.delete(col.key);
-					continue;
-				}
-				await col.loadDataType?.('relations');
-				if (isCitationCollectionRef(col, persistedKeys)) {
-					await col.eraseTx?.();
-					this.trackedCollectionKeys.delete(col.key);
-				}
+				if (this.getSessionIdByCollectionKey(key)) continue;
+				const col = api.getByLibraryAndKey(libraryID, key);
+				await this.eraseOwnedLeaf(col);
+				this.trackedCollectionKeys.delete(key);
 			} catch (err) {
 				this.kernel.logger.error('word-cite:purge-collection', err);
 			}
@@ -196,7 +193,7 @@ export class WordCitationCollectionManager {
 		this.windowDisposers.clear();
 		for (const col of this.sessionCollections.values()) {
 			try {
-				await col?.eraseTx?.();
+				await this.eraseOwnedLeaf(col);
 				if (col?.key) this.trackedCollectionKeys.delete(col.key);
 			} catch (err) {
 				this.kernel.logger.error('word-cite:erase-collection', err);
@@ -214,7 +211,7 @@ export class WordCitationCollectionManager {
 		if (!enabled) {
 			for (const [sid, col] of this.sessionCollections) {
 				try {
-					await col?.eraseTx?.();
+					await this.eraseOwnedLeaf(col);
 					if (col?.key) this.trackedCollectionKeys.delete(col.key);
 				} catch { /* ignore */ }
 				this.sessionCollections.delete(sid);
@@ -227,7 +224,7 @@ export class WordCitationCollectionManager {
 		for (const [sid, col] of this.sessionCollections) {
 			if (!activeIDs.has(sid)) {
 				try {
-					await col?.eraseTx?.();
+					await this.eraseOwnedLeaf(col);
 					if (col?.key) this.trackedCollectionKeys.delete(col.key);
 				} catch { /* ignore */ }
 				this.sessionCollections.delete(sid);

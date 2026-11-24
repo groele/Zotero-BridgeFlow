@@ -181,7 +181,7 @@ export class WordCiteSectionController {
 			button.addEventListener('click', () => { if (!button.disabled && !button.hidden) action(); }, { signal: controller.signal });
 		};
 		click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? undefined, st));
-		click(st.refreshBtn, () => this.kernel.bus.emit('word:refresh-request', { requestId: this.beginRequest('refresh', st), win: win ?? undefined }));
+		click(st.refreshBtn, () => this.kernel.bus.emit('word:refresh-request', { requestId: this.beginRequest('refresh', st), sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
 		click(st.docBtn, () => this.cycleWordSession());
 		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
 		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', { sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
@@ -202,7 +202,7 @@ export class WordCiteSectionController {
 		const win = st.root.ownerDocument?.defaultView ?? undefined;
 		if (act.kind === 'refresh-word') {
 			if (this.pendingRequest) return;
-			this.kernel.bus.emit('word:refresh-request', { requestId: this.beginRequest('refresh', st), win });
+			this.kernel.bus.emit('word:refresh-request', { requestId: this.beginRequest('refresh', st), sessionID: act.sessionID, win });
 			return;
 		}
 		if (act.kind === 'locate-recovered' && act.itemIDs?.length) {

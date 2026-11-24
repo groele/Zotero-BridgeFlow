@@ -1,5 +1,5 @@
-import { cacheDirectory, cacheFile } from './cache-directory.ts';
-import { copyToBackup, quarantineFile, readTextOutcome } from './safe-io.ts';
+import { cacheFile } from './cache-directory.ts';
+import { DurableCacheFile } from './durable-cache-file.ts';
 export interface CitationHistoryRecord {
 	readonly key: string;
 	readonly text: string;
@@ -36,10 +36,11 @@ export class CitationHistoryStore {
 	private config: CitationHistoryConfig = { maxEntries: 2000, ttlDays: 90 };
 	private initialized = false;
 	private dirty = false;
+	private file?: DurableCacheFile;
 	private writes = Promise.resolve(true);
+	private clearRevision = 0;
+	private savedClearRevision = 0;
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
-	private writeBlocked = false;
-	private lastBackupAt = 0;
 	public saveFailed = false;
 	private readonly statusListeners = new Set<() => void>();
 
@@ -49,10 +50,13 @@ export class CitationHistoryStore {
 	}
 
 	async retrySave(): Promise<boolean> {
-		if (this.writeBlocked) {
+		if (this.saveFailed) {
+			await this.writes;
 			await this.loadFromDisk();
-			if (!this.writeBlocked) this.dirty = true;
+			this.pruneExpired();
+			this.enforceEviction();
 		}
+		this.dirty = true;
 		return this.flushToDisk();
 	}
 
@@ -65,6 +69,7 @@ export class CitationHistoryStore {
 		}
 		if (!this.initialized && partial.customDir !== undefined) {
 			this.config.customDir = partial.customDir.trim() || undefined;
+			this.file = undefined;
 		}
 		this.pruneExpired();
 		this.enforceEviction();
@@ -74,17 +79,19 @@ export class CitationHistoryStore {
 		return this.records.size;
 	}
 
-	getDirectoryPath(): string { return cacheDirectory(this.config.customDir); }
-
-	getFilePath(): string { return cacheFile(this.getDirectoryPath(), 'citation-history.json'); }
-
-	getBackupFilePath(): string { return cacheFile(this.getDirectoryPath(), 'citation-history.bak.json'); }
+	private get disk(): DurableCacheFile {
+		return this.file ??= new DurableCacheFile('citations', 'citation-history', this.config.customDir);
+	}
+	getDirectoryPath(): string { return this.disk.directory; }
+	getFilePath(): string { return this.disk.path; }
+	getBackupFilePath(): string { return this.disk.backup; }
 
 	record(entry: Omit<CitationHistoryRecord, 'key' | 'copiedAt' | 'lastAccessedAt' | 'hitCount'>): CitationHistoryRecord | null {
 		const key = normalizeCitationKey(entry.text);
 		if (!key) return null;
 		const now = Date.now();
-		const existing = this.records.get(key);
+		const id = `${entry.libraryID}:${key}`;
+		const existing = this.records.get(id);
 		const record: CitationHistoryRecord = {
 			...entry,
 			key,
@@ -92,108 +99,124 @@ export class CitationHistoryStore {
 			lastAccessedAt: now,
 			hitCount: (existing?.hitCount ?? 0) + 1,
 		};
-		this.records.delete(key);
-		this.records.set(key, record);
+		this.records.delete(id);
+		this.records.set(id, record);
 		this.dirty = true;
 		this.enforceEviction();
 		this.scheduleSave();
 		return record;
 	}
 
-	lookupExact(query: string): CitationHistoryRecord | null {
+	lookupExact(query: string, libraryID?: number): CitationHistoryRecord | null {
 		const key = normalizeCitationKey(query);
 		if (!key) return null;
-		const rec = this.records.get(key);
-		if (!rec) return null;
-		if (Date.now() - (rec.lastAccessedAt || rec.copiedAt) >= this.config.ttlDays * 86_400_000) {
-			this.records.delete(key);
-			return null;
-		}
-		rec.lastAccessedAt = Date.now();
-		rec.hitCount += 1;
-		this.dirty = true;
-		this.scheduleSave(5000);
-		return rec;
-	}
-
-	searchFuzzy(query: string, limit = 5): CitationHistoryRecord[] {
-		const norm = normalizeCitationKey(query);
-		if (!norm) return [];
-		const qTokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter((t) => t.length >= 2);
-		const scored: Array<{ rec: CitationHistoryRecord; score: number }> = [];
-		for (const rec of this.records.values()) {
-			if (rec.key === norm) {
-				scored.push({ rec, score: 100 });
-			} else if (rec.key.includes(norm) || norm.includes(rec.key)) {
-				scored.push({ rec, score: 70 });
-			} else if (qTokens.length >= 3) {
-				let hits = 0;
-				for (const tok of qTokens) if (rec.key.includes(tok)) hits++;
-				const ratio = hits / qTokens.length;
-				if (hits >= 3 && ratio >= 0.6) scored.push({ rec, score: Math.round(45 + ratio * 20) });
+		let record: CitationHistoryRecord | undefined;
+		if (libraryID !== undefined) record = this.records.get(`${libraryID}:${key}`);
+		else {
+			for (const candidate of this.records.values()) {
+				if (candidate.key === key && (!record || candidate.lastAccessedAt >= record.lastAccessedAt)) record = candidate;
 			}
 		}
-		scored.sort((a, b) => b.score - a.score || b.rec.hitCount - a.rec.hitCount);
-		return scored.slice(0, limit).map((s) => s.rec);
+		if (!record) return null;
+		const id = `${record.libraryID}:${key}`;
+		this.records.delete(id);
+		if (this.isExpired(record)) return null;
+		record.lastAccessedAt = Date.now();
+		record.hitCount++;
+		this.records.set(id, record);
+		// Reads update in-memory ordering, and are persisted with the next data write.
+		return record;
+	}
+
+	private *rankFuzzy(query: string, limit: number, libraryID?: number) {
+		const norm = normalizeCitationKey(query);
+		const best: Array<{ rec: CitationHistoryRecord; score: number }> = [];
+		if (!norm || limit <= 0) return [];
+		const tokens = norm.split(/[^a-z0-9\u4e00-\u9fff]+/i).filter(token => token.length >= 2);
+		const oldest = Date.now() - this.config.ttlDays * 86_400_000;
+		let count = 0;
+		for (const rec of this.records.values()) {
+			if (++count % 256 === 0) yield;
+			if ((libraryID !== undefined && libraryID !== rec.libraryID) || rec.lastAccessedAt <= oldest) continue;
+			let score = 0;
+			if (rec.key === norm) score = 100;
+			else if (rec.key.includes(norm) || norm.includes(rec.key)) score = 70;
+			else if (tokens.length >= 3) {
+				let hits = 0;
+				for (const token of tokens) if (rec.key.includes(token)) hits++;
+				if (hits >= 3 && hits / tokens.length >= 0.6) score = Math.round(45 + hits / tokens.length * 20);
+			}
+			if (!score) continue;
+			const index = best.findIndex(hit => score > hit.score || (score === hit.score && rec.hitCount > hit.rec.hitCount));
+			if (index >= 0) best.splice(index, 0, { rec, score });
+			else if (best.length < limit) best.push({ rec, score });
+			if (best.length > limit) best.pop();
+		}
+		return best.map(hit => hit.rec);
+	}
+
+	searchFuzzy(query: string, limit = 5, libraryID?: number): CitationHistoryRecord[] {
+		const search = this.rankFuzzy(query, limit, libraryID);
+		while (true) {
+			const step = search.next();
+			if (step.done) return step.value;
+		}
+	}
+
+	async searchFuzzyAsync(query: string, limit: number, libraryID?: number, signal?: AbortSignal): Promise<CitationHistoryRecord[]> {
+		const search = this.rankFuzzy(query, limit, libraryID);
+		let start = performance.now();
+		while (!signal?.aborted) {
+			const step = search.next();
+			if (step.done) return step.value;
+			if (performance.now() - start >= 6) {
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+				start = performance.now();
+			}
+		}
+		return [];
 	}
 
 	clear(): void {
 		this.records.clear();
+		this.clearRevision++;
 		this.dirty = true;
 		this.scheduleSave();
 	}
 
-	private historyLoadPaths(): string[] {
-		const paths = [this.getFilePath(), this.getBackupFilePath()];
-		if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), 'citation-history.json'));
-		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
-		const pathUtils = (globalThis as any).PathUtils;
-		if (!this.config.customDir && dataDir && pathUtils?.join) {
-			paths.push(pathUtils.join(dataDir, 'viewflow-cache', 'viewflow-history.json'));
-		}
-		return paths;
-	}
-
-	/** Loads records from the first readable file. Unreadable (locked) files block writes; corrupt files are quarantined. */
 	private async loadFromDisk(): Promise<void> {
-		const paths = this.historyLoadPaths();
-		let loaded = false;
-		let readFailed = false;
-		for (const filePath of paths) {
-			const outcome = await readTextOutcome(filePath);
-			if (outcome.status === 'missing') continue;
-			if (outcome.status === 'error') { readFailed = true; continue; }
-			if (!outcome.text.trim()) continue;
-			let parsed: any;
-			try {
-				parsed = JSON.parse(outcome.text);
-			} catch {
-				await quarantineFile(filePath);
-				continue;
-			}
-			const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
-			for (const raw of list) {
-				if (!raw?.text || !raw?.itemID) continue;
+		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
+		const legacy = dataDir ? [cacheFile(cacheFile(dataDir, 'viewflow-cache'), 'viewflow-history.json')] : [];
+		const diskRecords = await this.disk.load(text => {
+			const parsed = JSON.parse(text);
+			const list = Array.isArray(parsed) ? parsed : parsed?.records;
+			if (!Array.isArray(list)) throw new Error('Invalid citation cache');
+			return list;
+		}, legacy);
+		if (!this.clearRevision) {
+			for (const raw of diskRecords || []) {
+				const itemID = Number(raw?.itemID);
+				const libraryID = Number(raw?.libraryID ?? 1);
+				if (typeof raw?.text !== 'string' || !Number.isSafeInteger(itemID) || itemID <= 0
+					|| !Number.isSafeInteger(libraryID) || libraryID <= 0) continue;
 				const key = normalizeCitationKey(raw.text);
-				if (this.records.has(key)) continue;
-				this.records.set(key, {
-					key,
-					text: String(raw.text),
-					libraryID: Number(raw.libraryID || 1),
+				const id = `${libraryID}:${key}`;
+				if (!key || this.records.has(id)) continue;
+				this.records.set(id, {
+					key, libraryID, itemID, text: raw.text,
 					itemKey: String(raw.itemKey || ''),
-					itemID: Number(raw.itemID),
 					title: String(raw.title || ''),
 					style: String(raw.style || ''),
-					copiedAt: Number(raw.copiedAt || Date.now()),
-					lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
-					hitCount: Number(raw.hitCount || 1),
+					copiedAt: Number(raw.copiedAt) || Date.now(),
+					lastAccessedAt: Number(raw.lastAccessedAt) || Number(raw.copiedAt) || Date.now(),
+					hitCount: Number(raw.hitCount) || 1,
 				});
 			}
-			loaded = true;
-			if (filePath !== paths[0]) { this.dirty = true; this.scheduleSave(); }
-			break;
 		}
-		this.writeBlocked = readFailed && !loaded;
+		if (this.disk.needsMigration) {
+			this.dirty = true;
+			this.scheduleSave();
+		}
 	}
 
 	async init(): Promise<void> {
@@ -204,6 +227,7 @@ export class CitationHistoryStore {
 		await this.loadFromDisk();
 		this.pruneExpired();
 		this.enforceEviction();
+		if (this.disk.needsMigration) await this.flushToDisk();
 	}
 
 	dispose(): void {
@@ -214,27 +238,19 @@ export class CitationHistoryStore {
 		}
 	}
 
+	private isExpired(record: CitationHistoryRecord): boolean {
+		return Date.now() - record.lastAccessedAt >= this.config.ttlDays * 86_400_000;
+	}
+
 	private pruneExpired(): void {
-		const now = Date.now();
-		const ttlMs = this.config.ttlDays * 86_400_000;
-		for (const [k, rec] of this.records.entries()) {
-			if (now - (rec.lastAccessedAt || rec.copiedAt) >= ttlMs) {
-				this.records.delete(k);
-			}
-		}
+		for (const [id, record] of this.records) if (this.isExpired(record)) this.records.delete(id);
 	}
 
 	private enforceEviction(): void {
-		if (this.records.size <= this.config.maxEntries) return;
-		const entries = [...this.records.values()];
-		entries.sort((a, b) => {
-			const scoreA = a.lastAccessedAt + a.hitCount * 3_600_000;
-			const scoreB = b.lastAccessedAt + b.hitCount * 3_600_000;
-			return scoreA - scoreB;
-		});
-		const overflow = this.records.size - this.config.maxEntries;
-		for (let i = 0; i < overflow; i++) {
-			this.records.delete(entries[i].key);
+		while (this.records.size > this.config.maxEntries) {
+			const oldest = this.records.keys().next().value;
+			if (oldest === undefined) break;
+			this.records.delete(oldest);
 		}
 	}
 
@@ -254,34 +270,17 @@ export class CitationHistoryStore {
 	}
 
 	private async writeRecords(): Promise<boolean> {
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.writeUTF8) return true;
-		if (this.writeBlocked) {
-			// The existing history could not be read; refuse to overwrite it with a partial list.
-			this.dirty = true;
-			this.saveFailed = true;
+		if (!this.dirty) return true;
+		this.dirty = false;
+		const revision = this.clearRevision;
+		const ok = await this.disk.write(() => JSON.stringify({ version: 1, records: [...this.records.values()] }),
+			600_000, revision !== this.savedClearRevision);
+		if (!ok) this.dirty = true;
+		else this.savedClearRevision = revision;
+		if (this.saveFailed === ok) {
+			this.saveFailed = !ok;
 			for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
-			return false;
 		}
-		try {
-			await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-			if (Date.now() - this.lastBackupAt > 600_000) {
-				this.lastBackupAt = Date.now();
-				await copyToBackup(this.getFilePath(), this.getBackupFilePath());
-			}
-			const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}\n`;
-			this.dirty = false;
-			await ioUtils.writeUTF8(this.getFilePath(), payload, { tmpPath: this.getFilePath() + '.tmp' });
-			if (this.saveFailed) {
-				this.saveFailed = false;
-				for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
-			}
-			return true;
-		} catch {
-			this.dirty = true;
-			this.saveFailed = true;
-			for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
-			return false;
-		}
+		return ok;
 	}
 }

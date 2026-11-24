@@ -246,18 +246,19 @@ export class VisualNotesDomainModule implements DomainModule {
 			if (this.active) this.refreshLibraryViews(scoped);
 		}, delayMs);
 	}
-
-	refreshLibraryViews(affectedIDs?: Iterable<number>): void {
+	refreshLibraryViews(affectedIDs?: Iterable<number>, readingOnly = false): void {
 		if (!this.active) return;
 		if (this.refreshTimer !== null) {
 			clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
 		}
 		this.readingColumns.clearCache(affectedIDs);
-		this.statusRatingColumns.clearCache(affectedIDs);
-		clearGalleryCardCache(affectedIDs);
-		clearExtraRemarkCache(affectedIDs);
-		this.infoBriefNote.refresh();
+		if (!readingOnly) {
+			this.statusRatingColumns.clearCache(affectedIDs);
+			clearGalleryCardCache(affectedIDs);
+			clearExtraRemarkCache(affectedIDs);
+			this.infoBriefNote.refresh();
+		}
 		this.titleHeatmap.refreshWindows();
 		this.galleryBoard.refreshWindows();
 	}

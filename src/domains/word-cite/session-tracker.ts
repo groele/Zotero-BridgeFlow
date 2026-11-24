@@ -246,7 +246,7 @@ export class WordSessionTracker {
 				.sort((a, b) => a[0] - b[0])
 				.map(([id, c]) => `${id}:${c.ordinal}:${c.occurrences ?? 1}:${c.shortText}`)
 				.join(',');
-			const orphans = ses.orphans.map((o) => `${o.key}:${o.kind}:${o.ordinal}:${o.shortText}`).join(',');
+			const orphans = JSON.stringify(ses.orphans.map(o => [o.key, o.kind, o.ordinal, o.shortText, o.title, o.authorYear, o.itemID, o.uris, o.itemData]));
 			parts.push(`${ses.sessionID}|${ses.displayName}|${items}|${orphans}`);
 		}
 		return parts.join(';');

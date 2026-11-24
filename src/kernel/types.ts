@@ -119,6 +119,7 @@ export interface WordRecoverOrphansResultPayload {
 	readonly restoredCount: number;
 	readonly importedCount: number;
 	readonly skippedCount: number;
+	readonly ambiguousCount?: number;
 	/** Orphans whose DOI or exact title+author+year already exists in the library, so no duplicate item was created. */
 	readonly existingCount?: number;
 	/** Orphans for which same-library `dc:replaces` relink relation was attached (for automatic Word refresh relinking). */
@@ -152,7 +153,7 @@ export interface BridgeFlowEventMap {
 	'visual-notes:reading-updated': { readonly keys?: readonly string[] };
 	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
 	'word:insert-result': WordInsertResultPayload;
-	'word:refresh-request': { readonly requestId?: string; readonly win?: Window };
+	'word:refresh-request': { readonly sessionID?: string; readonly requestId?: string; readonly win?: Window };
 	'word:refresh-result': WordRefreshResultPayload;
 	'word:snapshot-query': { readonly requester?: string };
 	'word:switch-session-request': { readonly sessionID: string };

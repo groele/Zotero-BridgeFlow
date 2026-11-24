@@ -30,12 +30,3 @@ export async function quarantineFile(path: string): Promise<boolean> {
 		return false;
 	}
 }
-
-/** Best-effort copy of the current file to its backup path before it is replaced. */
-export async function copyToBackup(path: string, backupPath: string): Promise<void> {
-	const ioUtils = (globalThis as any).IOUtils;
-	if (typeof ioUtils?.copy !== 'function' || typeof ioUtils?.exists !== 'function') return;
-	try {
-		if (await ioUtils.exists(path)) await ioUtils.copy(path, backupPath);
-	} catch { /* backup is best-effort */ }
-}

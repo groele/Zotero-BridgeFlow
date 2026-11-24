@@ -123,10 +123,11 @@ export class WordCiteDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('word:refresh-request', async ({ requestId }) => {
+			this.kernel.bus.on('word:refresh-request', async ({ requestId, sessionID }) => {
 				if (!this.active) return;
-				const docName = this.tracker.getActiveSession()?.displayName || '';
-				const ok = await refreshActiveWordDocument(this.kernel);
+				const session = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
+				const docName = session?.displayName || '';
+				const ok = (!sessionID || !!session) && await refreshActiveWordDocument(this.kernel, sessionID);
 				if (ok) {
 					void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error('word-cite:poll', err));
 				}
@@ -169,7 +170,7 @@ export class WordCiteDomainModule implements DomainModule {
 					});
 					return;
 				}
-				const targetSession = (sessionID ? this.tracker.getSession(sessionID) : undefined) || this.tracker.getActiveSession();
+				const targetSession = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
 				if (!targetSession || !targetSession.orphans.length) {
 					this.kernel.bus.emit('word:recover-orphans-result', {
 						requestId,
@@ -184,7 +185,7 @@ export class WordCiteDomainModule implements DomainModule {
 					const col = this.collections.getSessionCollection(targetSession.sessionID);
 					const result = await recoverOrphanCitations(targetSession.orphans, {
 						targetCollectionID: typeof col?.id === 'number' ? col.id : undefined,
-						collectionName: col?.name ? String(col.name) : targetSession.displayName,
+						collectionName: col?.name ? String(col.name) : undefined,
 						keys,
 					});
 					const changed = result.restoredCount > 0
@@ -194,7 +195,7 @@ export class WordCiteDomainModule implements DomainModule {
 					let refreshed = false;
 					if (changed) {
 						if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
-							refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
+							refreshed = await refreshActiveWordDocument(this.kernel, targetSession.sessionID).catch((err) => {
 								this.kernel.logger.error('word-cite:recover-refresh', err);
 								return false;
 							});
@@ -217,7 +218,7 @@ export class WordCiteDomainModule implements DomainModule {
 						restoredCount: 0,
 						importedCount: 0,
 						skippedCount: targetSession.orphans.length,
-						error: tLocale('恢复缺失引文时发生数据库错误，事务已安全回滚。', 'Failed to recover orphan citations; transaction safely rolled back.'),
+						error: tLocale('恢复未完成，请重新检查文库和缺失引文后重试。', 'Recovery did not complete. Recheck the library and remaining citations before retrying.'),
 					});
 				} finally {
 					this.recoveringOrphans = false;
@@ -261,13 +262,14 @@ export class WordCiteDomainModule implements DomainModule {
 		const all = this.tracker.getAllSessions();
 		if (all.length <= 1) return true;
 		const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
-		if (!fgTitle) return true;
+		if (!fgTitle) return false;
+		const title = extractDocumentBaseName(fgTitle).toLowerCase();
 		const matches = all.filter((ses) => {
 			const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
 			const stem = base.replace(/\.(docx?|rtf)$/i, '');
-			return Boolean(base && (fgTitle.includes(base) || (stem && fgTitle.includes(stem))));
+			return title === base || title === stem;
 		});
-		return matches.length === 0 || matches.some((m) => m.sessionID === targetSessionID);
+		return matches.length === 1 && matches[0].sessionID === targetSessionID;
 	}
 
 	private showSpotlightRecoverToast(docName: string, res: WordRecoverOrphansResultPayload): void {
@@ -279,8 +281,8 @@ export class WordCiteDomainModule implements DomainModule {
 			pw.changeHeadline(tLocale('Zotero BridgeFlow · 缺失引文找回', 'Zotero BridgeFlow · Citation Recovery'));
 			pw.addDescription(total > 0
 				? tLocale(
-					`「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? '并自动重连 Word' : '（请在 Word 点击刷新完成重连）'}。`,
-					`Recovered ${total} citation(s) for "${docName}"${res.refreshed ? ' and relinked in Word' : ''}.`,
+					`「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? '，已执行 Word 刷新' : '（请在目标 Word 文档核对并刷新引文）'}。`,
+					`Recovered ${total} citation(s) for "${docName}"${res.refreshed ? ' and refreshed Word' : ''}.`,
 				)
 				: tLocale('未能自动恢复缺失引文（缺少内嵌备份元数据）。', 'No orphan citations could be recovered.'));
 			pw.show();

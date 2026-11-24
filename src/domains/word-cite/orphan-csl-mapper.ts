@@ -87,7 +87,7 @@ export function buildBatchMetadataKey(libraryID: number, data: Record<string, un
 	if (title.length < 6) return '';
 	const { author, year } = extractFirstAuthorAndYear(data);
 	const normAuthor = normCompareToken(author);
-	if (!normAuthor && !year) return '';
+	if (!normAuthor || !year) return '';
 	return `meta:${libraryID}:${title}|${normAuthor}|${year}`;
 }
 
@@ -121,70 +121,56 @@ function matchesExactTitleAuthorYear(candidate: any, cslData: Record<string, unk
 
 	const { author, year } = extractFirstAuthorAndYear(cslData);
 	const normAuthor = normCompareToken(author);
-	if (!normAuthor && !year) return false;
+	if (!normAuthor || !year) return false;
 
 	const candDateRaw = readCandidateField(candidate, 'year') || readCandidateField(candidate, 'date');
 	const candYear = candDateRaw.match(/\d{4}/)?.[0] || '';
-	if (year && candYear && year !== candYear) return false;
+	if (year !== candYear || !candYear) return false;
 
 	const candCreator = readCandidateFirstSurname(candidate);
-	if (normAuthor && candCreator) {
-		const surnameOk = candCreator === normAuthor
-			|| candCreator.startsWith(`${normAuthor} `)
-			|| candCreator.startsWith(`${normAuthor},`);
-		if (!surnameOk) return false;
-	}
-	return Boolean((year && candYear === year) || (normAuthor && candCreator));
+	return candCreator === normAuthor
+		|| candCreator.startsWith(`${normAuthor} `)
+		|| candCreator.startsWith(`${normAuthor},`);
 }
 
 /**
  * Finds an existing non-deleted regular item in `libraryID` matching by normalized DOI first,
  * or falling back to strict exact title + author surname + publication year for non-DOI items.
  */
-export async function findExistingLibraryItem(
+export async function findExistingLibraryItems(
 	libraryID: number,
 	cslData: Record<string, unknown> | undefined,
 	doi: string,
-): Promise<any | null> {
+): Promise<any[]> {
 	const host = (globalThis as any).Zotero;
-	if (typeof host?.Search !== 'function') return null;
+	if (typeof host?.Search !== 'function') return [];
 
 	const runFieldSearch = async (field: string, value: string): Promise<any[]> => {
-		if (!value) return [];
-		try {
-			const s = new host.Search();
-			s.libraryID = libraryID;
-			s.addCondition(field, 'is', value);
-			const ids: number[] = await s.search();
-			const out: any[] = [];
-			for (const id of ids || []) {
-				const cand = (await host.Items?.getAsync?.(id)) ?? host.Items?.get?.(id);
-				if (cand && !cand.deleted && cand.isRegularItem?.() !== false) out.push(cand);
-			}
-			return out;
-		} catch {
-			return [];
+		const search = new host.Search();
+		search.libraryID = libraryID;
+		search.addCondition(field, 'is', value);
+		const ids: number[] = await search.search();
+		const out: any[] = [];
+		for (const id of ids || []) {
+			const candidate = (await host.Items?.getAsync?.(id)) ?? host.Items?.get?.(id);
+			if (candidate && !candidate.deleted && !candidate.isTrashed?.() && candidate.isRegularItem?.() !== false
+				&& (candidate.libraryID == null || candidate.libraryID === libraryID)) out.push(candidate);
 		}
+		return out;
 	};
 
 	if (doi) {
-		const byNormDoi = await runFieldSearch('DOI', doi);
-		if (byNormDoi.length > 0) return byNormDoi[0];
 		const rawDoi = String(cslData?.DOI || '').trim();
+		const normalized = await runFieldSearch('DOI', doi);
 		if (rawDoi && rawDoi.toLowerCase() !== doi) {
-			const byRawDoi = await runFieldSearch('DOI', rawDoi);
-			if (byRawDoi.length > 0) return byRawDoi[0];
+			const raw = await runFieldSearch('DOI', rawDoi);
+			normalized.push(...raw);
 		}
+		return [...new Map(normalized.map(item => [item.id, item])).values()];
 	}
-
-	const rawTitle = String(cslData?.title || '').trim();
-	if (cslData && normCompareToken(rawTitle).length >= 6) {
-		const byTitle = await runFieldSearch('title', rawTitle);
-		for (const cand of byTitle) {
-			if (matchesExactTitleAuthorYear(cand, cslData, doi)) return cand;
-		}
-	}
-	return null;
+	const title = String(cslData?.title || '').trim();
+	if (!cslData || !buildBatchMetadataKey(libraryID, cslData)) return [];
+	return (await runFieldSearch('title', title)).filter(item => matchesExactTitleAuthorYear(item, cslData, ''));
 }
 
 function setFieldIfEmpty(item: any, field: string, value: unknown): void {

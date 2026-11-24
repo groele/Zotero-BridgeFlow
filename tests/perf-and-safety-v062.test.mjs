@@ -6,10 +6,11 @@ import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery
 import { clearExtraRemarkCache, readItemRemarkWithFallback } from '../src/domains/visual-notes/data-source.ts';
 import { clearGalleryCardCache, extractGalleryCards, filterAndSortGalleryCards } from '../src/domains/visual-notes/gallery-board-helpers.ts';
 import { createHubScopeMemo, resolveAffectedVisualItemIDs } from '../src/domains/visual-notes/hub-cache.ts';
+import { DurableCacheFile } from '../src/services/durable-cache-file.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 import { escapeHtmlText, sanitizeCitationHtml } from '../src/services/html-sanitizer.ts';
 import { ItemRatingsDiskCache } from '../src/services/item-ratings-cache.ts';
-import { clearPdfCoverCache, requestGalleryPdfCover } from '../src/services/pdf-cover-service.ts';
+import { clearPdfCoverCache, getCachedPdfCoverSync, invalidatePdfCover, requestGalleryPdfCover } from '../src/services/pdf-cover-service.ts';
 
 test('Persistence fail-closed: locked history/ratings files are never overwritten, corrupt files are quarantined', async () => {
 	const prevIO = globalThis.IOUtils;
@@ -300,6 +301,10 @@ test('Performance caches: Gallery static card cache, O(1) stat cover hit without
 			getReadProgress: () => undefined,
 		});
 		assert.equal(first.cards.length, 120);
+		assert.equal(fieldReads, 0, 'opening the gallery must not hydrate offscreen metadata');
+		filterAndSortGalleryCards(first.cards, '', 'dateModified');
+		assert.equal(fieldReads, 0, 'default sort uses lightweight rows');
+		for (const card of first.cards) assert.ok(card.searchLower);
 		assert.ok(fieldReads > 0 && extraReads > 0);
 
 		const beforeSecondFields = fieldReads;
@@ -319,6 +324,13 @@ test('Performance caches: Gallery static card cache, O(1) stat cover hit without
 		// 2. Disk cover hit resolves via O(1) stat stamp without SHA-256 hashing the PDF
 		const coverUrl = await requestGalleryPdfCover({ attID: 5001, doc: {} });
 		assert.ok(coverUrl?.startsWith('data:image/jpeg;base64,'));
+		assert.equal(getCachedPdfCoverSync(5001), coverUrl);
+		assert.equal(getCachedPdfCoverSync(5001, 240), null, 'a cover at one resolution must not satisfy a different resolution');
+		assert.ok(await requestGalleryPdfCover({ attID: 5001, doc: {}, width: 240 }));
+		assert.ok(getCachedPdfCoverSync(5001, 240));
+		invalidatePdfCover(5001);
+		assert.equal(getCachedPdfCoverSync(5001), null);
+		assert.equal(getCachedPdfCoverSync(5001, 240), null);
 		assert.equal(sha256Calls, 0, 'disk cover cache hit must never SHA-256 hash PDF files');
 
 		// 3. Hub scope memo scans Zotero annotations once across repeated filter/color/toggle interactions
@@ -345,5 +357,83 @@ test('Performance caches: Gallery static card cache, O(1) stat cover hit without
 		globalThis.Zotero = prevZot;
 		globalThis.IOUtils = prevIO;
 		globalThis.PathUtils = prevPath;
+	}
+});
+
+test('Categorized caches retain locked files and migrate legacy data without changing the source', async () => {
+	const oldIO = globalThis.IOUtils;
+	const oldHost = globalThis.Zotero;
+	const files = new Map();
+	globalThis.Zotero = { DataDirectory: { dir: '/cache-migration' } };
+	let locked = false;
+	let failBackup = false;
+	globalThis.IOUtils = {
+		exists: async path => files.has(path),
+		readUTF8: async path => {
+			if (locked && path.endsWith('/reading-progress.json')) throw Error('locked');
+			return files.get(path);
+		},
+		writeUTF8: async (path, text) => {
+			if (failBackup && path.endsWith('.bak.json')) throw Error('disk full');
+			files.set(path, text);
+		},
+		copy: async (from, to) => { files.set(to, files.get(from)); },
+	};
+	try {
+		const progress = new DurableCacheFile('reading', 'reading-progress');
+		const legacy = '/cache-migration/bridgeflow-cache/reading-progress.json';
+		files.set(legacy, '{"n":1}');
+		assert.deepEqual(await progress.load(text => JSON.parse(text)), { n: 1 });
+		assert.equal(progress.needsMigration, true);
+		assert.equal(await progress.write(() => '{"n":1}'), true);
+		assert.equal(files.get(legacy), '{"n":1}');
+		failBackup = true;
+		assert.equal(await progress.write(() => '{"n":2}'), false);
+		assert.equal(files.get(progress.path), '{"n":1}');
+		failBackup = false;
+		assert.equal(await progress.write(() => '{"n":2}'), true);
+		locked = true;
+		assert.deepEqual(await progress.load(text => JSON.parse(text)), { n: 1 });
+		assert.equal(await progress.write(() => '{"n":3}'), false);
+		assert.equal(files.get(progress.path), '{"n":2}');
+		locked = false;
+		files.set(progress.path, '{broken');
+		assert.deepEqual(await progress.load(text => JSON.parse(text)), { n: 1 });
+		assert.equal(await progress.write(() => '{"n":1}'), true);
+		assert.ok([...files.values()].includes('{broken'));
+	} finally {
+		globalThis.IOUtils = oldIO;
+		globalThis.Zotero = oldHost;
+	}
+});
+
+test('Citation history isolates identical text across libraries and clears the recovery backup', async () => {
+	const oldIO = globalThis.IOUtils;
+	const oldHost = globalThis.Zotero;
+	const files = new Map();
+	const history = new CitationHistoryStore();
+	globalThis.Zotero = { DataDirectory: { dir: '/citation-cache' } };
+	globalThis.IOUtils = {
+		exists: async path => files.has(path),
+		readUTF8: async path => files.get(path),
+		writeUTF8: async (path, text) => files.set(path, text),
+	};
+	history.configure({ customDir: '/citation-cache/custom' });
+	try {
+		await history.init();
+		for (const id of [1, 2]) {
+			history.record({ text: 'Quantum paper 2025', itemID: id, libraryID: id, itemKey: 'TEST', title: '', style: 'apa' });
+		}
+		assert.equal(history.lookupExact('Quantum paper 2025', 1)?.itemID, 1);
+		assert.equal(history.lookupExact('Quantum paper 2025', 2)?.itemID, 2);
+		assert.deepEqual((await history.searchFuzzyAsync('Quantum paper', 5, 1)).map(hit => hit.itemID), [1]);
+		assert.equal(await history.retrySave(), true);
+		history.clear();
+		assert.equal(await history.retrySave(), true);
+		assert.deepEqual(JSON.parse(files.get(history.getBackupFilePath())).records, []);
+	} finally {
+		history.dispose();
+		globalThis.IOUtils = oldIO;
+		globalThis.Zotero = oldHost;
 	}
 });

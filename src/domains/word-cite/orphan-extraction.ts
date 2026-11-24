@@ -43,6 +43,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 	const orphanMap = new Map<string, { info: OrphanCitationInfo; knownOrdinal?: number; doi: string }>();
 	const orphanAliasToKey = new Map<string, string>();
 	const orphanItemIDs = new Set<number>();
+	const conflictingIDs = new Set<number>();
 	const orderQueue: Array<{ kind: 'valid'; itemID: number } | { kind: 'orphan'; key: string }> = [];
 	const statusCache = new Map<number, { status: 'valid' | 'trashed' | 'missing'; zotItem: any }>();
 	let fallbackSeq = 1;
@@ -156,11 +157,16 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 				const rawData = ci?.itemData && typeof ci.itemData === 'object' ? (ci.itemData as Record<string, unknown>) : undefined;
 				let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
 				let inspected = inspectItemById(resolvedID);
-				if (inspected.status === 'missing' && uris.length > 0 && hasItemLookup) {
-					const uriResolvedID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
-					if (uriResolvedID > 0) {
-						resolvedID = uriResolvedID;
-						inspected = inspectItemById(resolvedID);
+				if (uris.length && hasItemLookup) {
+					const canonical = inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === 'function'
+						? String(zoteroObj.URI.getItemURI(inspected.zotItem)).replace(/^https:/i, 'http:') : '';
+					if (!canonical || !uris.some(uri => uri.replace(/^https:/i, 'http:').replace(/\/+$/, '') === canonical)) {
+						const uriID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
+						if ((uriID || canonical) && uriID !== resolvedID) {
+							conflictingIDs.add(resolvedID);
+							resolvedID = uriID;
+							inspected = inspectItemById(resolvedID);
+						}
 					}
 				}
 				const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
@@ -177,6 +183,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 	if (byItem && typeof byItem === 'object') {
 		for (const [rawID, list] of Object.entries(byItem)) {
 			const itemID = Number(rawID);
+			if (conflictingIDs.has(itemID)) continue;
 			const knownOrdinal = lookupKnownOrdinal({ id: rawID }, citeprocOrdinals, itemID, undefined);
 			for (const entry of Array.isArray(list) ? list : [list]) {
 				if (!entry) continue;

@@ -66,7 +66,7 @@ export function isOrphanRecoverable(orphan: OrphanCitationInfo): boolean {
 export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: boolean): ReceiptState {
 	if (res.error) return { tone: 'err', text: res.error };
 	const {
-		restoredCount, importedCount, skippedCount,
+		restoredCount, importedCount, skippedCount, ambiguousCount = 0,
 		existingCount = 0, relinkedCount = 0, foreignSkippedCount = 0,
 		refreshed, recoveredItemIDs, sessionID, collectionName,
 	} = res;
@@ -74,7 +74,9 @@ export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: b
 	if (!totalRecovered) {
 		return {
 			tone: 'warn',
-			text: zh ? '⚠ 未能恢复缺失引文（缺少可用备份元数据）' : '⚠ No orphan citations could be recovered (missing embedded metadata)',
+			text: ambiguousCount
+				? (zh ? `有 ${ambiguousCount} 篇引文对应多条文库记录，请核对后重试。` : `${ambiguousCount} citation(s) matched multiple library items. Review the matches and retry.`)
+				: (zh ? '⚠ 未能恢复缺失引文（缺少可用备份元数据）' : '⚠ No orphan citations could be recovered (missing embedded metadata)'),
 		};
 	}
 
@@ -85,27 +87,30 @@ export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: b
 		chips.push({ text: zh ? `回收站还原 ${restoredCount} 篇` : `Trash ${restoredCount}`, variant: 'ok' });
 	}
 	if (importedCount > 0) {
-		parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ''}` : `Imported ${importedCount}${collectionName ? ` to "${collectionName}"` : ''}`);
+		parts.push(zh ? `已反向导入 ${importedCount} 篇` : `Imported ${importedCount}`);
 		chips.push({ text: zh ? `备份重建 ${importedCount} 篇` : `Rebuilt ${importedCount}`, variant: 'info' });
 	}
 	if (existingCount > 0) {
-		parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
+		parts.push(zh ? `已复用库内匹配文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
 		chips.push({ text: zh ? `复用已有 ${existingCount} 篇` : `Matched ${existingCount}`, variant: 'info' });
 	}
 	if (refreshed) {
-		parts.push(zh ? '已自动刷新并重连 Word' : 'auto-refreshed & relinked in Word');
-		chips.push({ text: zh ? '↻ Word 已重连' : '↻ Word Relinked', variant: 'ok' });
+		parts.push(zh ? '已执行 Word 刷新，请核对文内引文' : 'Word refreshed; verify the document citations');
+		chips.push({ text: zh ? '↻ Word 已刷新' : '↻ Word Refreshed', variant: 'ok' });
 	} else if (relinkedCount > 0) {
-		parts.push(zh ? '点 Word「刷新」即自动重连' : 'click Refresh in Word to relink');
+		parts.push(zh ? '请在目标 Word 文档刷新并核对引文' : 'click Refresh in Word to relink');
 		chips.push({ text: zh ? '待刷新重连 Word' : 'Needs Word Refresh', variant: 'warn' });
 	}
 	if (foreignSkippedCount > 0) {
 		parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
 		chips.push({ text: zh ? `外部账号隔离 ${foreignSkippedCount} 篇` : `External ${foreignSkippedCount}`, variant: 'warn' });
 	}
-	if (skippedCount > 0) {
+	if (ambiguousCount > 0) {
+		chips.push({ text: zh ? `候选不唯一 ${ambiguousCount} 篇` : `Ambiguous ${ambiguousCount}`, variant: 'warn' });
+	}
+	if (skippedCount > ambiguousCount) {
 		parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
-		chips.push({ text: zh ? `无备份跳过 ${skippedCount} 篇` : `Skipped ${skippedCount}`, variant: 'warn' });
+		chips.push({ text: zh ? `其他跳过 ${skippedCount - ambiguousCount} 篇` : `Other skipped ${skippedCount - ambiguousCount}`, variant: 'warn' });
 	}
 
 	const actions: ReceiptAction[] = [];
@@ -128,7 +133,7 @@ export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: b
 	}
 
 	const headline = zh ? `✓ 已成功找回 ${totalRecovered} 篇缺失引文` : `✓ Recovered ${totalRecovered} missing citation(s)`;
-	const subnote = collectionName ? (zh ? `已同步至「${collectionName}」` : `Synced to "${collectionName}"`) : undefined;
+	const subnote = collectionName ? (zh ? `目标文集「${collectionName}」` : `Target collection "${collectionName}"`) : undefined;
 	return {
 		tone: 'ok',
 		text: `✓ ${parts.join(zh ? '；' : '; ')}`,

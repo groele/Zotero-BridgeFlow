@@ -235,7 +235,7 @@ zbf-pref-ins-lookup-enable =
     .label = Enable compact citation reverse lookup section
 zbf-pref-ins-lookup-history =
     .label = Persist copied citation history for fast lookup
-zbf-pref-ins-cache-dir = BridgeFlow isolated cache directory (stores citation-history.json, workspace-snapshots.json, reading-progress.json, brief-notes.json, and item-ratings.json separately; restart to apply, blank for default)
+zbf-pref-ins-cache-dir = BridgeFlow cache root (citations, workspace, reading, ratings, and covers use separate folders. Restart to apply. Leave blank for the default location.)
 zbf-pref-ins-cache-max = Max cache entries
 zbf-pref-ins-cache-ttl = Cache TTL (days)
 

@@ -26,7 +26,7 @@ import {
 	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
-type StoreChange = 'data' | 'session';
+type StoreChange = 'data' | 'session' | 'reading';
 
 const createEmptyState = (): WorkspaceState => ({
 	version: 2, groups: [], collapsed: [], pinnedKeys: [], sleepingKeys: [],
@@ -88,7 +88,7 @@ export class WorkspaceStateStore {
 
 	saveReadingProgress(immediateDisk = false): void {
 		this.readingCache.scheduleSave(this.state, immediateDisk);
-		this.emitChange();
+		this.emitChange('reading');
 	}
 
 	saveBriefNotes(immediateDisk = false): void {

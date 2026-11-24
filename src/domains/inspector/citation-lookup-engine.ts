@@ -1,7 +1,7 @@
-import type { CitationHistoryStore } from '../../services/citation-history-store.ts';
+import type { CitationHistoryRecord, CitationHistoryStore } from '../../services/citation-history-store.ts';
 import { isRegularValidItem, safeGetItemField } from '../../services/item-resolution.ts';
 import {
-	parseCompactCitation, queryPhysicalCandidates, verifyAndFilterCandidates, type ParsedCitation,
+	extractIdentifier, parseCompactCitation, queryPhysicalCandidates, verifyAndFilterCandidates, type ParsedCitation,
 } from './citation-lookup-parser.ts';
 
 export interface LookupCandidate {
@@ -18,12 +18,10 @@ export interface RichLookupOutcome {
 	readonly candidates: readonly LookupCandidate[];
 }
 
-const DOI_REGEX = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)\b/i;
 const YEAR_REGEX = /\b(19|20)\d{2}\b/;
 
 export function extractDoi(input: string): string {
-	const match = String(input || '').match(DOI_REGEX);
-	return match ? match[1].replace(/[.,;)\]]+$/, '').toLowerCase() : '';
+	return extractIdentifier(String(input || '')).doi || '';
 }
 
 export function extractYear(input: string): string {
@@ -40,16 +38,21 @@ export class CitationLookupEngine {
 
 	async resolveRich(
 		rawQuery: string,
-		options: { libraryID?: number; useHistory?: boolean; libraryItems?: readonly any[] } = {},
+		options: { libraryID?: number; useHistory?: boolean; libraryItems?: readonly any[]; signal?: AbortSignal } = {},
 	): Promise<RichLookupOutcome> {
 		const query = String(rawQuery || '').trim();
-		if (!query) return { parsed: null, historyMatched: false, candidates: [] };
+		const empty: RichLookupOutcome = { parsed: null, historyMatched: false, candidates: [] };
+		const { signal } = options;
+		if (!query || signal?.aborted) return empty;
+		const parsed = parseCompactCitation(query);
+		const inScope = (libraryID?: number) => options.libraryID == null || options.libraryID === libraryID;
 
 		if (options.useHistory !== false) {
-			const exact = this.history.lookupExact(query);
-			if (exact) {
-				const liveItem = await this.resolveLiveItem(exact.itemID);
-				if (liveItem || options.libraryItems) {
+			const exact = this.history.lookupExact(query, options.libraryID);
+			if (exact && inScope(exact.libraryID)) {
+				const liveItem = await this.resolveLiveItem(exact);
+				if (signal?.aborted) return empty;
+				if ((liveItem && (!parsed?.doi || verifyAndFilterCandidates([liveItem], parsed).length)) || options.libraryItems) {
 					return {
 						parsed: null,
 						historyMatched: true,
@@ -58,11 +61,13 @@ export class CitationLookupEngine {
 				}
 			}
 
-			const fuzzy = this.history.searchFuzzy(query, 5);
+			const fuzzy = parsed?.doi || parsed?.arxiv ? [] : await this.history.searchFuzzyAsync(query, 5, options.libraryID, signal);
+			if (signal?.aborted) return empty;
 			if (fuzzy.length) {
 				const liveHits: LookupCandidate[] = [];
 				for (const rec of fuzzy) {
-					const liveItem = await this.resolveLiveItem(rec.itemID);
+					const liveItem = await this.resolveLiveItem(rec);
+					if (signal?.aborted) return empty;
 					if (liveItem) {
 						liveHits.push({
 							itemID: rec.itemID,
@@ -81,9 +86,9 @@ export class CitationLookupEngine {
 			}
 		}
 
-		const parsed = parseCompactCitation(query);
 		if (parsed && !options.libraryItems) {
-			const physical = await queryPhysicalCandidates(parsed, options.libraryID);
+			const physical = await queryPhysicalCandidates(parsed, options.libraryID, signal);
+			if (signal?.aborted) return empty;
 			const verified = verifyAndFilterCandidates(physical, parsed);
 			if (verified.length) {
 				return {
@@ -100,7 +105,10 @@ export class CitationLookupEngine {
 			}
 		}
 
-		const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID);
+		if (parsed?.arxiv && !parsed.journalText && !parsed.doi) {
+			return { parsed, historyMatched: false, candidates: [] };
+		}
+		const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID, signal);
 		return { parsed, historyMatched: false, candidates: weighted };
 	}
 
@@ -109,35 +117,44 @@ export class CitationLookupEngine {
 		return [...outcome.candidates];
 	}
 
-	private async resolveLiveItem(itemID: number): Promise<any | null> {
+	private async resolveLiveItem({ itemID, itemKey, libraryID }: CitationHistoryRecord): Promise<any | null> {
 		const hostItems = (globalThis as any).Zotero?.Items;
 		if (!hostItems) return null;
 		const item = typeof hostItems.getAsync === 'function'
 			? await hostItems.getAsync(itemID).catch(() => null)
 			: hostItems.get?.(itemID);
-		if (!item || item.deleted || item.isTrashed?.() || !item.isRegularItem?.()) return null;
+		if (!isRegularValidItem(item)) return null;
+		if (item.libraryID != null && item.libraryID !== libraryID) return null;
+		if (item.key && itemKey && item.key !== itemKey) return null;
 		return item;
 	}
 
-	private async weightedSearch(query: string, libraryItems?: readonly any[], libraryID?: number): Promise<LookupCandidate[]> {
+	private async weightedSearch(query: string, libraryItems?: readonly any[], libraryID?: number, signal?: AbortSignal): Promise<LookupCandidate[]> {
 		const candidates = libraryItems ?? await this.fetchLocalLibraryItems(libraryID);
 		const targetDoi = extractDoi(query);
 		const targetYear = extractYear(query);
 		const lowerQuery = query.toLowerCase();
 		const results: LookupCandidate[] = [];
 		const seen = new Set<number>();
+		let deadline = performance.now() + 6;
 
 		for (const item of candidates) {
-			if (!isRegularValidItem(item)) continue;
+			if (signal?.aborted) return [];
+			if (performance.now() >= deadline) {
+				await new Promise<void>(resolve => setTimeout(resolve, 0));
+				if (signal?.aborted) return [];
+				deadline = performance.now() + 6;
+			}
+			if (!isRegularValidItem(item) || (libraryID != null && item.libraryID != null && item.libraryID !== libraryID)) continue;
 			const id = Number(item.id || 0);
 			if (!id || seen.has(id)) continue;
 
 			const title = safeGetItemField(item, 'title') || String(item.title || '');
-			const doi = (safeGetItemField(item, 'DOI') || String(item.DOI || '')).trim().toLowerCase();
-			if (targetDoi && doi && doi === targetDoi) {
-				seen.add(id);
-				results.push({ itemID: id, title, score: 98, source: 'doi', item });
-				return results;
+			seen.add(id);
+			if (targetDoi) {
+				const doi = extractDoi(safeGetItemField(item, 'DOI') || String(item.DOI || ''));
+				if (doi === targetDoi) results.push({ itemID: id, title, score: 98, source: 'doi', item });
+				continue;
 			}
 
 			let score = 0;
@@ -153,7 +170,6 @@ export class CitationLookupEngine {
 			if (title && title.length >= 8 && lowerQuery.includes(title.toLowerCase().slice(0, 24))) score += 45;
 
 			if (score >= 45) {
-				seen.add(id);
 				results.push({ itemID: id, title, score: Math.min(95, score), source: 'library-weighted', item });
 			}
 		}

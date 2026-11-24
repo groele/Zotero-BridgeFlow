@@ -50,7 +50,6 @@ export function renderGalleryViewport(opts: {
 	const { doc, zh, sorted } = opts;
 	const viewport = galEl(doc, 'div');
 	viewport.className = 'zbf-gal-viewport';
-	const cardByID = new Map<number, GalleryCardModel>(sorted.map((c) => [c.itemID, c]));
 	const gap = opts.density === 'compact' ? 8 : 11;
 	const estimateHeight = opts.density === 'compact' ? 210 : 254;
 
@@ -90,6 +89,8 @@ export function renderGalleryViewport(opts: {
 		return { viewport, layout, activate: () => hydrator.activate(), dispose: () => { layout.destroy(); hydrator.dispose(); } };
 	}
 
+	const cardByID = new Map<number, GalleryCardModel>(sorted.map((c) => [c.itemID, c]));
+	let columnDragging = false;
 	const board = galEl(doc, 'div');
 	board.className = 'zbf-gal-board';
 	viewport.appendChild(board);
@@ -116,11 +117,13 @@ export function renderGalleryViewport(opts: {
 			head.draggable = true;
 			head.addEventListener('dragstart', (ev) => {
 				ev.stopPropagation();
+				columnDragging = true;
 				notifyGalleryCoverScroll(true);
 				layoutRef?.setDragging(true);
 				ev.dataTransfer?.setData('text/zbf-col-key', col.key);
 			});
 			head.addEventListener('dragend', () => {
+				columnDragging = false;
 				notifyGalleryCoverScroll(false);
 				layoutRef?.setDragging(false);
 			});
@@ -197,7 +200,11 @@ export function renderGalleryViewport(opts: {
 		onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl),
 	});
 
-	return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => { layoutRef?.destroy(); hydrator.dispose(); } };
+	return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => {
+		if (columnDragging) notifyGalleryCoverScroll(false);
+		layoutRef?.destroy();
+		hydrator.dispose();
+	} };
 }
 
 export function renderGalleryInlineFeed(opts: {

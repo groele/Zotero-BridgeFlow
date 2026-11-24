@@ -186,6 +186,12 @@ export async function insertItemsIntoWord(
 	}
 }
 
-export async function refreshActiveWordDocument(kernel: PluginKernel): Promise<boolean> {
-	return await runWordCommand(kernel, 'refresh', async (invoke) => invoke()) === 'completed';
+export async function refreshActiveWordDocument(kernel: PluginKernel, expectedSessionID?: string): Promise<boolean> {
+	let invoked = false;
+	const result = await runWordCommand(kernel, 'refresh', async (invoke, session) => {
+		if (expectedSessionID && session?.sessionID !== expectedSessionID) return;
+		invoked = true;
+		return invoke();
+	});
+	return invoked && result === 'completed';
 }

@@ -1,3 +1,4 @@
+import { DurableCacheFile } from '../../services/durable-cache-file.ts';
 import { cacheDirectory, cacheFile } from '../../services/cache-directory.ts';
 import {
 	pickReadingProgressState,
@@ -9,25 +10,21 @@ import type { WorkspaceState } from './types.ts';
 
 /**
  * Dedicated durable local cache for high-frequency reading telemetry & heatmaps:
- * - Writes `<ZoteroDataDir>/bridgeflow-cache/reading-progress.json` + `.bak.json`.
+ * - Writes `<ZoteroDataDir>/bridgeflow-cache/reading/reading-progress.json` + `.bak.json`.
  * - Isolated from workspace snapshots AND user-authored brief notes (`brief-notes.json`).
  * - Seamlessly migrates legacy `reading-notes.json` (`v0.4.1`) on startup.
  */
 export class ReadingProgressDiskCache {
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
-	private flushing: Promise<boolean> | null = null;
-	private lastWrittenJson = '';
-	public lastError = '';
-	public loadedFromLegacy = false;
-	private readonly directory: string;
+	private readonly file: DurableCacheFile;
+	private readonly root: string;
 
-	constructor(privateDirectory = '') {
-		this.directory = cacheDirectory(privateDirectory);
-	}
-
-	getDirectoryPath(): string { return this.directory; }
-	getFilePath(): string { return cacheFile(this.directory, 'reading-progress.json'); }
-	getBackupFilePath(): string { return cacheFile(this.directory, 'reading-progress.bak.json'); }
+	constructor(privateDirectory = '') { this.root = privateDirectory; this.file = new DurableCacheFile('reading', 'reading-progress', privateDirectory); }
+	get lastError(): string { return this.file.lastError; }
+	get loadedFromLegacy(): boolean { return this.file.needsMigration; }
+	getDirectoryPath(): string { return this.file.directory; }
+	getFilePath(): string { return this.file.path; }
+	getBackupFilePath(): string { return this.file.backup; }
 
 	scheduleSave(state: Pick<WorkspaceState, 'lastViewedAt' | 'readingProgress'>, immediate = false): void {
 		const ioUtils = (globalThis as any).IOUtils;
@@ -46,72 +43,18 @@ export class ReadingProgressDiskCache {
 		}, 320);
 	}
 
-	async flushNow(state: Pick<WorkspaceState, 'lastViewedAt' | 'readingProgress'>): Promise<boolean> {
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.writeUTF8) return true;
-		const payload = `${JSON.stringify({
-			format: 'zotero-bridgeflow-reading-progress',
-			version: 1,
-			state: pickReadingProgressState(state),
-		}, null, 2)}\n`;
-
-		const run = async (): Promise<boolean> => {
-			if (payload === this.lastWrittenJson) return true;
-			try {
-				await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
-				const mainPath = this.getFilePath();
-				const bakPath = this.getBackupFilePath();
-				if (this.lastWrittenJson) {
-					try { await ioUtils.writeUTF8(bakPath, this.lastWrittenJson, { tmpPath: bakPath + '.tmp' }); } catch { /* ignore */ }
-				}
-				await ioUtils.writeUTF8(mainPath, payload, { tmpPath: mainPath + '.tmp' });
-				this.lastWrittenJson = payload;
-				this.lastError = '';
-				return true;
-			} catch (err) {
-				this.lastError = err instanceof Error ? err.message : String(err || 'write failed');
-				return false;
-			}
-		};
-		this.flushing = (this.flushing || Promise.resolve(true)).then(run, run);
-		return this.flushing;
+	flushNow(state: Pick<WorkspaceState, 'lastViewedAt' | 'readingProgress'>): Promise<boolean> {
+		return this.file.write(() => JSON.stringify({
+			format: 'zotero-bridgeflow-reading-progress', version: 1, state: pickReadingProgressState(state),
+		}), 600_000);
 	}
 
-	async loadFromDisk(): Promise<ReadingProgressState | null> {
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.exists || !ioUtils?.readUTF8) return null;
-		this.loadedFromLegacy = false;
-
-		const primaryPaths = [this.getFilePath(), this.getBackupFilePath()];
-		if (this.directory !== cacheDirectory()) {
-			primaryPaths.push(cacheFile(cacheDirectory(), 'reading-progress.json'), cacheFile(cacheDirectory(), 'reading-progress.bak.json'));
-		}
-		for (const p of primaryPaths) {
-			try {
-				if (!(await ioUtils.exists(p))) continue;
-				const raw = await ioUtils.readUTF8(p);
-				if (!raw) continue;
-				const parsed = readReadingProgressBackup(raw);
-				this.lastWrittenJson = p === this.getFilePath() ? raw : '';
-				return parsed;
-			} catch { /* try next */ }
-		}
-
-		const legacyPaths = [cacheFile(this.directory, 'reading-notes.json'), cacheFile(this.directory, 'reading-notes.bak.json')];
-		if (this.directory !== cacheDirectory()) {
-			legacyPaths.push(cacheFile(cacheDirectory(), 'reading-notes.json'), cacheFile(cacheDirectory(), 'reading-notes.bak.json'));
-		}
-		for (const lp of legacyPaths) {
-			try {
-				if (!(await ioUtils.exists(lp))) continue;
-				const raw = await ioUtils.readUTF8(lp);
-				if (!raw) continue;
-				const parsed = readReadingNotesBackup(raw);
-				this.loadedFromLegacy = true;
-				return pickReadingProgressState(parsed);
-			} catch { /* try next */ }
-		}
-		return null;
+	loadFromDisk(): Promise<ReadingProgressState | null> {
+		const legacy = [...new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap(root =>
+			['reading-notes.json', 'reading-notes.bak.json'].map(name => cacheFile(root, name)));
+		return this.file.load((text, path) => legacy.includes(path)
+			? pickReadingProgressState(readReadingNotesBackup(text))
+			: readReadingProgressBackup(text), legacy);
 	}
 
 	mergeDurableState(

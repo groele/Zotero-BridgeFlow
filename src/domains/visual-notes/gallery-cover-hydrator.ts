@@ -17,6 +17,7 @@ function applyCoverUrl(coverEl: HTMLElement, doc: Document, url: string): void {
 	coverEl.querySelector('.zbf-gal-cover-abstract, .zbf-gal-cover-fallback')?.remove();
 	const img = galEl(doc, 'img');
 	img.className = 'zbf-gal-cover-img';
+	img.decoding = 'async';
 	img.src = url;
 	img.setAttribute('data-loaded', 'true');
 	coverEl.insertBefore(img, coverEl.firstChild);
@@ -25,6 +26,7 @@ function applyCoverUrl(coverEl: HTMLElement, doc: Document, url: string): void {
 export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document) {
 	const tasks = new Map<HTMLElement, AbortController>();
 	const tracked = new Set<HTMLElement>();
+	const priorities = new WeakMap<HTMLElement, number>();
 	let disposed = false;
 	let observer: IntersectionObserver | null = null;
 
@@ -47,32 +49,18 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 
 		const ctrl = makeAbortController(doc.defaultView);
 		tasks.set(card, ctrl);
-		const computePriority = () => {
-			const vr = viewport.getBoundingClientRect?.();
-			const cr = card.getBoundingClientRect?.();
-			if (!vr || !cr) return 10;
-			const dist = Math.abs((cr.top + cr.bottom) / 2 - (vr.top + vr.bottom) / 2);
-			return Math.max(1, Math.round(2000 - dist));
-		};
+
 		void requestGalleryPdfCover({
 			attID,
 			doc,
 			signal: ctrl.signal,
-			priority: computePriority,
-			onPreview: (previewUrl) => { if (!disposed && !ctrl.signal.aborted) applyCoverUrl(coverEl, doc, previewUrl); },
+			priority: () => priorities.get(card) ?? 1,
 		}).then((url) => {
 			if (tasks.get(card) === ctrl) tasks.delete(card);
 			if (!disposed && !ctrl.signal.aborted && url) applyCoverUrl(coverEl, doc, url);
 		}).catch(() => {
 			if (tasks.get(card) === ctrl) tasks.delete(card);
 		});
-	};
-
-	const isNearViewport = (card: HTMLElement): boolean => {
-		const vr = viewport.getBoundingClientRect?.();
-		const cr = card.getBoundingClientRect?.();
-		if (!vr || !cr || (vr.width === 0 && vr.height === 0)) return true;
-		return cr.bottom >= vr.top - 300 && cr.top <= vr.bottom + 300 && cr.right >= vr.left - 220 && cr.left <= vr.right + 220;
 	};
 
 	const trySyncCover = (card: HTMLElement): boolean => {
@@ -93,10 +81,17 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 			if (disposed) return;
 			for (const entry of entries) {
 				const card = entry.target as HTMLElement;
-				if (entry.isIntersecting) startCard(card);
+				if (entry.isIntersecting) {
+					const rect = entry.boundingClientRect;
+					const root = entry.rootBounds;
+					priorities.set(card, root
+						? Math.max(1, Math.round(2000 - Math.abs((rect.top + rect.bottom - root.top - root.bottom) / 2)))
+						: 1);
+					startCard(card);
+				}
 				else if (!card.contains(doc.activeElement)) cancelCard(card);
 			}
-		}, { root: viewport, rootMargin: '280px 180px' }) as IntersectionObserver;
+		}, { root: viewport, rootMargin: '260px 120px', threshold: [0, 0.5, 1] }) as IntersectionObserver;
 		observer = obs;
 		for (const c of tracked) {
 			if (c.isConnected) obs.observe(c);
@@ -115,14 +110,14 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 			tracked.add(card);
 			const obs = ensureObserver();
 			if (obs && card.isConnected) obs.observe(card);
-			if (viewport.isConnected && card.isConnected && (!obs || isNearViewport(card))) startCard(card);
+			if (viewport.isConnected && card.isConnected && !obs) startCard(card);
 		},
 		activate() {
 			if (disposed) return;
 			const obs = ensureObserver();
 			for (const c of tracked) {
 				if (!c.isConnected || trySyncCover(c)) continue;
-				if (!obs || isNearViewport(c)) startCard(c);
+				if (!obs) startCard(c);
 			}
 		},
 		unobserveCard(card: HTMLElement) {

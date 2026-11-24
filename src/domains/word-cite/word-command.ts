@@ -3,9 +3,7 @@ import type { Disposable } from '../../kernel/types.ts';
 
 export type WordCommandResult = 'completed' | 'busy' | 'cancelled' | 'unavailable';
 
-let commandInFlight = false;
-let commandStartedAt = 0;
-let activeCommandToken = 0;
+const inFlight = new WeakSet<object>();
 
 /** Track the native command separately from execCommand, which handles and swallows errors. */
 export async function runWordCommand(
@@ -21,14 +19,7 @@ export async function runWordCommand(
 		|| typeof integration.getApplication !== 'function' || typeof iface?.[command] !== 'function') {
 		return 'unavailable';
 	}
-	if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 90_000) {
-		commandInFlight = false;
-		commandStartedAt = 0;
-		activeCommandToken = 0;
-	}
-	if (commandInFlight || integration.currentDoc) return 'busy';
-
-	const token = ++activeCommandToken;
+	if (inFlight.has(integration) || integration.currentDoc) return 'busy';
 
 	const isMac = host.isMac === true;
 	const agent = isMac ? 'MacWord16' : 'WinWord';
@@ -42,8 +33,7 @@ export async function runWordCommand(
 		return typeof UserCancelled === 'function' && error instanceof UserCancelled;
 	};
 
-	commandInFlight = true;
-	commandStartedAt = Date.now();
+	inFlight.add(integration);
 	try {
 		disposers.push(kernel.runtime.patch(integration, 'getApplication', 'Word command', (original) =>
 			function (this: unknown, ...args: unknown[]) {
@@ -92,10 +82,6 @@ export async function runWordCommand(
 		return 'unavailable';
 	} finally {
 		for (const dispose of disposers.reverse()) dispose();
-		if (activeCommandToken === token) {
-			commandInFlight = false;
-			commandStartedAt = 0;
-			activeCommandToken = 0;
-		}
+		inFlight.delete(integration);
 	}
 }

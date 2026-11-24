@@ -235,3 +235,41 @@ test('CslFormattingEngine + ClipboardService + CitationHistoryStore roundtrip', 
 	assert.deepEqual(openedReaderIDs, [888]);
 	delete globalThis.Zotero;
 });
+
+test('Lookup preserves DOI parentheses, rejects cross-library history and stops superseded scans', async () => {
+	const prev = globalThis.Zotero;
+	const history = new CitationHistoryStore();
+	const query = 'https://doi.org/10.1234/paper(fig2)';
+	const checked = [];
+	const match = { id: 22, libraryID: 9, key:'LOCALKEY', isRegularItem: () => true,
+		getField: field => field === 'DOI' ? '10.1234/paper(fig2)' : 'Verified title' };
+	history.record({ text: query, libraryID: 1, itemKey: 'ELSEWHERE', itemID: 11, title: 'Other library', style: 'apa' });
+	globalThis.Zotero = {
+		Libraries: { userLibraryID: 1 },
+		Search: class {
+			addCondition(...args) { checked.push(args); }
+			async search() { checked.push(this.libraryID); return [22]; }
+		},
+		Items: { getAsync: async ids => Array.isArray(ids) ? [match] : null },
+	};
+	try {
+		const engine = new CitationLookupEngine(history);
+		const exact = await engine.resolveRich(query, { libraryID: 9 });
+		assert.equal(exact.candidates[0]?.itemID, 22);
+		assert.equal(exact.historyMatched, false);
+		assert.deepEqual(checked, [['DOI', 'is', '10.1234/paper(fig2)'], 9]);
+
+		let reads = 0;
+		const controller = new AbortController();
+		const rows = Array.from({ length: 1000 }, (_, id) => ({
+			...match, id: id + 1,
+			getField() { if (++reads === 8) controller.abort(); return 'anything'; },
+		}));
+		const cancelled = await engine.resolveRich('unstructured text', { libraryItems: rows, signal: controller.signal });
+		assert.deepEqual(cancelled.candidates, []);
+		assert.ok(reads < 20);
+		assert.deepEqual((await engine.resolveRich(query, { useHistory: false, libraryItems: [{
+			...match, getField: field => field === 'DOI' ? '10.1234/different' : 'paper',
+		}] })).candidates, []);
+	} finally { globalThis.Zotero = prev; }
+});

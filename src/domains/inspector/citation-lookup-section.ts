@@ -155,18 +155,22 @@ export class CitationLookupSectionController {
 		syncCacheStatus();
 
 		let request = 0;
+		let lookupController: AbortController | undefined;
 		let pasteTimer: ReturnType<typeof setTimeout> | undefined;
 		const cancelPaste = () => {
 			if (pasteTimer !== undefined) clearTimeout(pasteTimer);
 			pasteTimer = undefined;
 		};
-		this.cleanups.set(body, () => { request++; cancelPaste(); offCacheStatus(); });
+		this.cleanups.set(body, () => { request++; lookupController?.abort(); cancelPaste(); offCacheStatus(); });
 
 		const resolveItem = (candidate: LookupCandidate): any =>
 			candidate.item || (globalThis as any).Zotero?.Items?.get?.(candidate.itemID) || null;
 
 		const executeLookup = async (textToSearch: string) => {
 			const current = ++request;
+			lookupController?.abort();
+			const controller = new (doc.defaultView?.AbortController ?? AbortController)();
+			lookupController = controller;
 			const isActive = () => current === request && body.isConnected && input.value.trim() === textToSearch.trim();
 			if (!textToSearch.trim()) {
 				clearLookupResult(statusDiv);
@@ -189,7 +193,7 @@ export class CitationLookupSectionController {
 				const pane = (doc.defaultView as any)?.ZoteroPane;
 				const libraryID = pane?.getSelectedLibraryIDs?.()?.[0] ?? (globalThis as any).Zotero?.Libraries?.userLibraryID;
 				const outcome = await this.engine.resolveRich(textToSearch, {
-					libraryID,
+					libraryID, signal: controller.signal,
 					useHistory: this.kernel.prefs.get('inspector.lookup.historyEnable'),
 				});
 				if (!isActive()) return;
@@ -202,10 +206,12 @@ export class CitationLookupSectionController {
 					const hit = outcome.candidates[0];
 					if (outcome.historyMatched) {
 						renderLookupItemCard(doc, statusDiv, hit, '已匹配文献', 'zbf-lookup-state-matched', cb);
-					} else {
+					} else if (hit.source === 'physical-exact' || hit.source === 'doi') {
 						await this.locateInLibrary(hit.itemID);
 						if (!isActive()) return;
 						renderLookupItemCard(doc, statusDiv, hit, '已定位文献', 'zbf-lookup-state-located', cb);
+					} else {
+						renderLookupCandidatesList(doc, statusDiv, outcome.candidates, cb);
 					}
 					return;
 				}
@@ -230,6 +236,7 @@ export class CitationLookupSectionController {
 		const resetInput = () => {
 			cancelPaste();
 			request++;
+			lookupController?.abort();
 			input.value = '';
 			syncClear();
 			clearLookupResult(statusDiv);
@@ -237,6 +244,7 @@ export class CitationLookupSectionController {
 		clearBtn.onclick = () => { resetInput(); input.focus(); };
 		input.oninput = () => {
 			request++;
+			lookupController?.abort();
 			syncClear();
 			clearLookupResult(statusDiv);
 			if (!input.value.trim()) cancelPaste();

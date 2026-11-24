@@ -1,23 +1,24 @@
+import { isRegularValidItem } from '../../services/item-resolution.ts';
 import type { OrphanCitationInfo, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
 import {
 	buildBatchMetadataKey,
 	CSL_TO_ZOTERO_TYPE,
-	findExistingLibraryItem,
+	findExistingLibraryItems,
 	hasRecoverableCslMetadata,
 	mapCslCreators,
 	populateZoteroItemFromCsl,
 } from './orphan-csl-mapper.ts';
-import { classifySyncSafeRelinkUris, normalizeDoi, rememberRelinkedItemUris } from './orphan-identity.ts';
+import { classifySyncSafeRelinkUris, normalizeDoi, rememberRelinkedItemUris, resolveItemIdFromUris } from './orphan-identity.ts';
 
 /** Resolves the library an orphan citation came from; falls back to the user library when unknown or read-only. */
 export function resolveOrphanLibraryID(orphan: OrphanCitationInfo, fallbackLibraryID: number): number {
 	const host = (globalThis as any).Zotero;
 	for (const uri of orphan.uris || []) {
-		const match = String(uri).match(/\/groups\/(\d+)\/items\//);
+		const match = String(uri).match(/^https?:\/\/zotero\.org\/groups\/(\d+)\/items\/[A-Za-z0-9]+\/?$/i);
 		if (!match) continue;
 		try {
 			const libraryID = host?.Groups?.getLibraryIDFromGroupID?.(Number(match[1]));
-			if (Number.isSafeInteger(libraryID) && libraryID > 0 && host?.Libraries?.get?.(libraryID)?.editable !== false) {
+			if (Number.isSafeInteger(libraryID) && libraryID > 0 && host?.Libraries?.get?.(libraryID)?.editable === true) {
 				return libraryID;
 			}
 		} catch { /* fall through to user library */ }
@@ -46,19 +47,43 @@ async function attachSyncSafeRelinkRelations(
 		try { selfUri = String(zoteroObj.URI.getItemURI(targetItem) || '').trim(); } catch { /* ignore */ }
 	}
 
-	let attached = false;
+	const linkedUris: string[] = [];
 	for (const uri of safeUris) {
 		if (!uri || uri === selfUri) continue;
 		try {
 			if (targetItem.hasRelation?.(predicate, uri)) {
-				attached = true;
+				linkedUris.push(uri);
 				continue;
 			}
 			const added = targetItem.addRelation(predicate, uri);
-			if (added !== false) attached = true;
+			if (added !== false) linkedUris.push(uri);
 		} catch { /* ignore unsupported relation on stub */ }
 	}
-	return { attached, safeUris, foreignSkipped };
+	const aliases = (orphan.uris || []).filter((raw) => {
+		const canonical = classifySyncSafeRelinkUris([raw], targetLibraryID, userLibraryID, zoteroObj).safeUris[0];
+		return linkedUris.includes(canonical);
+	});
+	return { attached: linkedUris.length > 0, safeUris: [...linkedUris, ...aliases], foreignSkipped };
+}
+
+/** Reuse Zotero's own durable replacement relations, including after a plugin restart. */
+async function findLinkedItems(orphan: OrphanCitationInfo, libraryID: number, userLibraryID: number, host: any): Promise<any[]> {
+	const { safeUris } = classifySyncSafeRelinkUris(orphan.uris, libraryID, userLibraryID, host);
+	const originalUris = (orphan.uris || []).filter(uri =>
+		classifySyncSafeRelinkUris([uri], libraryID, userLibraryID, host).safeUris.length > 0);
+	const items = new Map<number, any>();
+	for (const uri of new Set([...safeUris, ...originalUris])) {
+		const id = resolveItemIdFromUris([uri], host, host.Items);
+		const direct = id ? ((await host.Items?.getAsync?.(id)) ?? host.Items?.get?.(id)) : null;
+		const replacements = await host.Relations?.getByPredicateAndObject?.(
+			'item', host.Relations.replacedItemPredicate || 'dc:replaces', uri,
+		);
+		for (const item of [direct, ...(replacements || [])]) {
+			if (!item?.id || !isRegularValidItem(item) || item.inTrash === true || item.libraryID !== libraryID) continue;
+			items.set(item.id, item);
+		}
+	}
+	return [...items.values()];
 }
 
 type SaveFn = (item: any, options?: Record<string, unknown>) => Promise<unknown>;
@@ -68,8 +93,9 @@ async function importOrphanFromMetadata(
 	userLibraryID: number,
 	saveInTx: SaveFn,
 	batchItemCache: Map<string, any>,
+	committedLinks: Map<string, number>,
 	targetCollectionID?: number,
-): Promise<{ outcome: 'imported' | 'existing' | 'failed'; itemID?: number; relinked: boolean; foreignSkipped: boolean }> {
+): Promise<{ outcome: 'imported' | 'existing' | 'failed' | 'ambiguous'; itemID?: number; relinked: boolean; foreignSkipped: boolean }> {
 	const ZoteroObj = (globalThis as any).Zotero;
 	const ItemCtor = ZoteroObj?.Item;
 	if (typeof ItemCtor !== 'function') return { outcome: 'failed', relinked: false, foreignSkipped: false };
@@ -78,11 +104,15 @@ async function importOrphanFromMetadata(
 	const targetLibraryID = resolveOrphanLibraryID(orphan, userLibraryID);
 	const doi = normalizeDoi(data?.DOI);
 	const batchDoiKey = doi ? `doi:${targetLibraryID}:${doi}` : '';
-	const batchMetaKey = buildBatchMetadataKey(targetLibraryID, data);
+	const batchMetaKey = doi ? '' : buildBatchMetadataKey(targetLibraryID, data);
 
-	const duplicate = (batchDoiKey ? batchItemCache.get(batchDoiKey) : null)
-		|| (batchMetaKey ? batchItemCache.get(batchMetaKey) : null)
-		|| (await findExistingLibraryItem(targetLibraryID, data, doi));
+	const ambiguous = { outcome: 'ambiguous' as const, relinked: false, foreignSkipped: false };
+	const linked = await findLinkedItems(orphan, targetLibraryID, userLibraryID, ZoteroObj);
+	if (linked.length > 1) return ambiguous;
+	const cached = batchItemCache.get(batchDoiKey || batchMetaKey);
+	const candidates = linked.length ? linked : cached ? [cached] : await findExistingLibraryItems(targetLibraryID, data, doi);
+	if (candidates.length > 1) return ambiguous;
+	const duplicate = candidates[0];
 
 	if (duplicate) {
 		const dupLibID = duplicate.libraryID ?? userLibraryID;
@@ -100,11 +130,13 @@ async function importOrphanFromMetadata(
 		const dupId = Number(duplicate.id || 0);
 		if (batchDoiKey) batchItemCache.set(batchDoiKey, duplicate);
 		if (batchMetaKey) batchItemCache.set(batchMetaKey, duplicate);
-		if (relRes.attached && dupId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, dupId);
+		if (relRes.attached && dupId > 0) {
+			for (const uri of relRes.safeUris) committedLinks.set(uri, dupId);
+		}
 		return {
 			outcome: 'existing',
 			...(dupId > 0 ? { itemID: dupId } : {}),
-			relinked: relRes.attached,
+			relinked: relRes.attached || linked.length === 1,
 			foreignSkipped: relRes.foreignSkipped,
 		};
 	}
@@ -116,7 +148,7 @@ async function importOrphanFromMetadata(
 
 	const csl = data!;
 	const rawType = String(csl.type || 'article-journal').trim();
-	const itemType = CSL_TO_ZOTERO_TYPE[rawType] || 'journalArticle';
+	const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : 'journalArticle';
 	const item = new ItemCtor(itemType);
 	item.libraryID = targetLibraryID;
 
@@ -130,7 +162,9 @@ async function importOrphanFromMetadata(
 	const resolvedNewId = Number(item.id || savedId || 0);
 	if (batchDoiKey) batchItemCache.set(batchDoiKey, item);
 	if (batchMetaKey) batchItemCache.set(batchMetaKey, item);
-	if (relRes.attached && resolvedNewId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, resolvedNewId);
+	if (relRes.attached && resolvedNewId > 0) {
+		for (const uri of relRes.safeUris) committedLinks.set(uri, resolvedNewId);
+	}
 	return {
 		outcome: 'imported',
 		...(resolvedNewId > 0 ? { itemID: resolvedNewId } : {}),
@@ -151,7 +185,7 @@ export async function recoverOrphanCitations(
 	const ZoteroObj = (globalThis as any).Zotero;
 	const hostItems = ZoteroObj?.Items;
 	const userLibraryID = Number(ZoteroObj?.Libraries?.userLibraryID ?? 1);
-	const keyFilter = options?.keys?.length ? new Set(options.keys) : null;
+	const keyFilter = options?.keys ? new Set(options.keys) : null;
 	const targets = keyFilter ? orphans.filter((o) => keyFilter.has(o.key)) : orphans;
 
 	const hasDbTx = typeof ZoteroObj?.DB?.executeTransaction === 'function';
@@ -172,15 +206,17 @@ export async function recoverOrphanCitations(
 	let skippedCount = 0;
 	let existingCount = 0;
 	let relinkedCount = 0;
+	let ambiguousCount = 0;
 	let foreignSkippedCount = 0;
 	const restoredIDs = new Set<number>();
-	const recoveredItemIDs: number[] = [];
+	const recoveredItemIDs = new Set<number>();
 	const pushRecoveredID = (id?: number) => {
-		if (id && Number.isSafeInteger(id) && id > 0 && !recoveredItemIDs.includes(id)) {
-			recoveredItemIDs.push(id);
+		if (id && Number.isSafeInteger(id) && id > 0) {
+			recoveredItemIDs.add(id);
 		}
 	};
 	const batchItemCache = new Map<string, any>();
+	const committedLinks = new Map<string, number>();
 
 	await runBatch(async () => {
 		for (const orphan of targets) {
@@ -189,7 +225,12 @@ export async function recoverOrphanCitations(
 				const existing = typeof hostItems?.getAsync === 'function'
 					? await hostItems.getAsync(orphan.itemID)
 					: hostItems?.get?.(orphan.itemID);
-				if (existing) {
+				if (existing && existing.isRegularItem?.() !== false
+					&& (!orphan.uris?.length || resolveItemIdFromUris(orphan.uris, ZoteroObj, hostItems) === orphan.itemID)) {
+					if (ZoteroObj.Libraries?.get?.(existing.libraryID)?.editable === false) {
+						skippedCount++;
+						continue;
+					}
 					existing.deleted = false;
 					const itemLibID = existing.libraryID ?? userLibraryID;
 					if (options?.targetCollectionID && typeof existing.addToCollection === 'function' && itemLibID === userLibraryID) {
@@ -204,16 +245,20 @@ export async function recoverOrphanCitations(
 				}
 			}
 
-			const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, options?.targetCollectionID);
+			const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, committedLinks, options?.targetCollectionID);
 			pushRecoveredID(res.itemID);
 			if (res.relinked) relinkedCount += 1;
 			if (res.foreignSkipped) foreignSkippedCount += 1;
 			if (res.outcome === 'imported') importedCount += 1;
 			else if (res.outcome === 'existing') existingCount += 1;
-			else skippedCount += 1;
+			else {
+				skippedCount += 1;
+				if (res.outcome === 'ambiguous') ambiguousCount += 1;
+			}
 		}
 	});
 
+	for (const [uri, id] of committedLinks) rememberRelinkedItemUris([uri], id);
 	return {
 		restoredCount,
 		importedCount,
@@ -221,7 +266,8 @@ export async function recoverOrphanCitations(
 		...(existingCount ? { existingCount } : {}),
 		...(relinkedCount ? { relinkedCount } : {}),
 		...(foreignSkippedCount ? { foreignSkippedCount } : {}),
-		...(recoveredItemIDs.length ? { recoveredItemIDs } : {}),
+		...(recoveredItemIDs.size ? { recoveredItemIDs: [...recoveredItemIDs] } : {}),
+		...(ambiguousCount ? { ambiguousCount } : {}),
 		...(options?.collectionName ? { collectionName: options.collectionName } : {}),
 	};
 }

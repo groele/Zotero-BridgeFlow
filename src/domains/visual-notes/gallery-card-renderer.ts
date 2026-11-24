@@ -192,6 +192,7 @@ export function renderGalleryCardElement(opts: {
 		if (syncUrl) {
 			const img = galEl(doc, 'img');
 			img.className = 'zbf-gal-cover-img';
+			img.decoding = 'async';
 			img.src = syncUrl;
 			img.setAttribute('data-loaded', 'true');
 			cover.appendChild(img);

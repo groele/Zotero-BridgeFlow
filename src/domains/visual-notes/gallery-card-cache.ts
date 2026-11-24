@@ -117,6 +117,8 @@ export function resolveCachedCardStatic(ref: any, itemID: number, zh: boolean, e
 	const itemType = String(ref.itemType || (globalThis as any).Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || 'journalArticle');
 	const tags = extractCleanTags(ref, excludedStatusTag);
 	const status = getItemStatus(ref, excludedStatusTag);
+	let attachmentID: number | undefined;
+	let abstractExcerpt: string | undefined;
 	const built: CachedCardStaticFields = {
 		title,
 		creator,
@@ -125,8 +127,8 @@ export function resolveCachedCardStatic(ref: any, itemID: number, zh: boolean, e
 		itemType,
 		itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : '') || itemType,
 		dateModified: String(ref.dateModified || ''),
-		pdfAttachmentID: resolvePrimaryPdfAttachmentID(ref),
-		abstractExcerpt: safeField(ref, 'abstractNote').replace(/\s+/g, ' ').slice(0, 620),
+		get pdfAttachmentID() { return attachmentID ??= resolvePrimaryPdfAttachmentID(ref); },
+		get abstractExcerpt() { return abstractExcerpt ??= safeField(ref, 'abstractNote').replace(/\s+/g, ' ').slice(0, 620); },
 		tags,
 		status,
 		baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ''} ${tags.join(' ')}`.toLowerCase(),
