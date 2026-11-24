@@ -1,4 +1,5 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
+import { tLocale } from '../../kernel/locale.ts';
 import type { Disposable } from '../../kernel/types.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
@@ -112,7 +113,10 @@ export class DragCiteController {
 		const probe = this.win32.probeCursorWordDropTarget();
 		if (probe.status !== 'word-confirmed' && !(globalThis as any).Zotero?.isMac) {
 			if (probe.status === 'unknown') {
-				this.notifyHint('未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。');
+				this.notifyHint(tLocale(
+					'未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。',
+					'Microsoft Word window not detected. Please drop the item inside a Word document editor.',
+				));
 			}
 			return 'non-word';
 		}
@@ -132,7 +136,10 @@ export class DragCiteController {
 			},
 		});
 		if (result === 'unavailable' && !onInserted) {
-			this.notifyHint('插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。');
+			this.notifyHint(tLocale(
+				'插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。',
+				'Failed to insert Word citation: please open a Microsoft Word document and place the cursor where you want to cite.',
+			));
 		}
 		return result;
 	}
@@ -145,7 +152,7 @@ export class DragCiteController {
 	private notifyHint(message: string): void {
 		try {
 			const pw = new (globalThis as any).Zotero.ProgressWindow();
-			pw.changeHeadline('Zotero BridgeFlow · Word 引用');
+			pw.changeHeadline(tLocale('Zotero BridgeFlow · Word 引用', 'Zotero BridgeFlow · Word Cite'));
 			pw.addDescription(message);
 			pw.show();
 			pw.startCloseTimer(4000);

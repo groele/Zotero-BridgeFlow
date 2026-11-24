@@ -16,6 +16,7 @@ export class WordIntegrationPoller {
 	private unpatchExec: (() => void) | null = null;
 	private unpatchGetSession: (() => void) | null = null;
 	private running = false;
+	private stopEpoch = 0;
 	private polling = false;
 	private execDepth = 0;
 	private idleRounds = 0;
@@ -45,6 +46,7 @@ export class WordIntegrationPoller {
 
 	stop(): void {
 		this.running = false;
+		this.stopEpoch++;
 		if (this.timer !== null) { clearTimeout(this.timer); this.timer = null; }
 		if (this.viewRefreshTimer !== null) { clearTimeout(this.viewRefreshTimer); this.viewRefreshTimer = null; }
 		if (this.postExecTimer !== null) { clearTimeout(this.postExecTimer); this.postExecTimer = null; }
@@ -67,6 +69,7 @@ export class WordIntegrationPoller {
 		if (!sessionsMap && !committedSession) return false;
 
 		this.polling = true;
+		const epoch = this.stopEpoch;
 		try {
 			const merged = new Map<string, any>();
 			if (sessionsMap) {
@@ -96,6 +99,7 @@ export class WordIntegrationPoller {
 				activeIDs.add(sessionID);
 
 				await this.ensureConsistentSnapshot(session);
+				if (this.stopEpoch !== epoch) return false;
 
 				const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session);
 				const prevTracked = this.tracker.getSession(sessionID);
@@ -128,8 +132,9 @@ export class WordIntegrationPoller {
 			for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
 			for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
 
+			if (this.stopEpoch !== epoch) return false;
 			const changed = this.tracker.syncSessions(rawSessions);
-			if (changed) { this.idleRounds = 0; this.scheduleItemsViewRefresh(); }
+			if (changed) { this.idleRounds = 0; if (this.running) this.scheduleItemsViewRefresh(); }
 			else { this.idleRounds = Math.min(10, this.idleRounds + 1); }
 			return changed;
 		} finally {
@@ -146,8 +151,9 @@ export class WordIntegrationPoller {
 		if (!missingObj && !mismatch) return;
 		let guard: ReturnType<typeof setTimeout> | undefined;
 		try {
+			const updatePromise = Promise.resolve(session.updateFromDocument(0)).catch(() => { /* ignore late busy doc */ });
 			await Promise.race([
-				Promise.resolve(session.updateFromDocument(0)),
+				updatePromise,
 				new Promise<void>((resolve) => { guard = setTimeout(resolve, 4000); }),
 			]);
 		} catch { /* ignore busy doc */ } finally {

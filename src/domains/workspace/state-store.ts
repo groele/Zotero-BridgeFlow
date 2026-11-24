@@ -9,6 +9,7 @@ import {
 	readWorkspace,
 } from './workspace-schema.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
+import { tLocale } from '../../kernel/locale.ts';
 import { WorkspaceDiskCache } from './workspace-disk-cache.ts';
 import { ReadingProgressDiskCache } from './reading-progress-cache.ts';
 import { BriefNotesDiskCache } from './brief-notes-cache.ts';
@@ -126,7 +127,7 @@ export class WorkspaceStateStore {
 	}
 
 	createGroup(name: string, color?: string): TabGroup {
-		const trimmed = name.trim() || '新分组';
+		const trimmed = name.trim() || tLocale('新分组', 'New Group');
 		const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		const chosen = color || GROUP_PALETTE[this.state.groups.length % GROUP_PALETTE.length];
 		const group: TabGroup = { id, name: trimmed, color: chosen, memberKeys: [] };
@@ -176,7 +177,8 @@ export class WorkspaceStateStore {
 
 	restoreSessionLayout(session: WorkspaceSession, merge = false, openKeys: string[] = []): void {
 		if (!merge && (openKeys.length || this.state.groups.length || this.state.pinnedKeys.length)) {
-			this.saveSession(`恢复前备份 · ${new Date().toLocaleTimeString()}`, { kind: 'pre-replace', rolling: true, openKeys });
+			const time = new Date().toLocaleTimeString();
+			this.saveSession(tLocale(`恢复前备份 · ${time}`, `Pre-restore Backup · ${time}`), { kind: 'pre-replace', rolling: true, openKeys });
 		}
 		const hasNotes = applySessionLayoutToState(this.state, session, merge);
 		this.save();

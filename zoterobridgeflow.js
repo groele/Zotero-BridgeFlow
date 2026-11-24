@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.1 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -9465,6 +9465,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 
   // src/services/pdf-cover-service.ts
   var MEM_CACHE_LIMIT = 512;
+  var META_MAP_LIMIT = 1024;
   var MAX_COVER_BYTES = 4 * 1024 * 1024;
   var TARGET_COVER_WIDTH = 480;
   var FAIL_COOLDOWN_MS = 45e3;
@@ -9474,8 +9475,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var touchedAt = /* @__PURE__ */ new Map();
   var writingPaths = /* @__PURE__ */ new Set();
   var failedRetryAt = /* @__PURE__ */ new Map();
+  var configuredCoverCacheDir = "";
   var lastSweepAt = 0;
   var sweepingPromise = null;
+  function setBounded(map, key, val, limit = META_MAP_LIMIT) {
+    if (map.has(key)) map.delete(key);
+    else if (map.size >= limit) {
+      const oldest = map.keys().next().value;
+      if (oldest !== void 0) map.delete(oldest);
+    }
+    map.set(key, val);
+  }
+  function configurePdfCoverCacheDirectory(customDir = "") {
+    configuredCoverCacheDir = String(customDir || "").trim();
+  }
   function setMemLru(attID, url) {
     if (memCoverCache.has(attID)) memCoverCache.delete(attID);
     else if (memCoverCache.size >= MEM_CACHE_LIMIT) {
@@ -9495,7 +9508,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     try {
       const zotero = globalThis.Zotero;
       const pathUtils = globalThis.PathUtils || zotero?.getMainWindow?.()?.PathUtils;
-      const base = String(customDir || "").trim() || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
+      const effectiveDir = String(customDir || configuredCoverCacheDir || "").trim();
+      const base = effectiveDir || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
       return base && pathUtils?.join ? pathUtils.join(base, "covers") : null;
     } catch {
       return null;
@@ -9514,7 +9528,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (!pdfPath || !ioUtils?.stat) return null;
       const stat = await ioUtils.stat(pdfPath);
       if (stat.type !== "regular" || !Number.isFinite(stat.lastModified) || !Number.isFinite(stat.size)) return null;
-      attPathByID.set(attID, pdfPath);
+      setBounded(attPathByID, attID, pdfPath);
       return {
         key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
         path: pdfPath,
@@ -9538,7 +9552,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         return digest;
       })();
       fp = { stamp: located.stamp, hashPromise };
-      fingerprints.set(located.path, fp);
+      setBounded(fingerprints, located.path, fp);
     }
     try {
       return { key: located.key, stamp: located.stamp, revision: await fp.hashPromise };
@@ -9591,7 +9605,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const parsed = JSON.parse(raw);
       if (parsed?.version !== 2 || typeof parsed.revision !== "string" || !isValidJpegDataUrl(parsed.url)) return null;
       if (typeof ioUtils.setModificationTime === "function" && Date.now() - (touchedAt.get(key) ?? 0) >= 36e5) {
-        touchedAt.set(key, Date.now());
+        setBounded(touchedAt, key, Date.now());
         void ioUtils.setModificationTime(filePath).catch(() => {
         });
       }
@@ -9680,7 +9694,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           }
         }, sig, rank);
         if (!isValidJpegDataUrl(rendered)) {
-          if (!sig.aborted) failedRetryAt.set(attID, Date.now() + FAIL_COOLDOWN_MS);
+          if (!sig.aborted) setBounded(failedRetryAt, attID, Date.now() + FAIL_COOLDOWN_MS);
           return null;
         }
         setMemLru(attID, rendered);
@@ -13434,9 +13448,23 @@ ${summary}` : summary;
     }
   };
 
+  // src/kernel/locale.ts
+  function isChineseLocale(doc) {
+    const host2 = globalThis.Zotero;
+    const rawLocale = String(
+      host2?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
+    ).trim();
+    if (!rawLocale) return true;
+    return rawLocale.toLowerCase().startsWith("zh");
+  }
+  function tLocale(zh, en, doc) {
+    return isChineseLocale(doc) ? zh : en;
+  }
+
   // src/domains/word-cite/word-command.ts
   var commandInFlight = false;
   var commandStartedAt = 0;
+  var activeCommandToken = 0;
   async function runWordCommand(kernel, command, run) {
     const host2 = globalThis.Zotero;
     const integration = host2?.Integration;
@@ -13448,8 +13476,10 @@ ${summary}` : summary;
     if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 9e4) {
       commandInFlight = false;
       commandStartedAt = 0;
+      activeCommandToken = 0;
     }
     if (commandInFlight || integration.currentDoc) return "busy";
+    const token = ++activeCommandToken;
     const isMac = host2.isMac === true;
     const agent = isMac ? "MacWord16" : "WinWord";
     const docId = isMac ? "/Applications/Microsoft Word.app/" : null;
@@ -13521,8 +13551,11 @@ ${summary}` : summary;
       return "unavailable";
     } finally {
       for (const dispose of disposers.reverse()) dispose();
-      commandInFlight = false;
-      commandStartedAt = 0;
+      if (activeCommandToken === token) {
+        commandInFlight = false;
+        commandStartedAt = 0;
+        activeCommandToken = 0;
+      }
     }
   }
 
@@ -13764,7 +13797,10 @@ ${summary}` : summary;
       const probe = this.win32.probeCursorWordDropTarget();
       if (probe.status !== "word-confirmed" && !globalThis.Zotero?.isMac) {
         if (probe.status === "unknown") {
-          this.notifyHint("未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。");
+          this.notifyHint(tLocale(
+            "未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。",
+            "Microsoft Word window not detected. Please drop the item inside a Word document editor."
+          ));
         }
         return "non-word";
       }
@@ -13783,7 +13819,10 @@ ${summary}` : summary;
         }
       });
       if (result === "unavailable" && !onInserted) {
-        this.notifyHint("插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。");
+        this.notifyHint(tLocale(
+          "插入 Word 引文失败：请先打开 Microsoft Word 文档并将光标置于正文需要插入引文的位置。",
+          "Failed to insert Word citation: please open a Microsoft Word document and place the cursor where you want to cite."
+        ));
       }
       return result;
     }
@@ -13794,7 +13833,7 @@ ${summary}` : summary;
     notifyHint(message) {
       try {
         const pw = new globalThis.Zotero.ProgressWindow();
-        pw.changeHeadline("Zotero BridgeFlow · Word 引用");
+        pw.changeHeadline(tLocale("Zotero BridgeFlow · Word 引用", "Zotero BridgeFlow · Word Cite"));
         pw.addDescription(message);
         pw.show();
         pw.startCloseTimer(4e3);
@@ -14455,6 +14494,7 @@ ${summary}` : summary;
     unpatchExec = null;
     unpatchGetSession = null;
     running = false;
+    stopEpoch = 0;
     polling = false;
     execDepth = 0;
     idleRounds = 0;
@@ -14480,6 +14520,7 @@ ${summary}` : summary;
     }
     stop() {
       this.running = false;
+      this.stopEpoch++;
       if (this.timer !== null) {
         clearTimeout(this.timer);
         this.timer = null;
@@ -14508,6 +14549,7 @@ ${summary}` : summary;
       const sessionsMap = integration?.sessions;
       if (!sessionsMap && !committedSession) return false;
       this.polling = true;
+      const epoch = this.stopEpoch;
       try {
         const merged = /* @__PURE__ */ new Map();
         if (sessionsMap) {
@@ -14528,6 +14570,7 @@ ${summary}` : summary;
           const sessionID = String(rawID);
           activeIDs.add(sessionID);
           await this.ensureConsistentSnapshot(session2);
+          if (this.stopEpoch !== epoch) return false;
           const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session2);
           const prevTracked = this.tracker.getSession(sessionID);
           if (!parsed.length && !orphans.length && prevTracked && prevTracked.itemCitations.size > 0) {
@@ -14555,10 +14598,11 @@ ${summary}` : summary;
         }
         for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
         for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
+        if (this.stopEpoch !== epoch) return false;
         const changed = this.tracker.syncSessions(rawSessions);
         if (changed) {
           this.idleRounds = 0;
-          this.scheduleItemsViewRefresh();
+          if (this.running) this.scheduleItemsViewRefresh();
         } else {
           this.idleRounds = Math.min(10, this.idleRounds + 1);
         }
@@ -14576,8 +14620,10 @@ ${summary}` : summary;
       if (!missingObj && !mismatch) return;
       let guard;
       try {
+        const updatePromise = Promise.resolve(session2.updateFromDocument(0)).catch(() => {
+        });
         await Promise.race([
-          Promise.resolve(session2.updateFromDocument(0)),
+          updatePromise,
           new Promise((resolve) => {
             guard = setTimeout(resolve, 4e3);
           })
@@ -16442,7 +16488,7 @@ ${summary}` : summary;
       this.saveBriefNotes(true);
     }
     createGroup(name, color) {
-      const trimmed = name.trim() || "新分组";
+      const trimmed = name.trim() || tLocale("新分组", "New Group");
       const id = `grp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
       const chosen = color || GROUP_PALETTE[this.state.groups.length % GROUP_PALETTE.length];
       const group2 = { id, name: trimmed, color: chosen, memberKeys: [] };
@@ -16487,7 +16533,8 @@ ${summary}` : summary;
     }
     restoreSessionLayout(session2, merge = false, openKeys = []) {
       if (!merge && (openKeys.length || this.state.groups.length || this.state.pinnedKeys.length)) {
-        this.saveSession(`恢复前备份 · ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { kind: "pre-replace", rolling: true, openKeys });
+        const time = (/* @__PURE__ */ new Date()).toLocaleTimeString();
+        this.saveSession(tLocale(`恢复前备份 · ${time}`, `Pre-restore Backup · ${time}`), { kind: "pre-replace", rolling: true, openKeys });
       }
       const hasNotes = applySessionLayoutToState(this.state, session2, merge);
       this.save();
@@ -17348,6 +17395,74 @@ ${summary}` : summary;
       groups.push({ groupId: group2.id, groupName: group2.name, itemIDs: [...seen] });
     }
     return groups;
+  }
+
+  // src/domains/workspace/workspace-maintenance.ts
+  function flushWorkspaceReadingProgress(ctx, minElapsed = 1, usePreviousReader = false) {
+    const now = Date.now();
+    const elapsed = Math.min(30, Math.floor((now - ctx.lastReadingTickAt) / 1e3));
+    if (elapsed < minElapsed) {
+      return { lastReadingTickAt: ctx.lastReadingTickAt, lastActivityAt: ctx.lastActivityAt, readingDirty: ctx.readingDirty };
+    }
+    let nextActivityAt = ctx.lastActivityAt;
+    let nextDirty = ctx.readingDirty;
+    let updated = false;
+    for (const win of ctx.windows) {
+      if (win.closed) continue;
+      const prev = usePreviousReader ? ctx.lastReaderByWin.get(win) : void 0;
+      const didUpdate = prev ? ctx.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+        overrideKey: prev.key,
+        overrideLastPage: prev.page,
+        overrideTotalPages: prev.total,
+        idleCutoffMs: 18e4,
+        lastActivityAt: nextActivityAt,
+        now
+      }) : ctx.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
+        idleCutoffMs: 18e4,
+        lastActivityAt: nextActivityAt,
+        now,
+        onPageChanged: () => {
+          nextActivityAt = now;
+        }
+      });
+      if (didUpdate) {
+        nextDirty = true;
+        updated = true;
+      }
+      const snap = ctx.tabs.resolveActiveReaderSnapshot(win);
+      if (snap) ctx.lastReaderByWin.set(win, snap);
+      else ctx.lastReaderByWin.delete(win);
+    }
+    if (updated) {
+      ctx.store.readingCache.scheduleSave(ctx.store.state);
+      ctx.kernel.bus.emit("visual-notes:reading-updated", {});
+      if (ctx.kernel.prefs.get("workspace.verticalTabSubtitleMode") === "lastViewed") {
+        ctx.onScheduleRefresh();
+      }
+    }
+    return { lastReadingTickAt: now, lastActivityAt: nextActivityAt, readingDirty: nextDirty };
+  }
+  function runWorkspaceMaintenance(ctx) {
+    let changed = false;
+    let readingDirty = ctx.readingDirty;
+    let lastRollingAt = ctx.lastRollingAt;
+    for (const win of ctx.windows) {
+      if (ctx.tabs.sleepIdleTabs(win) > 0) changed = true;
+    }
+    if (readingDirty) {
+      readingDirty = false;
+      void ctx.store.readingCache.flushNow(ctx.store.state);
+    }
+    if (ctx.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - lastRollingAt > 9e5) {
+      const openKeys = [...new Set([...ctx.windows].flatMap((win) => ctx.tabs.openKeys(win)))];
+      if (openKeys.length || ctx.store.state.groups.length > 0 || ctx.store.state.pinnedKeys.length > 0) {
+        const time = (/* @__PURE__ */ new Date()).toLocaleTimeString();
+        ctx.store.saveSession(tLocale(`自动滚动快照 ${time}`, `Auto Snapshot ${time}`), { rolling: true, openKeys });
+        lastRollingAt = Date.now();
+      }
+    }
+    if (changed) ctx.refreshAllWindows();
+    return { readingDirty, lastRollingAt };
   }
 
   // src/domains/workspace/workspace-elements.ts
@@ -20977,12 +21092,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       for (const ui of this.windows.values()) ui.destroy();
       this.windows.clear();
       this.pendingAutoGroup.clear();
-      if (this.readingDirty) {
-        this.readingDirty = false;
-        void this.store.readingCache.flushNow(this.store.state);
-      } else {
-        void this.store.readingCache.flushNow(this.store.state);
-      }
+      this.readingDirty = false;
+      void this.store.diskCache.flushNow(this.store.state);
+      void this.store.readingCache.flushNow(this.store.state);
       void this.store.notesCache.flushNow(this.store.state);
       this.store.notesCache.dispose();
       this.store.readingCache.dispose();
@@ -21011,42 +21123,24 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.lastReaderByWin.delete(win);
     }
     flushReadingProgress(minElapsed = 1, usePreviousReader = false) {
-      const now = Date.now();
-      const elapsed = Math.min(30, Math.floor((now - this.lastReadingTickAt) / 1e3));
-      if (elapsed < minElapsed) return;
-      this.lastReadingTickAt = now;
-      let updated = false;
-      for (const win of this.windows.keys()) {
-        if (win.closed) continue;
-        const prev = usePreviousReader ? this.lastReaderByWin.get(win) : void 0;
-        const didUpdate = prev ? this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
-          overrideKey: prev.key,
-          overrideLastPage: prev.page,
-          overrideTotalPages: prev.total,
-          idleCutoffMs: 18e4,
+      const res = flushWorkspaceReadingProgress(
+        {
+          windows: this.windows.keys(),
+          tabs: this.tabs,
+          store: this.store,
+          kernel: this.kernel,
+          lastReaderByWin: this.lastReaderByWin,
+          lastReadingTickAt: this.lastReadingTickAt,
           lastActivityAt: this.lastActivityAt,
-          now
-        }) : this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
-          idleCutoffMs: 18e4,
-          lastActivityAt: this.lastActivityAt,
-          now,
-          onPageChanged: () => {
-            this.lastActivityAt = now;
-          }
-        });
-        if (didUpdate) {
-          this.readingDirty = true;
-          updated = true;
-        }
-        const snap = this.tabs.resolveActiveReaderSnapshot(win);
-        if (snap) this.lastReaderByWin.set(win, snap);
-        else this.lastReaderByWin.delete(win);
-      }
-      if (updated) {
-        this.store.readingCache.scheduleSave(this.store.state);
-        this.kernel.bus.emit("visual-notes:reading-updated", {});
-        if (this.kernel.prefs.get("workspace.verticalTabSubtitleMode") === "lastViewed") this.queueRefresh(50);
-      }
+          readingDirty: this.readingDirty,
+          onScheduleRefresh: () => this.queueRefresh(50)
+        },
+        minElapsed,
+        usePreviousReader
+      );
+      this.lastReadingTickAt = res.lastReadingTickAt;
+      this.lastActivityAt = res.lastActivityAt;
+      this.readingDirty = res.readingDirty;
     }
     queueRefresh(delayMs = 16) {
       if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
@@ -21151,22 +21245,17 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     runPeriodicMaintenance() {
       if (!this.active) return;
-      let changed = false;
-      for (const win of this.windows.keys()) {
-        if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
-      }
-      if (this.readingDirty) {
-        this.readingDirty = false;
-        void this.store.readingCache.flushNow(this.store.state);
-      }
-      if (this.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - this.lastRollingAt > 9e5) {
-        const openKeys = [...new Set([...this.windows.keys()].flatMap((win) => this.tabs.openKeys(win)))];
-        if (openKeys.length || this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {
-          this.store.saveSession(`自动滚动快照 ${(/* @__PURE__ */ new Date()).toLocaleTimeString()}`, { rolling: true, openKeys });
-          this.lastRollingAt = Date.now();
-        }
-      }
-      if (changed) this.refreshAllWindows();
+      const res = runWorkspaceMaintenance({
+        windows: this.windows.keys(),
+        tabs: this.tabs,
+        store: this.store,
+        kernel: this.kernel,
+        readingDirty: this.readingDirty,
+        lastRollingAt: this.lastRollingAt,
+        refreshAllWindows: () => this.refreshAllWindows()
+      });
+      this.readingDirty = res.readingDirty;
+      this.lastRollingAt = res.lastRollingAt;
     }
     getTargetWindow() {
       const hostWin = globalThis.Zotero?.getMainWindow?.();
@@ -22642,6 +22731,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         ttlDays: this.kernel.prefs.get("inspector.lookup.cacheTtlDays")
       });
       this.ratings.configure(customDir);
+      configurePdfCoverCacheDirectory(customDir);
     }
     dispose() {
       this.panePositions.dispose();

@@ -6,6 +6,7 @@ import { invalidateResolvedItemCache } from './item-resolution.ts';
 import { ItemRatingsDiskCache, setActiveRatingsCache } from './item-ratings-cache.ts';
 import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
+import { configurePdfCoverCacheDirectory } from './pdf-cover-service.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
 
 export class ServiceContainer {
@@ -68,6 +69,7 @@ export class ServiceContainer {
 			ttlDays: this.kernel.prefs.get('inspector.lookup.cacheTtlDays'),
 		});
 		this.ratings.configure(customDir);
+		configurePdfCoverCacheDirectory(customDir);
 	}
 
 	dispose(): void {

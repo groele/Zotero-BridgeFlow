@@ -16,6 +16,7 @@ import { WorkspaceStateStore } from './state-store.ts';
 import { WorkspaceTabController } from './tab-controller.ts';
 import { invalidateTabProjectionCache } from './tab-projection.ts';
 import { buildWorkspaceGroupSummaries } from './workspace-group-emitter.ts';
+import { flushWorkspaceReadingProgress, runWorkspaceMaintenance, type ReaderSnapshot } from './workspace-maintenance.ts';
 import { WorkspaceWindowUI } from './workspace-ui.ts';
 
 const WATCHED_WORKSPACE_PREFS = [
@@ -66,7 +67,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	private lastReadingTickAt = Date.now();
 	private lastActivityAt = Date.now();
 	private readingDirty = false;
-	private readonly lastReaderByWin = new WeakMap<Window, { tabID: string; key: string; page: number; total: number }>();
+	private readonly lastReaderByWin = new WeakMap<Window, ReaderSnapshot>();
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastGroupFingerprint = '';
 
@@ -153,8 +154,9 @@ export class WorkspaceDomainModule implements DomainModule {
 		for (const ui of this.windows.values()) ui.destroy();
 		this.windows.clear();
 		this.pendingAutoGroup.clear();
-		if (this.readingDirty) { this.readingDirty = false; void this.store.readingCache.flushNow(this.store.state); }
-		else { void this.store.readingCache.flushNow(this.store.state); }
+		this.readingDirty = false;
+		void this.store.diskCache.flushNow(this.store.state);
+		void this.store.readingCache.flushNow(this.store.state);
 		void this.store.notesCache.flushNow(this.store.state);
 		this.store.notesCache.dispose();
 		this.store.readingCache.dispose();
@@ -187,33 +189,24 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	private flushReadingProgress(minElapsed = 1, usePreviousReader = false): void {
-		const now = Date.now();
-		const elapsed = Math.min(30, Math.floor((now - this.lastReadingTickAt) / 1000));
-		if (elapsed < minElapsed) return;
-		this.lastReadingTickAt = now;
-		let updated = false;
-		for (const win of this.windows.keys()) {
-			if ((win as any).closed) continue;
-			const prev = usePreviousReader ? this.lastReaderByWin.get(win) : undefined;
-			const didUpdate = prev
-				? this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
-					overrideKey: prev.key, overrideLastPage: prev.page, overrideTotalPages: prev.total,
-					idleCutoffMs: 180_000, lastActivityAt: this.lastActivityAt, now,
-				})
-				: this.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
-					idleCutoffMs: 180_000, lastActivityAt: this.lastActivityAt, now,
-					onPageChanged: () => { this.lastActivityAt = now; },
-				});
-			if (didUpdate) { this.readingDirty = true; updated = true; }
-			const snap = this.tabs.resolveActiveReaderSnapshot(win);
-			if (snap) this.lastReaderByWin.set(win, snap);
-			else this.lastReaderByWin.delete(win);
-		}
-		if (updated) {
-			this.store.readingCache.scheduleSave(this.store.state);
-			this.kernel.bus.emit('visual-notes:reading-updated', {});
-			if (this.kernel.prefs.get('workspace.verticalTabSubtitleMode') === 'lastViewed') this.queueRefresh(50);
-		}
+		const res = flushWorkspaceReadingProgress(
+			{
+				windows: this.windows.keys(),
+				tabs: this.tabs,
+				store: this.store,
+				kernel: this.kernel,
+				lastReaderByWin: this.lastReaderByWin,
+				lastReadingTickAt: this.lastReadingTickAt,
+				lastActivityAt: this.lastActivityAt,
+				readingDirty: this.readingDirty,
+				onScheduleRefresh: () => this.queueRefresh(50),
+			},
+			minElapsed,
+			usePreviousReader,
+		);
+		this.lastReadingTickAt = res.lastReadingTickAt;
+		this.lastActivityAt = res.lastActivityAt;
+		this.readingDirty = res.readingDirty;
 	}
 
 	private queueRefresh(delayMs = 16): void {
@@ -328,22 +321,17 @@ export class WorkspaceDomainModule implements DomainModule {
 
 	private runPeriodicMaintenance(): void {
 		if (!this.active) return;
-		let changed = false;
-		for (const win of this.windows.keys()) {
-			if (this.tabs.sleepIdleTabs(win) > 0) changed = true;
-		}
-		if (this.readingDirty) {
-			this.readingDirty = false;
-			void this.store.readingCache.flushNow(this.store.state);
-		}
-		if (this.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - this.lastRollingAt > 900_000) {
-			const openKeys = [...new Set([...this.windows.keys()].flatMap(win => this.tabs.openKeys(win)))];
-			if (openKeys.length || this.store.state.groups.length > 0 || this.store.state.pinnedKeys.length > 0) {
-				this.store.saveSession(`自动滚动快照 ${new Date().toLocaleTimeString()}`, { rolling: true, openKeys });
-				this.lastRollingAt = Date.now();
-			}
-		}
-		if (changed) this.refreshAllWindows();
+		const res = runWorkspaceMaintenance({
+			windows: this.windows.keys(),
+			tabs: this.tabs,
+			store: this.store,
+			kernel: this.kernel,
+			readingDirty: this.readingDirty,
+			lastRollingAt: this.lastRollingAt,
+			refreshAllWindows: () => this.refreshAllWindows(),
+		});
+		this.readingDirty = res.readingDirty;
+		this.lastRollingAt = res.lastRollingAt;
 	}
 
 	private getTargetWindow(): Window | null {

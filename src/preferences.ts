@@ -1,4 +1,5 @@
 import { PREF_PREFIX, PREF_SCHEMA, type PrefKey } from './kernel/pref-schema.ts';
+import { tLocale } from './kernel/locale.ts';
 import { UnifiedPrefService } from './kernel/pref-service.ts';
 import {
 	bindPreferenceActions,
@@ -45,7 +46,7 @@ async function populateCslStyles(doc: Document, prefs: UnifiedPrefService): Prom
 		const autoItem = createXul('menuitem');
 		autoItem.setAttribute('value', '');
 		autoItem.setAttribute('data-l10n-id', 'zbf-opt-style-quickcopy');
-		autoItem.setAttribute('label', '跟随 Zotero 快速复制（Quick Copy）默认样式');
+		autoItem.setAttribute('label', tLocale('跟随 Zotero 快速复制（Quick Copy）默认样式', 'Follow Zotero Quick Copy default style', doc));
 		popup.appendChild(autoItem);
 		const selectedStyle = String(prefs.get('inspector.cslPreview.citationstyle') || '');
 		for (const style of (hostStyles.getVisible?.() || []) as Array<{ styleID: string; title: string }>) {
@@ -152,7 +153,7 @@ const BridgeFlowPreferences = {
 				const next = Boolean((cb as any).checked ?? cb.hasAttribute('checked'));
 				prefs.set(key, next as never);
 				updatePreferenceDependencies(doc, prefs);
-				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 			});
 		}
 
@@ -164,7 +165,7 @@ const BridgeFlowPreferences = {
 				const val = String(hostMl.selectedItem?.getAttribute?.('value') ?? hostMl.value ?? '');
 				prefs.set(key, val as never);
 				updatePreferenceDependencies(doc, prefs);
-				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 			};
 			ml.addEventListener('command', onSelect);
 			ml.addEventListener('change', onSelect);
@@ -177,7 +178,7 @@ const BridgeFlowPreferences = {
 				const raw = input.type === 'number' ? Number(input.value) : input.value.trim();
 				input.value = String(prefs.set(key, raw as never));
 				updatePreferenceDependencies(doc, prefs);
-				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 			};
 			if (key === 'workspace.readingHeatmap.color') {
 				input.addEventListener('input', () => {
@@ -185,7 +186,7 @@ const BridgeFlowPreferences = {
 					prefs.set(key, val as never);
 					const hexEl = doc.getElementById('zbf-heatmap-color-hex');
 					if (hexEl) hexEl.textContent = val;
-					setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+					setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 				});
 			} else if (key === 'workspace.readingHeatmap.opacity') {
 				input.addEventListener('input', () => {
@@ -207,7 +208,7 @@ const BridgeFlowPreferences = {
 					heatOpacityNum.value = next;
 					heatOpacityNum.setAttribute('value', next);
 				}
-				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 			};
 			heatOpacityRange.addEventListener('input', syncRange);
 			heatOpacityRange.addEventListener('change', syncRange);
@@ -263,7 +264,7 @@ const BridgeFlowPreferences = {
 			const enableMod = () => {
 				prefs.set(modKey, true as never);
 				syncAll();
-				setStatusFeedback(doc, 'zbf-prefs-status-saved', '✓ 设置已自动保存并实时生效');
+				setStatusFeedback(doc, 'zbf-prefs-status-saved', tLocale('✓ 设置已自动保存并实时生效', '✓ Settings saved and applied', doc));
 			};
 			btn.addEventListener('command', enableMod);
 			btn.addEventListener('click', enableMod);

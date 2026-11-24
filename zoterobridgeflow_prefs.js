@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.0 - Preferences controller. */
+/* Zotero BridgeFlow v0.6.1 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -178,6 +178,19 @@
     "wordCite.healthWindowMs": { defaultValue: 3e5, min: 1e4, max: 36e5 },
     "wordCite.perfSlowThresholdMs": { defaultValue: 50, min: 5, max: 5e3 }
   };
+
+  // src/kernel/locale.ts
+  function isChineseLocale(doc) {
+    const host = globalThis.Zotero;
+    const rawLocale = String(
+      host?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
+    ).trim();
+    if (!rawLocale) return true;
+    return rawLocale.toLowerCase().startsWith("zh");
+  }
+  function tLocale(zh, en, doc) {
+    return isChineseLocale(doc) ? zh : en;
+  }
 
   // src/kernel/pref-service.ts
   function resolveDefaultAdapter() {
@@ -827,11 +840,13 @@
   var memCoverCache = /* @__PURE__ */ new Map();
   var fingerprints = /* @__PURE__ */ new Map();
   var failedRetryAt = /* @__PURE__ */ new Map();
+  var configuredCoverCacheDir = "";
   function getCoversDir(customDir = "") {
     try {
       const zotero = globalThis.Zotero;
       const pathUtils = globalThis.PathUtils || zotero?.getMainWindow?.()?.PathUtils;
-      const base = String(customDir || "").trim() || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
+      const effectiveDir = String(customDir || configuredCoverCacheDir || "").trim();
+      const base = effectiveDir || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, "bridgeflow-cache") : "");
       return base && pathUtils?.join ? pathUtils.join(base, "covers") : null;
     } catch {
       return null;
@@ -1213,7 +1228,7 @@
       const autoItem = createXul("menuitem");
       autoItem.setAttribute("value", "");
       autoItem.setAttribute("data-l10n-id", "zbf-opt-style-quickcopy");
-      autoItem.setAttribute("label", "跟随 Zotero 快速复制（Quick Copy）默认样式");
+      autoItem.setAttribute("label", tLocale("跟随 Zotero 快速复制（Quick Copy）默认样式", "Follow Zotero Quick Copy default style", doc));
       popup.appendChild(autoItem);
       const selectedStyle = String(prefs.get("inspector.cslPreview.citationstyle") || "");
       for (const style of hostStyles.getVisible?.() || []) {
@@ -1241,8 +1256,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.0" }));
-        versionEl.textContent = `v${"0.6.0"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.1" }));
+        versionEl.textContent = `v${"0.6.1"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");
@@ -1328,7 +1343,7 @@
           const next = Boolean(cb.checked ?? cb.hasAttribute("checked"));
           prefs.set(key, next);
           updatePreferenceDependencies(doc, prefs);
-          setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
         });
       }
       for (const ml of menulists) {
@@ -1339,7 +1354,7 @@
           const val = String(hostMl.selectedItem?.getAttribute?.("value") ?? hostMl.value ?? "");
           prefs.set(key, val);
           updatePreferenceDependencies(doc, prefs);
-          setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
         };
         ml.addEventListener("command", onSelect);
         ml.addEventListener("change", onSelect);
@@ -1351,7 +1366,7 @@
           const raw = input.type === "number" ? Number(input.value) : input.value.trim();
           input.value = String(prefs.set(key, raw));
           updatePreferenceDependencies(doc, prefs);
-          setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
         };
         if (key === "workspace.readingHeatmap.color") {
           input.addEventListener("input", () => {
@@ -1359,7 +1374,7 @@
             prefs.set(key, val);
             const hexEl = doc.getElementById("zbf-heatmap-color-hex");
             if (hexEl) hexEl.textContent = val;
-            setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+            setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
           });
         } else if (key === "workspace.readingHeatmap.opacity") {
           input.addEventListener("input", () => {
@@ -1382,7 +1397,7 @@
             heatOpacityNum.value = next;
             heatOpacityNum.setAttribute("value", next);
           }
-          setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
         };
         heatOpacityRange.addEventListener("input", syncRange);
         heatOpacityRange.addEventListener("change", syncRange);
@@ -1435,7 +1450,7 @@
         const enableMod = () => {
           prefs.set(modKey, true);
           syncAll();
-          setStatusFeedback(doc, "zbf-prefs-status-saved", "✓ 设置已自动保存并实时生效");
+          setStatusFeedback(doc, "zbf-prefs-status-saved", tLocale("✓ 设置已自动保存并实时生效", "✓ Settings saved and applied", doc));
         };
         btn.addEventListener("command", enableMod);
         btn.addEventListener("click", enableMod);

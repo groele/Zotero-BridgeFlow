@@ -5,6 +5,7 @@ export type WordCommandResult = 'completed' | 'busy' | 'cancelled' | 'unavailabl
 
 let commandInFlight = false;
 let commandStartedAt = 0;
+let activeCommandToken = 0;
 
 /** Track the native command separately from execCommand, which handles and swallows errors. */
 export async function runWordCommand(
@@ -23,8 +24,11 @@ export async function runWordCommand(
 	if (commandInFlight && commandStartedAt > 0 && Date.now() - commandStartedAt > 90_000) {
 		commandInFlight = false;
 		commandStartedAt = 0;
+		activeCommandToken = 0;
 	}
 	if (commandInFlight || integration.currentDoc) return 'busy';
+
+	const token = ++activeCommandToken;
 
 	const isMac = host.isMac === true;
 	const agent = isMac ? 'MacWord16' : 'WinWord';
@@ -88,7 +92,10 @@ export async function runWordCommand(
 		return 'unavailable';
 	} finally {
 		for (const dispose of disposers.reverse()) dispose();
-		commandInFlight = false;
-		commandStartedAt = 0;
+		if (activeCommandToken === token) {
+			commandInFlight = false;
+			commandStartedAt = 0;
+			activeCommandToken = 0;
+		}
 	}
 }

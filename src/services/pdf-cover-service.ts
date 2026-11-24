@@ -10,6 +10,7 @@ import { renderAttachmentPreviewCover, renderFallbackPdfJsCover } from './pdf-co
 export { computeCoverCacheEvictions, createGalleryScrollIdle, createGalleryWorkQueue, makeAbortController };
 
 const MEM_CACHE_LIMIT = 512;
+const META_MAP_LIMIT = 1024;
 const MAX_COVER_BYTES = 4 * 1024 * 1024;
 const TARGET_COVER_WIDTH = 480;
 const COVER_ASPECT_RATIO = 1.28;
@@ -27,8 +28,22 @@ const attPathByID = new Map<number, string>();
 const touchedAt = new Map<string, number>();
 const writingPaths = new Set<string>();
 const failedRetryAt = new Map<number, number>();
+let configuredCoverCacheDir = '';
 let lastSweepAt = 0;
 let sweepingPromise: Promise<void> | null = null;
+
+function setBounded<K, V>(map: Map<K, V>, key: K, val: V, limit = META_MAP_LIMIT): void {
+	if (map.has(key)) map.delete(key);
+	else if (map.size >= limit) {
+		const oldest = map.keys().next().value;
+		if (oldest !== undefined) map.delete(oldest);
+	}
+	map.set(key, val);
+}
+
+export function configurePdfCoverCacheDirectory(customDir = ''): void {
+	configuredCoverCacheDir = String(customDir || '').trim();
+}
 
 function setMemLru(attID: number, url: string): void {
 	if (memCoverCache.has(attID)) memCoverCache.delete(attID);
@@ -51,7 +66,8 @@ function getCoversDir(customDir = ''): string | null {
 	try {
 		const zotero = (globalThis as any).Zotero;
 		const pathUtils = (globalThis as any).PathUtils || zotero?.getMainWindow?.()?.PathUtils;
-		const base = String(customDir || '').trim() || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, 'bridgeflow-cache') : '');
+		const effectiveDir = String(customDir || configuredCoverCacheDir || '').trim();
+		const base = effectiveDir || (zotero?.DataDirectory?.dir ? pathUtils?.join?.(zotero.DataDirectory.dir, 'bridgeflow-cache') : '');
 		return base && pathUtils?.join ? pathUtils.join(base, 'covers') : null;
 	} catch { return null; }
 }
@@ -70,7 +86,7 @@ async function locateAttachmentPdf(attID: number, width: number): Promise<{ key:
 		if (!pdfPath || !ioUtils?.stat) return null;
 		const stat = await ioUtils.stat(pdfPath);
 		if (stat.type !== 'regular' || !Number.isFinite(stat.lastModified) || !Number.isFinite(stat.size)) return null;
-		attPathByID.set(attID, pdfPath);
+		setBounded(attPathByID, attID, pdfPath);
 		return {
 			key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
 			path: pdfPath,
@@ -97,7 +113,7 @@ async function identifyAttachmentPdf(attID: number, width: number, verify = fals
 			return digest;
 		})();
 		fp = { stamp: located.stamp, hashPromise };
-		fingerprints.set(located.path, fp);
+		setBounded(fingerprints, located.path, fp);
 	}
 	try {
 		return { key: located.key, stamp: located.stamp, revision: await fp.hashPromise };
@@ -148,7 +164,7 @@ async function readDiskEnvelope(key: string): Promise<{ revision: string; stamp:
 		const parsed = JSON.parse(raw);
 		if (parsed?.version !== 2 || typeof parsed.revision !== 'string' || !isValidJpegDataUrl(parsed.url)) return null;
 		if (typeof ioUtils.setModificationTime === 'function' && Date.now() - (touchedAt.get(key) ?? 0) >= 3600_000) {
-			touchedAt.set(key, Date.now());
+			setBounded(touchedAt, key, Date.now());
 			void ioUtils.setModificationTime(filePath).catch(() => {});
 		}
 		triggerCoverCacheSweep();
@@ -247,7 +263,7 @@ export function requestGalleryPdfCover(opts: {
 				}
 			}, sig, rank);
 			if (!isValidJpegDataUrl(rendered)) {
-				if (!sig.aborted) failedRetryAt.set(attID, Date.now() + FAIL_COOLDOWN_MS);
+				if (!sig.aborted) setBounded(failedRetryAt, attID, Date.now() + FAIL_COOLDOWN_MS);
 				return null;
 			}
 			setMemLru(attID, rendered);
