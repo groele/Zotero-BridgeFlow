@@ -56,23 +56,14 @@ export function buildReadTimeCell(opts: {
 	const pageText = prog.lastPage ? (prog.totalPages ? `p.${prog.lastPage}/${prog.totalPages}` : `p.${prog.lastPage}`) : '';
 	if (!durText && !pageText) return cell;
 
+	const fit = vcEl(doc, 'span');
+	fit.className = 'zbf-cell-fit';
 	const chip = vcEl(doc, 'span');
 	chip.className = 'zbf-read-chip';
-	const row = vcEl(doc, 'span');
-	row.className = 'zbf-read-row';
-	if (durText) {
-		const dur = vcEl(doc, 'span');
-		dur.className = 'zbf-read-dur';
-		dur.textContent = durText;
-		row.appendChild(dur);
-	}
-	if (pageText) {
-		const pg = vcEl(doc, 'span');
-		pg.className = 'zbf-read-page';
-		pg.textContent = pageText;
-		row.appendChild(pg);
-	}
-	chip.appendChild(row);
+	const dur = vcEl(doc, 'span');
+	dur.className = 'zbf-read-dur';
+	dur.textContent = durText || pageText;
+	chip.appendChild(dur);
 
 	const ratio = fmt.ratio ?? Math.min(1, Math.max(0.08, prog.readSeconds / 1200));
 	const bar = vcEl(doc, 'span');
@@ -83,6 +74,20 @@ export function buildReadTimeCell(opts: {
 	fill.style.background = prog.readSeconds >= 900 ? '#d97706' : prog.readSeconds >= 180 ? '#2563eb' : '#0d9488';
 	bar.appendChild(fill);
 	chip.appendChild(bar);
+
+	if (durText && pageText) {
+		const pg = vcEl(doc, 'span');
+		pg.className = 'zbf-read-page';
+		pg.textContent = pageText;
+		chip.appendChild(pg);
+	}
+	if (fmt.ratio != null) {
+		chip.setAttribute('data-has-pct', '1');
+		const pct = vcEl(doc, 'span');
+		pct.className = 'zbf-read-pct';
+		pct.textContent = `${Math.round(fmt.ratio * 100)}%`;
+		chip.appendChild(pct);
+	}
 
 	const peak = findPeakReadingPage(prog);
 	const tipParts = [durText || (zh ? '已翻阅' : 'Opened')];
@@ -104,7 +109,8 @@ export function buildReadTimeCell(opts: {
 			onOpenItem: callbacks?.onOpenItem,
 		});
 	});
-	cell.appendChild(chip);
+	fit.appendChild(chip);
+	cell.appendChild(fit);
 	return cell;
 }
 
@@ -124,6 +130,8 @@ export function buildAnnotationCell(opts: {
 	cell.className = `cell ${className || ''} zbf-ann-cell`.trim();
 	if (!item || !summary || !summary.total) return cell;
 
+	const fit = vcEl(doc, 'span');
+	fit.className = 'zbf-cell-fit';
 	const chip = vcEl(doc, 'span');
 	chip.className = 'zbf-ann-chip';
 	const totalEl = vcEl(doc, 'span');
@@ -146,9 +154,12 @@ export function buildAnnotationCell(opts: {
 		const dot = vcEl(doc, 'span');
 		dot.className = 'zbf-ann-dot';
 		dot.style.background = b.hex;
+		const lbl = vcEl(doc, 'span');
+		lbl.className = 'zbf-ann-dot-lbl';
+		lbl.textContent = b.label;
 		const cnt = vcEl(doc, 'span');
 		cnt.textContent = String(b.count);
-		dItem.append(dot, cnt);
+		dItem.append(dot, lbl, cnt);
 		dots.appendChild(dItem);
 	}
 	chip.append(totalEl, stack, dots);
@@ -173,6 +184,7 @@ export function buildAnnotationCell(opts: {
 			onOpenHub: callbacks?.onOpenHub,
 		});
 	});
-	cell.appendChild(chip);
+	fit.appendChild(chip);
+	cell.appendChild(fit);
 	return cell;
 }

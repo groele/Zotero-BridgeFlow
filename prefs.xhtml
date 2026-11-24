@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" src="chrome://zotero-bridgeflow/content/assets/bridgeflow.svg" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.5.11"}'>v0.5.11</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.5.12"}'>v0.5.12</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -624,27 +624,86 @@
 				</html:div>
 				<html:div class="zbf-card">
 					<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-maintenance"/>
-					<html:div class="zbf-stack">
+					<html:div class="zbf-maint-list">
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-reading-title"/>
+									<html:code class="zbf-maint-file">reading-progress.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-reading-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-btn-export-reading" native="true" data-l10n-id="zbf-btn-export-reading"/>
+								<button id="zbf-clear-reading-notes" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-reading"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-notes-title"/>
+									<html:code class="zbf-maint-file">brief-notes.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-notes-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-btn-export-brief-notes" native="true" data-l10n-id="zbf-btn-export-brief-notes"/>
+								<button id="zbf-clear-brief-notes" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-brief-notes"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-ratings-title"/>
+									<html:code class="zbf-maint-file">item-ratings.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-ratings-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-btn-export-ratings" native="true" data-l10n-id="zbf-btn-export-ratings"/>
+								<button id="zbf-clear-ratings-cache" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-ratings"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-covers-title"/>
+									<html:code class="zbf-maint-file">covers/</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-covers-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-clear-covers-cache" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-covers"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-citation-title"/>
+									<html:code class="zbf-maint-file">citation-history.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-citation-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-clear-cache" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-cache"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-workspace-title"/>
+									<html:code class="zbf-maint-file">workspace-snapshots.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-workspace-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-clear-workspace-state" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-workspace"/>
+							</html:div>
+						</html:div>
+					</html:div>
+					<html:div class="zbf-maint-foot">
 						<checkbox preference="extensions.zotero.bridgeflow.debug" native="true" data-l10n-id="zbf-pref-debug"/>
-						<html:div class="zbf-actions">
-							<button id="zbf-clear-cache" native="true" data-l10n-id="zbf-btn-clear-cache"/>
-							<button id="zbf-clear-workspace-state" native="true" data-l10n-id="zbf-btn-clear-workspace"/>
-						</html:div>
-						<html:div class="zbf-actions">
-							<button id="zbf-btn-export-reading" native="true" data-l10n-id="zbf-btn-export-reading"/>
-							<button id="zbf-clear-reading-notes" native="true" data-l10n-id="zbf-btn-clear-reading"/>
-						</html:div>
-						<html:div class="zbf-actions">
-							<button id="zbf-btn-export-brief-notes" native="true" data-l10n-id="zbf-btn-export-brief-notes"/>
-							<button id="zbf-clear-brief-notes" native="true" data-l10n-id="zbf-btn-clear-brief-notes"/>
-						</html:div>
-						<html:div class="zbf-actions">
-							<button id="zbf-btn-export-ratings" native="true" data-l10n-id="zbf-btn-export-ratings"/>
-							<button id="zbf-clear-ratings-cache" native="true" data-l10n-id="zbf-btn-clear-ratings"/>
-						</html:div>
-						<html:div class="zbf-actions">
-							<button id="zbf-reset-defaults" native="true" data-l10n-id="zbf-btn-reset-defaults"/>
-						</html:div>
+						<button id="zbf-reset-defaults" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-reset-defaults"/>
 					</html:div>
 				</html:div>
 			</html:div>

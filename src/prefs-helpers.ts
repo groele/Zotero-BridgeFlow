@@ -1,5 +1,6 @@
 import { UnifiedPrefService } from './kernel/pref-service.ts';
 import { initAnnotationColorEditor, syncAnnotationColorInputs } from './prefs-color-editor.ts';
+import { clearPdfCoverCache } from './services/pdf-cover-service.ts';
 
 export function setSubtreeDisabled(el: Element | null, disabled: boolean): void {
 	if (!el) return;
@@ -225,6 +226,16 @@ export function bindPreferenceActions(
 		app?.services?.ratings?.clearAll?.(true);
 		app?.visualNotes?.refreshLibraryViews?.();
 		setStatusFeedback(doc, 'zbf-prefs-status-ratings-cleared', '✓ 已清空本地星级评价缓存文件');
+	});
+
+	bindActionBtn(doc.getElementById('zbf-clear-covers-cache'), () => {
+		if (targetWin?.confirm && !targetWin.confirm('确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。')) {
+			return;
+		}
+		void clearPdfCoverCache(prefs.get('inspector.lookup.cacheDirectory')).then(() => {
+			getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
+			setStatusFeedback(doc, 'zbf-prefs-status-covers-cleared', '✓ 已清空画廊 PDF 封面缩略图缓存');
+		});
 	});
 
 	bindActionBtn(doc.getElementById('zbf-reset-defaults'), () => {

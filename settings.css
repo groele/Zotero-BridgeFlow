@@ -180,6 +180,58 @@
 
 #zotero-prefpane-zotero-bridgeflow [data-disabled="true"] { opacity: 0.52; pointer-events: none; }
 #zotero-prefpane-zotero-bridgeflow .zbf-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-list {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--zbf-p-border); border-radius: 8px; overflow: hidden;
+  background: color-mix(in srgb, currentColor 1.5%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--zbf-p-divider);
+  transition: background-color 0.14s ease;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-row:last-child { border-bottom: 0; }
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-row:hover {
+  background: color-mix(in srgb, var(--zbf-p-accent) 4%, transparent);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-info {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-head {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-name {
+  font-size: 13.5px; font-weight: 600; color: var(--zbf-p-text);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-file {
+  padding: 1px 6px; border-radius: 4px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 11.5px;
+  color: var(--zbf-p-muted);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  border: 1px solid var(--zbf-p-divider);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-desc {
+  font-size: 12.5px; line-height: 1.45; color: var(--zbf-p-muted);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-btns {
+  display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: none;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-btns button {
+  margin: 0; min-width: 74px;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-maint-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding-top: 8px; border-top: 1px solid var(--zbf-p-divider);
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-btn-danger:hover {
+  border-color: light-dark(rgba(220, 38, 38, 0.45), rgba(248, 113, 113, 0.55));
+  color: light-dark(#b91c1c, #fca5a5);
+}
+@media (max-width: 560px) {
+  #zotero-prefpane-zotero-bridgeflow .zbf-maint-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  #zotero-prefpane-zotero-bridgeflow .zbf-maint-btns { justify-content: flex-start; }
+}
 #zotero-prefpane-zotero-bridgeflow .zbf-settings-footer {
   margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--zbf-p-divider);
   color: var(--zbf-p-muted); font-size: 12px;

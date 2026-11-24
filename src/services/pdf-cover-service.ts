@@ -239,3 +239,26 @@ export function loadPdfCoverDataUrl(attID: number, doc: Document): Promise<strin
 	inflightJobs.set(attID, job);
 	return job;
 }
+
+export async function clearPdfCoverCache(customDir = ''): Promise<boolean> {
+	memCoverCache.clear();
+	failedRetryAt.clear();
+	try {
+		const zotero = (globalThis as any).Zotero;
+		const win = zotero?.getMainWindow?.();
+		const ioUtils = (globalThis as any).IOUtils || win?.IOUtils;
+		const pathUtils = (globalThis as any).PathUtils || win?.PathUtils;
+		if (!ioUtils?.remove || !pathUtils?.join) return true;
+		const dirs = new Set<string>();
+		const dataDir = String(zotero?.DataDirectory?.dir || '').trim();
+		if (dataDir) dirs.add(pathUtils.join(dataDir, 'bridgeflow-cache', 'covers'));
+		const custom = String(customDir || '').trim();
+		if (custom) dirs.add(pathUtils.join(custom, 'covers'));
+		for (const dir of dirs) {
+			await ioUtils.remove(dir, { recursive: true, ignoreAbsent: true }).catch(() => {});
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}

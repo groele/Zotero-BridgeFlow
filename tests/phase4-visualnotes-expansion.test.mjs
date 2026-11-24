@@ -47,7 +47,7 @@ import { GALLERY_BOARD_CSS } from '../src/domains/visual-notes/gallery-styles.ts
 import { closeHubPage, openHubPage } from '../src/domains/visual-notes/hub-page.ts';
 import { READING_LAYOUT_CSS } from '../src/domains/visual-notes/reading-layout.ts';
 import { parseEnabledAnnotationColors, serializeEnabledAnnotationColors } from '../src/services/annotation-utils.ts';
-import { COVER_RENDER_SPEC } from '../src/services/pdf-cover-service.ts';
+import { COVER_RENDER_SPEC, clearPdfCoverCache } from '../src/services/pdf-cover-service.ts';
 
 function createFakeRegularItem({
 	id,
@@ -504,6 +504,10 @@ test('Phase 4.8: Interactive visual columns — cumulative star hover CSS, selec
 	assert.match(VISUAL_COLUMN_CSS, /\.zbf-read-bar-fill/);
 	assert.match(VISUAL_COLUMN_CSS, /\.zbf-ann-stack/);
 	assert.match(VISUAL_COLUMN_CSS, /\.zbf-vc-heatbars/);
+	assert.match(VISUAL_COLUMN_CSS, /container-type:\s*inline-size/);
+	assert.match(VISUAL_COLUMN_CSS, /@container\s+zbf-cell\s*\(min-width:\s*164px\)/);
+	assert.match(STATUS_RATING_CSS, /@container\s+zbf-sr\s*\(min-width:\s*118px\)/);
 	assert.match(VISUAL_COLUMN_CSS, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
 	assert.match(GALLERY_BOARD_CSS, /\.zbf-gal-rate-float\[data-hover="5"\]/);
+	assert.equal(typeof clearPdfCoverCache, 'function');
 });

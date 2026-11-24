@@ -204,16 +204,27 @@ export class StatusRatingColumnsController {
 				if (!item || (typeof item.isRegularItem === 'function' && !item.isRegularItem())) return span;
 
 				let current = getItemRating(item, this.ratingStorage());
+				const fit = srHtmlEl(doc, 'span');
+				fit.className = 'zbf-sr-fit';
 				const wrap = srHtmlEl(doc, 'span');
 				wrap.className = 'zbf-rating-stars';
 				wrap.setAttribute('role', 'radiogroup');
 				wrap.setAttribute('aria-label', zh ? '星级评价' : 'Star rating');
 				guardPrimaryTreePointer(wrap);
+				const score = srHtmlEl(doc, 'span');
+				score.className = 'zbf-rating-score';
 
 				const starEls: HTMLSpanElement[] = [];
 				const syncVisual = (val: number) => {
-					if (val === 0) wrap.setAttribute('data-unrated', 'true');
-					else wrap.removeAttribute('data-unrated');
+					if (val === 0) {
+						wrap.setAttribute('data-unrated', 'true');
+						score.removeAttribute('data-has-score');
+						score.textContent = '';
+					} else {
+						wrap.removeAttribute('data-unrated');
+						score.setAttribute('data-has-score', '1');
+						score.textContent = `${val}/5`;
+					}
 					starEls.forEach((s, idx) => {
 						const k = idx + 1;
 						if (k <= val) s.setAttribute('data-lit', 'true');
@@ -262,7 +273,8 @@ export class StatusRatingColumnsController {
 					wrap.appendChild(star);
 				}
 				syncVisual(current);
-				span.appendChild(wrap);
+				fit.append(wrap, score);
+				span.appendChild(fit);
 				return span;
 			},
 		});

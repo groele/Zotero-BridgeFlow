@@ -32,7 +32,15 @@ export function isStatusPickerOpenFor(doc: Document | null | undefined, itemID: 
 
 export const STATUS_RATING_CSS = `
 @keyframes zbfPopIn { from { opacity: 0; transform: translateY(-4px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
-.zbf-status-cell, .zbf-rating-cell { display: inline-flex; align-items: center; width: 100%; height: 100%; pointer-events: auto; user-select: none; overflow: hidden; }
+.zbf-status-cell, .zbf-rating-cell { display: flex; align-items: center; height: 100%; min-width: 0; pointer-events: auto; user-select: none; overflow: hidden; }
+.zbf-sr-fit { display: flex; align-items: center; width: 100%; height: 100%; min-width: 0; gap: 6px; container-type: inline-size; container-name: zbf-sr; }
+.zbf-rating-score { display: none; margin-inline-start: auto; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; opacity: 0.65; white-space: nowrap; }
+@container zbf-sr (min-width: 96px) {
+  .zbf-rating-stars { font-size: 13.5px; gap: 2px; }
+}
+@container zbf-sr (min-width: 118px) {
+  .zbf-rating-score[data-has-score="1"] { display: inline; }
+}
 .zbf-status-pill { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 1.5px 8px; border-radius: 6px; border: 1px solid transparent; font-size: 11px; font-weight: 600; line-height: 1.4; cursor: pointer; background: rgba(100,116,139,0.12); color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: filter 0.14s ease, transform 0.12s ease, box-shadow 0.14s ease; }
 .zbf-status-pill:hover { filter: brightness(0.95); box-shadow: 0 1px 4px rgba(15,23,42,0.10); }
 .zbf-status-pill:active { transform: scale(0.96); }

@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.5.11 - Preferences controller. */
+/* Zotero BridgeFlow v0.5.12 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -648,6 +648,33 @@
     }
   }
 
+  // src/services/pdf-cover-service.ts
+  var memCoverCache = /* @__PURE__ */ new Map();
+  var failedRetryAt = /* @__PURE__ */ new Map();
+  async function clearPdfCoverCache(customDir = "") {
+    memCoverCache.clear();
+    failedRetryAt.clear();
+    try {
+      const zotero = globalThis.Zotero;
+      const win = zotero?.getMainWindow?.();
+      const ioUtils = globalThis.IOUtils || win?.IOUtils;
+      const pathUtils = globalThis.PathUtils || win?.PathUtils;
+      if (!ioUtils?.remove || !pathUtils?.join) return true;
+      const dirs = /* @__PURE__ */ new Set();
+      const dataDir = String(zotero?.DataDirectory?.dir || "").trim();
+      if (dataDir) dirs.add(pathUtils.join(dataDir, "bridgeflow-cache", "covers"));
+      const custom = String(customDir || "").trim();
+      if (custom) dirs.add(pathUtils.join(custom, "covers"));
+      for (const dir of dirs) {
+        await ioUtils.remove(dir, { recursive: true, ignoreAbsent: true }).catch(() => {
+        });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // src/prefs-helpers.ts
   function setSubtreeDisabled(el, disabled) {
     if (!el) return;
@@ -862,6 +889,15 @@
       app?.visualNotes?.refreshLibraryViews?.();
       setStatusFeedback(doc, "zbf-prefs-status-ratings-cleared", "✓ 已清空本地星级评价缓存文件");
     });
+    bindActionBtn(doc.getElementById("zbf-clear-covers-cache"), () => {
+      if (targetWin?.confirm && !targetWin.confirm("确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。")) {
+        return;
+      }
+      void clearPdfCoverCache(prefs.get("inspector.lookup.cacheDirectory")).then(() => {
+        getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
+        setStatusFeedback(doc, "zbf-prefs-status-covers-cleared", "✓ 已清空画廊 PDF 封面缩略图缓存");
+      });
+    });
     bindActionBtn(doc.getElementById("zbf-reset-defaults"), () => {
       prefs.resetAllDefaults();
       syncAll();
@@ -1020,8 +1056,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.5.11" }));
-        versionEl.textContent = `v${"0.5.11"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.5.12" }));
+        versionEl.textContent = `v${"0.5.12"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");
