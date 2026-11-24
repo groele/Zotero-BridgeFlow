@@ -48,6 +48,7 @@
 #zotero-prefpane-zotero-bridgeflow .zbf-status-pill {
   padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 500;
   color: var(--zbf-p-accent); background: color-mix(in srgb, var(--zbf-p-accent) 12%, transparent);
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--zbf-p-muted); }
 
@@ -111,6 +112,10 @@
   padding: 14px 16px;
   border: 1px solid var(--zbf-p-border); border-radius: 9px;
   background: var(--zbf-p-card-bg);
+  transition: border-color 0.14s ease;
+}
+#zotero-prefpane-zotero-bridgeflow .zbf-card:hover {
+  border-color: color-mix(in srgb, var(--zbf-p-accent) 26%, var(--zbf-p-border));
 }
 #zotero-prefpane-zotero-bridgeflow .zbf-card-title {
   margin: 0; padding-bottom: 8px;

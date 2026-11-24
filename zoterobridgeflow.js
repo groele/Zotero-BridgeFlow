@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.4.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.4.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -3543,7 +3543,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 }
 .ztf-pdf-page-card:hover {
 	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
+	box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
 }
 .ztf-pdf-page-card[data-unrendered="true"] {
 	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
@@ -3553,8 +3553,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .ztf-pdf-page-badge {
 	position: absolute; inset-inline-end: 6px; inset-block-end: 6px;
 	padding: 1px 6px; border-radius: 999px; font: 500 10px/1.35 system-ui, sans-serif;
-	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.56);
-	color: #fff; pointer-events: none; opacity: 0.72; transition: opacity 0.14s ease;
+	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.58);
+	backdrop-filter: blur(4px); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+	color: #fff; pointer-events: none; opacity: 0.76; transition: opacity 0.14s ease;
 }
 .ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
 .ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }
@@ -5738,6 +5739,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     dataSource;
     cachedColorRaw = "";
     cachedSemantics = parseColorSemantics(void 0);
+    annSummaryCache = /* @__PURE__ */ new Map();
     constructor(kernel, storeOrSource) {
       this.kernel = kernel;
       this.dataSource = storeOrSource && "getReadingProgress" in storeOrSource ? storeOrSource : makeSourceFromStore(storeOrSource);
@@ -5760,6 +5762,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       flushUnregisterColumns(this.registeredKeys);
     }
     refreshColumns() {
+      this.annSummaryCache.clear();
       if (!this.activeReadTime && !this.activeAnnotations) return;
       try {
         globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -5795,15 +5798,30 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (rawColor !== this.cachedColorRaw) {
         this.cachedColorRaw = rawColor;
         this.cachedSemantics = parseColorSemantics(rawColor);
+        this.annSummaryCache.clear();
+      }
+      const itemID = Number(item.id || 0);
+      const stamp = String(item.dateModified || item.version || "");
+      const cacheKey = itemID > 0 && stamp ? `${itemID}:${stamp}` : "";
+      if (cacheKey) {
+        const hit = this.annSummaryCache.get(cacheKey);
+        if (hit !== void 0) return hit;
       }
       const collected = collectItemAnnotations([item], this.cachedSemantics);
-      if (!collected.length) return "";
-      const counts = /* @__PURE__ */ new Map();
-      for (const a of collected) {
-        counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+      let formatted = "";
+      if (collected.length) {
+        const counts = /* @__PURE__ */ new Map();
+        for (const a of collected) {
+          counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+        }
+        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([lbl, n]) => `${lbl}:${n}`).join(" ");
+        formatted = `${collected.length} (${top})`;
       }
-      const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([lbl, n]) => `${lbl}:${n}`).join(" ");
-      return `${collected.length} (${top})`;
+      if (cacheKey) {
+        if (this.annSummaryCache.size >= 600) this.annSummaryCache.clear();
+        this.annSummaryCache.set(cacheKey, formatted);
+      }
+      return formatted;
     }
     registerReadTimeColumn() {
       const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
@@ -5832,6 +5850,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   // src/domains/visual-notes/title-heatmap.ts
   var DEFAULT_RGB = "13, 148, 136";
   var HEATMAP_STYLE_ID = "zbf-title-heatmap-style";
+  var MAX_GRADIENT_CACHE = 500;
+  var heatmapGradientCache = /* @__PURE__ */ new Map();
   var HEATMAP_CSS = `
 .virtualized-table .cell-text[data-zbf-heatmap="1"] {
   border-radius: 3px; background-repeat: no-repeat; box-decoration-break: clone;
@@ -5858,8 +5878,17 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   function buildTitleHeatmapGradient(progress2, options = {}) {
     const rawTotal = Number(progress2?.totalPages || 0);
     const bucketCount = options.bucketCount ?? (rawTotal > 0 && rawTotal < 16 ? rawTotal : 16);
+    const pageEntries = progress2?.pageSeconds ? Object.entries(progress2.pageSeconds) : [];
+    if (!pageEntries.length) return "";
+    const cacheKey = `${Number(progress2?.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ""}|${options.opacityPercent ?? ""}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(",")}`;
+    const cached = heatmapGradientCache.get(cacheKey);
+    if (cached !== void 0) return cached;
     const buckets = buildReadingHeatmapBuckets(progress2, bucketCount);
-    if (!buckets.length || !buckets.some((v) => v > 0)) return "";
+    if (!buckets.length || !buckets.some((v) => v > 0)) {
+      if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
+      heatmapGradientCache.set(cacheKey, "");
+      return "";
+    }
     const rgb = hexToRgbTuple(options.color);
     const maxPct = Number(options.opacityPercent);
     const maxAlpha = Number.isFinite(maxPct) ? Math.max(0.1, Math.min(0.9, maxPct / 100)) : 0.42;
@@ -5875,7 +5904,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       stops.push(`${color} ${formatStopPct(i, total)}`, `${color} ${formatStopPct(end, total)}`);
       i = end;
     }
-    return `linear-gradient(to right, ${stops.join(", ")})`;
+    const out = `linear-gradient(to right, ${stops.join(", ")})`;
+    if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
+    heatmapGradientCache.set(cacheKey, out);
+    return out;
   }
   function findCellText(cell) {
     if (!cell) return null;
@@ -5885,6 +5917,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   function clearTitleHeatmapFromCell(cell) {
     const textEl = findCellText(cell);
     if (!textEl) return;
+    if (textEl.getAttribute?.("data-zbf-heatmap") !== "1" && !textEl.style?.backgroundImage) return;
     if (typeof textEl.style?.removeProperty === "function") {
       textEl.style.removeProperty("background-image");
       textEl.style.removeProperty("--zbf-heat-rgb");
@@ -5901,10 +5934,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       clearTitleHeatmapFromCell(textEl);
       return false;
     }
-    if (textEl.style) {
+    if (textEl.style && textEl.style.backgroundImage !== gradient) {
       textEl.style.backgroundImage = gradient;
     }
-    textEl.setAttribute?.("data-zbf-heatmap", "1");
+    if (textEl.getAttribute?.("data-zbf-heatmap") !== "1") {
+      textEl.setAttribute?.("data-zbf-heatmap", "1");
+    }
     return true;
   }
   var TitleHeatmapController = class {
@@ -6055,6 +6090,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     disposables = new DisposableStack();
     windows = /* @__PURE__ */ new Set();
     active = false;
+    refreshTimer = null;
     constructor(kernel, services) {
       this.kernel = kernel;
       this.services = services;
@@ -6120,17 +6156,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       );
       this.disposables.add(
         this.kernel.bus.on("visual-notes:reading-updated", () => {
-          if (this.active) this.refreshLibraryViews();
+          if (this.active) this.scheduleLibraryRefresh();
         })
       );
       this.disposables.add(
         this.kernel.notifier.subscribe(["item"], ({ event }) => {
           if (!this.active) return;
           if (event === "modify" || event === "add" || event === "trash" || event === "restore") {
-            this.readingColumns.refreshColumns();
-            this.remarkColumn.refresh();
-            this.infoBriefNote.refresh();
-            this.titleHeatmap.refreshWindows();
+            this.scheduleLibraryRefresh();
           }
         })
       );
@@ -6147,8 +6180,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.windows.delete(win);
       this.titleHeatmap.detachWindow(win);
     }
+    scheduleLibraryRefresh(delayMs = 50) {
+      if (!this.active) return;
+      if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+      this.refreshTimer = setTimeout(() => {
+        this.refreshTimer = null;
+        if (this.active) this.refreshLibraryViews();
+      }, delayMs);
+    }
     refreshLibraryViews() {
       if (!this.active) return;
+      if (this.refreshTimer !== null) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+      }
       this.readingColumns.refreshColumns();
       this.remarkColumn.refresh();
       this.infoBriefNote.refresh();
@@ -6190,6 +6235,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     stop() {
       if (!this.active) return;
       this.active = false;
+      if (this.refreshTimer !== null) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+      }
       this.infoBriefNote.unregister();
       this.remarkColumn.unregister();
       this.readingColumns.unregisterAll();
@@ -11020,15 +11069,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const renderKey = `${selectedID}|${compactMode}|${this.prefs.get("workspace.pinnedIconOnly")}|${this.store.state.collapsed.join(",")}|${gKey}|${tKey}`;
       if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
       this.lastRenderKey = renderKey;
-      this.inlineEl.textContent = "";
+      const frag = this.doc.createDocumentFragment();
       const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
       const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
-      this.pinnedStrip.render(this.inlineEl, pinnedTabs, selectedID);
+      this.pinnedStrip.render(frag, pinnedTabs, selectedID);
       const compactInactive = compactMode === "compact" || compactMode === "auto" && unpinned.length > 5;
       for (const group2 of this.store.state.groups) {
         const members = unpinned.filter((t) => t.groupId === group2.id);
-        if (!members.length && !this.store.state.groups.length) continue;
-        this.inlineEl.appendChild(this.buildGroupSection(group2, members, selectedID, compactInactive));
+        frag.appendChild(this.buildGroupSection(group2, members, selectedID, compactInactive));
       }
       const ungrouped = unpinned.filter((t) => !t.groupId);
       if (ungrouped.length) {
@@ -11037,7 +11085,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         for (const tab of ungrouped) {
           sec.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
         }
-        this.inlineEl.appendChild(sec);
+        frag.appendChild(sec);
       }
       const addBtn = createWorkspaceElement(this.doc, "button");
       addBtn.type = "button";
@@ -11057,7 +11105,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         this.menus.openAddGroupMenu(addBtn, e);
       });
       this.bindDropToNewGroup(addBtn);
-      this.inlineEl.appendChild(addBtn);
+      frag.appendChild(addBtn);
+      this.inlineEl.replaceChildren(frag);
       if (selectedID && selectedID !== this.lastSelectedID) {
         this.lastSelectedID = selectedID;
         this.inlineEl.querySelector(".zbf-htab.selected")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
@@ -11517,10 +11566,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const prog = formatReadingProgress(storedProg);
       if (typeof pageIdx === "number" && pageIdx >= 0) {
         const total = typeof numPages === "number" && numPages > 0 ? numPages : storedProg?.totalPages || 0;
-        const dur = storedProg?.readSeconds && storedProg.readSeconds > 0 ? ` · ${prog.text.split(" · ")[0]}` : "";
+        const sec = Math.floor(storedProg?.readSeconds || 0);
+        const durLabel = sec >= 60 ? formatReadingDuration(sec) : sec > 0 ? `${sec}s` : "";
+        const dur = durLabel ? ` · ${durLabel}` : "";
         statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
       } else if (prog.text) {
         statusParts.push(prog.text);
+      } else if (storedProg?.readSeconds && storedProg.readSeconds > 0) {
+        statusParts.push(`${Math.floor(storedProg.readSeconds)}s`);
       }
       let peakNote = "";
       if (storedProg?.pageSeconds) {
@@ -11672,9 +11725,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       input.addEventListener("input", () => {
         clearBtn.hidden = !input.value;
         this.activeIndex = 0;
-        this.results = [];
-        this.rows = [];
-        this.listEl?.replaceChildren();
         this.scheduleResults(75);
       });
       input.addEventListener("keydown", (e) => this.handleKeydown(e));
@@ -11719,18 +11769,18 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const winH = this.win.innerHeight || 800;
       const panelW = Math.min(480, winW - 24);
       this.panelEl.style.width = `${panelW}px`;
+      let top = 44;
+      let left = Math.max(12, Math.round(winW - panelW - 16));
       if (anchor && typeof anchor.getBoundingClientRect === "function") {
         const rect = anchor.getBoundingClientRect();
         if (rect.width > 0 || rect.height > 0) {
-          const top = Math.max(8, Math.min(Math.round(rect.bottom + 6), winH - 180));
-          const left = Math.max(12, Math.min(Math.round(rect.right - panelW), winW - panelW - 12));
-          this.panelEl.style.top = `${top}px`;
-          this.panelEl.style.left = `${left}px`;
-          return;
+          top = Math.max(8, Math.min(Math.round(rect.bottom + 6), Math.max(8, winH - 220)));
+          left = Math.max(12, Math.min(Math.round(rect.right - panelW), winW - panelW - 12));
         }
       }
-      this.panelEl.style.top = "44px";
-      this.panelEl.style.left = `${Math.max(12, Math.round(winW - panelW - 16))}px`;
+      this.panelEl.style.top = `${top}px`;
+      this.panelEl.style.left = `${left}px`;
+      if (this.listEl) this.listEl.style.maxHeight = `${Math.max(140, Math.min(440, winH - top - 82))}px`;
     }
     partitionSections(items) {
       const openTabs = [];
@@ -12865,8 +12915,13 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
       const badgeKey = [...this.wordCiteMap.entries()].map(([id, b]) => `${id}:${b.ordinal}`).join(",");
       const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(",");
-      const tabKey = allTracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join("|");
-      const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(",")}|${this.prefs.get("workspace.verticalTabRowHeight")}|${this.prefs.get("workspace.verticalTabTitleMode")}|${this.prefs.get("workspace.verticalTabSubtitleMode")}|${this.prefs.get("workspace.enableBatchSelection")}|${groupKey}|${badgeKey}|${tabKey}`;
+      const subtitleMode = this.prefs.get("workspace.verticalTabSubtitleMode");
+      const tabKey = allTracked.map((t) => {
+        const prog = subtitleMode === "reading" ? this.store.state.readingProgress[t.key] : void 0;
+        const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}` : "";
+        return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}${progTag}`;
+      }).join("|");
+      const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(",")}|${this.prefs.get("workspace.verticalTabRowHeight")}|${this.prefs.get("workspace.verticalTabTitleMode")}|${subtitleMode}|${this.prefs.get("workspace.enableBatchSelection")}|${groupKey}|${badgeKey}|${tabKey}`;
       if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
       this.lastRenderKey = renderKey;
       const prevScroll = this.listEl.scrollTop;
@@ -13723,9 +13778,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-sb-empty-btn:hover { background: var(--zbf-hover); }
 
 .zbf-hover-card {
-  position: fixed; z-index: 2147483647; width: 316px; padding: 10px 12px; border-radius: 8px;
+  position: fixed; z-index: 2147483647; width: 320px; padding: 11px 13px; border-radius: 10px;
   border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.16); pointer-events: none; font: 12px/1.5 system-ui, sans-serif;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.06); pointer-events: none; font: 12px/1.5 system-ui, sans-serif;
 }
 .zbf-hc-title { font-weight: 600; margin-bottom: 3px; line-height: 1.4; overflow-wrap: anywhere; }
 .zbf-hc-meta { font-size: 11px; color: var(--zbf-muted); overflow-wrap: anywhere; }
@@ -13761,6 +13816,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   border: 1px solid transparent; background: transparent; color: var(--zbf-text); cursor: pointer;
 }
 .zbf-spot-row.active, .zbf-spot-row:hover { background: var(--zbf-accent-soft); border-color: color-mix(in srgb, var(--zbf-accent) 32%, transparent); }
+.zbf-spot-row.active { box-shadow: inset 2.5px 0 0 var(--zbf-accent); }
 .zbf-spot-row-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .zbf-spot-row-top > svg { flex: none; color: var(--zbf-muted); opacity: 0.85; }
 .zbf-spot-main { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--zbf-text); }
@@ -13837,7 +13893,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-stale-footer { display: flex; justify-content: flex-end; gap: 6px; padding: 4px 6px; }
 .zbf-mini-btn { padding: 2px 7px; border-radius: 4px; border: 1px solid var(--zbf-border); background: var(--zbf-surface); color: var(--zbf-text); font: 11px system-ui, sans-serif; cursor: pointer; flex: none; }
 .zbf-mini-btn.danger { color: light-dark(#c62828, #f87171); }
-.zbf-hc-heatbar { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 5px; height: 5px; }
+.zbf-hc-heatbar { display: grid; grid-template-columns: repeat(16, 1fr); gap: 2px; margin-top: 6px; padding: 2px; height: 6px; border-radius: 5px; background: var(--zbf-surface); border: 1px solid var(--zbf-border); }
 .zbf-hc-heatcell { display: block; border-radius: 2px; background: var(--zbf-muted); }
 .zbf-hc-heatcell[data-active="true"] { background: var(--zbf-heat-accent, var(--zbf-accent)); }
 `;
@@ -13918,13 +13974,15 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.spotlightPanel?.open(initialQuery);
     }
     render() {
-      if (this.destroyed || !this.doc) return;
+      if (this.destroyed || !this.doc) return [];
       try {
         const snapshot = this.tabs.buildTrackedTabs(this.win);
         this.sidebar?.render(snapshot);
         this.horizontal?.render(snapshot);
+        return snapshot;
       } catch (error) {
         globalThis.Zotero?.logError?.(error);
+        return [];
       }
     }
     destroy() {
@@ -14083,6 +14141,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
           if (type === "tab") {
             this.handleTabEvent(event, ids.map(String));
           } else if (event === "modify" || event === "add" || event === "delete" || event === "trash" || event === "restore") {
+            invalidateResolvedItemCache(ids.map((v) => Number(v)).filter((n) => Number.isFinite(n) && n > 0));
             invalidateTabProjectionCache();
             this.queueRefresh(32);
           }
@@ -14198,6 +14257,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       }, delayMs);
     }
     refreshAllWindows() {
+      const targetWin = this.getTargetWindow();
+      let targetSnapshot = null;
       for (const [win, ui] of [...this.windows.entries()]) {
         if (win.closed) {
           ui.destroy();
@@ -14205,15 +14266,15 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
           continue;
         }
         try {
-          ui.render();
+          const snap = ui.render();
+          if (win === targetWin) targetSnapshot = snap;
         } catch (err) {
           this.kernel.logger.error("workspace:render", err);
         }
       }
-      const targetWin = this.getTargetWindow();
       if (targetWin && !targetWin.closed) {
         try {
-          this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin));
+          this.neighbors.publish(targetWin, targetSnapshot ?? this.tabs.buildTrackedTabs(targetWin));
         } catch {
         }
       }

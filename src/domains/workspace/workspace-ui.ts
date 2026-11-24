@@ -1,6 +1,7 @@
 import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
+import type { TrackedTab } from './types.ts';
 import { WorkspaceHorizontalBar } from './horizontal-bar.ts';
 import { WorkspaceToolbarActions } from './horizontal-toolbar.ts';
 import { WorkspaceHoverCard } from './hover-card.ts';
@@ -104,13 +105,17 @@ export class WorkspaceWindowUI {
 		this.spotlightPanel?.open(initialQuery);
 	}
 
-	render(): void {
-		if (this.destroyed || !this.doc) return;
+	render(): TrackedTab[] {
+		if (this.destroyed || !this.doc) return [];
 		try {
 			const snapshot = this.tabs.buildTrackedTabs(this.win);
 			this.sidebar?.render(snapshot);
 			this.horizontal?.render(snapshot);
-		} catch (error) { (globalThis as any).Zotero?.logError?.(error); }
+			return snapshot;
+		} catch (error) {
+			(globalThis as any).Zotero?.logError?.(error);
+			return [];
+		}
 	}
 
 	destroy(): void {

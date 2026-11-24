@@ -10,6 +10,8 @@ export interface TitleHeatmapOptions {
 
 const DEFAULT_RGB = '13, 148, 136';
 const HEATMAP_STYLE_ID = 'zbf-title-heatmap-style';
+const MAX_GRADIENT_CACHE = 500;
+const heatmapGradientCache = new Map<string, string>();
 const HEATMAP_CSS = `
 .virtualized-table .cell-text[data-zbf-heatmap="1"] {
   border-radius: 3px; background-repeat: no-repeat; box-decoration-break: clone;
@@ -42,8 +44,19 @@ export function buildTitleHeatmapGradient(
 ): string {
 	const rawTotal = Number(progress?.totalPages || 0);
 	const bucketCount = options.bucketCount ?? (rawTotal > 0 && rawTotal < 16 ? rawTotal : 16);
+	const pageEntries = progress?.pageSeconds ? Object.entries(progress.pageSeconds) : [];
+	if (!pageEntries.length) return '';
+
+	const cacheKey = `${Number(progress?.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ''}|${options.opacityPercent ?? ''}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(',')}`;
+	const cached = heatmapGradientCache.get(cacheKey);
+	if (cached !== undefined) return cached;
+
 	const buckets = buildReadingHeatmapBuckets(progress, bucketCount);
-	if (!buckets.length || !buckets.some((v) => v > 0)) return '';
+	if (!buckets.length || !buckets.some((v) => v > 0)) {
+		if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
+		heatmapGradientCache.set(cacheKey, '');
+		return '';
+	}
 
 	const rgb = hexToRgbTuple(options.color);
 	const maxPct = Number(options.opacityPercent);
@@ -65,7 +78,10 @@ export function buildTitleHeatmapGradient(
 		stops.push(`${color} ${formatStopPct(i, total)}`, `${color} ${formatStopPct(end, total)}`);
 		i = end;
 	}
-	return `linear-gradient(to right, ${stops.join(', ')})`;
+	const out = `linear-gradient(to right, ${stops.join(', ')})`;
+	if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) heatmapGradientCache.clear();
+	heatmapGradientCache.set(cacheKey, out);
+	return out;
 }
 
 function findCellText(cell: Element | null | undefined): HTMLElement | null {
@@ -77,6 +93,7 @@ function findCellText(cell: Element | null | undefined): HTMLElement | null {
 export function clearTitleHeatmapFromCell(cell: Element | null | undefined): void {
 	const textEl = findCellText(cell);
 	if (!textEl) return;
+	if (textEl.getAttribute?.('data-zbf-heatmap') !== '1' && !textEl.style?.backgroundImage) return;
 	if (typeof textEl.style?.removeProperty === 'function') {
 		textEl.style.removeProperty('background-image');
 		textEl.style.removeProperty('--zbf-heat-rgb');
@@ -98,10 +115,12 @@ export function applyTitleHeatmapToCell(
 		clearTitleHeatmapFromCell(textEl);
 		return false;
 	}
-	if (textEl.style) {
+	if (textEl.style && textEl.style.backgroundImage !== gradient) {
 		textEl.style.backgroundImage = gradient;
 	}
-	textEl.setAttribute?.('data-zbf-heatmap', '1');
+	if (textEl.getAttribute?.('data-zbf-heatmap') !== '1') {
+		textEl.setAttribute?.('data-zbf-heatmap', '1');
+	}
 	return true;
 }
 

@@ -112,6 +112,7 @@ export class ReadingColumnsController {
 	private dataSource?: VisualNotesDataSource;
 	private cachedColorRaw = '';
 	private cachedSemantics = parseColorSemantics(undefined);
+	private readonly annSummaryCache = new Map<string, string>();
 
 	constructor(kernel: PluginKernel, storeOrSource?: StoreLike | VisualNotesDataSource) {
 		this.kernel = kernel;
@@ -141,6 +142,7 @@ export class ReadingColumnsController {
 	}
 
 	refreshColumns(): void {
+		this.annSummaryCache.clear();
 		if (!this.activeReadTime && !this.activeAnnotations) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -178,19 +180,34 @@ export class ReadingColumnsController {
 		if (rawColor !== this.cachedColorRaw) {
 			this.cachedColorRaw = rawColor;
 			this.cachedSemantics = parseColorSemantics(rawColor);
+			this.annSummaryCache.clear();
+		}
+		const itemID = Number(item.id || 0);
+		const stamp = String(item.dateModified || item.version || '');
+		const cacheKey = itemID > 0 && stamp ? `${itemID}:${stamp}` : '';
+		if (cacheKey) {
+			const hit = this.annSummaryCache.get(cacheKey);
+			if (hit !== undefined) return hit;
 		}
 		const collected = collectItemAnnotations([item], this.cachedSemantics);
-		if (!collected.length) return '';
-		const counts = new Map<string, number>();
-		for (const a of collected) {
-			counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+		let formatted = '';
+		if (collected.length) {
+			const counts = new Map<string, number>();
+			for (const a of collected) {
+				counts.set(a.colorLabel, (counts.get(a.colorLabel) || 0) + 1);
+			}
+			const top = [...counts.entries()]
+				.sort((a, b) => b[1] - a[1])
+				.slice(0, 3)
+				.map(([lbl, n]) => `${lbl}:${n}`)
+				.join(' ');
+			formatted = `${collected.length} (${top})`;
 		}
-		const top = [...counts.entries()]
-			.sort((a, b) => b[1] - a[1])
-			.slice(0, 3)
-			.map(([lbl, n]) => `${lbl}:${n}`)
-			.join(' ');
-		return `${collected.length} (${top})`;
+		if (cacheKey) {
+			if (this.annSummaryCache.size >= 600) this.annSummaryCache.clear();
+			this.annSummaryCache.set(cacheKey, formatted);
+		}
+		return formatted;
 	}
 
 	private registerReadTimeColumn(): void {

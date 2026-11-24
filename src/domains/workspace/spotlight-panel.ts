@@ -86,9 +86,6 @@ export class WorkspaceSpotlightPanel {
 		input.addEventListener('input', () => {
 			clearBtn.hidden = !input.value;
 			this.activeIndex = 0;
-			this.results = [];
-			this.rows = [];
-			this.listEl?.replaceChildren();
 			this.scheduleResults(75);
 		});
 		input.addEventListener('keydown', (e) => this.handleKeydown(e as KeyboardEvent));
@@ -144,18 +141,18 @@ export class WorkspaceSpotlightPanel {
 		const panelW = Math.min(480, winW - 24);
 		this.panelEl.style.width = `${panelW}px`;
 
+		let top = 44;
+		let left = Math.max(12, Math.round(winW - panelW - 16));
 		if (anchor && typeof anchor.getBoundingClientRect === 'function') {
 			const rect = anchor.getBoundingClientRect();
 			if (rect.width > 0 || rect.height > 0) {
-				const top = Math.max(8, Math.min(Math.round(rect.bottom + 6), winH - 180));
-				const left = Math.max(12, Math.min(Math.round(rect.right - panelW), winW - panelW - 12));
-				this.panelEl.style.top = `${top}px`;
-				this.panelEl.style.left = `${left}px`;
-				return;
+				top = Math.max(8, Math.min(Math.round(rect.bottom + 6), Math.max(8, winH - 220)));
+				left = Math.max(12, Math.min(Math.round(rect.right - panelW), winW - panelW - 12));
 			}
 		}
-		this.panelEl.style.top = '44px';
-		this.panelEl.style.left = `${Math.max(12, Math.round(winW - panelW - 16))}px`;
+		this.panelEl.style.top = `${top}px`;
+		this.panelEl.style.left = `${left}px`;
+		if (this.listEl) this.listEl.style.maxHeight = `${Math.max(140, Math.min(440, winH - top - 82))}px`;
 	}
 
 	private partitionSections(items: readonly SpotlightItemResult[]): SectionGroup[] {

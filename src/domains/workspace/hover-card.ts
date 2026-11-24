@@ -2,7 +2,7 @@ import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
-import { buildReadingHeatmapBuckets, formatReadingProgress } from '../../services/reading-stats.ts';
+import { buildReadingHeatmapBuckets, formatReadingDuration, formatReadingProgress } from '../../services/reading-stats.ts';
 import type { TrackedTab } from './types.ts';
 
 export function formatRelativeTimeZh(ts: number): string {
@@ -102,10 +102,14 @@ export class WorkspaceHoverCard {
 		const prog = formatReadingProgress(storedProg);
 		if (typeof pageIdx === 'number' && pageIdx >= 0) {
 			const total = typeof numPages === 'number' && numPages > 0 ? numPages : (storedProg?.totalPages || 0);
-			const dur = storedProg?.readSeconds && storedProg.readSeconds > 0 ? ` · ${prog.text.split(' · ')[0]}` : '';
+			const sec = Math.floor(storedProg?.readSeconds || 0);
+			const durLabel = sec >= 60 ? formatReadingDuration(sec) : (sec > 0 ? `${sec}s` : '');
+			const dur = durLabel ? ` · ${durLabel}` : '';
 			statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
 		} else if (prog.text) {
 			statusParts.push(prog.text);
+		} else if (storedProg?.readSeconds && storedProg.readSeconds > 0) {
+			statusParts.push(`${Math.floor(storedProg.readSeconds)}s`);
 		}
 		let peakNote = '';
 		if (storedProg?.pageSeconds) {

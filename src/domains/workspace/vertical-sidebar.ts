@@ -212,8 +212,13 @@ export class WorkspaceVerticalSidebar {
 		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
 		const badgeKey = [...this.wordCiteMap.entries()].map(([id, b]) => `${id}:${b.ordinal}`).join(',');
 		const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(',');
-		const tabKey = allTracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join('|');
-		const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(',')}|${this.prefs.get('workspace.verticalTabRowHeight')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${this.prefs.get('workspace.verticalTabSubtitleMode')}|${this.prefs.get('workspace.enableBatchSelection')}|${groupKey}|${badgeKey}|${tabKey}`;
+		const subtitleMode = this.prefs.get('workspace.verticalTabSubtitleMode');
+		const tabKey = allTracked.map((t) => {
+			const prog = subtitleMode === 'reading' ? this.store.state.readingProgress[t.key] : undefined;
+			const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}` : '';
+			return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}${progTag}`;
+		}).join('|');
+		const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(',')}|${this.prefs.get('workspace.verticalTabRowHeight')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${subtitleMode}|${this.prefs.get('workspace.enableBatchSelection')}|${groupKey}|${badgeKey}|${tabKey}`;
 		if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
 		this.lastRenderKey = renderKey;
 		const prevScroll = this.listEl.scrollTop;

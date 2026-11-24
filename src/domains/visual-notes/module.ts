@@ -24,6 +24,7 @@ export class VisualNotesDomainModule implements DomainModule {
 	private readonly disposables = new DisposableStack();
 	private readonly windows = new Set<Window>();
 	private active = false;
+	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -97,7 +98,7 @@ export class VisualNotesDomainModule implements DomainModule {
 
 		this.disposables.add(
 			this.kernel.bus.on('visual-notes:reading-updated', () => {
-				if (this.active) this.refreshLibraryViews();
+				if (this.active) this.scheduleLibraryRefresh();
 			}),
 		);
 
@@ -105,10 +106,7 @@ export class VisualNotesDomainModule implements DomainModule {
 			this.kernel.notifier.subscribe(['item'], ({ event }) => {
 				if (!this.active) return;
 				if (event === 'modify' || event === 'add' || event === 'trash' || event === 'restore') {
-					this.readingColumns.refreshColumns();
-					this.remarkColumn.refresh();
-					this.infoBriefNote.refresh();
-					this.titleHeatmap.refreshWindows();
+					this.scheduleLibraryRefresh();
 				}
 			}),
 		);
@@ -129,8 +127,21 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.titleHeatmap.detachWindow(win);
 	}
 
+	scheduleLibraryRefresh(delayMs = 50): void {
+		if (!this.active) return;
+		if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = null;
+			if (this.active) this.refreshLibraryViews();
+		}, delayMs);
+	}
+
 	refreshLibraryViews(): void {
 		if (!this.active) return;
+		if (this.refreshTimer !== null) {
+			clearTimeout(this.refreshTimer);
+			this.refreshTimer = null;
+		}
 		this.readingColumns.refreshColumns();
 		this.remarkColumn.refresh();
 		this.infoBriefNote.refresh();
@@ -172,6 +183,10 @@ export class VisualNotesDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		if (this.refreshTimer !== null) {
+			clearTimeout(this.refreshTimer);
+			this.refreshTimer = null;
+		}
 		this.infoBriefNote.unregister();
 		this.remarkColumn.unregister();
 		this.readingColumns.unregisterAll();

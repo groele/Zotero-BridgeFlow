@@ -9,6 +9,7 @@ import type {
 	WorkspaceGroupSummary,
 } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import { invalidateResolvedItemCache } from '../../services/item-resolution.ts';
 import { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
 import { ReaderNeighborPublisher } from './reader-neighbors.ts';
 import { WorkspaceStateStore } from './state-store.ts';
@@ -124,6 +125,7 @@ export class WorkspaceDomainModule implements DomainModule {
 				if (type === 'tab') {
 					this.handleTabEvent(event, ids.map(String));
 				} else if (event === 'modify' || event === 'add' || event === 'delete' || event === 'trash' || event === 'restore') {
+					invalidateResolvedItemCache(ids.map((v) => Number(v)).filter((n) => Number.isFinite(n) && n > 0));
 					invalidateTabProjectionCache();
 					this.queueRefresh(32);
 				}
@@ -223,17 +225,21 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	refreshAllWindows(): void {
+		const targetWin = this.getTargetWindow();
+		let targetSnapshot: ReturnType<WorkspaceTabController['buildTrackedTabs']> | null = null;
 		for (const [win, ui] of [...this.windows.entries()]) {
 			if ((win as any).closed) {
 				ui.destroy();
 				this.windows.delete(win);
 				continue;
 			}
-			try { ui.render(); } catch (err) { this.kernel.logger.error('workspace:render', err); }
+			try {
+				const snap = ui.render();
+				if (win === targetWin) targetSnapshot = snap;
+			} catch (err) { this.kernel.logger.error('workspace:render', err); }
 		}
-		const targetWin = this.getTargetWindow();
 		if (targetWin && !(targetWin as any).closed) {
-			try { this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin)); } catch { /* ignore */ }
+			try { this.neighbors.publish(targetWin, targetSnapshot ?? this.tabs.buildTrackedTabs(targetWin)); } catch { /* ignore */ }
 		}
 		this.emitGroupSummaries();
 	}

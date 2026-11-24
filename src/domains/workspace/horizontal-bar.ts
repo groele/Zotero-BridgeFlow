@@ -79,19 +79,18 @@ export class WorkspaceHorizontalBar {
 		const renderKey = `${selectedID}|${compactMode}|${this.prefs.get('workspace.pinnedIconOnly')}|${this.store.state.collapsed.join(',')}|${gKey}|${tKey}`;
 		if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
 		this.lastRenderKey = renderKey;
-		this.inlineEl.textContent = '';
+		const frag = this.doc.createDocumentFragment();
 
 		const pinnedTabs = tracked.filter((t) => !t.virtual && t.pinned);
 		const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
 
-		this.pinnedStrip.render(this.inlineEl, pinnedTabs, selectedID);
+		this.pinnedStrip.render(frag, pinnedTabs, selectedID);
 
 		const compactInactive = compactMode === 'compact' || (compactMode === 'auto' && unpinned.length > 5);
 
 		for (const group of this.store.state.groups) {
 			const members = unpinned.filter((t) => t.groupId === group.id);
-			if (!members.length && !this.store.state.groups.length) continue;
-			this.inlineEl.appendChild(this.buildGroupSection(group, members, selectedID, compactInactive));
+			frag.appendChild(this.buildGroupSection(group, members, selectedID, compactInactive));
 		}
 
 		const ungrouped = unpinned.filter((t) => !t.groupId);
@@ -101,7 +100,7 @@ export class WorkspaceHorizontalBar {
 			for (const tab of ungrouped) {
 				sec.appendChild(this.buildTabChip(tab, selectedID, compactInactive));
 			}
-			this.inlineEl.appendChild(sec);
+			frag.appendChild(sec);
 		}
 
 		const addBtn = createWorkspaceElement(this.doc, 'button');
@@ -122,7 +121,8 @@ export class WorkspaceHorizontalBar {
 			this.menus.openAddGroupMenu(addBtn, e as MouseEvent);
 		});
 		this.bindDropToNewGroup(addBtn);
-		this.inlineEl.appendChild(addBtn);
+		frag.appendChild(addBtn);
+		this.inlineEl.replaceChildren(frag);
 		if (selectedID && selectedID !== this.lastSelectedID) {
 			this.lastSelectedID = selectedID;
 			this.inlineEl.querySelector('.zbf-htab.selected')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });

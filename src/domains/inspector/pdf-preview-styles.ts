@@ -131,7 +131,7 @@ export const PREVIEW_CSS = `
 }
 .ztf-pdf-page-card:hover {
 	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.09);
+	box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
 }
 .ztf-pdf-page-card[data-unrendered="true"] {
 	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
@@ -141,8 +141,9 @@ export const PREVIEW_CSS = `
 .ztf-pdf-page-badge {
 	position: absolute; inset-inline-end: 6px; inset-block-end: 6px;
 	padding: 1px 6px; border-radius: 999px; font: 500 10px/1.35 system-ui, sans-serif;
-	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.56);
-	color: #fff; pointer-events: none; opacity: 0.72; transition: opacity 0.14s ease;
+	font-variant-numeric: tabular-nums; background: rgba(15, 23, 42, 0.58);
+	backdrop-filter: blur(4px); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+	color: #fff; pointer-events: none; opacity: 0.76; transition: opacity 0.14s ease;
 }
 .ztf-pdf-page-card:hover .ztf-pdf-page-badge { opacity: 0.95; }
 .ztf-pdf-root[data-show-badge="false"] .ztf-pdf-page-badge { display: none; }

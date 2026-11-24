@@ -397,3 +397,76 @@ test('Phase 2.4: reading-progress.json & brief-notes.json strict isolation, lega
 	}), true);
 	assert.equal(legacyStore.state.readingProgress['item:99'].readSeconds, 275);
 });
+
+test('Phase 2.5: hover card sub-60s duration formatting & ReadingColumnsController annotation summary cache invalidation', async (t) => {
+	const { WorkspaceHoverCard } = await import('../src/domains/workspace/hover-card.ts');
+	const oldZ = globalThis.Zotero;
+	t.after(() => { globalThis.Zotero = oldZ; });
+
+	const { prefs } = createMemoryPrefs({ 'workspace.annotationColumn.enable': true });
+	const store = new WorkspaceStateStore(prefs);
+	store.updateReadingProgress('item:310', 45, 3, 6);
+
+	let annQueries = 0;
+	const item310 = {
+		id: 310,
+		dateModified: '2026-11-24 08:00:00',
+		deleted: false,
+		getAttachments: () => [311],
+	};
+	const att311 = {
+		id: 311,
+		deleted: false,
+		getAnnotations: () => {
+			annQueries++;
+			return [{ id: 1, deleted: false, annotationColor: '#ff6666', annotationText: 'Test', annotationComment: '', annotationPageLabel: '1' }];
+		},
+	};
+	globalThis.Zotero = {
+		Items: { get: (id) => (id === 310 ? item310 : id === 311 ? att311 : null) },
+		Reader: {
+			getByTabID: () => ({ _internalReader: { _state: { primaryViewStats: { pageIndex: 2, pagesCount: 6 } } } }),
+		},
+		locale: 'zh-CN',
+	};
+
+	const makeEl = (tag) => {
+		const el = {
+			tagName: tag, className: '', textContent: '', title: '', children: [], attrs: new Map(),
+			style: { setProperty() {} },
+			append(...n) { this.children.push(...n); },
+			appendChild(n) { this.children.push(n); return n; },
+			setAttribute(k, v) { this.attrs.set(k, v); },
+			remove() {},
+			offsetWidth: 320, offsetHeight: 110,
+		};
+		return el;
+	};
+	const host = makeEl('body');
+	const doc = {
+		documentElement: host,
+		body: host,
+		defaultView: { innerWidth: 1200, innerHeight: 800, setTimeout: () => 1, clearTimeout() {} },
+		createElementNS: (_ns, tag) => makeEl(tag),
+	};
+
+	const hc = new WorkspaceHoverCard(doc, prefs, store);
+	hc.show({ getBoundingClientRect: () => ({ left: 20, top: 20, bottom: 40, width: 100, height: 20 }) }, {
+		key: 'item:310', itemID: 310, parentItemID: 310, tabID: 't-310',
+		title: 'Sub-minute paper', shortTitle: 'Sub-minute', filename: '', source: '', creatorYear: '', collection: '',
+		type: 'reader', groupId: '', pinned: false, sleeping: false, virtual: false, remark: '', lastViewedAt: 0,
+	});
+	const metaRow = host.children[0].children.find((c) => c.className === 'zbf-hc-meta' && c.textContent.includes('第 3 / 6 页'));
+	assert.ok(metaRow);
+	assert.match(metaRow.textContent, /第 3 \/ 6 页 · 45s/);
+	assert.doesNotMatch(metaRow.textContent, /p\.3\/6/);
+	hc.destroy();
+
+	const cols = new ReadingColumnsController({ prefs, info: { id: 'bridgeflow@test' } }, store);
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
+	assert.equal(annQueries, 1);
+	cols.refreshColumns();
+	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (方法:1)');
+	assert.equal(annQueries, 2);
+});

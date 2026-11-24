@@ -32,7 +32,7 @@ export class HorizontalPinnedStrip {
 		this.hover = hover;
 	}
 
-	render(container: HTMLElement, pinnedTabs: readonly TrackedTab[], selectedID: string): void {
+	render(container: ParentNode, pinnedTabs: readonly TrackedTab[], selectedID: string): void {
 		if (!this.prefs.get('workspace.enablePinnedTabs') || !pinnedTabs.length) return;
 
 		const strip = createWorkspaceElement(this.doc, 'div');
