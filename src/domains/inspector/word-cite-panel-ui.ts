@@ -23,20 +23,24 @@ export function formatRefreshReceipt(res: WordRefreshResultPayload, zh: boolean)
 
 export function formatPendingReceipt(kind: 'insert' | 'refresh' | 'recover', zh: boolean): ReceiptState {
 	const text = kind === 'insert' ? (zh ? '正在插入 Word 引文…' : 'Inserting Word citations…')
-		: kind === 'recover' ? (zh ? '正在还原/反向导入缺失引文…' : 'Recovering missing citations…')
+		: kind === 'recover' ? (zh ? '正在还原/重建引文并重连 Word…' : 'Recovering & relinking citations…')
 		: (zh ? '正在刷新 Word 引文…' : 'Refreshing Word citations…');
 	return { tone: 'warn', text };
 }
 
 export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: boolean): ReceiptState {
 	if (res.error) return { tone: 'err', text: res.error };
-	const { restoredCount, importedCount, skippedCount, collectionName } = res;
-	if (!restoredCount && !importedCount) {
-		return { tone: 'warn', text: zh ? '⚠ 未能恢复或导入缺失引文' : '⚠ No orphan citations could be recovered' };
+	const { restoredCount, importedCount, skippedCount, existingCount = 0, relinkedCount = 0, foreignSkippedCount = 0, refreshed, collectionName } = res;
+	if (!restoredCount && !importedCount && !existingCount) {
+		return { tone: 'warn', text: zh ? '⚠ 未能恢复缺失引文（缺少可用备份元数据）' : '⚠ No orphan citations could be recovered' };
 	}
 	const parts: string[] = [];
-	if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（刷新 Word 即自动重连）` : `Restored ${restoredCount} from Trash`);
-	if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ''}（请在 Word 中替换旧引用）` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ''} (re-link in Word)`);
+	if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（保留原附件与笔记）` : `Restored ${restoredCount} from Trash`);
+	if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ''}` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ''}`);
+	if (existingCount > 0) parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing DOI item(s)`);
+	if (refreshed) parts.push(zh ? '已自动刷新并重连 Word' : 'auto-refreshed & relinked in Word');
+	else if (relinkedCount > 0) parts.push(zh ? '点 Word「刷新」即自动重连' : 'click Refresh in Word to relink');
+	if (foreignSkippedCount > 0) parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
 	if (skippedCount > 0) parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
 	return { tone: 'ok', text: `✓ ${parts.join(zh ? '；' : '; ')}` };
 }
@@ -51,13 +55,13 @@ export function buildOrphanBannerModel(orphans: readonly OrphanCitationInfo[] | 
 		? `⚠ 检测到 ${orphans.length} 篇断链/缺失引文（${ordinals}${moreOrd}）`
 		: `⚠ ${orphans.length} missing/trashed citation(s) (${ordinals}${moreOrd})`;
 	const listText = orphans.slice(0, 4).map((o) => {
-		const tag = o.kind === 'trashed' ? (zh ? '回收站' : 'Trash') : (zh ? '本地缺失' : 'Missing');
+		const tag = o.kind === 'trashed' ? (zh ? '回收站·含原附件' : 'Trash') : (zh ? '本地缺失·可重建' : 'Missing');
 		return `[${o.ordinal}] ${o.title} (${tag})`;
 	}).join('\n') + (orphans.length > 4 ? (zh ? `\n…另有 ${orphans.length - 4} 篇` : `\n…and ${orphans.length - 4} more`) : '');
 	const buttonLabel = trashed > 0 && missing === 0
-		? (zh ? `一键从回收站还原 (${trashed})` : `Restore from Trash (${trashed})`)
+		? (zh ? `一键从回收站还原并重连 (${trashed})` : `Restore & Relink (${trashed})`)
 		: trashed === 0
-			? (zh ? `一键反向导入 Zotero (${missing})` : `Import to Zotero (${missing})`)
+			? (zh ? `一键重建回 Zotero 并重连 (${missing})` : `Import & Relink (${missing})`)
 			: (zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`);
 	return { title, listText, buttonLabel };
 }

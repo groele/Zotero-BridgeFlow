@@ -5,18 +5,33 @@ import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { ServiceContainer } from '../src/services/service-container.ts';
 import { WordCiteDomainModule } from '../src/domains/word-cite/module.ts';
 import { extractSessionCitationsWithOrphans } from '../src/domains/word-cite/orphan-extraction.ts';
+import { clearRelinkedItemUris } from '../src/domains/word-cite/orphan-identity.ts';
+import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery.ts';
 import { buildOrphanBannerModel, formatRecoverReceipt } from '../src/domains/inspector/word-cite-panel-ui.ts';
 
-function createItemStub(id, { title = `Paper ${id}`, inTrash = false, deleted = false } = {}) {
+function createItemStub(id, { title = `Paper ${id}`, inTrash = false, deleted = false, libraryID = 1, key = `K${id}` } = {}) {
 	return {
 		id,
+		key,
+		libraryID,
 		deleted,
 		inTrash: () => inTrash,
+		isRegularItem: () => true,
 		getField: (f) => (f === 'title' ? title : ''),
 		collections: [],
+		relations: new Map(),
+		loadedDataTypes: new Set(),
+		async loadDataType(dt) { this.loadedDataTypes.add(dt); },
+		hasRelation(pred, obj) { return this.relations.get(pred)?.has(obj) ?? false; },
+		addRelation(pred, obj) {
+			if (!this.relations.has(pred)) this.relations.set(pred, new Set());
+			this.relations.get(pred).add(obj);
+			return true;
+		},
 		addToCollection(cid) { this.collections.push(cid); },
 		saveCount: 0,
-		async saveTx() { this.saveCount += 1; },
+		async save() { this.saveCount += 1; return this.id; },
+		async saveTx() { this.saveCount += 1; return this.id; },
 	};
 }
 
@@ -93,94 +108,503 @@ test('extractSessionCitationsWithOrphans preserves true document ordinals across
 	}
 });
 
-test('WordCiteDomainModule handles word:recover-orphans-request by restoring trashed items and reverse-importing missing items', async () => {
+test('Bug #1/#2/#3 fixes: singular ci.uri, ephemeral surrogate dedup, citeproc sorted seq & post-refresh Trash URI lookup', () => {
 	const prevZotero = globalThis.Zotero;
-	const trashedItem = createItemStub(203, { title: 'Trashed Paper', deleted: true, inTrash: true });
+	clearRelinkedItemUris();
+	const itemsById = new Map([
+		[301, createItemStub(301, { title: 'Zhang Paper', key: 'ZHANG301' })],
+		[302, createItemStub(302, { title: 'Brown Paper', key: 'BROWN302' })],
+		// 303 is in Zotero Trash, AND Word was already refreshed so ci.id became 'sessA/rand303'
+		[303, createItemStub(303, { title: 'Trashed After Refresh', key: 'TRASH303', deleted: true, inTrash: true })],
+		[304, createItemStub(304, { title: 'Delayed Unindexed Paper', key: 'DELAY304' })],
+	]);
+	const keyToId = new Map([
+		['1:ZHANG301', 301],
+		['1:BROWN302', 302],
+		['1:TRASH303', 303],
+		['1:DELAY304', 304],
+	]);
+
+	globalThis.Zotero = {
+		Users: { getCurrentUserID: () => 888, getLocalUserKey: () => 'MYLOCAL' },
+		URI: {
+			getURIItemID: (uri) => {
+				const m = String(uri).match(/\/users\/(\d+)\/items\/([A-Z0-9]+)/i);
+				if (!m) return false;
+				// Simulate Zotero uri.js mapping any /users/ URI onto library 1
+				return keyToId.get(`1:${m[2]}`) ?? false;
+			},
+		},
+		Items: { get: (id) => itemsById.get(id) ?? null },
+	};
+
+	try {
+		// Style sorts bibliography alphabetically:
+		// [1] Adams (missing, legacy singular `uri`, cited twice with different surrogate IDs!)
+		// [2] Brown (302)
+		// [3] Li (missing without URI, cited twice with ephemeral 'sessA/ephem1' and 'sessA/ephem2')
+		// [4] Trashed After Refresh (303, surrogate 'sessA/rand303', URI points to TRASH303)
+		// [5] Delayed Unindexed Paper (304, not yet in citeproc registry -> must receive gap-filled ordinal 5)
+		// [6] Zhang (301, cited first in text at index 0, but sorted to #6 in bibliography!)
+		const session = {
+			sessionID: 'sessA',
+			style: {
+				registry: {
+					registry: {
+						301: { seq: 6 },
+						'sessA/adams1': { seq: 1 },
+						302: { seq: 2 },
+						'sessA/ephem1': { seq: 3 },
+						'sessA/rand303': { seq: 4 },
+						'sessA/foreign999': { seq: 7 },
+					},
+				},
+			},
+			citationsByIndex: {
+				0: {
+					properties: { plainCitation: '[6]' },
+					citationItems: [{ id: 301 }],
+				},
+				1: {
+					properties: { plainCitation: '[1, 3]' },
+					citationItems: [
+						// First hit lacks itemData (pasted legacy citation), uses singular `uri`
+						{ id: 'sessA/adams1', uri: 'http://zotero.org/users/888/items/ADAMS001' },
+						// Missing without URI, ephemeral id #1
+						{
+							id: 'sessA/ephem1',
+							itemData: {
+								id: 'sessA/ephem1',
+								type: 'article-journal',
+								title: ' Valleytronics in MoS2 ',
+								author: [{ family: 'Li', given: 'Ming' }],
+								issued: { 'date-parts': [[2024]] },
+							},
+						},
+					],
+				},
+				2: {
+					properties: { plainCitation: '[1, 2, 3, 4]' },
+					citationItems: [
+						// Repeated Adams hit now provides itemData -> must merge & NOT allocate a new ordinal!
+						{
+							id: 'sessA/adams2',
+							uri: 'http://zotero.org/users/888/items/ADAMS001',
+							itemData: { id: 'sessA/adams2', title: 'Adams Seminal Work', author: [{ family: 'Adams' }], issued: { 'date-parts': [[2020]] } },
+						},
+						{ id: 302 },
+						// Repeated Li hit with brand-new ephemeral ID -> must dedup via title+author+year fingerprint!
+						{
+							id: 'sessA/ephem2',
+							itemData: {
+								id: 'sessA/ephem2',
+								type: 'article-journal',
+								title: 'valleytronics in mos2',
+								author: [{ family: 'Li', given: 'Ming' }],
+								issued: { 'date-parts': [[2024]] },
+							},
+						},
+						// Trashed item whose numeric ID was wiped by Word Refresh -> must penetrate Trash via URI!
+						{
+							id: 'sessA/rand303',
+							uris: ['http://zotero.org/users/888/items/TRASH303'],
+							itemData: { id: 'sessA/rand303', title: 'Stale Embedded Title' },
+						},
+						// Foreign user URI that happens to share key TRASH303 -> must NOT spoof local Trash item 303!
+						{
+							id: 'sessA/foreign999',
+							uris: ['http://zotero.org/users/999999/items/TRASH303'],
+							itemData: { id: 'sessA/foreign999', title: 'Coauthor Paper', DOI: '10.1000/coauthor' },
+						},
+					],
+				},
+				3: {
+					properties: { plainCitation: '[5]' },
+					citationItems: [{ id: 304 }],
+				},
+			},
+			citationsByItemID: {},
+		};
+
+		const { citations, orphans } = extractSessionCitationsWithOrphans(session);
+		const validById = new Map(citations.map((c) => [c.itemID, c]));
+
+		// Citeproc sorted ordinals + gap-free fallback ordinal
+		assert.equal(validById.get(301)?.ordinal, 6, 'Zhang cited first in text gets true citeproc bibliography ordinal 6');
+		assert.equal(validById.get(302)?.ordinal, 2);
+		assert.equal(validById.get(304)?.ordinal, 5, 'Delayed unindexed item fills unused ordinal 5 instead of colliding with 6');
+
+		// Orphans: Adams (#1), Li (#3), Trashed 303 (#4), Coauthor (#7) — zero duplicate slots!
+		assert.equal(orphans.length, 4);
+		assert.equal(orphans[0].ordinal, 1);
+		assert.equal(orphans[0].title, 'Adams Seminal Work', 'Later occurrence itemData merged into first singular-uri hit');
+		assert.deepEqual(orphans[0].uris, ['http://zotero.org/users/888/items/ADAMS001']);
+
+		assert.equal(orphans[1].ordinal, 3);
+		assert.equal(orphans[1].authorYear, 'Li, 2024');
+
+		assert.equal(orphans[2].ordinal, 4);
+		assert.equal(orphans[2].kind, 'trashed', 'Post-refresh trashed item resolved via URI as trashed, not missing');
+		assert.equal(orphans[2].itemID, 303);
+		assert.equal(orphans[2].title, 'Trashed After Refresh');
+
+		assert.equal(orphans[3].kind, 'missing', 'Foreign co-author URI must not match local item key');
+		assert.equal(orphans[3].itemID, undefined);
+		assert.equal(orphans[3].ordinal, 7);
+	} finally {
+		clearRelinkedItemUris();
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, local URI normalization, foreign URI guard, junk guard & auto-refresh', async () => {
+	const prevZotero = globalThis.Zotero;
+	clearRelinkedItemUris();
+
+	let txCount = 0;
+	let refreshCalls = 0;
+	let toastCount = 0;
+	const trashedItem = createItemStub(203, { title: 'Trashed Paper With PDF', deleted: true, inTrash: true, key: 'TR203' });
+	const existingDoiItem = createItemStub(209, { title: 'Existing DOI Paper', deleted: false, key: 'EX209' });
 	const createdItems = [];
+	let nextNewId = 500;
 
 	class FakeZoteroItem {
 		constructor(itemType) {
+			this.id = 0;
+			this.key = '';
+			this.libraryID = 1;
 			this.itemType = itemType;
 			this.fields = {};
 			this.creators = [];
 			this.collections = [];
+			this.relations = new Map();
 		}
 		setField(k, v) { this.fields[k] = v; }
 		setCreators(c) { this.creators = c; }
 		addToCollection(cid) { this.collections.push(cid); }
-		async saveTx() { createdItems.push(this); }
+		hasRelation(pred, obj) { return this.relations.get(pred)?.has(obj) ?? false; }
+		addRelation(pred, obj) {
+			if (!this.relations.has(pred)) this.relations.set(pred, new Set());
+			this.relations.get(pred).add(obj);
+			return true;
+		}
+		async save() {
+			this.id = ++nextNewId;
+			this.key = `NEW${this.id}`;
+			createdItems.push(this);
+			return this.id;
+		}
 	}
 
+	class FakeSearch {
+		constructor() { this.conditions = []; }
+		addCondition(f, op, v) { this.conditions.push([f, op, v]); }
+		async search() {
+			const hit = this.conditions.find((c) => c[0] === 'DOI' && c[2] === '10.1038/existing.209');
+			return hit ? [209] : [];
+		}
+	}
+
+	class FakeProgressWindow {
+		changeHeadline() {}
+		addDescription() {}
+		show() { toastCount += 1; }
+		startCloseTimer() {}
+	}
+
+	const itemsMap = new Map([
+		[201, createItemStub(201, { title: 'Valid Cited 1' })],
+		[203, trashedItem],
+		[209, existingDoiItem],
+	]);
+
 	globalThis.Zotero = {
+		isWin: true,
+		isMac: false,
 		Item: FakeZoteroItem,
-		Libraries: { userLibraryID: 1 },
+		Search: FakeSearch,
+		ProgressWindow: FakeProgressWindow,
+		Relations: { replacedItemPredicate: 'dc:replaces' },
+		Users: { getCurrentUserID: () => 888, getLocalUserKey: () => 'OWNLOCAL' },
+		Libraries: { userLibraryID: 1, get: () => ({ editable: true }) },
+		URI: {
+			getItemURI: (it) => `http://zotero.org/users/888/items/${it.key}`,
+			getURIItemID: () => false,
+		},
+		DB: {
+			async executeTransaction(work) {
+				txCount += 1;
+				return work();
+			},
+		},
 		Items: {
-			get: (id) => (id === 203 ? trashedItem : null),
-			getAsync: async (id) => (id === 203 ? trashedItem : null),
+			get: (id) => itemsMap.get(id) || createdItems.find((x) => x.id === id) || null,
+			getAsync: async (id) => itemsMap.get(id) || createdItems.find((x) => x.id === id) || null,
+		},
+		Integration: {
+			Interface: class {
+				constructor(app, doc, session) { this._app = app; this._doc = doc; this._session = session; }
+				async refresh() { refreshCalls += 1; }
+			},
+			getApplication: () => ({
+				getActiveDocument: async () => ({ doc: 'Paper.docx' }),
+				getDocument: async () => ({ doc: 'Paper.docx' }),
+			}),
+			async execCommand(_agent, cmd) {
+				const app = this.getApplication('WinWord', cmd, null);
+				const doc = await app.getActiveDocument();
+				await new this.Interface(app, doc, {})[cmd]();
+			},
 		},
 		Prefs: { get: () => '', set: () => {}, registerObserver: () => 0, unregisterObserver: () => {} },
 	};
 
-	const kernel = new PluginKernel({ id: 'bridgeflow@groele', version: '0.5.17', rootURI: 'chrome://bridgeflow/' });
+	const kernel = new PluginKernel({ id: 'bridgeflow@groele', version: '0.6.3', rootURI: 'chrome://bridgeflow/' });
+	const services = new ServiceContainer(kernel);
+	const mod = new WordCiteDomainModule(kernel, services);
+
+	try {
+		mod.start();
+		const sessionOrphans = [
+			// 1. Trashed item -> in-place restore
+			{ key: 'id:203', kind: 'trashed', itemID: 203, ordinal: 2, shortText: '2', title: 'Trashed Paper With PDF' },
+			// 2. Permanently deleted own item (with legacy local URI + synced URI) -> rebuild + dc:replaces normalized to users/888
+			{
+				key: 'uri:http://zotero.org/users/local/OWNLOCAL/items/DEL204',
+				kind: 'missing',
+				ordinal: 3,
+				shortText: '3',
+				title: 'Rebuilt Paper',
+				uris: ['http://zotero.org/users/local/OWNLOCAL/items/DEL204'],
+				itemData: {
+					type: 'article-journal',
+					title: 'Rebuilt Paper',
+					author: [{ family: 'Doe', given: 'Jane' }],
+					issued: { 'date-parts': [[2024, 5]] },
+					DOI: '10.1234/rebuilt',
+					'container-title': 'Nature',
+				},
+			},
+			// 3. Permanently deleted item whose DOI already exists in library (209) -> no duplicate created, dc:replaces attached to 209!
+			{
+				key: 'uri:http://zotero.org/users/888/items/OLD209',
+				kind: 'missing',
+				ordinal: 4,
+				shortText: '4',
+				title: 'Existing DOI Paper',
+				uris: ['http://zotero.org/users/888/items/OLD209'],
+				itemData: {
+					type: 'article-journal',
+					title: 'Existing DOI Paper',
+					DOI: 'https://doi.org/10.1038/EXISTING.209',
+				},
+			},
+			// 4. Co-author foreign URI (users/999999 !== 888) -> imported safely into Zotero, NO dc:replaces written!
+			{
+				key: 'uri:http://zotero.org/users/999999/items/COAUTH1',
+				kind: 'missing',
+				ordinal: 5,
+				shortText: '5',
+				title: 'Coauthor Paper',
+				uris: ['http://zotero.org/users/999999/items/COAUTH1'],
+				itemData: {
+					type: 'article-journal',
+					title: 'Coauthor Paper',
+					author: [{ family: 'Kim' }],
+					DOI: '10.5555/coauthor',
+				},
+			},
+			// 5. Unembedded empty orphan (no itemData) -> must be skipped, NEVER create junk "Citation 6" item!
+			{
+				key: 'uri:http://zotero.org/users/888/items/NOEMBED6',
+				kind: 'missing',
+				ordinal: 6,
+				shortText: '6',
+				title: 'Citation 6',
+				uris: ['http://zotero.org/users/888/items/NOEMBED6'],
+			},
+		];
+
+		mod.tracker.syncSessions([{
+			sessionID: 's1',
+			documentPath: 'Paper.docx',
+			citations: [{ itemID: 201, ordinal: 1, shortText: '1', occurrences: 1 }],
+			orphans: sessionOrphans,
+		}]);
+
+		// Proactive ProgressWindow toast fired once for this orphan signature, and must not re-fire on identical snapshot
+		assert.equal(toastCount, 1);
+		mod.tracker.emitCurrentSnapshot();
+		assert.equal(toastCount, 1, 'identical orphan set must not spam ProgressWindow toasts');
+
+		const banner = buildOrphanBannerModel(mod.tracker.getSession('s1')?.orphans, true);
+		assert.match(banner.title, /5 篇/);
+		assert.match(banner.buttonLabel, /一键还原并导入 \(5\)/);
+
+		const resultPromise = new Promise((resolve) => {
+			kernel.bus.on('word:recover-orphans-result', (res) => resolve(res));
+		});
+		kernel.bus.emit('word:recover-orphans-request', { sessionID: 's1', requestId: 'rec-all' });
+		const res = await resultPromise;
+
+		assert.equal(res.requestId, 'rec-all');
+		assert.equal(txCount, 1, 'entire recovery batch must execute inside a single Zotero.DB.executeTransaction');
+		assert.equal(res.restoredCount, 1);
+		assert.equal(res.importedCount, 2, 'Rebuilt Paper + Coauthor Paper imported; empty Citation 6 skipped; DOI 209 deduplicated');
+		assert.equal(res.existingCount, 1);
+		assert.equal(res.skippedCount, 1);
+		assert.equal(res.relinkedCount, 3, 'trashed 203 + own rebuilt + own DOI 209 relinked');
+		assert.equal(res.foreignSkippedCount, 1, 'foreign co-author URI excluded from dc:replaces');
+		assert.equal(res.refreshed, true, 'active Word document automatically refreshed after recovery');
+		assert.equal(refreshCalls, 1);
+
+		// Verify Trash restore
+		assert.equal(trashedItem.deleted, false);
+
+		// Verify existing DOI item loaded 'relations' datatype before attaching dc:replaces
+		assert.equal(existingDoiItem.loadedDataTypes.has('relations'), true);
+		assert.equal(existingDoiItem.hasRelation('dc:replaces', 'http://zotero.org/users/888/items/OLD209'), true);
+
+		// Verify local URI normalized to synced users/888 URI for Cloud Sync safety
+		const rebuilt = createdItems.find((it) => it.fields.title === 'Rebuilt Paper');
+		assert.ok(rebuilt);
+		assert.equal(rebuilt.hasRelation('dc:replaces', 'http://zotero.org/users/888/items/DEL204'), true);
+		assert.equal(rebuilt.hasRelation('dc:replaces', 'http://zotero.org/users/local/OWNLOCAL/items/DEL204'), false);
+
+		// Verify foreign co-author item has ZERO dc:replaces relations
+		const coauth = createdItems.find((it) => it.fields.title === 'Coauthor Paper');
+		assert.ok(coauth);
+		assert.equal(coauth.relations.size, 0);
+
+		// Verify immediate in-memory URI bridge resolves recovered items even before Word rewrites field JSON
+		const postExtract = extractSessionCitationsWithOrphans({
+			sessionID: 's1',
+			citationsByIndex: {
+				0: { properties: { plainCitation: '3,4' }, citationItems: [
+					{ id: 's1/old204', uris: ['http://zotero.org/users/local/OWNLOCAL/items/DEL204'] },
+					{ id: 's1/old209', uris: ['http://zotero.org/users/888/items/OLD209'] },
+				] },
+			},
+		});
+		assert.equal(postExtract.orphans.length, 0, 'relinked URIs resolve directly to recovered Zotero items');
+		assert.deepEqual(postExtract.citations.map((c) => c.itemID), [rebuilt.id, 209]);
+
+		// Verify receipt formatting for mixed & DOI-only outcomes
+		const receipt = formatRecoverReceipt(res, true);
+		assert.equal(receipt.tone, 'ok');
+		assert.match(receipt.text, /已从回收站还原 1 篇/);
+		assert.match(receipt.text, /已反向导入 2 篇/);
+		assert.match(receipt.text, /已复用库内同 DOI 文献 1 篇/);
+		assert.match(receipt.text, /已自动刷新并重连 Word/);
+		assert.match(receipt.text, /1 篇外部账号引文未写跨库映射/);
+
+		const doiOnlyReceipt = formatRecoverReceipt({
+			restoredCount: 0,
+			importedCount: 0,
+			skippedCount: 0,
+			existingCount: 1,
+			relinkedCount: 1,
+			refreshed: false,
+		}, true);
+		assert.equal(doiOnlyReceipt.tone, 'ok', 'DOI-only match must report success, not warning');
+		assert.match(doiOnlyReceipt.text, /点 Word「刷新」即自动重连/);
+	} finally {
+		mod.stop();
+		clearRelinkedItemUris();
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('Transaction rollback emits clean error receipt without leaving half-written state', async () => {
+	const prevZotero = globalThis.Zotero;
+	globalThis.Zotero = {
+		Item: class { setField() {} async save() { throw new Error('SQLITE_FULL'); } },
+		Libraries: { userLibraryID: 1 },
+		DB: { executeTransaction: async (work) => work() },
+		Items: { get: () => null },
+		Prefs: { get: () => '', set: () => {}, registerObserver: () => 0, unregisterObserver: () => {} },
+	};
+
+	const kernel = new PluginKernel({ id: 'bridgeflow@groele', version: '0.6.3', rootURI: 'chrome://bridgeflow/' });
 	const services = new ServiceContainer(kernel);
 	const mod = new WordCiteDomainModule(kernel, services);
 
 	try {
 		mod.start();
 		mod.tracker.syncSessions([{
-			sessionID: 's1',
-			documentPath: 'Paper.docx',
-			citations: [{ itemID: 201, ordinal: 1, shortText: '1', occurrences: 1 }],
-			orphans: [
-				{ key: 'id:203', kind: 'trashed', itemID: 203, ordinal: 2, shortText: '2', title: 'Trashed Paper' },
-				{
-					key: 'id:204',
-					kind: 'missing',
-					itemID: 204,
-					ordinal: 3,
-					shortText: '3',
-					title: 'Imported Paper',
-					itemData: {
-						type: 'article-journal',
-						title: 'Imported Paper',
-						author: [{ family: 'Doe', given: 'Jane' }],
-						issued: { 'date-parts': [[2024, 5]] },
-						DOI: '10.1234/test',
-						'container-title': 'Nature',
-					},
-				},
-			],
+			sessionID: 's-err',
+			documentPath: 'Broken.docx',
+			citations: [],
+			orphans: [{
+				key: 'o1',
+				kind: 'missing',
+				ordinal: 1,
+				shortText: '1',
+				title: 'Will Fail Save',
+				itemData: { title: 'Will Fail Save', DOI: '10.1000/fail' },
+			}],
 		}]);
 
-		const resultPromise = new Promise((resolve) => {
-			kernel.bus.on('word:recover-orphans-result', (res) => resolve(res));
+		const res = await new Promise((resolve) => {
+			kernel.bus.on('word:recover-orphans-result', resolve);
+			kernel.bus.emit('word:recover-orphans-request', { sessionID: 's-err', requestId: 'req-fail' });
 		});
-		kernel.bus.emit('word:recover-orphans-request', { sessionID: 's1', requestId: 'rec-1' });
-		const res = await resultPromise;
-
-		assert.equal(res.requestId, 'rec-1');
-		assert.equal(res.restoredCount, 1);
-		assert.equal(res.importedCount, 1);
-		assert.equal(trashedItem.deleted, false);
-		assert.equal(trashedItem.saveCount, 1);
-
-		assert.equal(createdItems.length, 1);
-		assert.equal(createdItems[0].itemType, 'journalArticle');
-		assert.equal(createdItems[0].fields.title, 'Imported Paper');
-		assert.equal(createdItems[0].fields.DOI, '10.1234/test');
-		assert.equal(createdItems[0].fields.publicationTitle, 'Nature');
-		assert.equal(createdItems[0].fields.date, '2024-5');
-		assert.equal(createdItems[0].creators[0].lastName, 'Doe');
-
-		const banner = buildOrphanBannerModel(mod.tracker.getSession('s1')?.orphans, true);
-		assert.match(banner.title, /2 篇/);
-		assert.match(banner.buttonLabel, /一键还原并导入 \(2\)/);
-		const receipt = formatRecoverReceipt(res, true);
-		assert.equal(receipt.tone, 'ok');
-		assert.match(receipt.text, /已从回收站还原 1 篇/);
-		assert.match(receipt.text, /已反向导入 1 篇/);
+		assert.equal(res.requestId, 'req-fail');
+		assert.equal(res.restoredCount, 0);
+		assert.equal(res.importedCount, 0);
+		assert.ok(res.error);
+		assert.equal(formatRecoverReceipt(res, true).tone, 'err');
 	} finally {
 		mod.stop();
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('recoverOrphanCitations deduplicates identical DOIs within the same recovery batch', async () => {
+	const prevZotero = globalThis.Zotero;
+	const saved = [];
+	let seq = 800;
+	globalThis.Zotero = {
+		Libraries: { userLibraryID: 1 },
+		Relations: { replacedItemPredicate: 'dc:replaces' },
+		Item: class {
+			constructor() { this.id = 0; this.libraryID = 1; this.fields = {}; this.rels = []; }
+			setField(k, v) { this.fields[k] = v; }
+			setCreators() {}
+			hasRelation(p, u) { return this.rels.some(([rp, ru]) => rp === p && ru === u); }
+			addRelation(p, u) { this.rels.push([p, u]); return true; }
+			async saveTx() { if (!this.id) { this.id = ++seq; saved.push(this); } return this.id; }
+		},
+	};
+	try {
+		const res = await recoverOrphanCitations([
+			{
+				key: 'k1',
+				kind: 'missing',
+				ordinal: 1,
+				shortText: '1',
+				title: 'Same Paper Copy 1',
+				uris: ['http://zotero.org/users/1/items/AAA11111'],
+				itemData: { title: 'Same Paper', DOI: '10.1000/same' },
+			},
+			{
+				key: 'k2',
+				kind: 'missing',
+				ordinal: 2,
+				shortText: '2',
+				title: 'Same Paper Copy 2',
+				uris: ['http://zotero.org/users/1/items/BBB22222'],
+				itemData: { title: 'Same Paper', DOI: 'https://doi.org/10.1000/SAME' },
+			},
+		]);
+		assert.equal(saved.length, 1, 'identical DOI within one batch must create only 1 item');
+		assert.equal(res.importedCount, 1);
+		assert.equal(res.existingCount, 1);
+		assert.equal(res.relinkedCount, 2);
+		assert.equal(saved[0].rels.length, 2, 'both old URIs attached as dc:replaces onto the single created item');
+	} finally {
+		clearRelinkedItemUris();
 		globalThis.Zotero = prevZotero;
 	}
 });

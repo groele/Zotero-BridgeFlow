@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.6.2** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.6.3** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -56,7 +56,8 @@
 
 ### 4. 子系统四：Microsoft Word 引用追踪与标签治理 (`word-cite`)
 
-- 在文献库展示原生 **「引用」** 序数列（多文档独立会话追踪与出现频次统计），支持 Windows 原生拖拽直接插入可编辑 Word 引文域，配合事务回滚防呆与 90 秒命令卡死保护；
+- 在文献库展示原生 **「引用」** 序数列（优先读取 Citeproc 真实题录序号、回退稳定指纹留座去重，兼容多文档会话与出现频次统计），支持 Windows 原生拖拽直接插入可编辑 Word 引文域，配合事务回滚防呆与 90 秒命令卡死保护；
+- **缺失/回收站引文智能找回与官方 `dc:replaces` 自动重连**：支持 Word 刷新后通过 URI 穿透找回 Zotero 回收站原条目（完整保留原 PDF 附件与批注），或从 Word 内嵌 CSL-JSON 备份单事务重建/DOI 查重复用，对同库 URI 自动写入 Zotero 原生 `dc:replaces` 映射并联动刷新重连回 Word 临时文集（严守外部账号 URI 隔离护栏）；
 - 自动维护 Word 关联临时文集分类并置顶排序，按设定前缀（默认 `/Citations`）自动同步已引用文献标签，采用串行队列确保并发写作时不丢状态。
 
 ---
@@ -102,7 +103,7 @@
 
 - **五层微内核结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（4 个独立子域禁止直接横向导入）➔ `src/bridges/`。
 - **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minify: false` 保持源码可审计）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **13 项静态守卫**与 **61 项单元测试**。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **13 项静态守卫**与 **77 项单元测试**。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -114,11 +115,11 @@ npm run build:xpi
 
 ---
 
-## 安装包完整性校验 (`v0.6.2`)
+## 安装包完整性校验 (`v0.6.3`)
 
-- 文件名：`Zotero-BridgeFlow-0.6.2.xpi`（`277,844` 字节，19 个条目，确定性构建）
-- SHA-256：`34CC18C36166B49AAAD1DECE801912BAEA3208A8986174C42DB9513060D87E94`
-- SHA-512：`53A862C04C0F0A21EF3C414121A269BAE28B8E70ED48D6B7E4D06A9D2EC079B75A52A529192A41D33BB634CBB980E87C014DD55157E8B7A8CFF1B65BE4EBE8CD`
+- 文件名：`Zotero-BridgeFlow-0.6.3.xpi`（`282,807` 字节，19 个条目，确定性构建）
+- SHA-256：`43491C6A1FC6E5985C87EA92E0E77C9B517C84A0382B8982694AC65FBEA28525`
+- SHA-512：`BB79F395F3F8A2F48808CCF57E37C5822AF01552C3D1FE0FCFBB414F19472B1A887824042F997F7B000B56F3C44B6E5BBBD0A9142831397BD0C8F3AF78BC5A66`
 
 ---
 

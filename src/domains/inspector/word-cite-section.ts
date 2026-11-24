@@ -1,4 +1,5 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
+import { isChineseLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { CitationSnapshotPayload, WorkspaceGroupSummary } from '../../kernel/types.ts';
 import { deduplicateRegularItems, normalizeToRegularItem } from '../../services/item-resolution.ts';
@@ -22,8 +23,8 @@ import {
 
 const WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
 
-function isZhLocale(): boolean {
-	return String((globalThis as any).Zotero?.locale || 'zh-CN').toLowerCase().startsWith('zh');
+function isZhLocale(doc?: Document | null): boolean {
+	return isChineseLocale(doc);
 }
 
 export class WordCiteSectionController {
@@ -155,12 +156,13 @@ export class WordCiteSectionController {
 		this.pendingRequest = requestId;
 		this.receiptOwner = owner;
 		this.receipt = formatPendingReceipt(kind, isZhLocale());
+		const timeoutMs = kind === 'insert' ? 12_000 : 25_000;
 		this.pendingTimer = setTimeout(() => {
 			if (this.pendingRequest !== requestId) return;
 			this.pendingTimer = null; this.pendingRequest = undefined;
 			this.receipt = { tone: 'warn', text: isZhLocale() ? '⌛ 未收到 Word 响应，请检查 Word 后重试' : '⌛ Word request timed out; retry when ready' };
 			this.renderAllBodies();
-		}, 12_000);
+		}, timeoutMs);
 		this.renderAllBodies();
 		return requestId;
 	}

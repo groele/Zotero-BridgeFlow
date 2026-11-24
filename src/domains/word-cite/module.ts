@@ -1,11 +1,13 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
+import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { DomainModule } from '../../kernel/types.ts';
+import type { CitationSnapshotPayload, DomainModule } from '../../kernel/types.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { WordCitationCollectionManager } from './citation-collections.ts';
 import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
+import { clearRelinkedItemUris } from './orphan-identity.ts';
 import { recoverOrphanCitations } from './orphan-recovery.ts';
 import { WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
@@ -23,7 +25,9 @@ export class WordCiteDomainModule implements DomainModule {
 	private readonly column: CitationColumnController;
 	private readonly poller: WordIntegrationPoller;
 	private readonly disposables = new DisposableStack();
+	private readonly notifiedOrphanSigs = new Map<string, string>();
 	private tagDebounceTimer: number | null = null;
+	private recoveringOrphans = false;
 	private active = false;
 
 	private readonly kernel: PluginKernel;
@@ -60,6 +64,7 @@ export class WordCiteDomainModule implements DomainModule {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
+		this.notifiedOrphanSigs.clear();
 		void this.collections.purgeStaleCollections();
 		if (this.kernel.prefs.get('wordCite.column.enable')) this.column.register();
 		this.poller.start();
@@ -73,9 +78,10 @@ export class WordCiteDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('citation:snapshot-updated', () => {
+			this.kernel.bus.on('citation:snapshot-updated', (snap) => {
 				this.scheduleTagSync();
 				this.collections.sync(this.tracker.getAllSessions());
+				this.notifyOrphansIfNeeded(snap);
 			}),
 		);
 
@@ -150,6 +156,16 @@ export class WordCiteDomainModule implements DomainModule {
 		this.disposables.add(
 			this.kernel.bus.on('word:recover-orphans-request', async ({ sessionID, keys, requestId }) => {
 				if (!this.active) return;
+				if (this.recoveringOrphans) {
+					this.kernel.bus.emit('word:recover-orphans-result', {
+						requestId,
+						restoredCount: 0,
+						importedCount: 0,
+						skippedCount: 0,
+						error: tLocale('正在执行缺失引文恢复，请稍候重试。', 'Citation recovery is already in progress.'),
+					});
+					return;
+				}
 				const targetSession = (sessionID ? this.tracker.getSession(sessionID) : undefined) || this.tracker.getActiveSession();
 				if (!targetSession || !targetSession.orphans.length) {
 					this.kernel.bus.emit('word:recover-orphans-result', {
@@ -160,16 +176,45 @@ export class WordCiteDomainModule implements DomainModule {
 					});
 					return;
 				}
-				const col = this.collections.getSessionCollection(targetSession.sessionID);
-				const result = await recoverOrphanCitations(targetSession.orphans, {
-					targetCollectionID: typeof col?.id === 'number' ? col.id : undefined,
-					collectionName: col?.name ? String(col.name) : targetSession.displayName,
-					keys,
-				});
-				if (result.restoredCount > 0 || result.importedCount > 0) {
-					await this.resyncNow().catch((err) => this.kernel.logger.error('word-cite:recover-resync', err));
+				this.recoveringOrphans = true;
+				try {
+					const col = this.collections.getSessionCollection(targetSession.sessionID);
+					const result = await recoverOrphanCitations(targetSession.orphans, {
+						targetCollectionID: typeof col?.id === 'number' ? col.id : undefined,
+						collectionName: col?.name ? String(col.name) : targetSession.displayName,
+						keys,
+					});
+					const changed = result.restoredCount > 0
+						|| result.importedCount > 0
+						|| (result.existingCount ?? 0) > 0
+						|| (result.relinkedCount ?? 0) > 0;
+					let refreshed = false;
+					if (changed) {
+						if (targetSession.sessionID === this.tracker.getActiveSession()?.sessionID) {
+							refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
+								this.kernel.logger.error('word-cite:recover-refresh', err);
+								return false;
+							});
+						}
+						await this.resyncNow().catch((err) => this.kernel.logger.error('word-cite:recover-resync', err));
+					}
+					this.kernel.bus.emit('word:recover-orphans-result', {
+						...result,
+						...(refreshed ? { refreshed: true } : {}),
+						requestId,
+					});
+				} catch (err) {
+					this.kernel.logger.error('word-cite:recover-orphans', err);
+					this.kernel.bus.emit('word:recover-orphans-result', {
+						requestId,
+						restoredCount: 0,
+						importedCount: 0,
+						skippedCount: targetSession.orphans.length,
+						error: tLocale('恢复缺失引文时发生数据库错误，事务已安全回滚。', 'Failed to recover orphan citations; transaction safely rolled back.'),
+					});
+				} finally {
+					this.recoveringOrphans = false;
 				}
-				this.kernel.bus.emit('word:recover-orphans-result', { ...result, requestId });
 			}),
 		);
 	}
@@ -192,6 +237,9 @@ export class WordCiteDomainModule implements DomainModule {
 			clearTimeout(this.tagDebounceTimer);
 			this.tagDebounceTimer = null;
 		}
+		this.recoveringOrphans = false;
+		this.notifiedOrphanSigs.clear();
+		clearRelinkedItemUris();
 		this.poller.stop();
 		this.column.unregister();
 		this.dragCite.disposeAll();
@@ -208,5 +256,37 @@ export class WordCiteDomainModule implements DomainModule {
 			if (!this.active) return;
 			void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
 		}, Math.max(0, delay));
+	}
+
+	private notifyOrphansIfNeeded(snap: CitationSnapshotPayload): void {
+		if (!this.active || this.recoveringOrphans) return;
+		const sessions = snap.sessions || [];
+		const openIDs = new Set(sessions.map((s) => s.sessionID));
+		for (const sid of this.notifiedOrphanSigs.keys()) {
+			if (!openIDs.has(sid)) this.notifiedOrphanSigs.delete(sid);
+		}
+		for (const ses of sessions) {
+			const orphans = ses.orphans || [];
+			if (!orphans.length) {
+				this.notifiedOrphanSigs.delete(ses.sessionID);
+				continue;
+			}
+			const sig = orphans.map((o) => `${o.key}:${o.kind}`).sort().join('|');
+			if (this.notifiedOrphanSigs.get(ses.sessionID) === sig) continue;
+			this.notifiedOrphanSigs.set(ses.sessionID, sig);
+			try {
+				const PW = (globalThis as any).Zotero?.ProgressWindow;
+				if (typeof PW !== 'function') continue;
+				const ordText = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ') + (orphans.length > 4 ? '…' : '');
+				const pw = new PW();
+				pw.changeHeadline(tLocale('Zotero BridgeFlow · 缺失引文提示', 'Zotero BridgeFlow · Missing Citations'));
+				pw.addDescription(tLocale(
+					`「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），请在右侧「Word 引用」面板一键还原并重连。`,
+					`"${ses.documentName}" has ${orphans.length} missing/trashed citation(s) (${ordText}). Open the Word Cite panel to recover & relink.`,
+				));
+				pw.show();
+				pw.startCloseTimer(5500);
+			} catch { /* headless safe */ }
+		}
 	}
 }

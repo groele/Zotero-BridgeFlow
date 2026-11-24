@@ -1,4 +1,16 @@
 import type { OrphanCitationInfo } from '../../kernel/types.ts';
+import {
+	buildOrphanIdentity,
+	cleanCitationText,
+	extractCitationItemUris,
+	formatCslAuthorYear,
+	lookupKnownOrdinal,
+	mergeOrphanMetadata,
+	resolveCiteprocOrdinalMap,
+	resolveItemIdFromUris,
+} from './orphan-identity.ts';
+
+export { cleanCitationText };
 
 const VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
 
@@ -14,73 +26,28 @@ export interface ExtractedSessionCitations {
 	orphans: OrphanCitationInfo[];
 }
 
-export function cleanCitationText(raw: unknown): string {
-	return String(raw || '').replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function formatCslAuthorYear(itemData: Record<string, unknown> | undefined): string {
-	if (!itemData) return '';
-	const authors = Array.isArray(itemData.author) ? itemData.author : Array.isArray(itemData.editor) ? itemData.editor : [];
-	const first = authors[0] as Record<string, unknown> | undefined;
-	const name = String(first?.family || first?.literal || first?.given || '').trim();
-	const issued = itemData.issued as { 'date-parts'?: unknown[][]; literal?: string; raw?: string } | undefined;
-	const yearPart = issued?.['date-parts']?.[0]?.[0] ?? issued?.literal ?? issued?.raw ?? '';
-	const year = String(yearPart || '').match(/\d{4}/)?.[0] || '';
-	return [name, year].filter(Boolean).join(', ');
-}
-
-function buildOrphanKey(itemID: number, uris: readonly string[], itemData: Record<string, unknown> | undefined, fallbackText: string): string {
-	if (Number.isSafeInteger(itemID) && itemID > 0) return `id:${itemID}`;
-	if (uris.length > 0) return `uri:${uris[0]}`;
-	const cslId = itemData?.id !== undefined ? String(itemData.id).trim() : '';
-	if (cslId) return `csl:${cslId}`;
-	const title = String(itemData?.title || '').trim();
-	if (title) return `title:${title.toLowerCase()}`;
-	return `raw:${fallbackText || 'unknown'}`;
-}
-
-function buildOrphanMetadata(
-	ci: any,
-	zotItem: any,
-	itemID: number,
-	shortText: string,
-	ordinal: number,
-	kind: 'trashed' | 'missing',
-): OrphanCitationInfo {
-	const rawData = ci?.itemData && typeof ci.itemData === 'object' ? (ci.itemData as Record<string, unknown>) : undefined;
-	const uris = Array.isArray(ci?.uris) ? ci.uris.map((u: unknown) => String(u || '').trim()).filter(Boolean) : [];
-	const itemTitle = typeof zotItem?.getField === 'function' ? String(zotItem.getField('title') || '').trim() : '';
-	const dataTitle = String(rawData?.title || rawData?.['container-title'] || '').trim();
-	const title = itemTitle || dataTitle || (shortText ? `Citation ${shortText}` : `#${ordinal}`);
-	const authorYear = formatCslAuthorYear(rawData);
-	const key = buildOrphanKey(itemID, uris, rawData, `${ordinal}:${shortText}`);
-	return {
-		key,
-		kind,
-		ordinal,
-		shortText,
-		title,
-		...(authorYear ? { authorYear } : {}),
-		...(Number.isSafeInteger(itemID) && itemID > 0 ? { itemID } : {}),
-		...(uris.length ? { uris } : {}),
-		...(rawData ? { itemData: rawData } : {}),
-	};
-}
-
 /**
- * Extracts unique valid cited items AND orphan/trashed citations in exact document appearance order.
- * Orphan/trashed citations reserve their true document ordinal so subsequent valid citations never shift left.
+ * Extracts unique valid cited items AND orphan/trashed citations with exact document ordinals:
+ * 1) Reads true citeproc bibliography ordinals when available (accurate for sorted/custom styles).
+ * 2) Falls back to document appearance order with URI/DOI/title+author+year deduplication across repeated missing citations.
+ * 3) Resolves trashed items via `uris`/`uri` even after Word refresh replaces numeric IDs with `<sessionID>/<randomID>`.
  */
 export function extractSessionCitationsWithOrphans(session: any): ExtractedSessionCitations {
-	const hostItems = (globalThis as any).Zotero?.Items;
+	const zoteroObj = (globalThis as any).Zotero;
+	const hostItems = zoteroObj?.Items;
 	const hasItemLookup = typeof hostItems?.get === 'function';
-	const ordinalMap = new Map<number, { ordinal: number; occurrences: number; labels: string[] }>();
-	const orphanMap = new Map<string, OrphanCitationInfo>();
-	const orphanItemIDs = new Set<number>();
-	const statusCache = new Map<number, { status: 'valid' | 'trashed' | 'missing'; zotItem: any }>();
-	let nextOrdinal = 1;
+	const sessionID = String(session?.sessionID || session?.data?.sessionID || '').trim();
+	const citeprocOrdinals = resolveCiteprocOrdinalMap(session);
 
-	const inspectItemStatus = (itemID: number): { status: 'valid' | 'trashed' | 'missing'; zotItem: any } => {
+	const validMap = new Map<number, { ordinal: number; knownOrdinal?: number; occurrences: number; labels: string[] }>();
+	const orphanMap = new Map<string, { info: OrphanCitationInfo; knownOrdinal?: number; doi: string }>();
+	const orphanAliasToKey = new Map<string, string>();
+	const orphanItemIDs = new Set<number>();
+	const orderQueue: Array<{ kind: 'valid'; itemID: number } | { kind: 'orphan'; key: string }> = [];
+	const statusCache = new Map<number, { status: 'valid' | 'trashed' | 'missing'; zotItem: any }>();
+	let fallbackSeq = 1;
+
+	const inspectItemById = (itemID: number): { status: 'valid' | 'trashed' | 'missing'; zotItem: any } => {
 		if (!Number.isSafeInteger(itemID) || itemID <= 0) return { status: 'missing', zotItem: null };
 		if (!hasItemLookup) return { status: 'valid', zotItem: null };
 		const cached = statusCache.get(itemID);
@@ -92,42 +59,85 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 			return res;
 		}
 		const inTrash = typeof zotItem.inTrash === 'function' ? zotItem.inTrash() === true : zotItem.inTrash === true;
-		const trashed = zotItem.deleted === true || inTrash;
-		const res = { status: (trashed ? 'trashed' : 'valid') as 'trashed' | 'valid', zotItem };
+		const res = { status: (zotItem.deleted === true || inTrash ? 'trashed' : 'valid') as 'trashed' | 'valid', zotItem };
 		statusCache.set(itemID, res);
 		return res;
 	};
 
-	const recordValidHit = (itemID: number, shortText: unknown, explicitItemOrdinal?: number, countOcc = false) => {
-		if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
-		if (orphanItemIDs.has(itemID)) return;
-		const { status } = inspectItemStatus(itemID);
-		if (status !== 'valid') return;
-
+	const recordValidHit = (itemID: number, shortText: unknown, knownOrdinal?: number, countOcc = false) => {
+		if (!Number.isSafeInteger(itemID) || itemID <= 0 || orphanItemIDs.has(itemID)) return;
+		if (inspectItemById(itemID).status !== 'valid') return;
 		const label = cleanCitationText(shortText);
-		let existing = ordinalMap.get(itemID);
+		let existing = validMap.get(itemID);
 		if (!existing) {
-			const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
-			nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-			existing = { ordinal: assigned, occurrences: 0, labels: [] };
-			ordinalMap.set(itemID, existing);
+			existing = { ordinal: 0, knownOrdinal, occurrences: 0, labels: [] };
+			validMap.set(itemID, existing);
+			orderQueue.push({ kind: 'valid', itemID });
+		} else if (!existing.knownOrdinal && knownOrdinal) {
+			existing.knownOrdinal = knownOrdinal;
 		}
 		if (countOcc) existing.occurrences += 1;
 		else if (existing.occurrences === 0) existing.occurrences = 1;
-		if (label && !existing.labels.includes(label)) {
-			existing.labels.push(label);
-		}
+		if (label && !existing.labels.includes(label)) existing.labels.push(label);
 	};
 
-	const recordOrphanHit = (ci: any, zotItem: any, itemID: number, kind: 'trashed' | 'missing', shortText: string, explicitOrdinal?: number) => {
+	const recordOrphanHit = (
+		ci: any,
+		zotItem: any,
+		itemID: number,
+		kind: 'trashed' | 'missing',
+		uris: readonly string[],
+		shortText: string,
+		knownOrdinal?: number,
+	) => {
 		const rawData = ci?.itemData && typeof ci.itemData === 'object' ? (ci.itemData as Record<string, unknown>) : undefined;
-		const uris = Array.isArray(ci?.uris) ? ci.uris.map((u: unknown) => String(u || '').trim()).filter(Boolean) : [];
-		const key = buildOrphanKey(itemID, uris, rawData, shortText || String(nextOrdinal));
+		const ident = buildOrphanIdentity(itemID, uris, rawData, sessionID, `${fallbackSeq++}:${shortText}`);
 		if (Number.isSafeInteger(itemID) && itemID > 0) orphanItemIDs.add(itemID);
-		if (orphanMap.has(key)) return;
-		const assigned = explicitOrdinal && explicitOrdinal > 0 ? explicitOrdinal : nextOrdinal;
-		nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-		orphanMap.set(key, buildOrphanMetadata(ci, zotItem, itemID, shortText, assigned, kind));
+
+		let matchedKey: string | undefined = orphanMap.has(ident.key) ? ident.key : undefined;
+		if (!matchedKey) {
+			for (const alias of ident.aliases) {
+				const found = orphanAliasToKey.get(alias);
+				if (found && orphanMap.has(found)) { matchedKey = found; break; }
+			}
+		}
+		if (!matchedKey && ident.fpAlias) {
+			const fpOwnerKey = orphanAliasToKey.get(ident.fpAlias);
+			const fpEntry = fpOwnerKey ? orphanMap.get(fpOwnerKey) : undefined;
+			if (fpEntry && (!ident.doi || !fpEntry.doi || ident.doi === fpEntry.doi)) {
+				matchedKey = fpOwnerKey;
+			}
+		}
+
+		if (matchedKey) {
+			const slot = orphanMap.get(matchedKey)!;
+			slot.info = mergeOrphanMetadata(slot.info, uris, rawData, itemID);
+			if (!slot.knownOrdinal && knownOrdinal) slot.knownOrdinal = knownOrdinal;
+			if (!slot.doi && ident.doi) slot.doi = ident.doi;
+			for (const alias of ident.aliases) orphanAliasToKey.set(alias, matchedKey);
+			if (ident.fpAlias && !orphanAliasToKey.has(ident.fpAlias)) orphanAliasToKey.set(ident.fpAlias, matchedKey);
+			return;
+		}
+
+		const itemTitle = typeof zotItem?.getField === 'function' ? String(zotItem.getField('title') || '').trim() : '';
+		const dataTitle = String(rawData?.title || rawData?.['container-title'] || '').trim();
+		const title = itemTitle || dataTitle || (shortText ? `Citation ${shortText}` : `#${orderQueue.length + 1}`);
+		const authorYear = formatCslAuthorYear(rawData);
+		const info: OrphanCitationInfo = {
+			key: ident.key,
+			kind,
+			ordinal: 0,
+			shortText,
+			title,
+			...(authorYear ? { authorYear } : {}),
+			...(Number.isSafeInteger(itemID) && itemID > 0 ? { itemID } : {}),
+			...(uris.length ? { uris: [...uris] } : {}),
+			...(rawData ? { itemData: rawData } : {}),
+		};
+		orphanMap.set(ident.key, { info, knownOrdinal, doi: ident.doi });
+		for (const alias of ident.aliases) orphanAliasToKey.set(alias, ident.key);
+		if (ident.fpAlias && !orphanAliasToKey.has(ident.fpAlias)) orphanAliasToKey.set(ident.fpAlias, ident.key);
+		orderQueue.push({ kind: 'orphan', key: ident.key });
 	};
 
 	const byIndex = session?.citationsByIndex;
@@ -139,18 +149,25 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 		for (const key of sortedKeys) {
 			const cit = byIndex[key];
 			const cItems: any[] = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
-			const shortText = cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? '';
-			const cleanedShort = cleanCitationText(shortText);
+			const cleanedShort = cleanCitationText(cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? '');
 			for (const ci of cItems) {
 				if (!ci || typeof ci !== 'object') continue;
-				const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
-				const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
-				const expOrd = explicitOrdinal > 0 ? explicitOrdinal : undefined;
-				const { status, zotItem } = inspectItemStatus(itemID);
-				if (status === 'valid') {
-					recordValidHit(itemID, cleanedShort, expOrd, true);
+				const uris = extractCitationItemUris(ci);
+				const rawData = ci?.itemData && typeof ci.itemData === 'object' ? (ci.itemData as Record<string, unknown>) : undefined;
+				let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
+				let inspected = inspectItemById(resolvedID);
+				if (inspected.status === 'missing' && uris.length > 0 && hasItemLookup) {
+					const uriResolvedID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
+					if (uriResolvedID > 0) {
+						resolvedID = uriResolvedID;
+						inspected = inspectItemById(resolvedID);
+					}
+				}
+				const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
+				if (inspected.status === 'valid') {
+					recordValidHit(resolvedID, cleanedShort, knownOrdinal, true);
 				} else {
-					recordOrphanHit(ci, zotItem, itemID, status, cleanedShort, expOrd);
+					recordOrphanHit(ci, inspected.zotItem, resolvedID, inspected.status, uris, cleanedShort, knownOrdinal);
 				}
 			}
 		}
@@ -160,22 +177,54 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 	if (byItem && typeof byItem === 'object') {
 		for (const [rawID, list] of Object.entries(byItem)) {
 			const itemID = Number(rawID);
-			const entries = Array.isArray(list) ? list : [list];
-			for (const entry of entries) {
+			const knownOrdinal = lookupKnownOrdinal({ id: rawID }, citeprocOrdinals, itemID, undefined);
+			for (const entry of Array.isArray(list) ? list : [list]) {
 				if (!entry) continue;
-				const shortText = entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? '';
-				recordValidHit(itemID, shortText);
+				recordValidHit(itemID, entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? '', knownOrdinal);
+			}
+		}
+	}
+
+	const usedOrdinals = new Set<number>();
+	for (const entry of validMap.values()) {
+		if (entry.knownOrdinal && entry.knownOrdinal > 0) usedOrdinals.add(entry.knownOrdinal);
+	}
+	for (const entry of orphanMap.values()) {
+		if (entry.knownOrdinal && entry.knownOrdinal > 0) usedOrdinals.add(entry.knownOrdinal);
+	}
+
+	let nextOrdinal = 1;
+	const allocOrdinal = (known?: number): number => {
+		if (known && known > 0) return known;
+		while (usedOrdinals.has(nextOrdinal)) nextOrdinal += 1;
+		usedOrdinals.add(nextOrdinal);
+		return nextOrdinal++;
+	};
+
+	for (const node of orderQueue) {
+		if (node.kind === 'valid') {
+			const slot = validMap.get(node.itemID);
+			if (slot && slot.ordinal <= 0) slot.ordinal = allocOrdinal(slot.knownOrdinal);
+		} else {
+			const slot = orphanMap.get(node.key);
+			if (slot && slot.info.ordinal <= 0) {
+				const ord = allocOrdinal(slot.knownOrdinal);
+				slot.info = {
+					...slot.info,
+					ordinal: ord,
+					title: slot.info.title.startsWith('#') ? `#${ord}` : slot.info.title,
+				};
 			}
 		}
 	}
 
 	return {
-		citations: [...ordinalMap.entries()].map(([itemID, info]) => ({
+		citations: [...validMap.entries()].map(([itemID, info]) => ({
 			itemID,
 			ordinal: info.ordinal,
 			shortText: info.labels.join(', '),
 			occurrences: info.occurrences,
 		})),
-		orphans: [...orphanMap.values()],
+		orphans: [...orphanMap.values()].map((slot) => slot.info).sort((a, b) => a.ordinal - b.ordinal),
 	};
 }

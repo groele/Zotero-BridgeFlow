@@ -104,7 +104,7 @@ export class WordIntegrationPoller {
 				const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session);
 				const prevTracked = this.tracker.getSession(sessionID);
 
-				if (!parsed.length && !orphans.length && prevTracked && prevTracked.itemCitations.size > 0) {
+				if (!parsed.length && !orphans.length && prevTracked && (prevTracked.itemCitations.size > 0 || prevTracked.orphans.length > 0)) {
 					const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
 					this.emptyStreakBySession.set(sessionID, streak);
 					if (streak < 2) {

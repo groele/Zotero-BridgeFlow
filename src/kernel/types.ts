@@ -121,6 +121,12 @@ export interface WordRecoverOrphansResultPayload {
 	readonly skippedCount: number;
 	/** Orphans whose DOI already exists in the library, so no duplicate item was created. */
 	readonly existingCount?: number;
+	/** Orphans for which same-library `dc:replaces` relink relation was attached (for automatic Word refresh relinking). */
+	readonly relinkedCount?: number;
+	/** Orphans skipped from `dc:replaces` binding because the source URI belongs to another user/library. */
+	readonly foreignSkippedCount?: number;
+	/** Whether the active Word document was automatically refreshed right after recovery. */
+	readonly refreshed?: boolean;
 	readonly collectionName?: string;
 	readonly error?: string;
 }

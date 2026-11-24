@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -4023,6 +4023,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/kernel/locale.ts
+  function isChineseLocale(doc) {
+    const host2 = globalThis.Zotero;
+    const rawLocale = String(
+      host2?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
+    ).trim();
+    if (!rawLocale) return true;
+    return rawLocale.toLowerCase().startsWith("zh");
+  }
+  function tLocale(zh, en, doc) {
+    return isChineseLocale(doc) ? zh : en;
+  }
+
   // src/domains/inspector/word-cite-panel-ui.ts
   function formatInsertReceipt(res, zh) {
     const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
@@ -4038,18 +4051,22 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
   }
   function formatPendingReceipt(kind, zh) {
-    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在还原/反向导入缺失引文…" : "Recovering missing citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
+    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在还原/重建引文并重连 Word…" : "Recovering & relinking citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
     return { tone: "warn", text: text2 };
   }
   function formatRecoverReceipt(res, zh) {
     if (res.error) return { tone: "err", text: res.error };
-    const { restoredCount, importedCount, skippedCount, collectionName } = res;
-    if (!restoredCount && !importedCount) {
-      return { tone: "warn", text: zh ? "⚠ 未能恢复或导入缺失引文" : "⚠ No orphan citations could be recovered" };
+    const { restoredCount, importedCount, skippedCount, existingCount = 0, relinkedCount = 0, foreignSkippedCount = 0, refreshed, collectionName } = res;
+    if (!restoredCount && !importedCount && !existingCount) {
+      return { tone: "warn", text: zh ? "⚠ 未能恢复缺失引文（缺少可用备份元数据）" : "⚠ No orphan citations could be recovered" };
     }
     const parts = [];
-    if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（刷新 Word 即自动重连）` : `Restored ${restoredCount} from Trash`);
-    if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}（请在 Word 中替换旧引用）` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ""} (re-link in Word)`);
+    if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（保留原附件与笔记）` : `Restored ${restoredCount} from Trash`);
+    if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ""}`);
+    if (existingCount > 0) parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing DOI item(s)`);
+    if (refreshed) parts.push(zh ? "已自动刷新并重连 Word" : "auto-refreshed & relinked in Word");
+    else if (relinkedCount > 0) parts.push(zh ? "点 Word「刷新」即自动重连" : "click Refresh in Word to relink");
+    if (foreignSkippedCount > 0) parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
     if (skippedCount > 0) parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
     return { tone: "ok", text: `✓ ${parts.join(zh ? "；" : "; ")}` };
   }
@@ -4061,12 +4078,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const moreOrd = orphans.length > 4 ? zh ? " 等" : "…" : "";
     const title = zh ? `⚠ 检测到 ${orphans.length} 篇断链/缺失引文（${ordinals}${moreOrd}）` : `⚠ ${orphans.length} missing/trashed citation(s) (${ordinals}${moreOrd})`;
     const listText = orphans.slice(0, 4).map((o) => {
-      const tag = o.kind === "trashed" ? zh ? "回收站" : "Trash" : zh ? "本地缺失" : "Missing";
+      const tag = o.kind === "trashed" ? zh ? "回收站·含原附件" : "Trash" : zh ? "本地缺失·可重建" : "Missing";
       return `[${o.ordinal}] ${o.title} (${tag})`;
     }).join("\n") + (orphans.length > 4 ? zh ? `
 …另有 ${orphans.length - 4} 篇` : `
 …and ${orphans.length - 4} more` : "");
-    const buttonLabel = trashed > 0 && missing === 0 ? zh ? `一键从回收站还原 (${trashed})` : `Restore from Trash (${trashed})` : trashed === 0 ? zh ? `一键反向导入 Zotero (${missing})` : `Import to Zotero (${missing})` : zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`;
+    const buttonLabel = trashed > 0 && missing === 0 ? zh ? `一键从回收站还原并重连 (${trashed})` : `Restore & Relink (${trashed})` : trashed === 0 ? zh ? `一键重建回 Zotero 并重连 (${missing})` : `Import & Relink (${missing})` : zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`;
     return { title, listText, buttonLabel };
   }
   function buildWordCiteSectionSummary(zh, snap, ids) {
@@ -4278,8 +4295,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 
   // src/domains/inspector/word-cite-section.ts
   var WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
-  function isZhLocale() {
-    return String(globalThis.Zotero?.locale || "zh-CN").toLowerCase().startsWith("zh");
+  function isZhLocale(doc) {
+    return isChineseLocale(doc);
   }
   var WordCiteSectionController = class {
     kernel;
@@ -4408,13 +4425,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.pendingRequest = requestId;
       this.receiptOwner = owner;
       this.receipt = formatPendingReceipt(kind, isZhLocale());
+      const timeoutMs = kind === "insert" ? 12e3 : 25e3;
       this.pendingTimer = setTimeout(() => {
         if (this.pendingRequest !== requestId) return;
         this.pendingTimer = null;
         this.pendingRequest = void 0;
         this.receipt = { tone: "warn", text: isZhLocale() ? "⌛ 未收到 Word 响应，请检查 Word 后重试" : "⌛ Word request timed out; retry when ready" };
         this.renderAllBodies();
-      }, 12e3);
+      }, timeoutMs);
       this.renderAllBodies();
       return requestId;
     }
@@ -13766,19 +13784,6 @@ ${summary}` : summary;
     }
   };
 
-  // src/kernel/locale.ts
-  function isChineseLocale(doc) {
-    const host2 = globalThis.Zotero;
-    const rawLocale = String(
-      host2?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
-    ).trim();
-    if (!rawLocale) return true;
-    return rawLocale.toLowerCase().startsWith("zh");
-  }
-  function tLocale(zh, en, doc) {
-    return isChineseLocale(doc) ? zh : en;
-  }
-
   // src/domains/word-cite/word-command.ts
   var commandInFlight = false;
   var commandStartedAt = 0;
@@ -14160,6 +14165,247 @@ ${summary}` : summary;
     }
   };
 
+  // src/domains/word-cite/orphan-identity.ts
+  function cleanCitationText(raw) {
+    return String(raw || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function normalizeDoi(raw) {
+    return String(raw ?? "").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").replace(/^doi:\s*/i, "").toLowerCase();
+  }
+  function normalizeMetaToken(raw) {
+    return String(raw ?? "").toLowerCase().replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function extractCitationItemUris(ci) {
+    const rawList = [];
+    if (Array.isArray(ci?.uris)) rawList.push(...ci.uris);
+    if (ci?.uri !== void 0 && ci?.uri !== null) rawList.push(ci.uri);
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const entry of rawList) {
+      const trimmed = String(entry || "").trim();
+      if (trimmed && !seen.has(trimmed)) {
+        seen.add(trimmed);
+        out.push(trimmed);
+      }
+    }
+    return out;
+  }
+  function extractFirstAuthorAndYear(itemData) {
+    if (!itemData) return { author: "", year: "" };
+    const authors = Array.isArray(itemData.author) ? itemData.author : Array.isArray(itemData.editor) ? itemData.editor : [];
+    const first = authors[0];
+    const author = String(first?.family || first?.literal || first?.given || "").trim();
+    const issued = itemData.issued;
+    const yearPart = issued?.["date-parts"]?.[0]?.[0] ?? issued?.literal ?? issued?.raw ?? "";
+    const year = String(yearPart || "").match(/\d{4}/)?.[0] || "";
+    return { author, year };
+  }
+  function formatCslAuthorYear(itemData) {
+    const { author, year } = extractFirstAuthorAndYear(itemData);
+    return [author, year].filter(Boolean).join(", ");
+  }
+  function isEphemeralSurrogateId(rawId, sessionID) {
+    if (!rawId) return true;
+    const lower = rawId.toLowerCase();
+    if (lower === "undefined" || lower === "null" || lower === "false") return true;
+    if (rawId.includes("/")) return true;
+    if (sessionID && rawId.startsWith(sessionID)) return true;
+    return false;
+  }
+  function buildOrphanIdentity(itemID, uris, itemData, sessionID, fallbackText) {
+    const doi = normalizeDoi(itemData?.DOI);
+    const rawCslId = itemData?.id !== void 0 && itemData?.id !== null ? String(itemData.id).trim() : "";
+    const stableCslId = rawCslId && !isEphemeralSurrogateId(rawCslId, sessionID) ? rawCslId : "";
+    const { author, year } = extractFirstAuthorAndYear(itemData);
+    const normTitle = normalizeMetaToken(itemData?.title || itemData?.["container-title"]);
+    const fpAlias = normTitle ? `fp:${normTitle}|${normalizeMetaToken(author)}|${year}` : "";
+    let key = "";
+    if (Number.isSafeInteger(itemID) && itemID > 0) key = `id:${itemID}`;
+    else if (uris.length > 0) key = `uri:${uris[0]}`;
+    else if (doi) key = `doi:${doi}`;
+    else if (stableCslId) key = `csl:${stableCslId}`;
+    else if (fpAlias) key = fpAlias;
+    else key = `raw:${fallbackText || "unknown"}`;
+    const aliases = [];
+    if (Number.isSafeInteger(itemID) && itemID > 0) aliases.push(`id:${itemID}`);
+    for (const uri of uris) aliases.push(`uri:${uri}`);
+    if (doi) aliases.push(`doi:${doi}`);
+    if (stableCslId) aliases.push(`csl:${stableCslId}`);
+    return { key, doi, fpAlias, aliases };
+  }
+  function isForeignUserItemUri(uri, zoteroObj) {
+    const userMatch = uri.match(/^https?:\/\/zotero\.org\/users\/(\d+)\/items\/([A-Za-z0-9]+)\/?$/i);
+    if (userMatch) {
+      const currentUid = typeof zoteroObj?.Users?.getCurrentUserID === "function" ? String(zoteroObj.Users.getCurrentUserID() || "").trim() : "";
+      return Boolean(currentUid && userMatch[1] !== currentUid);
+    }
+    const localMatch = uri.match(/^https?:\/\/zotero\.org\/users\/local\/([A-Za-z0-9]+)\/items\/([A-Za-z0-9]+)\/?$/i);
+    if (localMatch) {
+      const ownLocal = typeof zoteroObj?.Users?.getLocalUserKey === "function" ? String(zoteroObj.Users.getLocalUserKey() || "").trim() : "";
+      return Boolean(ownLocal && localMatch[1] !== ownLocal);
+    }
+    return false;
+  }
+  var relinkedUriMap = /* @__PURE__ */ new Map();
+  function rememberRelinkedItemUris(uris, itemID) {
+    if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
+    for (const raw of uris) {
+      const norm = String(raw || "").trim().replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
+      if (norm) relinkedUriMap.set(norm, itemID);
+    }
+  }
+  function clearRelinkedItemUris() {
+    relinkedUriMap.clear();
+  }
+  function resolveItemIdFromUris(uris, zoteroObj, hostItems) {
+    if (!uris.length || !hostItems) return 0;
+    const uriSvc = zoteroObj?.URI;
+    for (const uri of uris) {
+      if (!uri || isForeignUserItemUri(uri, zoteroObj)) continue;
+      try {
+        if (typeof uriSvc?.getURIItemID === "function") {
+          const id = Number(uriSvc.getURIItemID(uri));
+          if (Number.isSafeInteger(id) && id > 0) return id;
+        }
+        if (typeof uriSvc?.getURIItemLibraryKey === "function") {
+          const parsed = uriSvc.getURIItemLibraryKey(uri);
+          if (parsed && parsed.libraryID != null && parsed.key) {
+            if (typeof hostItems.getIDFromLibraryAndKey === "function") {
+              const id = Number(hostItems.getIDFromLibraryAndKey(parsed.libraryID, parsed.key));
+              if (Number.isSafeInteger(id) && id > 0) return id;
+            }
+            if (typeof hostItems.getByLibraryAndKey === "function") {
+              const item = hostItems.getByLibraryAndKey(parsed.libraryID, parsed.key);
+              const id = Number(item?.id || 0);
+              if (Number.isSafeInteger(id) && id > 0) return id;
+            }
+          }
+        }
+        const norm = uri.replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
+        const mapped = relinkedUriMap.get(norm);
+        if (mapped && hostItems.get?.(mapped)) return mapped;
+      } catch {
+      }
+    }
+    return 0;
+  }
+  function classifySyncSafeRelinkUris(uris, targetLibraryID, userLibraryID, zoteroObj) {
+    const safeUris = [];
+    const seen = /* @__PURE__ */ new Set();
+    let foreignSkipped = false;
+    if (!uris?.length) return { safeUris, foreignSkipped };
+    const hasUsersApi = typeof zoteroObj?.Users?.getCurrentUserID === "function";
+    const currentUid = hasUsersApi ? String(zoteroObj.Users.getCurrentUserID() || "").trim() : "";
+    const hasLocalKeyApi = typeof zoteroObj?.Users?.getLocalUserKey === "function";
+    const ownLocalKey = hasLocalKeyApi ? String(zoteroObj.Users.getLocalUserKey() || "").trim() : "";
+    const pushSafe = (uri) => {
+      if (uri && !seen.has(uri)) {
+        seen.add(uri);
+        safeUris.push(uri);
+      }
+    };
+    for (const raw of uris) {
+      const trimmed = String(raw || "").trim().replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
+      const match = trimmed.match(/^http:\/\/zotero\.org\/(?:users\/local\/([A-Za-z0-9]+)|users\/(\d+)|groups\/(\d+))\/items\/([A-Za-z0-9]+)$/i);
+      if (!match) continue;
+      const [, localKey, userId, groupId, itemKey] = match;
+      if (groupId) {
+        const groupLibId = Number(zoteroObj?.Groups?.getLibraryIDFromGroupID?.(Number(groupId)) ?? 0);
+        const editable = groupLibId > 0 && zoteroObj?.Libraries?.get?.(groupLibId)?.editable !== false;
+        if (groupLibId === targetLibraryID && editable) {
+          pushSafe(`http://zotero.org/groups/${groupId}/items/${itemKey}`);
+        } else {
+          foreignSkipped = true;
+        }
+        continue;
+      }
+      if (targetLibraryID !== userLibraryID) {
+        foreignSkipped = true;
+        continue;
+      }
+      if (userId) {
+        if (!hasUsersApi || currentUid && userId === currentUid) {
+          pushSafe(`http://zotero.org/users/${userId}/items/${itemKey}`);
+        } else {
+          foreignSkipped = true;
+        }
+        continue;
+      }
+      if (localKey) {
+        if (ownLocalKey && localKey !== ownLocalKey) {
+          foreignSkipped = true;
+        } else if (currentUid) {
+          pushSafe(`http://zotero.org/users/${currentUid}/items/${itemKey}`);
+        } else {
+          pushSafe(`http://zotero.org/users/local/${localKey}/items/${itemKey}`);
+        }
+      }
+    }
+    return { safeUris, foreignSkipped };
+  }
+  function resolveCiteprocOrdinalMap(session2) {
+    const ordinals = /* @__PURE__ */ new Map();
+    const style = session2?.style;
+    const regObj = style?.registry;
+    if (!regObj || typeof regObj !== "object") return ordinals;
+    const descDir = style?.bibliography_sort?.opt?.citation_number_sort_direction;
+    const descMap = descDir ? style?.bibliography_sort?.tmp?.citation_number_map : void 0;
+    const normalizeSeq = (rawSeq) => {
+      const seq = Number(rawSeq);
+      if (!Number.isSafeInteger(seq) || seq <= 0) return 0;
+      const mapped = descMap && descMap[seq] !== void 0 ? Number(descMap[seq]) : seq;
+      return Number.isSafeInteger(mapped) && mapped > 0 ? mapped : seq;
+    };
+    const reg = regObj.registry;
+    if (reg && typeof reg === "object") {
+      for (const [idKey, entry] of Object.entries(reg)) {
+        const seq = normalizeSeq(entry?.seq);
+        if (seq > 0) ordinals.set(String(idKey).trim(), seq);
+      }
+    }
+    if (Array.isArray(regObj.reflist)) {
+      for (const entry of regObj.reflist) {
+        const idKey = entry?.id !== void 0 && entry?.id !== null ? String(entry.id).trim() : "";
+        const seq = normalizeSeq(entry?.seq);
+        if (idKey && seq > 0 && !ordinals.has(idKey)) ordinals.set(idKey, seq);
+      }
+    }
+    return ordinals;
+  }
+  function lookupKnownOrdinal(ci, citeprocMap, resolvedItemID, rawData) {
+    const explicit = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
+    if (Number.isSafeInteger(explicit) && explicit > 0) return explicit;
+    if (!citeprocMap.size) return void 0;
+    const candidates = [
+      ci?.id !== void 0 && ci?.id !== null ? String(ci.id).trim() : "",
+      ci?.itemID !== void 0 && ci?.itemID !== null ? String(ci.itemID).trim() : "",
+      resolvedItemID > 0 ? String(resolvedItemID) : "",
+      rawData?.id !== void 0 && rawData?.id !== null ? String(rawData.id).trim() : ""
+    ];
+    for (const key of candidates) {
+      if (!key) continue;
+      const seq = citeprocMap.get(key);
+      if (seq && seq > 0) return seq;
+    }
+    return void 0;
+  }
+  function mergeOrphanMetadata(existing, uris, rawData, itemID) {
+    const mergedUris = uris.length ? [.../* @__PURE__ */ new Set([...existing.uris || [], ...uris])] : existing.uris;
+    const mergedData = existing.itemData || rawData;
+    const mergedAuthorYear = existing.authorYear || formatCslAuthorYear(rawData);
+    const candidateTitle = String(rawData?.title || rawData?.["container-title"] || "").trim();
+    const mergedTitle = existing.title.startsWith("Citation ") && candidateTitle ? candidateTitle : existing.title;
+    const mergedId = existing.itemID || (Number.isSafeInteger(itemID) && itemID > 0 ? itemID : void 0);
+    return {
+      ...existing,
+      title: mergedTitle,
+      ...mergedAuthorYear ? { authorYear: mergedAuthorYear } : {},
+      ...mergedId ? { itemID: mergedId } : {},
+      ...mergedUris?.length ? { uris: mergedUris } : {},
+      ...mergedData ? { itemData: mergedData } : {}
+    };
+  }
+
   // src/domains/word-cite/orphan-recovery.ts
   var CSL_TO_ZOTERO_TYPE = {
     "article-journal": "journalArticle",
@@ -14222,8 +14468,13 @@ ${summary}` : summary;
     } catch {
     }
   }
-  function normalizeDoi(raw) {
-    return String(raw ?? "").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").replace(/^doi:\s*/i, "").toLowerCase();
+  function hasRecoverableCslMetadata(data, creatorsCount, doi) {
+    if (!data || typeof data !== "object") return false;
+    const title = String(data.title || "").trim();
+    const container = String(data["container-title"] || "").trim();
+    const url = String(data.URL || "").trim();
+    const isbn = String(data.ISBN || "").trim();
+    return Boolean(title || container || creatorsCount > 0 || doi || url || isbn);
   }
   function resolveOrphanLibraryID(orphan, fallbackLibraryID) {
     const host2 = globalThis.Zotero;
@@ -14256,102 +14507,169 @@ ${summary}` : summary;
     }
     return null;
   }
-  async function importOrphanFromMetadata(orphan, libraryID, targetCollectionID) {
+  async function attachSyncSafeRelinkRelations(targetItem, orphan, targetLibraryID, userLibraryID, zoteroObj) {
+    const { safeUris, foreignSkipped } = classifySyncSafeRelinkUris(orphan.uris, targetLibraryID, userLibraryID, zoteroObj);
+    if (!safeUris.length || typeof targetItem?.addRelation !== "function") {
+      return { attached: false, safeUris, foreignSkipped };
+    }
+    const predicate = zoteroObj?.Relations?.replacedItemPredicate || "dc:replaces";
+    if (targetItem.id && typeof targetItem.loadDataType === "function") {
+      try {
+        await targetItem.loadDataType("relations");
+      } catch {
+      }
+    }
+    let selfUri = "";
+    if (targetItem.key && typeof zoteroObj?.URI?.getItemURI === "function") {
+      try {
+        selfUri = String(zoteroObj.URI.getItemURI(targetItem) || "").trim();
+      } catch {
+      }
+    }
+    let attached = false;
+    for (const uri of safeUris) {
+      if (!uri || uri === selfUri) continue;
+      try {
+        if (targetItem.hasRelation?.(predicate, uri)) {
+          attached = true;
+          continue;
+        }
+        const added = targetItem.addRelation(predicate, uri);
+        if (added !== false) attached = true;
+      } catch {
+      }
+    }
+    return { attached, safeUris, foreignSkipped };
+  }
+  async function importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchDoiCache, targetCollectionID) {
     const ZoteroObj = globalThis.Zotero;
     const ItemCtor = ZoteroObj?.Item;
-    if (typeof ItemCtor !== "function") return "failed";
-    const data = orphan.itemData || {};
-    const targetLibraryID = resolveOrphanLibraryID(orphan, libraryID);
-    const doi = normalizeDoi(data.DOI);
-    const duplicate = await findExistingItemByDoi(targetLibraryID, doi);
+    if (typeof ItemCtor !== "function") return { outcome: "failed", relinked: false, foreignSkipped: false };
+    const data = orphan.itemData && typeof orphan.itemData === "object" ? orphan.itemData : void 0;
+    const targetLibraryID = resolveOrphanLibraryID(orphan, userLibraryID);
+    const doi = normalizeDoi(data?.DOI);
+    const batchDupKey = doi ? `${targetLibraryID}:${doi}` : "";
+    const duplicate = (batchDupKey ? batchDoiCache.get(batchDupKey) : null) || await findExistingItemByDoi(targetLibraryID, doi);
     if (duplicate) {
-      if (targetCollectionID && typeof duplicate.addToCollection === "function" && duplicate.libraryID === libraryID) {
+      const dupLibID = duplicate.libraryID ?? userLibraryID;
+      const relRes2 = await attachSyncSafeRelinkRelations(duplicate, orphan, dupLibID, userLibraryID, ZoteroObj);
+      let addedToCol = false;
+      if (targetCollectionID && typeof duplicate.addToCollection === "function" && dupLibID === userLibraryID) {
         try {
           duplicate.addToCollection(targetCollectionID);
-          await duplicate.saveTx?.();
+          addedToCol = true;
         } catch {
         }
       }
-      return "existing";
+      if (addedToCol || relRes2.attached) {
+        await saveInTx(duplicate, addedToCol ? void 0 : { skipDateModifiedUpdate: true });
+      }
+      const dupId = Number(duplicate.id || 0);
+      if (relRes2.attached && dupId > 0) rememberRelinkedItemUris(orphan.uris || relRes2.safeUris, dupId);
+      return { outcome: "existing", relinked: relRes2.attached, foreignSkipped: relRes2.foreignSkipped };
     }
-    const rawType = String(data.type || "article-journal").trim();
+    const creators = data ? mapCslCreators(data) : [];
+    if (!hasRecoverableCslMetadata(data, creators.length, doi)) {
+      return { outcome: "failed", relinked: false, foreignSkipped: false };
+    }
+    const csl = data;
+    const rawType = String(csl.type || "article-journal").trim();
     const itemType = CSL_TO_ZOTERO_TYPE[rawType] || "journalArticle";
     const item = new ItemCtor(itemType);
     item.libraryID = targetLibraryID;
-    setFieldIfPresent(item, "title", data.title || orphan.title);
-    setFieldIfPresent(item, "publicationTitle", data["container-title"]);
-    setFieldIfPresent(item, "volume", data.volume);
-    setFieldIfPresent(item, "issue", data.issue);
-    setFieldIfPresent(item, "pages", data.page);
-    setFieldIfPresent(item, "DOI", data.DOI);
-    setFieldIfPresent(item, "ISBN", data.ISBN);
-    setFieldIfPresent(item, "ISSN", data.ISSN);
-    setFieldIfPresent(item, "url", data.URL);
-    setFieldIfPresent(item, "publisher", data.publisher);
-    setFieldIfPresent(item, "place", data["publisher-place"]);
-    setFieldIfPresent(item, "abstractNote", data.abstract);
-    setFieldIfPresent(item, "date", formatCslIssuedDate(data));
-    const creators = mapCslCreators(data);
+    setFieldIfPresent(item, "title", csl.title || csl["container-title"] || orphan.title);
+    setFieldIfPresent(item, "publicationTitle", csl["container-title"]);
+    setFieldIfPresent(item, "volume", csl.volume);
+    setFieldIfPresent(item, "issue", csl.issue);
+    setFieldIfPresent(item, "pages", csl.page);
+    setFieldIfPresent(item, "DOI", csl.DOI);
+    setFieldIfPresent(item, "ISBN", csl.ISBN);
+    setFieldIfPresent(item, "ISSN", csl.ISSN);
+    setFieldIfPresent(item, "url", csl.URL);
+    setFieldIfPresent(item, "publisher", csl.publisher);
+    setFieldIfPresent(item, "place", csl["publisher-place"]);
+    setFieldIfPresent(item, "abstractNote", csl.abstract);
+    setFieldIfPresent(item, "date", formatCslIssuedDate(csl));
     if (creators.length > 0 && typeof item.setCreators === "function") {
       try {
         item.setCreators(creators);
       } catch {
       }
     }
-    if (targetCollectionID && typeof item.addToCollection === "function" && targetLibraryID === libraryID) {
+    if (targetCollectionID && typeof item.addToCollection === "function" && targetLibraryID === userLibraryID) {
       try {
         item.addToCollection(targetCollectionID);
       } catch {
       }
     }
-    if (typeof item.saveTx === "function") {
-      await item.saveTx();
-      return "imported";
-    }
-    return "failed";
+    const relRes = await attachSyncSafeRelinkRelations(item, orphan, targetLibraryID, userLibraryID, ZoteroObj);
+    const savedId = await saveInTx(item);
+    const resolvedNewId = Number(item.id || savedId || 0);
+    if (batchDupKey) batchDoiCache.set(batchDupKey, item);
+    if (relRes.attached && resolvedNewId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, resolvedNewId);
+    return { outcome: "imported", relinked: relRes.attached, foreignSkipped: relRes.foreignSkipped };
   }
   async function recoverOrphanCitations(orphans, options) {
     const ZoteroObj = globalThis.Zotero;
     const hostItems = ZoteroObj?.Items;
-    const libraryID = Number(ZoteroObj?.Libraries?.userLibraryID ?? 1);
+    const userLibraryID = Number(ZoteroObj?.Libraries?.userLibraryID ?? 1);
     const keyFilter = options?.keys?.length ? new Set(options.keys) : null;
     const targets = keyFilter ? orphans.filter((o) => keyFilter.has(o.key)) : orphans;
+    const hasDbTx = typeof ZoteroObj?.DB?.executeTransaction === "function";
+    const saveInTx = async (item, opts) => {
+      if (hasDbTx && typeof item?.save === "function") {
+        return opts ? item.save(opts) : item.save();
+      }
+      if (typeof item?.saveTx === "function") {
+        return opts ? item.saveTx(opts) : item.saveTx();
+      }
+      throw new Error("Item persistence API unavailable");
+    };
+    const runBatch = async (work) => hasDbTx ? ZoteroObj.DB.executeTransaction(work) : work();
     let restoredCount = 0;
     let importedCount = 0;
     let skippedCount = 0;
     let existingCount = 0;
-    for (const orphan of targets) {
-      try {
+    let relinkedCount = 0;
+    let foreignSkippedCount = 0;
+    const restoredIDs = /* @__PURE__ */ new Set();
+    const batchDoiCache = /* @__PURE__ */ new Map();
+    await runBatch(async () => {
+      for (const orphan of targets) {
         if (orphan.kind === "trashed" && orphan.itemID) {
+          if (restoredIDs.has(orphan.itemID)) continue;
           const existing = typeof hostItems?.getAsync === "function" ? await hostItems.getAsync(orphan.itemID) : hostItems?.get?.(orphan.itemID);
           if (existing) {
             existing.deleted = false;
-            if (options?.targetCollectionID && typeof existing.addToCollection === "function") {
+            const itemLibID = existing.libraryID ?? userLibraryID;
+            if (options?.targetCollectionID && typeof existing.addToCollection === "function" && itemLibID === userLibraryID) {
               try {
                 existing.addToCollection(options.targetCollectionID);
               } catch {
               }
             }
-            if (typeof existing.saveTx === "function") {
-              await existing.saveTx();
-              restoredCount += 1;
-              continue;
-            }
+            await saveInTx(existing);
+            restoredIDs.add(orphan.itemID);
+            restoredCount += 1;
+            relinkedCount += 1;
+            continue;
           }
         }
-        const outcome = await importOrphanFromMetadata(orphan, libraryID, options?.targetCollectionID);
-        if (outcome === "imported") importedCount += 1;
-        else if (outcome === "existing") existingCount += 1;
+        const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchDoiCache, options?.targetCollectionID);
+        if (res.relinked) relinkedCount += 1;
+        if (res.foreignSkipped) foreignSkippedCount += 1;
+        if (res.outcome === "imported") importedCount += 1;
+        else if (res.outcome === "existing") existingCount += 1;
         else skippedCount += 1;
-      } catch {
-        skippedCount += 1;
       }
-    }
+    });
     return {
       restoredCount,
       importedCount,
       skippedCount,
       ...existingCount ? { existingCount } : {},
+      ...relinkedCount ? { relinkedCount } : {},
+      ...foreignSkippedCount ? { foreignSkippedCount } : {},
       ...options?.collectionName ? { collectionName: options.collectionName } : {}
     };
   }
@@ -14726,57 +15044,20 @@ ${summary}` : summary;
 
   // src/domains/word-cite/orphan-extraction.ts
   var VALID_INDEX_KEY_RE = /^(?:0|[1-9]\d*)$/;
-  function cleanCitationText(raw) {
-    return String(raw || "").replace(/[\u0000-\u001F\u007F\u200B-\u200F\u202A-\u202E\uFEFF]/g, " ").replace(/\s+/g, " ").trim();
-  }
-  function formatCslAuthorYear(itemData) {
-    if (!itemData) return "";
-    const authors = Array.isArray(itemData.author) ? itemData.author : Array.isArray(itemData.editor) ? itemData.editor : [];
-    const first = authors[0];
-    const name = String(first?.family || first?.literal || first?.given || "").trim();
-    const issued = itemData.issued;
-    const yearPart = issued?.["date-parts"]?.[0]?.[0] ?? issued?.literal ?? issued?.raw ?? "";
-    const year = String(yearPart || "").match(/\d{4}/)?.[0] || "";
-    return [name, year].filter(Boolean).join(", ");
-  }
-  function buildOrphanKey(itemID, uris, itemData, fallbackText) {
-    if (Number.isSafeInteger(itemID) && itemID > 0) return `id:${itemID}`;
-    if (uris.length > 0) return `uri:${uris[0]}`;
-    const cslId = itemData?.id !== void 0 ? String(itemData.id).trim() : "";
-    if (cslId) return `csl:${cslId}`;
-    const title = String(itemData?.title || "").trim();
-    if (title) return `title:${title.toLowerCase()}`;
-    return `raw:${fallbackText || "unknown"}`;
-  }
-  function buildOrphanMetadata(ci, zotItem, itemID, shortText, ordinal, kind) {
-    const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
-    const uris = Array.isArray(ci?.uris) ? ci.uris.map((u) => String(u || "").trim()).filter(Boolean) : [];
-    const itemTitle = typeof zotItem?.getField === "function" ? String(zotItem.getField("title") || "").trim() : "";
-    const dataTitle = String(rawData?.title || rawData?.["container-title"] || "").trim();
-    const title = itemTitle || dataTitle || (shortText ? `Citation ${shortText}` : `#${ordinal}`);
-    const authorYear = formatCslAuthorYear(rawData);
-    const key = buildOrphanKey(itemID, uris, rawData, `${ordinal}:${shortText}`);
-    return {
-      key,
-      kind,
-      ordinal,
-      shortText,
-      title,
-      ...authorYear ? { authorYear } : {},
-      ...Number.isSafeInteger(itemID) && itemID > 0 ? { itemID } : {},
-      ...uris.length ? { uris } : {},
-      ...rawData ? { itemData: rawData } : {}
-    };
-  }
   function extractSessionCitationsWithOrphans(session2) {
-    const hostItems = globalThis.Zotero?.Items;
+    const zoteroObj = globalThis.Zotero;
+    const hostItems = zoteroObj?.Items;
     const hasItemLookup = typeof hostItems?.get === "function";
-    const ordinalMap = /* @__PURE__ */ new Map();
+    const sessionID = String(session2?.sessionID || session2?.data?.sessionID || "").trim();
+    const citeprocOrdinals = resolveCiteprocOrdinalMap(session2);
+    const validMap = /* @__PURE__ */ new Map();
     const orphanMap = /* @__PURE__ */ new Map();
+    const orphanAliasToKey = /* @__PURE__ */ new Map();
     const orphanItemIDs = /* @__PURE__ */ new Set();
+    const orderQueue = [];
     const statusCache2 = /* @__PURE__ */ new Map();
-    let nextOrdinal = 1;
-    const inspectItemStatus = (itemID) => {
+    let fallbackSeq = 1;
+    const inspectItemById = (itemID) => {
       if (!Number.isSafeInteger(itemID) || itemID <= 0) return { status: "missing", zotItem: null };
       if (!hasItemLookup) return { status: "valid", zotItem: null };
       const cached = statusCache2.get(itemID);
@@ -14788,39 +15069,75 @@ ${summary}` : summary;
         return res2;
       }
       const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
-      const trashed = zotItem.deleted === true || inTrash;
-      const res = { status: trashed ? "trashed" : "valid", zotItem };
+      const res = { status: zotItem.deleted === true || inTrash ? "trashed" : "valid", zotItem };
       statusCache2.set(itemID, res);
       return res;
     };
-    const recordValidHit = (itemID, shortText, explicitItemOrdinal, countOcc = false) => {
-      if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
-      if (orphanItemIDs.has(itemID)) return;
-      const { status } = inspectItemStatus(itemID);
-      if (status !== "valid") return;
+    const recordValidHit = (itemID, shortText, knownOrdinal, countOcc = false) => {
+      if (!Number.isSafeInteger(itemID) || itemID <= 0 || orphanItemIDs.has(itemID)) return;
+      if (inspectItemById(itemID).status !== "valid") return;
       const label = cleanCitationText(shortText);
-      let existing = ordinalMap.get(itemID);
+      let existing = validMap.get(itemID);
       if (!existing) {
-        const assigned = explicitItemOrdinal && explicitItemOrdinal > 0 ? explicitItemOrdinal : nextOrdinal;
-        nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-        existing = { ordinal: assigned, occurrences: 0, labels: [] };
-        ordinalMap.set(itemID, existing);
+        existing = { ordinal: 0, knownOrdinal, occurrences: 0, labels: [] };
+        validMap.set(itemID, existing);
+        orderQueue.push({ kind: "valid", itemID });
+      } else if (!existing.knownOrdinal && knownOrdinal) {
+        existing.knownOrdinal = knownOrdinal;
       }
       if (countOcc) existing.occurrences += 1;
       else if (existing.occurrences === 0) existing.occurrences = 1;
-      if (label && !existing.labels.includes(label)) {
-        existing.labels.push(label);
-      }
+      if (label && !existing.labels.includes(label)) existing.labels.push(label);
     };
-    const recordOrphanHit = (ci, zotItem, itemID, kind, shortText, explicitOrdinal) => {
+    const recordOrphanHit = (ci, zotItem, itemID, kind, uris, shortText, knownOrdinal) => {
       const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
-      const uris = Array.isArray(ci?.uris) ? ci.uris.map((u) => String(u || "").trim()).filter(Boolean) : [];
-      const key = buildOrphanKey(itemID, uris, rawData, shortText || String(nextOrdinal));
+      const ident = buildOrphanIdentity(itemID, uris, rawData, sessionID, `${fallbackSeq++}:${shortText}`);
       if (Number.isSafeInteger(itemID) && itemID > 0) orphanItemIDs.add(itemID);
-      if (orphanMap.has(key)) return;
-      const assigned = explicitOrdinal && explicitOrdinal > 0 ? explicitOrdinal : nextOrdinal;
-      nextOrdinal = Math.max(nextOrdinal + 1, assigned + 1);
-      orphanMap.set(key, buildOrphanMetadata(ci, zotItem, itemID, shortText, assigned, kind));
+      let matchedKey = orphanMap.has(ident.key) ? ident.key : void 0;
+      if (!matchedKey) {
+        for (const alias of ident.aliases) {
+          const found = orphanAliasToKey.get(alias);
+          if (found && orphanMap.has(found)) {
+            matchedKey = found;
+            break;
+          }
+        }
+      }
+      if (!matchedKey && ident.fpAlias) {
+        const fpOwnerKey = orphanAliasToKey.get(ident.fpAlias);
+        const fpEntry = fpOwnerKey ? orphanMap.get(fpOwnerKey) : void 0;
+        if (fpEntry && (!ident.doi || !fpEntry.doi || ident.doi === fpEntry.doi)) {
+          matchedKey = fpOwnerKey;
+        }
+      }
+      if (matchedKey) {
+        const slot = orphanMap.get(matchedKey);
+        slot.info = mergeOrphanMetadata(slot.info, uris, rawData, itemID);
+        if (!slot.knownOrdinal && knownOrdinal) slot.knownOrdinal = knownOrdinal;
+        if (!slot.doi && ident.doi) slot.doi = ident.doi;
+        for (const alias of ident.aliases) orphanAliasToKey.set(alias, matchedKey);
+        if (ident.fpAlias && !orphanAliasToKey.has(ident.fpAlias)) orphanAliasToKey.set(ident.fpAlias, matchedKey);
+        return;
+      }
+      const itemTitle = typeof zotItem?.getField === "function" ? String(zotItem.getField("title") || "").trim() : "";
+      const dataTitle = String(rawData?.title || rawData?.["container-title"] || "").trim();
+      const title = itemTitle || dataTitle || (shortText ? `Citation ${shortText}` : `#${orderQueue.length + 1}`);
+      const authorYear = formatCslAuthorYear(rawData);
+      const info = {
+        key: ident.key,
+        kind,
+        ordinal: 0,
+        shortText,
+        title,
+        ...authorYear ? { authorYear } : {},
+        ...Number.isSafeInteger(itemID) && itemID > 0 ? { itemID } : {},
+        ...uris.length ? { uris: [...uris] } : {},
+        ...rawData ? { itemData: rawData } : {}
+      };
+      orphanMap.set(ident.key, { info, knownOrdinal, doi: ident.doi });
+      for (const alias of ident.aliases) orphanAliasToKey.set(alias, ident.key);
+      if (ident.fpAlias && !orphanAliasToKey.has(ident.fpAlias)) orphanAliasToKey.set(ident.fpAlias, ident.key);
+      orderQueue.push({ kind: "orphan", key: ident.key });
     };
     const byIndex = session2?.citationsByIndex;
     if (byIndex && typeof byIndex === "object") {
@@ -14828,18 +15145,25 @@ ${summary}` : summary;
       for (const key of sortedKeys) {
         const cit = byIndex[key];
         const cItems = Array.isArray(cit?.citationItems) ? cit.citationItems : [];
-        const shortText = cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? "";
-        const cleanedShort = cleanCitationText(shortText);
+        const cleanedShort = cleanCitationText(cit?.properties?.plainCitation ?? cit?.properties?.formattedCitation ?? cit?.text ?? "");
         for (const ci of cItems) {
           if (!ci || typeof ci !== "object") continue;
-          const itemID = Number(ci?.id ?? ci?.itemID ?? 0);
-          const explicitOrdinal = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
-          const expOrd = explicitOrdinal > 0 ? explicitOrdinal : void 0;
-          const { status, zotItem } = inspectItemStatus(itemID);
-          if (status === "valid") {
-            recordValidHit(itemID, cleanedShort, expOrd, true);
+          const uris = extractCitationItemUris(ci);
+          const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
+          let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
+          let inspected = inspectItemById(resolvedID);
+          if (inspected.status === "missing" && uris.length > 0 && hasItemLookup) {
+            const uriResolvedID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
+            if (uriResolvedID > 0) {
+              resolvedID = uriResolvedID;
+              inspected = inspectItemById(resolvedID);
+            }
+          }
+          const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
+          if (inspected.status === "valid") {
+            recordValidHit(resolvedID, cleanedShort, knownOrdinal, true);
           } else {
-            recordOrphanHit(ci, zotItem, itemID, status, cleanedShort, expOrd);
+            recordOrphanHit(ci, inspected.zotItem, resolvedID, inspected.status, uris, cleanedShort, knownOrdinal);
           }
         }
       }
@@ -14848,22 +15172,51 @@ ${summary}` : summary;
     if (byItem && typeof byItem === "object") {
       for (const [rawID, list] of Object.entries(byItem)) {
         const itemID = Number(rawID);
-        const entries = Array.isArray(list) ? list : [list];
-        for (const entry of entries) {
+        const knownOrdinal = lookupKnownOrdinal({ id: rawID }, citeprocOrdinals, itemID, void 0);
+        for (const entry of Array.isArray(list) ? list : [list]) {
           if (!entry) continue;
-          const shortText = entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? "";
-          recordValidHit(itemID, shortText);
+          recordValidHit(itemID, entry.properties?.plainCitation ?? entry.properties?.formattedCitation ?? entry.text ?? "", knownOrdinal);
+        }
+      }
+    }
+    const usedOrdinals = /* @__PURE__ */ new Set();
+    for (const entry of validMap.values()) {
+      if (entry.knownOrdinal && entry.knownOrdinal > 0) usedOrdinals.add(entry.knownOrdinal);
+    }
+    for (const entry of orphanMap.values()) {
+      if (entry.knownOrdinal && entry.knownOrdinal > 0) usedOrdinals.add(entry.knownOrdinal);
+    }
+    let nextOrdinal = 1;
+    const allocOrdinal = (known) => {
+      if (known && known > 0) return known;
+      while (usedOrdinals.has(nextOrdinal)) nextOrdinal += 1;
+      usedOrdinals.add(nextOrdinal);
+      return nextOrdinal++;
+    };
+    for (const node of orderQueue) {
+      if (node.kind === "valid") {
+        const slot = validMap.get(node.itemID);
+        if (slot && slot.ordinal <= 0) slot.ordinal = allocOrdinal(slot.knownOrdinal);
+      } else {
+        const slot = orphanMap.get(node.key);
+        if (slot && slot.info.ordinal <= 0) {
+          const ord = allocOrdinal(slot.knownOrdinal);
+          slot.info = {
+            ...slot.info,
+            ordinal: ord,
+            title: slot.info.title.startsWith("#") ? `#${ord}` : slot.info.title
+          };
         }
       }
     }
     return {
-      citations: [...ordinalMap.entries()].map(([itemID, info]) => ({
+      citations: [...validMap.entries()].map(([itemID, info]) => ({
         itemID,
         ordinal: info.ordinal,
         shortText: info.labels.join(", "),
         occurrences: info.occurrences
       })),
-      orphans: [...orphanMap.values()]
+      orphans: [...orphanMap.values()].map((slot) => slot.info).sort((a, b) => a.ordinal - b.ordinal)
     };
   }
 
@@ -14954,7 +15307,7 @@ ${summary}` : summary;
           if (this.stopEpoch !== epoch) return false;
           const { citations: parsed, orphans } = extractSessionCitationsWithOrphans(session2);
           const prevTracked = this.tracker.getSession(sessionID);
-          if (!parsed.length && !orphans.length && prevTracked && prevTracked.itemCitations.size > 0) {
+          if (!parsed.length && !orphans.length && prevTracked && (prevTracked.itemCitations.size > 0 || prevTracked.orphans.length > 0)) {
             const streak = (this.emptyStreakBySession.get(sessionID) ?? 0) + 1;
             this.emptyStreakBySession.set(sessionID, streak);
             if (streak < 2) {
@@ -15171,7 +15524,9 @@ ${summary}` : summary;
     column;
     poller;
     disposables = new DisposableStack();
+    notifiedOrphanSigs = /* @__PURE__ */ new Map();
     tagDebounceTimer = null;
+    recoveringOrphans = false;
     active = false;
     kernel;
     constructor(kernel, services) {
@@ -15202,6 +15557,7 @@ ${summary}` : summary;
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
+      this.notifiedOrphanSigs.clear();
       void this.collections.purgeStaleCollections();
       if (this.kernel.prefs.get("wordCite.column.enable")) this.column.register();
       this.poller.start();
@@ -15213,9 +15569,10 @@ ${summary}` : summary;
         })
       );
       this.disposables.add(
-        this.kernel.bus.on("citation:snapshot-updated", () => {
+        this.kernel.bus.on("citation:snapshot-updated", (snap) => {
           this.scheduleTagSync();
           this.collections.sync(this.tracker.getAllSessions());
+          this.notifyOrphansIfNeeded(snap);
         })
       );
       this.disposables.add(
@@ -15282,6 +15639,16 @@ ${summary}` : summary;
       this.disposables.add(
         this.kernel.bus.on("word:recover-orphans-request", async ({ sessionID, keys: keys2, requestId }) => {
           if (!this.active) return;
+          if (this.recoveringOrphans) {
+            this.kernel.bus.emit("word:recover-orphans-result", {
+              requestId,
+              restoredCount: 0,
+              importedCount: 0,
+              skippedCount: 0,
+              error: tLocale("正在执行缺失引文恢复，请稍候重试。", "Citation recovery is already in progress.")
+            });
+            return;
+          }
           const targetSession = (sessionID ? this.tracker.getSession(sessionID) : void 0) || this.tracker.getActiveSession();
           if (!targetSession || !targetSession.orphans.length) {
             this.kernel.bus.emit("word:recover-orphans-result", {
@@ -15292,16 +15659,42 @@ ${summary}` : summary;
             });
             return;
           }
-          const col = this.collections.getSessionCollection(targetSession.sessionID);
-          const result = await recoverOrphanCitations(targetSession.orphans, {
-            targetCollectionID: typeof col?.id === "number" ? col.id : void 0,
-            collectionName: col?.name ? String(col.name) : targetSession.displayName,
-            keys: keys2
-          });
-          if (result.restoredCount > 0 || result.importedCount > 0) {
-            await this.resyncNow().catch((err) => this.kernel.logger.error("word-cite:recover-resync", err));
+          this.recoveringOrphans = true;
+          try {
+            const col = this.collections.getSessionCollection(targetSession.sessionID);
+            const result = await recoverOrphanCitations(targetSession.orphans, {
+              targetCollectionID: typeof col?.id === "number" ? col.id : void 0,
+              collectionName: col?.name ? String(col.name) : targetSession.displayName,
+              keys: keys2
+            });
+            const changed = result.restoredCount > 0 || result.importedCount > 0 || (result.existingCount ?? 0) > 0 || (result.relinkedCount ?? 0) > 0;
+            let refreshed = false;
+            if (changed) {
+              if (targetSession.sessionID === this.tracker.getActiveSession()?.sessionID) {
+                refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
+                  this.kernel.logger.error("word-cite:recover-refresh", err);
+                  return false;
+                });
+              }
+              await this.resyncNow().catch((err) => this.kernel.logger.error("word-cite:recover-resync", err));
+            }
+            this.kernel.bus.emit("word:recover-orphans-result", {
+              ...result,
+              ...refreshed ? { refreshed: true } : {},
+              requestId
+            });
+          } catch (err) {
+            this.kernel.logger.error("word-cite:recover-orphans", err);
+            this.kernel.bus.emit("word:recover-orphans-result", {
+              requestId,
+              restoredCount: 0,
+              importedCount: 0,
+              skippedCount: targetSession.orphans.length,
+              error: tLocale("恢复缺失引文时发生数据库错误，事务已安全回滚。", "Failed to recover orphan citations; transaction safely rolled back.")
+            });
+          } finally {
+            this.recoveringOrphans = false;
           }
-          this.kernel.bus.emit("word:recover-orphans-result", { ...result, requestId });
         })
       );
     }
@@ -15321,6 +15714,9 @@ ${summary}` : summary;
         clearTimeout(this.tagDebounceTimer);
         this.tagDebounceTimer = null;
       }
+      this.recoveringOrphans = false;
+      this.notifiedOrphanSigs.clear();
+      clearRelinkedItemUris();
       this.poller.stop();
       this.column.unregister();
       this.dragCite.disposeAll();
@@ -15336,6 +15732,38 @@ ${summary}` : summary;
         if (!this.active) return;
         void this.tagGovernance.syncCitedItems(this.tracker.getUnionCitedItemIDs());
       }, Math.max(0, delay));
+    }
+    notifyOrphansIfNeeded(snap) {
+      if (!this.active || this.recoveringOrphans) return;
+      const sessions = snap.sessions || [];
+      const openIDs = new Set(sessions.map((s) => s.sessionID));
+      for (const sid of this.notifiedOrphanSigs.keys()) {
+        if (!openIDs.has(sid)) this.notifiedOrphanSigs.delete(sid);
+      }
+      for (const ses of sessions) {
+        const orphans = ses.orphans || [];
+        if (!orphans.length) {
+          this.notifiedOrphanSigs.delete(ses.sessionID);
+          continue;
+        }
+        const sig = orphans.map((o) => `${o.key}:${o.kind}`).sort().join("|");
+        if (this.notifiedOrphanSigs.get(ses.sessionID) === sig) continue;
+        this.notifiedOrphanSigs.set(ses.sessionID, sig);
+        try {
+          const PW = globalThis.Zotero?.ProgressWindow;
+          if (typeof PW !== "function") continue;
+          const ordText = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ") + (orphans.length > 4 ? "…" : "");
+          const pw = new PW();
+          pw.changeHeadline(tLocale("Zotero BridgeFlow · 缺失引文提示", "Zotero BridgeFlow · Missing Citations"));
+          pw.addDescription(tLocale(
+            `「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），请在右侧「Word 引用」面板一键还原并重连。`,
+            `"${ses.documentName}" has ${orphans.length} missing/trashed citation(s) (${ordText}). Open the Word Cite panel to recover & relink.`
+          ));
+          pw.show();
+          pw.startCloseTimer(5500);
+        } catch {
+        }
+      }
     }
   };
 
