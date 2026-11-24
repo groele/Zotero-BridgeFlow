@@ -119,7 +119,7 @@ export interface WordRecoverOrphansResultPayload {
 	readonly restoredCount: number;
 	readonly importedCount: number;
 	readonly skippedCount: number;
-	/** Orphans whose DOI already exists in the library, so no duplicate item was created. */
+	/** Orphans whose DOI or exact title+author+year already exists in the library, so no duplicate item was created. */
 	readonly existingCount?: number;
 	/** Orphans for which same-library `dc:replaces` relink relation was attached (for automatic Word refresh relinking). */
 	readonly relinkedCount?: number;
@@ -127,6 +127,9 @@ export interface WordRecoverOrphansResultPayload {
 	readonly foreignSkippedCount?: number;
 	/** Whether the active Word document was automatically refreshed right after recovery. */
 	readonly refreshed?: boolean;
+	/** Zotero item IDs of all restored, newly imported, or matched items for 1-click inspection. */
+	readonly recoveredItemIDs?: readonly number[];
+	readonly sessionID?: string;
 	readonly collectionName?: string;
 	readonly error?: string;
 }
@@ -154,7 +157,7 @@ export interface BridgeFlowEventMap {
 	'word:snapshot-query': { readonly requester?: string };
 	'word:switch-session-request': { readonly sessionID: string };
 	'word:select-collection-request': { readonly sessionID?: string; readonly win?: Window };
-	'word:recover-orphans-request': { readonly sessionID?: string; readonly keys?: readonly string[]; readonly requestId?: string; readonly win?: Window };
+	'word:recover-orphans-request': { readonly sessionID?: string; readonly keys?: readonly string[]; readonly requestId?: string; readonly source?: 'panel' | 'spotlight'; readonly win?: Window };
 	'word:recover-orphans-result': WordRecoverOrphansResultPayload;
 	'inspector:lookup-clipboard': { readonly win?: Window };
 	'inspector:clear-cache': { readonly target: 'memory' | 'disk' | 'all' };

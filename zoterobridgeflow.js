@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -192,6 +192,27 @@
             if (!this.kernel.prefs.get("fusion.spotlightCrossDomain")) return [];
             const out = [];
             const active = this.wordCite.tracker.getActiveSession();
+            for (const ses of this.wordCite.tracker.getAllSessions()) {
+              if (!ses.orphans.length) continue;
+              const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ") + (ses.orphans.length > 4 ? "…" : "");
+              const recoverTitle = `> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`;
+              if (!term || recoverTitle.toLowerCase().includes(term) || "recover orphan word 找回 恢复 缺失 断链 重连".includes(term)) {
+                out.push({
+                  id: `cmd:recover-word-orphans:${ses.sessionID}`,
+                  category: "command",
+                  title: recoverTitle,
+                  subtitle: `单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
+                  badge: "修复",
+                  action: () => {
+                    this.kernel.bus.emit("word:recover-orphans-request", {
+                      sessionID: ses.sessionID,
+                      source: "spotlight",
+                      win
+                    });
+                  }
+                });
+              }
+            }
             if (active) {
               const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;
               if (!term || groupCmdTitle.toLowerCase().includes(term) || "word".includes(term) || "group".includes(term)) {
@@ -4036,6 +4057,392 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return isChineseLocale(doc) ? zh : en;
   }
 
+  // src/domains/inspector/word-cite-orphan-model.ts
+  function isOrphanRecoverable(orphan) {
+    if (orphan.kind === "trashed" && Boolean(orphan.itemID)) return true;
+    const data = orphan.itemData;
+    if (!data || typeof data !== "object") return false;
+    const hasCreators = [data.author, data.editor, data.translator].some((arr) => Array.isArray(arr) && arr.length > 0);
+    return Boolean(
+      String(data.title || "").trim() || String(data["container-title"] || "").trim() || String(data.DOI || "").trim() || String(data.URL || "").trim() || String(data.ISBN || "").trim() || hasCreators
+    );
+  }
+  function formatRecoverReceipt(res, zh) {
+    if (res.error) return { tone: "err", text: res.error };
+    const {
+      restoredCount,
+      importedCount,
+      skippedCount,
+      existingCount = 0,
+      relinkedCount = 0,
+      foreignSkippedCount = 0,
+      refreshed,
+      recoveredItemIDs,
+      sessionID,
+      collectionName
+    } = res;
+    const totalRecovered = restoredCount + importedCount + existingCount;
+    if (!totalRecovered) {
+      return {
+        tone: "warn",
+        text: zh ? "⚠ 未能恢复缺失引文（缺少可用备份元数据）" : "⚠ No orphan citations could be recovered (missing embedded metadata)"
+      };
+    }
+    const parts = [];
+    const chips = [];
+    if (restoredCount > 0) {
+      parts.push(zh ? `已从回收站还原 ${restoredCount} 篇` : `Restored ${restoredCount} from Trash`);
+      chips.push({ text: zh ? `回收站还原 ${restoredCount} 篇` : `Trash ${restoredCount}`, variant: "ok" });
+    }
+    if (importedCount > 0) {
+      parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}` : `Imported ${importedCount}${collectionName ? ` to "${collectionName}"` : ""}`);
+      chips.push({ text: zh ? `备份重建 ${importedCount} 篇` : `Rebuilt ${importedCount}`, variant: "info" });
+    }
+    if (existingCount > 0) {
+      parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
+      chips.push({ text: zh ? `复用已有 ${existingCount} 篇` : `Matched ${existingCount}`, variant: "info" });
+    }
+    if (refreshed) {
+      parts.push(zh ? "已自动刷新并重连 Word" : "auto-refreshed & relinked in Word");
+      chips.push({ text: zh ? "↻ Word 已重连" : "↻ Word Relinked", variant: "ok" });
+    } else if (relinkedCount > 0) {
+      parts.push(zh ? "点 Word「刷新」即自动重连" : "click Refresh in Word to relink");
+      chips.push({ text: zh ? "待刷新重连 Word" : "Needs Word Refresh", variant: "warn" });
+    }
+    if (foreignSkippedCount > 0) {
+      parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
+      chips.push({ text: zh ? `外部账号隔离 ${foreignSkippedCount} 篇` : `External ${foreignSkippedCount}`, variant: "warn" });
+    }
+    if (skippedCount > 0) {
+      parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
+      chips.push({ text: zh ? `无备份跳过 ${skippedCount} 篇` : `Skipped ${skippedCount}`, variant: "warn" });
+    }
+    const actions = [];
+    if (!refreshed && relinkedCount > 0) {
+      actions.push({
+        kind: "refresh-word",
+        label: zh ? "↻ 立即刷新 Word" : "↻ Refresh Word",
+        title: zh ? "立即执行 Zotero 官方刷新，将恢复的文献重新连接回当前 Word 文档" : "Run Zotero Refresh now to relink recovered items in Word",
+        sessionID
+      });
+    }
+    if (recoveredItemIDs?.length) {
+      actions.push({
+        kind: "locate-recovered",
+        label: zh ? `定位查看 (${recoveredItemIDs.length}) ↗` : `Locate (${recoveredItemIDs.length}) ↗`,
+        title: zh ? "在文库列表中定位并高亮刚刚找回的文献（便于核对或补抓 PDF）" : "Select and reveal the recovered items in your Zotero library",
+        itemIDs: recoveredItemIDs,
+        sessionID
+      });
+    }
+    const headline = zh ? `✓ 已成功找回 ${totalRecovered} 篇缺失引文` : `✓ Recovered ${totalRecovered} missing citation(s)`;
+    const subnote = collectionName ? zh ? `已同步至「${collectionName}」` : `Synced to "${collectionName}"` : void 0;
+    return {
+      tone: "ok",
+      text: `✓ ${parts.join(zh ? "；" : "; ")}`,
+      headline,
+      chips,
+      subnote,
+      actions: actions.length ? actions : void 0,
+      stickyUntil: Date.now() + 25e3
+    };
+  }
+  function buildOrphanBannerModel(orphans, zh, options) {
+    if (!orphans?.length) {
+      return {
+        visible: false,
+        title: "",
+        listText: "",
+        summaryChips: [],
+        showToggle: false,
+        toggleLabel: "",
+        rows: [],
+        buttonLabel: "",
+        buttonTooltip: "",
+        buttonDisabled: true
+      };
+    }
+    const unchecked = options?.uncheckedKeys;
+    const expanded = Boolean(options?.expanded);
+    let trashedCount = 0;
+    let rebuildCount = 0;
+    let unrecCount = 0;
+    const allRows = orphans.map((o) => {
+      const recoverable = isOrphanRecoverable(o);
+      const isTrash = o.kind === "trashed" && Boolean(o.itemID);
+      if (isTrash) trashedCount += 1;
+      else if (recoverable) rebuildCount += 1;
+      else unrecCount += 1;
+      const checked = recoverable && !unchecked?.has(o.key);
+      const tagVariant = isTrash ? "trash" : recoverable ? "rebuild" : "unrec";
+      const tagText = isTrash ? zh ? "回收站·含原附件" : "Trash · Keeps PDF" : recoverable ? zh ? "Word备份·可重建" : "Word Backup" : zh ? "无内嵌备份" : "No Backup";
+      const doi = String(o.itemData?.DOI || "").trim();
+      const tooltipParts = [`[${o.ordinal}] ${o.title}`, o.authorYear || "", doi ? `DOI: ${doi}` : "", tagText].filter(Boolean);
+      return {
+        key: o.key,
+        ordinal: o.ordinal,
+        title: o.title,
+        tooltip: tooltipParts.join("\n"),
+        authorYear: o.authorYear || "",
+        tagText,
+        tagVariant,
+        recoverable,
+        checked
+      };
+    });
+    const summaryChips = [];
+    if (trashedCount > 0) summaryChips.push({ text: zh ? `回收站 ${trashedCount}` : `Trash ${trashedCount}`, variant: "trash" });
+    if (rebuildCount > 0) summaryChips.push({ text: zh ? `可重建 ${rebuildCount}` : `Backup ${rebuildCount}`, variant: "rebuild" });
+    if (unrecCount > 0) summaryChips.push({ text: zh ? `缺备份 ${unrecCount}` : `No Data ${unrecCount}`, variant: "unrec" });
+    const checkedRows = allRows.filter((r) => r.checked);
+    const recoverableTotal = trashedCount + rebuildCount;
+    const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ");
+    const moreOrd = orphans.length > 4 ? zh ? " 等" : "…" : "";
+    const title = zh ? `⚠ 检测到 ${orphans.length} 篇断链引文（${ordinals}${moreOrd}）` : `⚠ ${orphans.length} broken citation(s) (${ordinals}${moreOrd})`;
+    const listText = allRows.slice(0, 4).map((r) => `[${r.ordinal}] ${r.title} (${r.tagText})`).join("\n") + (allRows.length > 4 ? zh ? `
+…另有 ${allRows.length - 4} 篇` : `
+…and ${allRows.length - 4} more` : "");
+    let buttonLabel;
+    if (recoverableTotal === 0) {
+      buttonLabel = zh ? "缺少内嵌备份，请在 Word 中手动重选" : "No embedded backup available";
+    } else if (checkedRows.length === 0) {
+      buttonLabel = zh ? "请勾选需要找回的引文" : "Select citations to recover";
+    } else if (checkedRows.length < recoverableTotal) {
+      buttonLabel = zh ? `⚡ 找回已选 ${checkedRows.length} 篇并重连 Word` : `⚡ Recover ${checkedRows.length} Selected & Relink`;
+    } else if (trashedCount > 0 && rebuildCount === 0) {
+      buttonLabel = zh ? `⚡ 一键从回收站找回并重连 (${trashedCount})` : `⚡ Restore & Relink (${trashedCount})`;
+    } else if (trashedCount === 0) {
+      buttonLabel = zh ? `⚡ 一键找回并重连 Word (${rebuildCount})` : `⚡ Recover & Relink (${rebuildCount})`;
+    } else {
+      buttonLabel = zh ? `⚡ 一键还原并导入 (${checkedRows.length})` : `⚡ Restore & Import (${checkedRows.length})`;
+    }
+    const buttonTooltip = zh ? "在单个数据库事务中无损还原回收站条目或从 Word 备份重建（自动按 DOI/题录查重），并通过官方 dc:replaces 关系自动重连 Word" : "Atomically restore from Trash or rebuild from Word metadata with DOI/title deduplication and native dc:replaces relinking";
+    const showToggle = allRows.length > 3;
+    const toggleLabel = expanded ? zh ? "收起" : "Collapse" : zh ? `展开全部 (${allRows.length})` : `Show all (${allRows.length})`;
+    const rows = showToggle && !expanded ? allRows.slice(0, 3) : allRows;
+    return {
+      visible: true,
+      title,
+      listText,
+      summaryChips,
+      showToggle,
+      toggleLabel,
+      rows,
+      buttonLabel,
+      buttonTooltip,
+      buttonDisabled: checkedRows.length === 0
+    };
+  }
+  var OrphanSelectionState = class {
+    uncheckedKeys = /* @__PURE__ */ new Set();
+    expanded = false;
+    autoOpenedSig = "";
+    reset() {
+      this.uncheckedKeys.clear();
+      this.expanded = false;
+      this.autoOpenedSig = "";
+    }
+    toggleKey(key) {
+      if (this.uncheckedKeys.has(key)) this.uncheckedKeys.delete(key);
+      else this.uncheckedKeys.add(key);
+    }
+    getSelectedRecoverableKeys(orphans) {
+      if (!orphans?.length) return [];
+      return orphans.filter((o) => isOrphanRecoverable(o) && !this.uncheckedKeys.has(o.key)).map((o) => o.key);
+    }
+    /** Returns true when a fresh orphan set appears and the section should auto-expand once. */
+    syncSnapshot(activeSessionID, orphans) {
+      if (!orphans?.length) {
+        this.reset();
+        return false;
+      }
+      const validKeys = new Set(orphans.map((o) => o.key));
+      for (const k of [...this.uncheckedKeys]) {
+        if (!validKeys.has(k)) this.uncheckedKeys.delete(k);
+      }
+      const sig = `${activeSessionID || ""}:${orphans.map((o) => o.key).sort().join("|")}`;
+      if (sig === this.autoOpenedSig) return false;
+      this.autoOpenedSig = sig;
+      return true;
+    }
+  };
+
+  // src/domains/inspector/word-cite-orphan-ui.ts
+  var XHTML_NS2 = "http://www.w3.org/1999/xhtml";
+  function createEl(doc, tag, cls) {
+    const node = typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS2, tag) : doc.createElement(tag);
+    if (cls) node.className = cls;
+    return node;
+  }
+  function clearChildren(el) {
+    if (typeof el.replaceChildren === "function") {
+      el.replaceChildren();
+      return;
+    }
+    if (Array.isArray(el.children)) {
+      el.children.length = 0;
+    }
+    el.textContent = "";
+  }
+  var ORPHAN_AND_RECEIPT_CSS = `
+.zbf-wc-orphan-box { order: 1; display: grid; gap: 6px; padding: 8px 9px; border-radius: 8px; border: 1px solid rgba(217,119,6,0.36); background: linear-gradient(180deg, rgba(245,158,11,0.11), rgba(245,158,11,0.05)); font-size: 11.5px; }
+.zbf-wc-orphan-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.zbf-wc-orphan-title { font-weight: 600; color: #b45309; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-toggle { flex: none; background: none; border: none; padding: 1px 4px; border-radius: 4px; font-size: 11px; color: #b45309; cursor: pointer; opacity: 0.88; }
+.zbf-wc-orphan-toggle:hover { background: rgba(217,119,6,0.14); opacity: 1; }
+.zbf-wc-orphan-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.zbf-wc-orphan-chip, .zbf-wc-orphan-tag, .zbf-wc-rcp-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; line-height: 1.45; white-space: nowrap; font-weight: 500; }
+.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { background: rgba(13,148,136,0.14); color: #0f766e; }
+.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild { background: rgba(37,99,235,0.12); color: #1d4ed8; }
+.zbf-wc-orphan-chip.is-unrec, .zbf-wc-orphan-tag.is-unrec { background: rgba(128,128,128,0.15); color: inherit; opacity: 0.75; }
+.zbf-wc-orphan-list { display: grid; gap: 4px; max-height: 184px; overflow-y: auto; padding-right: 1px; }
+.zbf-wc-orphan-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px; border-radius: 6px; background: var(--fill-primary, rgba(255,255,255,0.58)); border: 1px solid rgba(128,128,128,0.15); cursor: pointer; min-width: 0; }
+.zbf-wc-orphan-row:hover { border-color: rgba(217,119,6,0.4); }
+.zbf-wc-orphan-row.is-disabled { opacity: 0.62; cursor: default; }
+.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; }
+.zbf-wc-orphan-ord { flex: none; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; line-height: 1.45; }
+.zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
+.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10.5px; opacity: 0.86; min-width: 0; }
+.zbf-wc-orphan-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+.zbf-wc-orphan-btn { box-sizing: border-box; width: 100%; padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.5); background: rgba(217,119,6,0.17); color: #92400e; font-size: 11.5px; font-weight: 600; cursor: pointer; text-align: center; transition: background 120ms ease; }
+.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.26); }
+.zbf-wc-orphan-btn:disabled { opacity: 0.48; cursor: default; }
+.zbf-wc-receipt { order: 2; display: grid; gap: 5px; font-size: 11.5px; padding: 6px 8px; border-radius: 7px; line-height: 1.4; border: 1px solid transparent; }
+.zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.1); border-color: rgba(22,163,74,0.28); color: #15803d; }
+.zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.28); color: #b45309; }
+.zbf-wc-receipt.is-err { background: rgba(220,38,38,0.1); border-color: rgba(220,38,38,0.28); color: #b91c1c; }
+.zbf-wc-rcp-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; font-weight: 600; }
+.zbf-wc-rcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-rcp-close { flex: none; background: none; border: none; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.65; cursor: pointer; border-radius: 4px; }
+.zbf-wc-rcp-close:hover { opacity: 1; background: rgba(128,128,128,0.15); }
+.zbf-wc-rcp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.zbf-wc-rcp-chip.is-ok { background: rgba(22,163,74,0.15); color: #15803d; }
+.zbf-wc-rcp-chip.is-info { background: rgba(37,99,235,0.12); color: #1d4ed8; }
+.zbf-wc-rcp-chip.is-warn { background: rgba(217,119,6,0.15); color: #b45309; }
+.zbf-wc-rcp-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; padding-top: 3px; border-top: 1px dashed rgba(128,128,128,0.2); }
+.zbf-wc-rcp-note { font-size: 10.5px; opacity: 0.85; min-width: 0; flex: 1 1 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-rcp-actions { display: inline-flex; align-items: center; gap: 5px; margin-inline-start: auto; }
+.zbf-wc-rcp-btn { background: rgba(255,255,255,0.65); border: 1px solid currentColor; border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 600; color: inherit; cursor: pointer; white-space: nowrap; }
+.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.9); }
+@media (prefers-color-scheme: dark) {
+	.zbf-wc-orphan-title, .zbf-wc-orphan-toggle, .zbf-wc-orphan-ord, .zbf-wc-orphan-btn, .zbf-wc-rcp-chip.is-warn, .zbf-wc-receipt.is-warn { color: #fbbf24; }
+	.zbf-wc-receipt.is-ok { color: #4ade80; }
+	.zbf-wc-receipt.is-err { color: #f87171; }
+	.zbf-wc-orphan-row { background: rgba(24,24,27,0.45); }
+	.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { color: #5eead4; background: rgba(20,184,166,0.18); }
+	.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild, .zbf-wc-rcp-chip.is-info { color: #93c5fd; background: rgba(59,130,246,0.2); }
+	.zbf-wc-rcp-chip.is-ok { color: #4ade80; background: rgba(34,197,94,0.18); }
+	.zbf-wc-rcp-btn { background: rgba(255,255,255,0.08); }
+	.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.16); }
+}`;
+  function renderOrphanCardDom(doc, box, headEl, titleEl, toggleBtn, chipsEl, listEl, actionBtn, model, disabled, cb) {
+    box.hidden = !model.visible;
+    if (!model.visible) return;
+    titleEl.textContent = model.title;
+    titleEl.title = model.listText;
+    toggleBtn.hidden = !model.showToggle;
+    toggleBtn.textContent = model.toggleLabel;
+    headEl.hidden = false;
+    clearChildren(chipsEl);
+    chipsEl.hidden = model.summaryChips.length === 0;
+    for (const chip of model.summaryChips) {
+      const pill = createEl(doc, "span", `zbf-wc-orphan-chip is-${chip.variant}`);
+      pill.textContent = chip.text;
+      chipsEl.appendChild(pill);
+    }
+    clearChildren(listEl);
+    for (const rowVm of model.rows) {
+      const row = createEl(doc, "div", `zbf-wc-orphan-row${rowVm.recoverable ? "" : " is-disabled"}`);
+      row.title = rowVm.tooltip;
+      const chk = createEl(doc, "input", "zbf-wc-orphan-chk");
+      chk.type = "checkbox";
+      chk.checked = rowVm.checked;
+      chk.disabled = disabled || !rowVm.recoverable;
+      const ord = createEl(doc, "span", "zbf-wc-orphan-ord");
+      ord.textContent = `[${rowVm.ordinal}]`;
+      const main = createEl(doc, "div", "zbf-wc-orphan-main");
+      const t = createEl(doc, "div", "zbf-wc-orphan-item-title");
+      t.textContent = rowVm.title;
+      const meta = createEl(doc, "div", "zbf-wc-orphan-item-meta");
+      if (rowVm.authorYear) {
+        const ay = createEl(doc, "span", "zbf-wc-orphan-author");
+        ay.textContent = rowVm.authorYear;
+        meta.appendChild(ay);
+      }
+      const tag = createEl(doc, "span", `zbf-wc-orphan-tag is-${rowVm.tagVariant}`);
+      tag.textContent = rowVm.tagText;
+      meta.appendChild(tag);
+      main.append(t, meta);
+      row.append(chk, ord, main);
+      if (rowVm.recoverable && !disabled) {
+        row.addEventListener("click", (ev) => {
+          if (ev.target !== chk) ev.preventDefault?.();
+          cb.onToggleItem(rowVm.key);
+        });
+      }
+      listEl.appendChild(row);
+    }
+    actionBtn.textContent = model.buttonLabel;
+    actionBtn.title = model.buttonTooltip;
+    actionBtn.disabled = disabled || model.buttonDisabled;
+  }
+  function renderReceiptDom(doc, receiptEl, receipt, cb) {
+    const visible = receipt.tone !== "none" && Boolean(receipt.text);
+    receiptEl.hidden = !visible;
+    receiptEl.classList.remove("is-ok", "is-warn", "is-err");
+    clearChildren(receiptEl);
+    if (!visible) return;
+    receiptEl.classList.add(`is-${receipt.tone}`);
+    const isStructured = Boolean(receipt.headline || receipt.chips?.length || receipt.actions?.length);
+    if (!isStructured) {
+      receiptEl.textContent = receipt.text;
+      return;
+    }
+    const head = createEl(doc, "div", "zbf-wc-rcp-head");
+    const title = createEl(doc, "span", "zbf-wc-rcp-title");
+    title.textContent = receipt.headline || receipt.text;
+    title.title = receipt.text;
+    const closeBtn = createEl(doc, "button", "zbf-wc-rcp-close");
+    closeBtn.type = "button";
+    closeBtn.textContent = "×";
+    closeBtn.title = "关闭提示 / Dismiss";
+    closeBtn.addEventListener("click", () => cb.onDismissReceipt());
+    head.append(title, closeBtn);
+    receiptEl.appendChild(head);
+    if (receipt.chips?.length) {
+      const chipsWrap = createEl(doc, "div", "zbf-wc-rcp-chips");
+      for (const c of receipt.chips) {
+        const chipEl = createEl(doc, "span", `zbf-wc-rcp-chip is-${c.variant}`);
+        chipEl.textContent = c.text;
+        chipsWrap.appendChild(chipEl);
+      }
+      receiptEl.appendChild(chipsWrap);
+    }
+    if (receipt.subnote || receipt.actions?.length) {
+      const foot = createEl(doc, "div", "zbf-wc-rcp-foot");
+      if (receipt.subnote) {
+        const note = createEl(doc, "span", "zbf-wc-rcp-note");
+        note.textContent = receipt.subnote;
+        note.title = receipt.subnote;
+        foot.appendChild(note);
+      }
+      if (receipt.actions?.length) {
+        const acts = createEl(doc, "div", "zbf-wc-rcp-actions");
+        for (const act of receipt.actions) {
+          const btn = createEl(doc, "button", "zbf-wc-rcp-btn");
+          btn.type = "button";
+          btn.textContent = act.label;
+          btn.title = act.title;
+          btn.addEventListener("click", () => cb.onReceiptAction(act));
+          acts.appendChild(btn);
+        }
+        foot.appendChild(acts);
+      }
+      receiptEl.appendChild(foot);
+    }
+  }
+
   // src/domains/inspector/word-cite-panel-ui.ts
   function formatInsertReceipt(res, zh) {
     const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
@@ -4051,71 +4458,59 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
   }
   function formatPendingReceipt(kind, zh) {
-    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在还原/重建引文并重连 Word…" : "Recovering & relinking citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
+    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在单事务还原/重建引文并重连 Word…" : "Recovering & relinking citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
     return { tone: "warn", text: text2 };
-  }
-  function formatRecoverReceipt(res, zh) {
-    if (res.error) return { tone: "err", text: res.error };
-    const { restoredCount, importedCount, skippedCount, existingCount = 0, relinkedCount = 0, foreignSkippedCount = 0, refreshed, collectionName } = res;
-    if (!restoredCount && !importedCount && !existingCount) {
-      return { tone: "warn", text: zh ? "⚠ 未能恢复缺失引文（缺少可用备份元数据）" : "⚠ No orphan citations could be recovered" };
-    }
-    const parts = [];
-    if (restoredCount > 0) parts.push(zh ? `已从回收站还原 ${restoredCount} 篇（保留原附件与笔记）` : `Restored ${restoredCount} from Trash`);
-    if (importedCount > 0) parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ""}` : `Imported ${importedCount} item(s)${collectionName ? ` to "${collectionName}"` : ""}`);
-    if (existingCount > 0) parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing DOI item(s)`);
-    if (refreshed) parts.push(zh ? "已自动刷新并重连 Word" : "auto-refreshed & relinked in Word");
-    else if (relinkedCount > 0) parts.push(zh ? "点 Word「刷新」即自动重连" : "click Refresh in Word to relink");
-    if (foreignSkippedCount > 0) parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
-    if (skippedCount > 0) parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
-    return { tone: "ok", text: `✓ ${parts.join(zh ? "；" : "; ")}` };
-  }
-  function buildOrphanBannerModel(orphans, zh) {
-    if (!orphans?.length) return { title: "", listText: "", buttonLabel: "" };
-    const trashed = orphans.filter((o) => o.kind === "trashed").length;
-    const missing = orphans.length - trashed;
-    const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ");
-    const moreOrd = orphans.length > 4 ? zh ? " 等" : "…" : "";
-    const title = zh ? `⚠ 检测到 ${orphans.length} 篇断链/缺失引文（${ordinals}${moreOrd}）` : `⚠ ${orphans.length} missing/trashed citation(s) (${ordinals}${moreOrd})`;
-    const listText = orphans.slice(0, 4).map((o) => {
-      const tag = o.kind === "trashed" ? zh ? "回收站·含原附件" : "Trash" : zh ? "本地缺失·可重建" : "Missing";
-      return `[${o.ordinal}] ${o.title} (${tag})`;
-    }).join("\n") + (orphans.length > 4 ? zh ? `
-…另有 ${orphans.length - 4} 篇` : `
-…and ${orphans.length - 4} more` : "");
-    const buttonLabel = trashed > 0 && missing === 0 ? zh ? `一键从回收站还原并重连 (${trashed})` : `Restore & Relink (${trashed})` : trashed === 0 ? zh ? `一键重建回 Zotero 并重连 (${missing})` : `Import & Relink (${missing})` : zh ? `一键还原并导入 (${orphans.length})` : `Restore & Import (${orphans.length})`;
-    return { title, listText, buttonLabel };
   }
   function buildWordCiteSectionSummary(zh, snap, ids) {
     if (!snap?.activeSessionID) return "";
     const total = snap.totalCitedCount;
-    if (ids.length > 1) return zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`;
+    const orphanSuffix = snap.orphans?.length ? zh ? ` · ⚠ ${snap.orphans.length} 缺失` : ` · ⚠ ${snap.orphans.length} missing` : "";
+    if (ids.length > 1) return (zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`) + orphanSuffix;
     const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
-    if (badge) return zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`;
-    return zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`;
+    if (badge) return (zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`) + orphanSuffix;
+    return (zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`) + orphanSuffix;
   }
   function buildWordCiteStats(zh, snap, ids) {
     if (!snap?.activeSessionID) {
       return { text: zh ? "请先打开 Word" : "Open Word first", title: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected", state: "none" };
     }
     const total = snap.totalCitedCount;
+    const orphanCount = snap.orphans?.length ?? 0;
+    const orphanShort = orphanCount > 0 ? zh ? ` · ⚠${orphanCount}` : ` · ⚠${orphanCount}` : "";
+    const orphanTip = orphanCount > 0 ? zh ? `；另有 ${orphanCount} 篇缺失引文待找回` : `; ${orphanCount} broken citation(s)` : "";
     if (ids.length === 1) {
       const b = snap.byItemID.get(ids[0]);
       if (b) {
         const occ = b.occurrences ?? 1;
-        return { text: zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`, title: zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`, state: "cited" };
+        return {
+          text: (zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`) + orphanShort,
+          title: (zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`) + orphanTip,
+          state: "cited"
+        };
       }
-      return { text: zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`, title: zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`, state: "uncited" };
+      return {
+        text: (zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`) + orphanShort,
+        title: (zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`) + orphanTip,
+        state: orphanCount > 0 ? "warn" : "uncited"
+      };
     }
     if (ids.length > 1) {
       const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
       if (cited.length) {
         const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
-        return { text: zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`, title: zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`, state: "cited" };
+        return {
+          text: (zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`) + orphanShort,
+          title: (zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`) + orphanTip,
+          state: "cited"
+        };
       }
-      return { text: zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`, title: zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet", state: "uncited" };
+      return {
+        text: (zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`) + orphanShort,
+        title: (zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet") + orphanTip,
+        state: orphanCount > 0 ? "warn" : "uncited"
+      };
     }
-    return { text: zh ? `共引 ${total} 篇` : `${total} cited`, title: snap.activeDocumentName, state: "uncited" };
+    return { text: (zh ? `共引 ${total} 篇` : `${total} cited`) + orphanShort, title: snap.activeDocumentName + orphanTip, state: orphanCount > 0 ? "warn" : "uncited" };
   }
   function buildWordCiteMetaText(zh, items) {
     if (!items.length) return zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation";
@@ -4125,9 +4520,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     return zh ? `已选 ${items.length} 篇：${first}` : `${items.length} items: ${first}`;
   }
   var STYLE_ID2 = "zbf-word-cite-styles";
-  var XHTML_NS2 = "http://www.w3.org/1999/xhtml";
+  var XHTML_NS3 = "http://www.w3.org/1999/xhtml";
   function createXhtmlEl2(doc, tag) {
-    return typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS2, tag) : doc.createElement(tag);
+    return typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS3, tag) : doc.createElement(tag);
   }
   function ensureWordCitePanelStyles(doc) {
     if (!doc?.getElementById) return;
@@ -4138,14 +4533,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       (doc.head || doc.documentElement)?.appendChild(style);
     }
     const css = `
-/* Zotero's synthetic scroll spacer can leave a viewport of empty space after
-   the final action. Keep the native alignment space for pinned sections. */
-item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before {
-	height: 0;
-}
+item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
 .zbf-word-cite-wrap { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden; padding: 6px 2px 8px; font-size: 12px; }
 .zbf-word-cite-wrap [hidden] { display: none !important; }
-.zbf-wc-row1 { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; min-height: 22px; }
+.zbf-wc-row1 { order: 0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; min-height: 22px; }
 .zbf-wc-doc { box-sizing: border-box; display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; flex: 0 1 auto; padding: 2px 7px; border-radius: 999px; border: 1px solid rgba(128,128,128,0.24); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 11px; line-height: 1.4; cursor: default; appearance: none; }
 .zbf-wc-doc.is-multi { cursor: pointer; border-color: rgba(37,99,235,0.35); }
 .zbf-wc-doc.is-multi:hover { background: rgba(37,99,235,0.12); }
@@ -4155,31 +4546,23 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-swap { flex: none; opacity: 0.78; font-size: 10px; }
 .zbf-wc-stats { box-sizing: border-box; font-size: 11px; padding: 2px 7px; border-radius: 999px; max-width: 100%; min-width: 0; flex: 0 1 auto; margin-inline-start: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; background: rgba(128,128,128,0.1); color: inherit; opacity: 0.85; }
 .zbf-wc-stats.is-cited { background: rgba(22,163,74,0.14); color: #15803d; font-weight: 600; opacity: 1; }
-.zbf-wc-meta { min-width: 0; max-width: 100%; font-size: 12px; opacity: 0.88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-inline: 2px; }
-.zbf-wc-actions { display: flex; align-items: stretch; gap: 6px; min-width: 0; max-width: 100%; }
+.zbf-wc-stats.is-warn { background: rgba(217,119,6,0.14); color: #b45309; font-weight: 600; opacity: 1; }
+.zbf-wc-meta { order: 3; min-width: 0; max-width: 100%; font-size: 12px; opacity: 0.88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-inline: 2px; }
+.zbf-wc-actions { order: 4; display: flex; align-items: stretch; gap: 6px; min-width: 0; max-width: 100%; }
 .zbf-word-cite-action { box-sizing: border-box; flex: 1 1 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(37,99,235,0.42); background: rgba(37,99,235,0.11); color: inherit; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .zbf-word-cite-action:hover:not(:disabled) { background: rgba(37,99,235,0.2); }
 .zbf-word-cite-action:disabled { opacity: 0.45; cursor: default; }
 .zbf-word-refresh-action { box-sizing: border-box; flex: 0 0 30px; width: 30px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.28); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .zbf-word-refresh-action:hover:not(:disabled) { background: var(--fill-quarternary, rgba(128,128,128,0.16)); }
-.zbf-wc-synergy { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; padding-top: 4px; border-top: 1px dashed rgba(128,128,128,0.2); }
+.zbf-wc-synergy { order: 5; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; padding-top: 4px; border-top: 1px dashed rgba(128,128,128,0.2); }
 .zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: none; padding: 1px 2px; font-size: 11px; color: #2563eb; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
 .zbf-wc-link:hover { text-decoration: underline; }
-.zbf-wc-doc.is-multi:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible { outline: 2px solid var(--accent-blue, #2563eb); outline-offset: 1px; }
+.zbf-wc-doc.is-multi:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-orphan-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible { outline: 2px solid var(--accent-blue, #2563eb); outline-offset: 1px; }
 .zbf-wc-col-link { flex: none; margin-inline-start: auto; }
-.zbf-wc-receipt { font-size: 11px; padding: 4px 7px; border-radius: 5px; line-height: 1.4; }
-.zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.12); color: #15803d; }
-.zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.12); color: #b45309; }
-.zbf-wc-receipt.is-err { background: rgba(220,38,38,0.12); color: #b91c1c; }
-.zbf-wc-orphan-box { display: grid; gap: 4px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.35); background: rgba(217,119,6,0.08); font-size: 11px; }
-.zbf-wc-orphan-title { font-weight: 600; color: #b45309; }
-.zbf-wc-orphan-list { white-space: pre-line; line-height: 1.45; opacity: 0.9; max-height: 76px; overflow-y: auto; }
-.zbf-wc-orphan-btn { box-sizing: border-box; padding: 4px 8px; border-radius: 5px; border: 1px solid rgba(217,119,6,0.45); background: rgba(217,119,6,0.14); color: inherit; font-size: 11px; font-weight: 600; cursor: pointer; text-align: center; }
-.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.22); }
-.zbf-wc-orphan-btn:disabled { opacity: 0.5; cursor: default; }
+${ORPHAN_AND_RECEIPT_CSS}
 @media (prefers-color-scheme: dark) {
 	.zbf-wc-stats.is-cited, .zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-receipt.is-warn, .zbf-wc-orphan-title { color: #fbbf24; }
+	.zbf-wc-stats.is-warn, .zbf-wc-receipt.is-warn { color: #fbbf24; }
 	.zbf-wc-receipt.is-err { color: #f87171; }
 	.zbf-wc-link { color: #60a5fa; }
 }`;
@@ -4220,11 +4603,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     synergyEl.append(groupBtn, colBtn);
     const orphanBox = el("div", "zbf-wc-orphan-box");
     orphanBox.hidden = true;
+    const orphanHead = el("div", "zbf-wc-orphan-head");
     const orphanTitle = el("div", "zbf-wc-orphan-title");
+    const orphanToggleBtn = el("button", "zbf-wc-orphan-toggle");
+    orphanToggleBtn.type = "button";
+    orphanHead.append(orphanTitle, orphanToggleBtn);
+    const orphanChips = el("div", "zbf-wc-orphan-chips");
     const orphanList = el("div", "zbf-wc-orphan-list");
     const orphanBtn = el("button", "zbf-wc-orphan-btn");
     orphanBtn.type = "button";
-    orphanBox.append(orphanTitle, orphanList, orphanBtn);
+    orphanBox.append(orphanHead, orphanChips, orphanList, orphanBtn);
     const receiptEl = el("div", "zbf-wc-receipt");
     receiptEl.hidden = true;
     receiptEl.setAttribute("role", "status");
@@ -4245,7 +4633,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       groupBtn,
       colBtn,
       orphanBox,
+      orphanHead,
       orphanTitle,
+      orphanToggleBtn,
+      orphanChips,
       orphanList,
       orphanBtn,
       receiptEl,
@@ -4254,7 +4645,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       lastGroup: null
     };
   }
-  function renderWordCitePanel(st, vm) {
+  function renderWordCitePanel(st, vm, cb) {
+    const doc = st.root.ownerDocument;
     st.docBtn.hidden = !vm.showDocSwitcher;
     st.docBtn.classList.toggle("is-multi", vm.isMultiSession);
     st.docBtn.disabled = !vm.isMultiSession;
@@ -4266,7 +4658,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     st.statsEl.textContent = vm.statsText;
     st.statsEl.title = vm.statsTitle;
     st.statsEl.classList.toggle("is-cited", vm.statsState === "cited");
-    st.statsEl.classList.toggle("is-uncited", vm.statsState !== "cited");
+    st.statsEl.classList.toggle("is-warn", vm.statsState === "warn");
+    st.statsEl.classList.toggle("is-uncited", vm.statsState === "uncited" || vm.statsState === "none");
     st.row1.hidden = !vm.showDocSwitcher && !vm.showSummaryCounts;
     st.metaEl.textContent = vm.metaText;
     st.metaEl.title = vm.metaTitle;
@@ -4282,22 +4675,24 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     st.colBtn.textContent = vm.colButtonText;
     st.colBtn.title = vm.colButtonTitle;
     st.synergyEl.hidden = st.groupBtn.hidden && st.colBtn.hidden;
-    st.orphanBox.hidden = !vm.orphanTitle;
-    st.orphanTitle.textContent = vm.orphanTitle;
-    st.orphanList.textContent = vm.orphanListText;
-    st.orphanBtn.textContent = vm.orphanButtonLabel;
-    st.orphanBtn.disabled = vm.orphanDisabled;
-    st.receiptEl.hidden = vm.receiptTone === "none" || !vm.receiptText;
-    st.receiptEl.textContent = vm.receiptText;
-    st.receiptEl.classList.remove("is-ok", "is-warn", "is-err");
-    if (vm.receiptTone !== "none") st.receiptEl.classList.add(`is-${vm.receiptTone}`);
+    renderOrphanCardDom(
+      doc,
+      st.orphanBox,
+      st.orphanHead,
+      st.orphanTitle,
+      st.orphanToggleBtn,
+      st.orphanChips,
+      st.orphanList,
+      st.orphanBtn,
+      vm.orphanCard,
+      vm.orphanDisabled,
+      cb
+    );
+    renderReceiptDom(doc, st.receiptEl, vm.receipt, cb);
   }
 
   // src/domains/inspector/word-cite-section.ts
   var WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
-  function isZhLocale(doc) {
-    return isChineseLocale(doc);
-  }
   var WordCiteSectionController = class {
     kernel;
     services;
@@ -4305,6 +4700,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     states = /* @__PURE__ */ new Map();
     buttonListeners = /* @__PURE__ */ new Map();
     docListeners = /* @__PURE__ */ new Map();
+    orphanState = new OrphanSelectionState();
     unregisterFn = null;
     snapshot = null;
     groups = [];
@@ -4322,33 +4718,21 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.disposables.reset();
       this.disposables.add(this.kernel.bus.on("citation:snapshot-updated", (snap) => {
         this.snapshot = snap;
+        if (this.orphanState.syncSnapshot(snap.activeSessionID, snap.orphans)) {
+          for (const st of this.states.values()) {
+            const col = st.root.closest?.("collapsible-section");
+            if (col && !col.open) col.open = true;
+          }
+        }
         this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("workspace:groups-updated", ({ groups }) => {
         this.groups = groups;
         this.renderAllBodies();
       }));
-      this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => {
-        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
-        this.clearPendingTimer();
-        this.pendingRequest = void 0;
-        this.receipt = formatInsertReceipt(res, isZhLocale());
-        this.renderAllBodies();
-      }));
-      this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => {
-        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
-        this.clearPendingTimer();
-        this.pendingRequest = void 0;
-        this.receipt = formatRefreshReceipt(res, isZhLocale());
-        this.renderAllBodies();
-      }));
-      this.disposables.add(this.kernel.bus.on("word:recover-orphans-result", (res) => {
-        if (!this.pendingRequest || res.requestId !== this.pendingRequest) return;
-        this.clearPendingTimer();
-        this.pendingRequest = void 0;
-        this.receipt = formatRecoverReceipt(res, isZhLocale());
-        this.renderAllBodies();
-      }));
+      this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => this.finishRequest(res.requestId, formatInsertReceipt(res, isChineseLocale()))));
+      this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => this.finishRequest(res.requestId, formatRefreshReceipt(res, isChineseLocale()))));
+      this.disposables.add(this.kernel.bus.on("word:recover-orphans-result", (res) => this.finishRequest(res.requestId, formatRecoverReceipt(res, isChineseLocale()))));
       const icon = `${this.kernel.info.rootURI}assets/word-cite.svg`;
       const reg = this.services.itemPanes.register({
         paneID: "bridgeflow-word-cite",
@@ -4359,11 +4743,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           this.initBody(doc || body.ownerDocument, body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
         },
-        onDestroy: ({ doc, body }) => {
-          this.onDestroy(doc || body.ownerDocument, body);
-        },
+        onDestroy: ({ doc, body }) => this.onDestroy(doc || body.ownerDocument, body),
         onItemChange: ({ body, item, setEnabled, setSectionSummary }) => {
-          if (this.states.get(body) === this.receiptOwner && !this.pendingRequest) this.receipt = { text: "", tone: "none" };
+          const isSticky = Boolean(this.receipt.stickyUntil && Date.now() < this.receipt.stickyUntil);
+          if (this.states.get(body) === this.receiptOwner && !this.pendingRequest && !isSticky) {
+            this.receipt = { text: "", tone: "none" };
+          }
           this.updateState(body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
           return this.isSectionEnabled() && Boolean(item);
@@ -4402,6 +4787,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       this.unregisterFn?.();
       this.unregisterFn = null;
       this.states.clear();
+      this.orphanState.reset();
       this.receiptOwner = void 0;
       this.pendingRequest = void 0;
       this.receipt = { text: "", tone: "none" };
@@ -4419,27 +4805,31 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         this.pendingTimer = null;
       }
     }
+    finishRequest(requestId, nextReceipt) {
+      if (!this.pendingRequest || requestId !== this.pendingRequest) return;
+      this.clearPendingTimer();
+      this.pendingRequest = void 0;
+      this.receipt = nextReceipt;
+      this.renderAllBodies();
+    }
     beginRequest(kind, owner) {
       this.clearPendingTimer();
       const requestId = `word-${++this.requestSeq}`;
       this.pendingRequest = requestId;
       this.receiptOwner = owner;
-      this.receipt = formatPendingReceipt(kind, isZhLocale());
-      const timeoutMs = kind === "insert" ? 12e3 : 25e3;
+      this.receipt = formatPendingReceipt(kind, isChineseLocale());
       this.pendingTimer = setTimeout(() => {
         if (this.pendingRequest !== requestId) return;
         this.pendingTimer = null;
         this.pendingRequest = void 0;
-        this.receipt = { tone: "warn", text: isZhLocale() ? "⌛ 未收到 Word 响应，请检查 Word 后重试" : "⌛ Word request timed out; retry when ready" };
+        this.receipt = { tone: "warn", text: isChineseLocale() ? "⌛ 未收到 Word 响应，请检查 Word 后重试" : "⌛ Word request timed out; retry when ready" };
         this.renderAllBodies();
-      }, timeoutMs);
+      }, kind === "insert" ? 12e3 : 25e3);
       this.renderAllBodies();
       return requestId;
     }
     isSectionEnabled() {
-      return Boolean(
-        this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable")
-      );
+      return Boolean(this.kernel.prefs.get("inspector.wordCite.enable") && this.kernel.prefs.get("modules.wordCite.enable"));
     }
     initBody(doc, body, item, setEnabled, setSectionSummary) {
       if (!doc) return;
@@ -4456,23 +4846,49 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         }, { signal: controller.signal });
       };
       click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? void 0, st));
-      click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", {
-        requestId: this.beginRequest("refresh", st),
-        win: win ?? void 0
-      }));
+      click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), win: win ?? void 0 }));
       click(st.docBtn, () => this.cycleWordSession());
       click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
-      click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", {
-        sessionID: this.snapshot?.activeSessionID || void 0,
-        win: win ?? void 0
-      }));
-      click(st.orphanBtn, () => this.kernel.bus.emit("word:recover-orphans-request", {
-        sessionID: this.snapshot?.activeSessionID || void 0,
-        requestId: this.beginRequest("recover", st),
-        win: win ?? void 0
-      }));
+      click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", { sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
+      click(st.orphanToggleBtn, () => {
+        this.orphanState.expanded = !this.orphanState.expanded;
+        this.renderAllBodies();
+      });
+      click(st.orphanBtn, () => {
+        const keys2 = this.orphanState.getSelectedRecoverableKeys(this.snapshot?.orphans);
+        if (!keys2.length) return;
+        this.kernel.bus.emit("word:recover-orphans-request", {
+          sessionID: this.snapshot?.activeSessionID || void 0,
+          keys: keys2,
+          source: "panel",
+          requestId: this.beginRequest("recover", st),
+          win: win ?? void 0
+        });
+      });
       this.bindDocumentEvents(doc);
       this.updateState(body, item, setEnabled, setSectionSummary);
+    }
+    handleReceiptAction(act, st) {
+      const win = st.root.ownerDocument?.defaultView ?? void 0;
+      if (act.kind === "refresh-word") {
+        if (this.pendingRequest) return;
+        this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), win });
+        return;
+      }
+      if (act.kind === "locate-recovered" && act.itemIDs?.length) {
+        if (act.sessionID && this.kernel.prefs.get("wordCite.collections.enable")) {
+          this.kernel.bus.emit("word:select-collection-request", { sessionID: act.sessionID, win });
+        }
+        const pane = win?.ZoteroPane;
+        if (typeof pane?.selectItems === "function") {
+          setTimeout(() => {
+            void Promise.resolve(pane.selectItems(act.itemIDs)).catch(() => {
+            });
+          }, 80);
+        } else {
+          void locateItemInZoteroLibrary(act.itemIDs[0], { win: win ?? null, switchCollection: true });
+        }
+      }
     }
     bindDocumentEvents(doc) {
       if (this.docListeners.has(doc)) return;
@@ -4491,7 +4907,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
             if (collapsible && !collapsible.open) collapsible.open = true;
             this.renderBodyState(st);
           }
-          return;
         }
       }, { capture: true, signal: ac.signal });
     }
@@ -4529,25 +4944,36 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     renderBodyState(st, resolvedItems) {
       const items = resolvedItems ?? this.resolveTargetItems(st.root.ownerDocument?.defaultView || null, st.activeItem);
-      const zh = isZhLocale();
+      const zh = isChineseLocale(st.root.ownerDocument);
       const snap = this.snapshot;
       const hasSession = Boolean(snap?.activeSessionID);
       const sessionCount = snap?.sessions?.length ?? 0;
-      const showDocSwitcher = this.kernel.prefs.get("inspector.wordCite.showDocSwitcher");
-      const showSummaryCounts = this.kernel.prefs.get("inspector.wordCite.showSummaryCounts");
-      const showGroupSynergy = this.kernel.prefs.get("inspector.wordCite.showGroupSynergy");
-      const showCollectionLink = this.kernel.prefs.get("inspector.wordCite.showCollectionLink");
       const idSet = new Set(st.lastItemIDs);
-      const matchedGroup = showGroupSynergy && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
+      const matchedGroup = this.kernel.prefs.get("inspector.wordCite.showGroupSynergy") && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
       st.lastGroup = matchedGroup;
       const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
-      st.setSectionSummary?.(showSummaryCounts ? buildWordCiteSectionSummary(zh, snap, st.lastItemIDs) : "");
+      st.setSectionSummary?.(this.kernel.prefs.get("inspector.wordCite.showSummaryCounts") ? buildWordCiteSectionSummary(zh, snap, st.lastItemIDs) : "");
       const stats = buildWordCiteStats(zh, snap, st.lastItemIDs);
       const meta = buildWordCiteMetaText(zh, items);
-      const orphanBanner = buildOrphanBannerModel(snap?.orphans, zh);
+      const orphanCard = buildOrphanBannerModel(snap?.orphans, zh, { uncheckedKeys: this.orphanState.uncheckedKeys, expanded: this.orphanState.expanded });
+      const cb = {
+        onToggleItem: (key) => {
+          this.orphanState.toggleKey(key);
+          this.renderAllBodies();
+        },
+        onToggleExpand: () => {
+          this.orphanState.expanded = !this.orphanState.expanded;
+          this.renderAllBodies();
+        },
+        onReceiptAction: (act) => this.handleReceiptAction(act, st),
+        onDismissReceipt: () => {
+          this.receipt = { text: "", tone: "none" };
+          this.renderAllBodies();
+        }
+      };
       const vm = {
-        showDocSwitcher,
-        showSummaryCounts,
+        showDocSwitcher: this.kernel.prefs.get("inspector.wordCite.showDocSwitcher"),
+        showSummaryCounts: this.kernel.prefs.get("inspector.wordCite.showSummaryCounts"),
         docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
         docTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Click to switch active Word doc (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
         isMultiSession: sessionCount >= 2,
@@ -4563,17 +4989,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
         groupButtonText: matchedGroup ? zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
         groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ""}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ""}` : "",
-        showCollectionButton: showCollectionLink && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
+        showCollectionButton: this.kernel.prefs.get("inspector.wordCite.showCollectionLink") && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
         colButtonText: zh ? "已引清单" : "Cited List",
         colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
-        orphanTitle: orphanBanner.title,
-        orphanListText: orphanBanner.listText,
-        orphanButtonLabel: orphanBanner.buttonLabel,
+        orphanCard,
         orphanDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
-        receiptText: st === this.receiptOwner ? this.receipt.text : "",
-        receiptTone: st === this.receiptOwner ? this.receipt.tone : "none"
+        receipt: st === this.receiptOwner ? this.receipt : { text: "", tone: "none" }
       };
-      renderWordCitePanel(st, vm);
+      renderWordCitePanel(st, vm, cb);
     }
     resolveTargetItems(win, item) {
       if (!item) return [];
@@ -6003,7 +6426,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 
   // src/domains/visual-notes/gallery-icons.ts
   var SVG_NS2 = "http://www.w3.org/2000/svg";
-  var XHTML_NS3 = "http://www.w3.org/1999/xhtml";
+  var XHTML_NS4 = "http://www.w3.org/1999/xhtml";
   function createToolbarArt(doc, kind) {
     const svg = doc.createElementNS(SVG_NS2, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -6132,10 +6555,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const normTag = rawTag === "em" ? "i" : rawTag === "strong" ? "b" : rawTag;
       if (!isClose) {
         if (normTag === "span") {
-          stack.push(doc.createElementNS(XHTML_NS3, "span"));
+          stack.push(doc.createElementNS(XHTML_NS4, "span"));
           stack[stack.length - 2].appendChild(stack[stack.length - 1]);
         } else {
-          const node = doc.createElementNS(XHTML_NS3, normTag);
+          const node = doc.createElementNS(XHTML_NS4, normTag);
           stack[stack.length - 1].appendChild(node);
           stack.push(node);
         }
@@ -14406,7 +14829,7 @@ ${summary}` : summary;
     };
   }
 
-  // src/domains/word-cite/orphan-recovery.ts
+  // src/domains/word-cite/orphan-csl-mapper.ts
   var CSL_TO_ZOTERO_TYPE = {
     "article-journal": "journalArticle",
     "article-magazine": "magazineArticle",
@@ -14424,6 +14847,9 @@ ${summary}` : summary;
     article: "preprint",
     document: "document"
   };
+  function normCompareToken(raw) {
+    return String(raw ?? "").toLowerCase().replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+  }
   function mapCslCreators(itemData) {
     const creators = [];
     const pushRole = (list, creatorType) => {
@@ -14459,15 +14885,6 @@ ${summary}` : summary;
     if (parts.length > 0) return parts.join("-");
     return String(issued.literal || issued.raw || "").trim();
   }
-  function setFieldIfPresent(item, field, value) {
-    if (typeof item?.setField !== "function") return;
-    const text2 = String(value ?? "").trim();
-    if (!text2) return;
-    try {
-      item.setField(field, text2);
-    } catch {
-    }
-  }
   function hasRecoverableCslMetadata(data, creatorsCount, doi) {
     if (!data || typeof data !== "object") return false;
     const title = String(data.title || "").trim();
@@ -14476,6 +14893,157 @@ ${summary}` : summary;
     const isbn = String(data.ISBN || "").trim();
     return Boolean(title || container || creatorsCount > 0 || doi || url || isbn);
   }
+  function buildBatchMetadataKey(libraryID, data) {
+    if (!data) return "";
+    const title = normCompareToken(data.title);
+    if (title.length < 6) return "";
+    const { author, year } = extractFirstAuthorAndYear(data);
+    const normAuthor = normCompareToken(author);
+    if (!normAuthor && !year) return "";
+    return `meta:${libraryID}:${title}|${normAuthor}|${year}`;
+  }
+  function readCandidateField(item, field) {
+    try {
+      return typeof item?.getField === "function" ? String(item.getField(field) || "").trim() : "";
+    } catch {
+      return "";
+    }
+  }
+  function readCandidateFirstSurname(item) {
+    try {
+      const creators = typeof item?.getCreators === "function" ? item.getCreators() : null;
+      if (Array.isArray(creators) && creators[0]) {
+        const c0 = creators[0];
+        return normCompareToken(c0.lastName || c0.name || "");
+      }
+    } catch {
+    }
+    return normCompareToken(item?.firstCreator || "");
+  }
+  function matchesExactTitleAuthorYear(candidate, cslData, cslDoi) {
+    const rawTitle = String(cslData.title || "").trim();
+    const targetTitle = normCompareToken(rawTitle);
+    if (targetTitle.length < 6) return false;
+    if (normCompareToken(readCandidateField(candidate, "title")) !== targetTitle) return false;
+    const candDoi = normalizeDoi(readCandidateField(candidate, "DOI"));
+    if (cslDoi && candDoi && cslDoi !== candDoi) return false;
+    const { author, year } = extractFirstAuthorAndYear(cslData);
+    const normAuthor = normCompareToken(author);
+    if (!normAuthor && !year) return false;
+    const candDateRaw = readCandidateField(candidate, "year") || readCandidateField(candidate, "date");
+    const candYear = candDateRaw.match(/\d{4}/)?.[0] || "";
+    if (year && candYear && year !== candYear) return false;
+    const candCreator = readCandidateFirstSurname(candidate);
+    if (normAuthor && candCreator) {
+      const surnameOk = candCreator === normAuthor || candCreator.startsWith(`${normAuthor} `) || candCreator.startsWith(`${normAuthor},`);
+      if (!surnameOk) return false;
+    }
+    return Boolean(year && candYear === year || normAuthor && candCreator);
+  }
+  async function findExistingLibraryItem(libraryID, cslData, doi) {
+    const host2 = globalThis.Zotero;
+    if (typeof host2?.Search !== "function") return null;
+    const runFieldSearch = async (field, value) => {
+      if (!value) return [];
+      try {
+        const s = new host2.Search();
+        s.libraryID = libraryID;
+        s.addCondition(field, "is", value);
+        const ids = await s.search();
+        const out = [];
+        for (const id of ids || []) {
+          const cand = await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id);
+          if (cand && !cand.deleted && cand.isRegularItem?.() !== false) out.push(cand);
+        }
+        return out;
+      } catch {
+        return [];
+      }
+    };
+    if (doi) {
+      const byNormDoi = await runFieldSearch("DOI", doi);
+      if (byNormDoi.length > 0) return byNormDoi[0];
+      const rawDoi = String(cslData?.DOI || "").trim();
+      if (rawDoi && rawDoi.toLowerCase() !== doi) {
+        const byRawDoi = await runFieldSearch("DOI", rawDoi);
+        if (byRawDoi.length > 0) return byRawDoi[0];
+      }
+    }
+    const rawTitle = String(cslData?.title || "").trim();
+    if (cslData && normCompareToken(rawTitle).length >= 6) {
+      const byTitle = await runFieldSearch("title", rawTitle);
+      for (const cand of byTitle) {
+        if (matchesExactTitleAuthorYear(cand, cslData, doi)) return cand;
+      }
+    }
+    return null;
+  }
+  function setFieldIfEmpty(item, field, value) {
+    if (typeof item?.setField !== "function") return;
+    const text2 = String(value ?? "").trim();
+    if (!text2) return;
+    try {
+      const existing = typeof item.getField === "function" ? String(item.getField(field) || "").trim() : "";
+      if (!existing) item.setField(field, text2);
+    } catch {
+    }
+  }
+  function populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, zoteroObj) {
+    if (typeof zoteroObj?.Utilities?.itemFromCSLJSON === "function") {
+      try {
+        zoteroObj.Utilities.itemFromCSLJSON(item, { type: String(csl.type || "article-journal"), ...csl });
+      } catch {
+      }
+    }
+    setFieldIfEmpty(item, "title", csl.title || csl["container-title"] || orphan.title);
+    setFieldIfEmpty(item, "shortTitle", csl["title-short"] || csl.shortTitle);
+    const container = csl["container-title"];
+    if (itemType === "bookSection") {
+      setFieldIfEmpty(item, "bookTitle", container);
+    } else if (itemType === "conferencePaper") {
+      setFieldIfEmpty(item, "proceedingsTitle", container);
+      setFieldIfEmpty(item, "conferenceName", csl["event-title"] || csl.event);
+    } else {
+      setFieldIfEmpty(item, "publicationTitle", container);
+    }
+    setFieldIfEmpty(item, "journalAbbreviation", csl["container-title-short"] || csl.journalAbbreviation);
+    setFieldIfEmpty(item, "volume", csl.volume);
+    setFieldIfEmpty(item, "issue", csl.issue);
+    setFieldIfEmpty(item, "pages", csl.page || (itemType === "journalArticle" ? csl.number : ""));
+    if (itemType === "report") {
+      setFieldIfEmpty(item, "institution", csl.publisher);
+      setFieldIfEmpty(item, "reportNumber", csl.number);
+      setFieldIfEmpty(item, "reportType", csl.genre);
+    } else if (itemType === "thesis") {
+      setFieldIfEmpty(item, "university", csl.publisher);
+      setFieldIfEmpty(item, "thesisType", csl.genre);
+    } else if (itemType === "patent") {
+      setFieldIfEmpty(item, "patentNumber", csl.number);
+    } else {
+      setFieldIfEmpty(item, "publisher", csl.publisher);
+    }
+    setFieldIfEmpty(item, "series", csl["collection-title"]);
+    setFieldIfEmpty(item, "edition", csl.edition);
+    setFieldIfEmpty(item, "place", csl["publisher-place"] || csl["event-place"]);
+    setFieldIfEmpty(item, "DOI", csl.DOI);
+    setFieldIfEmpty(item, "ISBN", csl.ISBN);
+    setFieldIfEmpty(item, "ISSN", csl.ISSN);
+    setFieldIfEmpty(item, "url", csl.URL);
+    setFieldIfEmpty(item, "abstractNote", csl.abstract);
+    setFieldIfEmpty(item, "language", csl.language);
+    setFieldIfEmpty(item, "date", formatCslIssuedDate(csl));
+    if (creators.length > 0 && typeof item.setCreators === "function") {
+      try {
+        const existingCreators = typeof item.getCreators === "function" ? item.getCreators() : null;
+        if (!Array.isArray(existingCreators) || existingCreators.length === 0) {
+          item.setCreators(creators);
+        }
+      } catch {
+      }
+    }
+  }
+
+  // src/domains/word-cite/orphan-recovery.ts
   function resolveOrphanLibraryID(orphan, fallbackLibraryID) {
     const host2 = globalThis.Zotero;
     for (const uri of orphan.uris || []) {
@@ -14490,22 +15058,6 @@ ${summary}` : summary;
       }
     }
     return fallbackLibraryID;
-  }
-  async function findExistingItemByDoi(libraryID, doi) {
-    const host2 = globalThis.Zotero;
-    if (!doi || typeof host2?.Search !== "function") return null;
-    try {
-      const search = new host2.Search();
-      search.libraryID = libraryID;
-      search.addCondition("DOI", "is", doi);
-      const ids = await search.search();
-      for (const id of ids || []) {
-        const candidate = await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id);
-        if (candidate && !candidate.deleted && candidate.isRegularItem?.() !== false) return candidate;
-      }
-    } catch {
-    }
-    return null;
   }
   async function attachSyncSafeRelinkRelations(targetItem, orphan, targetLibraryID, userLibraryID, zoteroObj) {
     const { safeUris, foreignSkipped } = classifySyncSafeRelinkUris(orphan.uris, targetLibraryID, userLibraryID, zoteroObj);
@@ -14541,15 +15093,16 @@ ${summary}` : summary;
     }
     return { attached, safeUris, foreignSkipped };
   }
-  async function importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchDoiCache, targetCollectionID) {
+  async function importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, targetCollectionID) {
     const ZoteroObj = globalThis.Zotero;
     const ItemCtor = ZoteroObj?.Item;
     if (typeof ItemCtor !== "function") return { outcome: "failed", relinked: false, foreignSkipped: false };
     const data = orphan.itemData && typeof orphan.itemData === "object" ? orphan.itemData : void 0;
     const targetLibraryID = resolveOrphanLibraryID(orphan, userLibraryID);
     const doi = normalizeDoi(data?.DOI);
-    const batchDupKey = doi ? `${targetLibraryID}:${doi}` : "";
-    const duplicate = (batchDupKey ? batchDoiCache.get(batchDupKey) : null) || await findExistingItemByDoi(targetLibraryID, doi);
+    const batchDoiKey = doi ? `doi:${targetLibraryID}:${doi}` : "";
+    const batchMetaKey = buildBatchMetadataKey(targetLibraryID, data);
+    const duplicate = (batchDoiKey ? batchItemCache.get(batchDoiKey) : null) || (batchMetaKey ? batchItemCache.get(batchMetaKey) : null) || await findExistingLibraryItem(targetLibraryID, data, doi);
     if (duplicate) {
       const dupLibID = duplicate.libraryID ?? userLibraryID;
       const relRes2 = await attachSyncSafeRelinkRelations(duplicate, orphan, dupLibID, userLibraryID, ZoteroObj);
@@ -14565,8 +15118,15 @@ ${summary}` : summary;
         await saveInTx(duplicate, addedToCol ? void 0 : { skipDateModifiedUpdate: true });
       }
       const dupId = Number(duplicate.id || 0);
+      if (batchDoiKey) batchItemCache.set(batchDoiKey, duplicate);
+      if (batchMetaKey) batchItemCache.set(batchMetaKey, duplicate);
       if (relRes2.attached && dupId > 0) rememberRelinkedItemUris(orphan.uris || relRes2.safeUris, dupId);
-      return { outcome: "existing", relinked: relRes2.attached, foreignSkipped: relRes2.foreignSkipped };
+      return {
+        outcome: "existing",
+        ...dupId > 0 ? { itemID: dupId } : {},
+        relinked: relRes2.attached,
+        foreignSkipped: relRes2.foreignSkipped
+      };
     }
     const creators = data ? mapCslCreators(data) : [];
     if (!hasRecoverableCslMetadata(data, creators.length, doi)) {
@@ -14577,25 +15137,7 @@ ${summary}` : summary;
     const itemType = CSL_TO_ZOTERO_TYPE[rawType] || "journalArticle";
     const item = new ItemCtor(itemType);
     item.libraryID = targetLibraryID;
-    setFieldIfPresent(item, "title", csl.title || csl["container-title"] || orphan.title);
-    setFieldIfPresent(item, "publicationTitle", csl["container-title"]);
-    setFieldIfPresent(item, "volume", csl.volume);
-    setFieldIfPresent(item, "issue", csl.issue);
-    setFieldIfPresent(item, "pages", csl.page);
-    setFieldIfPresent(item, "DOI", csl.DOI);
-    setFieldIfPresent(item, "ISBN", csl.ISBN);
-    setFieldIfPresent(item, "ISSN", csl.ISSN);
-    setFieldIfPresent(item, "url", csl.URL);
-    setFieldIfPresent(item, "publisher", csl.publisher);
-    setFieldIfPresent(item, "place", csl["publisher-place"]);
-    setFieldIfPresent(item, "abstractNote", csl.abstract);
-    setFieldIfPresent(item, "date", formatCslIssuedDate(csl));
-    if (creators.length > 0 && typeof item.setCreators === "function") {
-      try {
-        item.setCreators(creators);
-      } catch {
-      }
-    }
+    populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, ZoteroObj);
     if (targetCollectionID && typeof item.addToCollection === "function" && targetLibraryID === userLibraryID) {
       try {
         item.addToCollection(targetCollectionID);
@@ -14605,9 +15147,15 @@ ${summary}` : summary;
     const relRes = await attachSyncSafeRelinkRelations(item, orphan, targetLibraryID, userLibraryID, ZoteroObj);
     const savedId = await saveInTx(item);
     const resolvedNewId = Number(item.id || savedId || 0);
-    if (batchDupKey) batchDoiCache.set(batchDupKey, item);
+    if (batchDoiKey) batchItemCache.set(batchDoiKey, item);
+    if (batchMetaKey) batchItemCache.set(batchMetaKey, item);
     if (relRes.attached && resolvedNewId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, resolvedNewId);
-    return { outcome: "imported", relinked: relRes.attached, foreignSkipped: relRes.foreignSkipped };
+    return {
+      outcome: "imported",
+      ...resolvedNewId > 0 ? { itemID: resolvedNewId } : {},
+      relinked: relRes.attached,
+      foreignSkipped: relRes.foreignSkipped
+    };
   }
   async function recoverOrphanCitations(orphans, options) {
     const ZoteroObj = globalThis.Zotero;
@@ -14633,7 +15181,13 @@ ${summary}` : summary;
     let relinkedCount = 0;
     let foreignSkippedCount = 0;
     const restoredIDs = /* @__PURE__ */ new Set();
-    const batchDoiCache = /* @__PURE__ */ new Map();
+    const recoveredItemIDs = [];
+    const pushRecoveredID = (id) => {
+      if (id && Number.isSafeInteger(id) && id > 0 && !recoveredItemIDs.includes(id)) {
+        recoveredItemIDs.push(id);
+      }
+    };
+    const batchItemCache = /* @__PURE__ */ new Map();
     await runBatch(async () => {
       for (const orphan of targets) {
         if (orphan.kind === "trashed" && orphan.itemID) {
@@ -14650,12 +15204,14 @@ ${summary}` : summary;
             }
             await saveInTx(existing);
             restoredIDs.add(orphan.itemID);
+            pushRecoveredID(Number(existing.id || orphan.itemID));
             restoredCount += 1;
             relinkedCount += 1;
             continue;
           }
         }
-        const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchDoiCache, options?.targetCollectionID);
+        const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, options?.targetCollectionID);
+        pushRecoveredID(res.itemID);
         if (res.relinked) relinkedCount += 1;
         if (res.foreignSkipped) foreignSkippedCount += 1;
         if (res.outcome === "imported") importedCount += 1;
@@ -14670,6 +15226,7 @@ ${summary}` : summary;
       ...existingCount ? { existingCount } : {},
       ...relinkedCount ? { relinkedCount } : {},
       ...foreignSkippedCount ? { foreignSkippedCount } : {},
+      ...recoveredItemIDs.length ? { recoveredItemIDs } : {},
       ...options?.collectionName ? { collectionName: options.collectionName } : {}
     };
   }
@@ -15523,6 +16080,7 @@ ${summary}` : summary;
     collections;
     column;
     poller;
+    win32;
     disposables = new DisposableStack();
     notifiedOrphanSigs = /* @__PURE__ */ new Map();
     tagDebounceTimer = null;
@@ -15531,6 +16089,7 @@ ${summary}` : summary;
     kernel;
     constructor(kernel, services) {
       this.kernel = kernel;
+      this.win32 = services.win32;
       this.tracker = new WordSessionTracker(kernel.bus, services.win32);
       this.tagGovernance = new CitationTagGovernance(kernel.prefs);
       this.collections = new WordCitationCollectionManager(kernel);
@@ -15637,7 +16196,7 @@ ${summary}` : summary;
         })
       );
       this.disposables.add(
-        this.kernel.bus.on("word:recover-orphans-request", async ({ sessionID, keys: keys2, requestId }) => {
+        this.kernel.bus.on("word:recover-orphans-request", async ({ sessionID, keys: keys2, requestId, source }) => {
           if (!this.active) return;
           if (this.recoveringOrphans) {
             this.kernel.bus.emit("word:recover-orphans-result", {
@@ -15670,7 +16229,7 @@ ${summary}` : summary;
             const changed = result.restoredCount > 0 || result.importedCount > 0 || (result.existingCount ?? 0) > 0 || (result.relinkedCount ?? 0) > 0;
             let refreshed = false;
             if (changed) {
-              if (targetSession.sessionID === this.tracker.getActiveSession()?.sessionID) {
+              if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
                 refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
                   this.kernel.logger.error("word-cite:recover-refresh", err);
                   return false;
@@ -15678,15 +16237,19 @@ ${summary}` : summary;
               }
               await this.resyncNow().catch((err) => this.kernel.logger.error("word-cite:recover-resync", err));
             }
-            this.kernel.bus.emit("word:recover-orphans-result", {
+            const payload = {
               ...result,
+              sessionID: targetSession.sessionID,
               ...refreshed ? { refreshed: true } : {},
               requestId
-            });
+            };
+            if (source === "spotlight") this.showSpotlightRecoverToast(targetSession.displayName, payload);
+            this.kernel.bus.emit("word:recover-orphans-result", payload);
           } catch (err) {
             this.kernel.logger.error("word-cite:recover-orphans", err);
             this.kernel.bus.emit("word:recover-orphans-result", {
               requestId,
+              sessionID: targetSession.sessionID,
               restoredCount: 0,
               importedCount: 0,
               skippedCount: targetSession.orphans.length,
@@ -15724,6 +16287,36 @@ ${summary}` : summary;
       this.tracker.clear();
       this.disposables.disposeAll();
     }
+    /** Prevents auto-refreshing the wrong open Word window when multiple Word sessions exist. */
+    canSafelyAutoRefreshSession(targetSessionID) {
+      if (this.tracker.getActiveSession()?.sessionID !== targetSessionID) return false;
+      const all = this.tracker.getAllSessions();
+      if (all.length <= 1) return true;
+      const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
+      if (!fgTitle) return true;
+      const matches = all.filter((ses) => {
+        const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
+        const stem = base.replace(/\.(docx?|rtf)$/i, "");
+        return Boolean(base && (fgTitle.includes(base) || stem && fgTitle.includes(stem)));
+      });
+      return matches.length === 0 || matches.some((m) => m.sessionID === targetSessionID);
+    }
+    showSpotlightRecoverToast(docName, res) {
+      try {
+        const PW = globalThis.Zotero?.ProgressWindow;
+        if (typeof PW !== "function") return;
+        const total = res.restoredCount + res.importedCount + (res.existingCount ?? 0);
+        const pw = new PW();
+        pw.changeHeadline(tLocale("Zotero BridgeFlow · 缺失引文找回", "Zotero BridgeFlow · Citation Recovery"));
+        pw.addDescription(total > 0 ? tLocale(
+          `「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? "并自动重连 Word" : "（请在 Word 点击刷新完成重连）"}。`,
+          `Recovered ${total} citation(s) for "${docName}"${res.refreshed ? " and relinked in Word" : ""}.`
+        ) : tLocale("未能自动恢复缺失引文（缺少内嵌备份元数据）。", "No orphan citations could be recovered."));
+        pw.show();
+        pw.startCloseTimer(4500);
+      } catch {
+      }
+    }
     scheduleTagSync() {
       if (this.tagDebounceTimer !== null) clearTimeout(this.tagDebounceTimer);
       const delay = this.kernel.prefs.get("wordCite.citationTagDebounceMs");
@@ -15756,8 +16349,8 @@ ${summary}` : summary;
           const pw = new PW();
           pw.changeHeadline(tLocale("Zotero BridgeFlow · 缺失引文提示", "Zotero BridgeFlow · Missing Citations"));
           pw.addDescription(tLocale(
-            `「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），请在右侧「Word 引用」面板一键还原并重连。`,
-            `"${ses.documentName}" has ${orphans.length} missing/trashed citation(s) (${ordText}). Open the Word Cite panel to recover & relink.`
+            `「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），可在右侧「Word 引用」面板或按 Ctrl+P（输入 >）一键找回并重连。`,
+            `"${ses.documentName}" has ${orphans.length} broken citation(s) (${ordText}). Recover via Word Cite panel or Ctrl+P (>).`
           ));
           pw.show();
           pw.startCloseTimer(5500);
@@ -22482,7 +23075,12 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     const desc = PREF_SCHEMA[key];
     const def = desc.defaultValue;
     if (raw === void 0 || raw === null || raw === "undefined" || raw === "null") return def;
-    if (typeof def === "boolean") return Boolean(raw);
+    if (typeof def === "boolean") {
+      if (typeof raw === "boolean") return raw;
+      if (raw === "true" || raw === 1 || raw === "1") return true;
+      if (raw === "false" || raw === 0 || raw === "0") return false;
+      return def;
+    }
     if (typeof def === "number") {
       const n = typeof raw === "number" ? raw : Number(raw);
       if (!Number.isFinite(n)) return def;

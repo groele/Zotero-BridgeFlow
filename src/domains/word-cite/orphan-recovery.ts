@@ -1,80 +1,13 @@
 import type { OrphanCitationInfo, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
+import {
+	buildBatchMetadataKey,
+	CSL_TO_ZOTERO_TYPE,
+	findExistingLibraryItem,
+	hasRecoverableCslMetadata,
+	mapCslCreators,
+	populateZoteroItemFromCsl,
+} from './orphan-csl-mapper.ts';
 import { classifySyncSafeRelinkUris, normalizeDoi, rememberRelinkedItemUris } from './orphan-identity.ts';
-
-const CSL_TO_ZOTERO_TYPE: Record<string, string> = {
-	'article-journal': 'journalArticle',
-	'article-magazine': 'magazineArticle',
-	'article-newspaper': 'newspaperArticle',
-	'paper-conference': 'conferencePaper',
-	book: 'book',
-	chapter: 'bookSection',
-	thesis: 'thesis',
-	report: 'report',
-	webpage: 'webpage',
-	patent: 'patent',
-	manuscript: 'manuscript',
-	software: 'computerProgram',
-	dataset: 'dataset',
-	article: 'preprint',
-	document: 'document',
-};
-
-function mapCslCreators(itemData: Record<string, unknown>): Array<{ firstName?: string; lastName: string; creatorType: string; fieldMode?: number }> {
-	const creators: Array<{ firstName?: string; lastName: string; creatorType: string; fieldMode?: number }> = [];
-	const pushRole = (list: unknown, creatorType: string) => {
-		if (!Array.isArray(list)) return;
-		for (const entry of list) {
-			if (!entry || typeof entry !== 'object') continue;
-			const rec = entry as Record<string, unknown>;
-			const literal = String(rec.literal || '').trim();
-			if (literal) {
-				creators.push({ lastName: literal, creatorType, fieldMode: 1 });
-				continue;
-			}
-			const family = String(rec.family || '').trim();
-			const given = String(rec.given || '').trim();
-			if (family || given) {
-				creators.push({
-					lastName: family || given,
-					...(family && given ? { firstName: given } : {}),
-					creatorType,
-				});
-			}
-		}
-	};
-	pushRole(itemData.author, 'author');
-	pushRole(itemData.editor, 'editor');
-	pushRole(itemData.translator, 'translator');
-	return creators;
-}
-
-function formatCslIssuedDate(itemData: Record<string, unknown>): string {
-	const issued = itemData.issued as { 'date-parts'?: unknown[][]; literal?: string; raw?: string } | undefined;
-	if (!issued || typeof issued !== 'object') return '';
-	const parts = Array.isArray(issued['date-parts']) && Array.isArray(issued['date-parts'][0])
-		? issued['date-parts'][0].map((v) => String(v ?? '').trim()).filter(Boolean)
-		: [];
-	if (parts.length > 0) return parts.join('-');
-	return String(issued.literal || issued.raw || '').trim();
-}
-
-function setFieldIfPresent(item: any, field: string, value: unknown): void {
-	if (typeof item?.setField !== 'function') return;
-	const text = String(value ?? '').trim();
-	if (!text) return;
-	try {
-		item.setField(field, text);
-	} catch { /* field not supported on this itemType */ }
-}
-
-function hasRecoverableCslMetadata(data: Record<string, unknown> | undefined, creatorsCount: number, doi: string): boolean {
-	if (!data || typeof data !== 'object') return false;
-	const title = String(data.title || '').trim();
-	const container = String(data['container-title'] || '').trim();
-	const url = String(data.URL || '').trim();
-	const isbn = String(data.ISBN || '').trim();
-	return Boolean(title || container || creatorsCount > 0 || doi || url || isbn);
-}
 
 /** Resolves the library an orphan citation came from; falls back to the user library when unknown or read-only. */
 export function resolveOrphanLibraryID(orphan: OrphanCitationInfo, fallbackLibraryID: number): number {
@@ -90,23 +23,6 @@ export function resolveOrphanLibraryID(orphan: OrphanCitationInfo, fallbackLibra
 		} catch { /* fall through to user library */ }
 	}
 	return fallbackLibraryID;
-}
-
-/** Finds an existing, non-deleted regular item in the library with the same DOI so recovery never duplicates it. */
-async function findExistingItemByDoi(libraryID: number, doi: string): Promise<any | null> {
-	const host = (globalThis as any).Zotero;
-	if (!doi || typeof host?.Search !== 'function') return null;
-	try {
-		const search = new host.Search();
-		search.libraryID = libraryID;
-		search.addCondition('DOI', 'is', doi);
-		const ids: number[] = await search.search();
-		for (const id of ids || []) {
-			const candidate = (await host.Items?.getAsync?.(id)) ?? host.Items?.get?.(id);
-			if (candidate && !candidate.deleted && candidate.isRegularItem?.() !== false) return candidate;
-		}
-	} catch { /* search unavailable: treat as no duplicate */ }
-	return null;
 }
 
 async function attachSyncSafeRelinkRelations(
@@ -151,9 +67,9 @@ async function importOrphanFromMetadata(
 	orphan: OrphanCitationInfo,
 	userLibraryID: number,
 	saveInTx: SaveFn,
-	batchDoiCache: Map<string, any>,
+	batchItemCache: Map<string, any>,
 	targetCollectionID?: number,
-): Promise<{ outcome: 'imported' | 'existing' | 'failed'; relinked: boolean; foreignSkipped: boolean }> {
+): Promise<{ outcome: 'imported' | 'existing' | 'failed'; itemID?: number; relinked: boolean; foreignSkipped: boolean }> {
 	const ZoteroObj = (globalThis as any).Zotero;
 	const ItemCtor = ZoteroObj?.Item;
 	if (typeof ItemCtor !== 'function') return { outcome: 'failed', relinked: false, foreignSkipped: false };
@@ -161,8 +77,13 @@ async function importOrphanFromMetadata(
 	const data = orphan.itemData && typeof orphan.itemData === 'object' ? orphan.itemData : undefined;
 	const targetLibraryID = resolveOrphanLibraryID(orphan, userLibraryID);
 	const doi = normalizeDoi(data?.DOI);
-	const batchDupKey = doi ? `${targetLibraryID}:${doi}` : '';
-	const duplicate = (batchDupKey ? batchDoiCache.get(batchDupKey) : null) || (await findExistingItemByDoi(targetLibraryID, doi));
+	const batchDoiKey = doi ? `doi:${targetLibraryID}:${doi}` : '';
+	const batchMetaKey = buildBatchMetadataKey(targetLibraryID, data);
+
+	const duplicate = (batchDoiKey ? batchItemCache.get(batchDoiKey) : null)
+		|| (batchMetaKey ? batchItemCache.get(batchMetaKey) : null)
+		|| (await findExistingLibraryItem(targetLibraryID, data, doi));
+
 	if (duplicate) {
 		const dupLibID = duplicate.libraryID ?? userLibraryID;
 		const relRes = await attachSyncSafeRelinkRelations(duplicate, orphan, dupLibID, userLibraryID, ZoteroObj);
@@ -177,8 +98,15 @@ async function importOrphanFromMetadata(
 			await saveInTx(duplicate, addedToCol ? undefined : { skipDateModifiedUpdate: true });
 		}
 		const dupId = Number(duplicate.id || 0);
+		if (batchDoiKey) batchItemCache.set(batchDoiKey, duplicate);
+		if (batchMetaKey) batchItemCache.set(batchMetaKey, duplicate);
 		if (relRes.attached && dupId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, dupId);
-		return { outcome: 'existing', relinked: relRes.attached, foreignSkipped: relRes.foreignSkipped };
+		return {
+			outcome: 'existing',
+			...(dupId > 0 ? { itemID: dupId } : {}),
+			relinked: relRes.attached,
+			foreignSkipped: relRes.foreignSkipped,
+		};
 	}
 
 	const creators = data ? mapCslCreators(data) : [];
@@ -192,32 +120,23 @@ async function importOrphanFromMetadata(
 	const item = new ItemCtor(itemType);
 	item.libraryID = targetLibraryID;
 
-	setFieldIfPresent(item, 'title', csl.title || csl['container-title'] || orphan.title);
-	setFieldIfPresent(item, 'publicationTitle', csl['container-title']);
-	setFieldIfPresent(item, 'volume', csl.volume);
-	setFieldIfPresent(item, 'issue', csl.issue);
-	setFieldIfPresent(item, 'pages', csl.page);
-	setFieldIfPresent(item, 'DOI', csl.DOI);
-	setFieldIfPresent(item, 'ISBN', csl.ISBN);
-	setFieldIfPresent(item, 'ISSN', csl.ISSN);
-	setFieldIfPresent(item, 'url', csl.URL);
-	setFieldIfPresent(item, 'publisher', csl.publisher);
-	setFieldIfPresent(item, 'place', csl['publisher-place']);
-	setFieldIfPresent(item, 'abstractNote', csl.abstract);
-	setFieldIfPresent(item, 'date', formatCslIssuedDate(csl));
+	populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, ZoteroObj);
 
-	if (creators.length > 0 && typeof item.setCreators === 'function') {
-		try { item.setCreators(creators); } catch { /* ignore */ }
-	}
 	if (targetCollectionID && typeof item.addToCollection === 'function' && targetLibraryID === userLibraryID) {
 		try { item.addToCollection(targetCollectionID); } catch { /* ignore */ }
 	}
 	const relRes = await attachSyncSafeRelinkRelations(item, orphan, targetLibraryID, userLibraryID, ZoteroObj);
 	const savedId = await saveInTx(item);
 	const resolvedNewId = Number(item.id || savedId || 0);
-	if (batchDupKey) batchDoiCache.set(batchDupKey, item);
+	if (batchDoiKey) batchItemCache.set(batchDoiKey, item);
+	if (batchMetaKey) batchItemCache.set(batchMetaKey, item);
 	if (relRes.attached && resolvedNewId > 0) rememberRelinkedItemUris(orphan.uris || relRes.safeUris, resolvedNewId);
-	return { outcome: 'imported', relinked: relRes.attached, foreignSkipped: relRes.foreignSkipped };
+	return {
+		outcome: 'imported',
+		...(resolvedNewId > 0 ? { itemID: resolvedNewId } : {}),
+		relinked: relRes.attached,
+		foreignSkipped: relRes.foreignSkipped,
+	};
 }
 
 /**
@@ -255,7 +174,13 @@ export async function recoverOrphanCitations(
 	let relinkedCount = 0;
 	let foreignSkippedCount = 0;
 	const restoredIDs = new Set<number>();
-	const batchDoiCache = new Map<string, any>();
+	const recoveredItemIDs: number[] = [];
+	const pushRecoveredID = (id?: number) => {
+		if (id && Number.isSafeInteger(id) && id > 0 && !recoveredItemIDs.includes(id)) {
+			recoveredItemIDs.push(id);
+		}
+	};
+	const batchItemCache = new Map<string, any>();
 
 	await runBatch(async () => {
 		for (const orphan of targets) {
@@ -272,13 +197,15 @@ export async function recoverOrphanCitations(
 					}
 					await saveInTx(existing);
 					restoredIDs.add(orphan.itemID);
+					pushRecoveredID(Number(existing.id || orphan.itemID));
 					restoredCount += 1;
 					relinkedCount += 1;
 					continue;
 				}
 			}
 
-			const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchDoiCache, options?.targetCollectionID);
+			const res = await importOrphanFromMetadata(orphan, userLibraryID, saveInTx, batchItemCache, options?.targetCollectionID);
+			pushRecoveredID(res.itemID);
 			if (res.relinked) relinkedCount += 1;
 			if (res.foreignSkipped) foreignSkippedCount += 1;
 			if (res.outcome === 'imported') importedCount += 1;
@@ -294,6 +221,7 @@ export async function recoverOrphanCitations(
 		...(existingCount ? { existingCount } : {}),
 		...(relinkedCount ? { relinkedCount } : {}),
 		...(foreignSkippedCount ? { foreignSkippedCount } : {}),
+		...(recoveredItemIDs.length ? { recoveredItemIDs } : {}),
 		...(options?.collectionName ? { collectionName: options.collectionName } : {}),
 	};
 }

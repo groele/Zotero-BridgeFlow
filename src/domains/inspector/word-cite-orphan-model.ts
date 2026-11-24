@@ -1,0 +1,271 @@
+import type { OrphanCitationInfo, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
+
+export interface ReceiptChip {
+	readonly text: string;
+	readonly variant: 'ok' | 'info' | 'warn';
+}
+
+export interface ReceiptAction {
+	readonly kind: 'locate-recovered' | 'refresh-word';
+	readonly label: string;
+	readonly title: string;
+	readonly itemIDs?: readonly number[];
+	readonly sessionID?: string;
+}
+
+export interface ReceiptState {
+	readonly text: string;
+	readonly tone: 'ok' | 'warn' | 'err' | 'none';
+	readonly headline?: string;
+	readonly chips?: readonly ReceiptChip[];
+	readonly subnote?: string;
+	readonly actions?: readonly ReceiptAction[];
+	readonly stickyUntil?: number;
+}
+
+export interface OrphanRowViewModel {
+	readonly key: string;
+	readonly ordinal: number;
+	readonly title: string;
+	readonly tooltip: string;
+	readonly authorYear: string;
+	readonly tagText: string;
+	readonly tagVariant: 'trash' | 'rebuild' | 'unrec';
+	readonly recoverable: boolean;
+	readonly checked: boolean;
+}
+
+export interface OrphanCardViewModel {
+	readonly visible: boolean;
+	readonly title: string;
+	readonly listText: string;
+	readonly summaryChips: ReadonlyArray<{ text: string; variant: 'trash' | 'rebuild' | 'unrec' }>;
+	readonly showToggle: boolean;
+	readonly toggleLabel: string;
+	readonly rows: readonly OrphanRowViewModel[];
+	readonly buttonLabel: string;
+	readonly buttonTooltip: string;
+	readonly buttonDisabled: boolean;
+}
+
+export function isOrphanRecoverable(orphan: OrphanCitationInfo): boolean {
+	if (orphan.kind === 'trashed' && Boolean(orphan.itemID)) return true;
+	const data = orphan.itemData;
+	if (!data || typeof data !== 'object') return false;
+	const hasCreators = [data.author, data.editor, data.translator].some((arr) => Array.isArray(arr) && arr.length > 0);
+	return Boolean(
+		String(data.title || '').trim()
+		|| String(data['container-title'] || '').trim()
+		|| String(data.DOI || '').trim()
+		|| String(data.URL || '').trim()
+		|| String(data.ISBN || '').trim()
+		|| hasCreators,
+	);
+}
+
+export function formatRecoverReceipt(res: WordRecoverOrphansResultPayload, zh: boolean): ReceiptState {
+	if (res.error) return { tone: 'err', text: res.error };
+	const {
+		restoredCount, importedCount, skippedCount,
+		existingCount = 0, relinkedCount = 0, foreignSkippedCount = 0,
+		refreshed, recoveredItemIDs, sessionID, collectionName,
+	} = res;
+	const totalRecovered = restoredCount + importedCount + existingCount;
+	if (!totalRecovered) {
+		return {
+			tone: 'warn',
+			text: zh ? '⚠ 未能恢复缺失引文（缺少可用备份元数据）' : '⚠ No orphan citations could be recovered (missing embedded metadata)',
+		};
+	}
+
+	const parts: string[] = [];
+	const chips: ReceiptChip[] = [];
+	if (restoredCount > 0) {
+		parts.push(zh ? `已从回收站还原 ${restoredCount} 篇` : `Restored ${restoredCount} from Trash`);
+		chips.push({ text: zh ? `回收站还原 ${restoredCount} 篇` : `Trash ${restoredCount}`, variant: 'ok' });
+	}
+	if (importedCount > 0) {
+		parts.push(zh ? `已反向导入 ${importedCount} 篇${collectionName ? `至「${collectionName}」` : ''}` : `Imported ${importedCount}${collectionName ? ` to "${collectionName}"` : ''}`);
+		chips.push({ text: zh ? `备份重建 ${importedCount} 篇` : `Rebuilt ${importedCount}`, variant: 'info' });
+	}
+	if (existingCount > 0) {
+		parts.push(zh ? `已复用库内同 DOI 文献 ${existingCount} 篇` : `Matched ${existingCount} existing item(s)`);
+		chips.push({ text: zh ? `复用已有 ${existingCount} 篇` : `Matched ${existingCount}`, variant: 'info' });
+	}
+	if (refreshed) {
+		parts.push(zh ? '已自动刷新并重连 Word' : 'auto-refreshed & relinked in Word');
+		chips.push({ text: zh ? '↻ Word 已重连' : '↻ Word Relinked', variant: 'ok' });
+	} else if (relinkedCount > 0) {
+		parts.push(zh ? '点 Word「刷新」即自动重连' : 'click Refresh in Word to relink');
+		chips.push({ text: zh ? '待刷新重连 Word' : 'Needs Word Refresh', variant: 'warn' });
+	}
+	if (foreignSkippedCount > 0) {
+		parts.push(zh ? `${foreignSkippedCount} 篇外部账号引文未写跨库映射` : `${foreignSkippedCount} external URI(s) skipped`);
+		chips.push({ text: zh ? `外部账号隔离 ${foreignSkippedCount} 篇` : `External ${foreignSkippedCount}`, variant: 'warn' });
+	}
+	if (skippedCount > 0) {
+		parts.push(zh ? `跳过 ${skippedCount} 篇` : `skipped ${skippedCount}`);
+		chips.push({ text: zh ? `无备份跳过 ${skippedCount} 篇` : `Skipped ${skippedCount}`, variant: 'warn' });
+	}
+
+	const actions: ReceiptAction[] = [];
+	if (!refreshed && relinkedCount > 0) {
+		actions.push({
+			kind: 'refresh-word',
+			label: zh ? '↻ 立即刷新 Word' : '↻ Refresh Word',
+			title: zh ? '立即执行 Zotero 官方刷新，将恢复的文献重新连接回当前 Word 文档' : 'Run Zotero Refresh now to relink recovered items in Word',
+			sessionID,
+		});
+	}
+	if (recoveredItemIDs?.length) {
+		actions.push({
+			kind: 'locate-recovered',
+			label: zh ? `定位查看 (${recoveredItemIDs.length}) ↗` : `Locate (${recoveredItemIDs.length}) ↗`,
+			title: zh ? '在文库列表中定位并高亮刚刚找回的文献（便于核对或补抓 PDF）' : 'Select and reveal the recovered items in your Zotero library',
+			itemIDs: recoveredItemIDs,
+			sessionID,
+		});
+	}
+
+	const headline = zh ? `✓ 已成功找回 ${totalRecovered} 篇缺失引文` : `✓ Recovered ${totalRecovered} missing citation(s)`;
+	const subnote = collectionName ? (zh ? `已同步至「${collectionName}」` : `Synced to "${collectionName}"`) : undefined;
+	return {
+		tone: 'ok',
+		text: `✓ ${parts.join(zh ? '；' : '; ')}`,
+		headline,
+		chips,
+		subnote,
+		actions: actions.length ? actions : undefined,
+		stickyUntil: Date.now() + 25_000,
+	};
+}
+
+export function buildOrphanBannerModel(
+	orphans: readonly OrphanCitationInfo[] | undefined,
+	zh: boolean,
+	options?: { uncheckedKeys?: ReadonlySet<string>; expanded?: boolean },
+): OrphanCardViewModel {
+	if (!orphans?.length) {
+		return {
+			visible: false, title: '', listText: '', summaryChips: [],
+			showToggle: false, toggleLabel: '', rows: [], buttonLabel: '', buttonTooltip: '', buttonDisabled: true,
+		};
+	}
+	const unchecked = options?.uncheckedKeys;
+	const expanded = Boolean(options?.expanded);
+	let trashedCount = 0;
+	let rebuildCount = 0;
+	let unrecCount = 0;
+
+	const allRows: OrphanRowViewModel[] = orphans.map((o) => {
+		const recoverable = isOrphanRecoverable(o);
+		const isTrash = o.kind === 'trashed' && Boolean(o.itemID);
+		if (isTrash) trashedCount += 1;
+		else if (recoverable) rebuildCount += 1;
+		else unrecCount += 1;
+
+		const checked = recoverable && !unchecked?.has(o.key);
+		const tagVariant = isTrash ? 'trash' : recoverable ? 'rebuild' : 'unrec';
+		const tagText = isTrash
+			? (zh ? '回收站·含原附件' : 'Trash · Keeps PDF')
+			: recoverable
+				? (zh ? 'Word备份·可重建' : 'Word Backup')
+				: (zh ? '无内嵌备份' : 'No Backup');
+		const doi = String(o.itemData?.DOI || '').trim();
+		const tooltipParts = [`[${o.ordinal}] ${o.title}`, o.authorYear || '', doi ? `DOI: ${doi}` : '', tagText].filter(Boolean);
+		return {
+			key: o.key,
+			ordinal: o.ordinal,
+			title: o.title,
+			tooltip: tooltipParts.join('\n'),
+			authorYear: o.authorYear || '',
+			tagText,
+			tagVariant,
+			recoverable,
+			checked,
+		};
+	});
+
+	const summaryChips: Array<{ text: string; variant: 'trash' | 'rebuild' | 'unrec' }> = [];
+	if (trashedCount > 0) summaryChips.push({ text: zh ? `回收站 ${trashedCount}` : `Trash ${trashedCount}`, variant: 'trash' });
+	if (rebuildCount > 0) summaryChips.push({ text: zh ? `可重建 ${rebuildCount}` : `Backup ${rebuildCount}`, variant: 'rebuild' });
+	if (unrecCount > 0) summaryChips.push({ text: zh ? `缺备份 ${unrecCount}` : `No Data ${unrecCount}`, variant: 'unrec' });
+
+	const checkedRows = allRows.filter((r) => r.checked);
+	const recoverableTotal = trashedCount + rebuildCount;
+	const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ');
+	const moreOrd = orphans.length > 4 ? (zh ? ' 等' : '…') : '';
+	const title = zh
+		? `⚠ 检测到 ${orphans.length} 篇断链引文（${ordinals}${moreOrd}）`
+		: `⚠ ${orphans.length} broken citation(s) (${ordinals}${moreOrd})`;
+	const listText = allRows.slice(0, 4).map((r) => `[${r.ordinal}] ${r.title} (${r.tagText})`).join('\n')
+		+ (allRows.length > 4 ? (zh ? `\n…另有 ${allRows.length - 4} 篇` : `\n…and ${allRows.length - 4} more`) : '');
+
+	let buttonLabel: string;
+	if (recoverableTotal === 0) {
+		buttonLabel = zh ? '缺少内嵌备份，请在 Word 中手动重选' : 'No embedded backup available';
+	} else if (checkedRows.length === 0) {
+		buttonLabel = zh ? '请勾选需要找回的引文' : 'Select citations to recover';
+	} else if (checkedRows.length < recoverableTotal) {
+		buttonLabel = zh ? `⚡ 找回已选 ${checkedRows.length} 篇并重连 Word` : `⚡ Recover ${checkedRows.length} Selected & Relink`;
+	} else if (trashedCount > 0 && rebuildCount === 0) {
+		buttonLabel = zh ? `⚡ 一键从回收站找回并重连 (${trashedCount})` : `⚡ Restore & Relink (${trashedCount})`;
+	} else if (trashedCount === 0) {
+		buttonLabel = zh ? `⚡ 一键找回并重连 Word (${rebuildCount})` : `⚡ Recover & Relink (${rebuildCount})`;
+	} else {
+		buttonLabel = zh ? `⚡ 一键还原并导入 (${checkedRows.length})` : `⚡ Restore & Import (${checkedRows.length})`;
+	}
+
+	const buttonTooltip = zh
+		? '在单个数据库事务中无损还原回收站条目或从 Word 备份重建（自动按 DOI/题录查重），并通过官方 dc:replaces 关系自动重连 Word'
+		: 'Atomically restore from Trash or rebuild from Word metadata with DOI/title deduplication and native dc:replaces relinking';
+
+	const showToggle = allRows.length > 3;
+	const toggleLabel = expanded
+		? (zh ? '收起' : 'Collapse')
+		: (zh ? `展开全部 (${allRows.length})` : `Show all (${allRows.length})`);
+	const rows = showToggle && !expanded ? allRows.slice(0, 3) : allRows;
+
+	return {
+		visible: true, title, listText, summaryChips, showToggle, toggleLabel, rows,
+		buttonLabel, buttonTooltip, buttonDisabled: checkedRows.length === 0,
+	};
+}
+
+export class OrphanSelectionState {
+	public readonly uncheckedKeys = new Set<string>();
+	public expanded = false;
+	private autoOpenedSig = '';
+
+	reset(): void {
+		this.uncheckedKeys.clear();
+		this.expanded = false;
+		this.autoOpenedSig = '';
+	}
+
+	toggleKey(key: string): void {
+		if (this.uncheckedKeys.has(key)) this.uncheckedKeys.delete(key);
+		else this.uncheckedKeys.add(key);
+	}
+
+	getSelectedRecoverableKeys(orphans: readonly OrphanCitationInfo[] | undefined): string[] {
+		if (!orphans?.length) return [];
+		return orphans.filter((o) => isOrphanRecoverable(o) && !this.uncheckedKeys.has(o.key)).map((o) => o.key);
+	}
+
+	/** Returns true when a fresh orphan set appears and the section should auto-expand once. */
+	syncSnapshot(activeSessionID: string | null | undefined, orphans: readonly OrphanCitationInfo[] | undefined): boolean {
+		if (!orphans?.length) {
+			this.reset();
+			return false;
+		}
+		const validKeys = new Set(orphans.map((o) => o.key));
+		for (const k of [...this.uncheckedKeys]) {
+			if (!validKeys.has(k)) this.uncheckedKeys.delete(k);
+		}
+		const sig = `${activeSessionID || ''}:${orphans.map((o) => o.key).sort().join('|')}`;
+		if (sig === this.autoOpenedSig) return false;
+		this.autoOpenedSig = sig;
+		return true;
+	}
+}

@@ -1,15 +1,16 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { CitationSnapshotPayload, DomainModule } from '../../kernel/types.ts';
+import type { CitationSnapshotPayload, DomainModule, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
+import type { Win32BridgeService } from '../../services/win32-bridge.ts';
 import { WordCitationCollectionManager } from './citation-collections.ts';
 import { CitationColumnController } from './citation-column.ts';
 import { DragCiteController } from './drag-cite-controller.ts';
 import { clearRelinkedItemUris } from './orphan-identity.ts';
 import { recoverOrphanCitations } from './orphan-recovery.ts';
-import { WordSessionTracker } from './session-tracker.ts';
+import { extractDocumentBaseName, WordSessionTracker } from './session-tracker.ts';
 import { CitationTagGovernance } from './tag-governance.ts';
 import { refreshActiveWordDocument, resolveActiveSelectionForWord } from './word-inserter.ts';
 import { WordIntegrationPoller } from './word-poller.ts';
@@ -24,6 +25,7 @@ export class WordCiteDomainModule implements DomainModule {
 
 	private readonly column: CitationColumnController;
 	private readonly poller: WordIntegrationPoller;
+	private readonly win32: Win32BridgeService;
 	private readonly disposables = new DisposableStack();
 	private readonly notifiedOrphanSigs = new Map<string, string>();
 	private tagDebounceTimer: number | null = null;
@@ -34,6 +36,7 @@ export class WordCiteDomainModule implements DomainModule {
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
+		this.win32 = services.win32;
 		this.tracker = new WordSessionTracker(kernel.bus, services.win32);
 		this.tagGovernance = new CitationTagGovernance(kernel.prefs);
 		this.collections = new WordCitationCollectionManager(kernel);
@@ -154,7 +157,7 @@ export class WordCiteDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('word:recover-orphans-request', async ({ sessionID, keys, requestId }) => {
+			this.kernel.bus.on('word:recover-orphans-request', async ({ sessionID, keys, requestId, source }) => {
 				if (!this.active) return;
 				if (this.recoveringOrphans) {
 					this.kernel.bus.emit('word:recover-orphans-result', {
@@ -190,7 +193,7 @@ export class WordCiteDomainModule implements DomainModule {
 						|| (result.relinkedCount ?? 0) > 0;
 					let refreshed = false;
 					if (changed) {
-						if (targetSession.sessionID === this.tracker.getActiveSession()?.sessionID) {
+						if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
 							refreshed = await refreshActiveWordDocument(this.kernel).catch((err) => {
 								this.kernel.logger.error('word-cite:recover-refresh', err);
 								return false;
@@ -198,15 +201,19 @@ export class WordCiteDomainModule implements DomainModule {
 						}
 						await this.resyncNow().catch((err) => this.kernel.logger.error('word-cite:recover-resync', err));
 					}
-					this.kernel.bus.emit('word:recover-orphans-result', {
+					const payload: WordRecoverOrphansResultPayload = {
 						...result,
+						sessionID: targetSession.sessionID,
 						...(refreshed ? { refreshed: true } : {}),
 						requestId,
-					});
+					};
+					if (source === 'spotlight') this.showSpotlightRecoverToast(targetSession.displayName, payload);
+					this.kernel.bus.emit('word:recover-orphans-result', payload);
 				} catch (err) {
 					this.kernel.logger.error('word-cite:recover-orphans', err);
 					this.kernel.bus.emit('word:recover-orphans-result', {
 						requestId,
+						sessionID: targetSession.sessionID,
 						restoredCount: 0,
 						importedCount: 0,
 						skippedCount: targetSession.orphans.length,
@@ -248,6 +255,39 @@ export class WordCiteDomainModule implements DomainModule {
 		this.disposables.disposeAll();
 	}
 
+	/** Prevents auto-refreshing the wrong open Word window when multiple Word sessions exist. */
+	private canSafelyAutoRefreshSession(targetSessionID: string): boolean {
+		if (this.tracker.getActiveSession()?.sessionID !== targetSessionID) return false;
+		const all = this.tracker.getAllSessions();
+		if (all.length <= 1) return true;
+		const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
+		if (!fgTitle) return true;
+		const matches = all.filter((ses) => {
+			const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
+			const stem = base.replace(/\.(docx?|rtf)$/i, '');
+			return Boolean(base && (fgTitle.includes(base) || (stem && fgTitle.includes(stem))));
+		});
+		return matches.length === 0 || matches.some((m) => m.sessionID === targetSessionID);
+	}
+
+	private showSpotlightRecoverToast(docName: string, res: WordRecoverOrphansResultPayload): void {
+		try {
+			const PW = (globalThis as any).Zotero?.ProgressWindow;
+			if (typeof PW !== 'function') return;
+			const total = res.restoredCount + res.importedCount + (res.existingCount ?? 0);
+			const pw = new PW();
+			pw.changeHeadline(tLocale('Zotero BridgeFlow · 缺失引文找回', 'Zotero BridgeFlow · Citation Recovery'));
+			pw.addDescription(total > 0
+				? tLocale(
+					`「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? '并自动重连 Word' : '（请在 Word 点击刷新完成重连）'}。`,
+					`Recovered ${total} citation(s) for "${docName}"${res.refreshed ? ' and relinked in Word' : ''}.`,
+				)
+				: tLocale('未能自动恢复缺失引文（缺少内嵌备份元数据）。', 'No orphan citations could be recovered.'));
+			pw.show();
+			pw.startCloseTimer(4500);
+		} catch { /* headless safe */ }
+	}
+
 	private scheduleTagSync(): void {
 		if (this.tagDebounceTimer !== null) clearTimeout(this.tagDebounceTimer);
 		const delay = this.kernel.prefs.get('wordCite.citationTagDebounceMs');
@@ -281,8 +321,8 @@ export class WordCiteDomainModule implements DomainModule {
 				const pw = new PW();
 				pw.changeHeadline(tLocale('Zotero BridgeFlow · 缺失引文提示', 'Zotero BridgeFlow · Missing Citations'));
 				pw.addDescription(tLocale(
-					`「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），请在右侧「Word 引用」面板一键还原并重连。`,
-					`"${ses.documentName}" has ${orphans.length} missing/trashed citation(s) (${ordText}). Open the Word Cite panel to recover & relink.`,
+					`「${ses.documentName}」检测到 ${orphans.length} 篇缺失/回收站引文（${ordText}），可在右侧「Word 引用」面板或按 Ctrl+P（输入 >）一键找回并重连。`,
+					`"${ses.documentName}" has ${orphans.length} broken citation(s) (${ordText}). Recover via Word Cite panel or Ctrl+P (>).`,
 				));
 				pw.show();
 				pw.startCloseTimer(5500);

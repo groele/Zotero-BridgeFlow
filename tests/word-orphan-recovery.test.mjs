@@ -7,7 +7,9 @@ import { WordCiteDomainModule } from '../src/domains/word-cite/module.ts';
 import { extractSessionCitationsWithOrphans } from '../src/domains/word-cite/orphan-extraction.ts';
 import { clearRelinkedItemUris } from '../src/domains/word-cite/orphan-identity.ts';
 import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery.ts';
-import { buildOrphanBannerModel, formatRecoverReceipt } from '../src/domains/inspector/word-cite-panel-ui.ts';
+import { SpotlightFusionBridge } from '../src/bridges/spotlight-fusion-bridge.ts';
+import { WorkspaceDomainModule } from '../src/domains/workspace/module.ts';
+import { buildOrphanBannerModel, formatRecoverReceipt, OrphanSelectionState } from '../src/domains/inspector/word-cite-panel-ui.ts';
 
 function createItemStub(id, { title = `Paper ${id}`, inTrash = false, deleted = false, libraryID = 1, key = `K${id}` } = {}) {
 	return {
@@ -440,7 +442,7 @@ test('Bug #4 & safety guardrails: single-tx recovery, dc:replaces relinking, loc
 
 		const banner = buildOrphanBannerModel(mod.tracker.getSession('s1')?.orphans, true);
 		assert.match(banner.title, /5 篇/);
-		assert.match(banner.buttonLabel, /一键还原并导入 \(5\)/);
+		assert.match(banner.buttonLabel, /一键还原并导入 \(4\)/);
 
 		const resultPromise = new Promise((resolve) => {
 			kernel.bus.on('word:recover-orphans-result', (res) => resolve(res));
@@ -603,6 +605,196 @@ test('recoverOrphanCitations deduplicates identical DOIs within the same recover
 		assert.equal(res.existingCount, 1);
 		assert.equal(res.relinkedCount, 2);
 		assert.equal(saved[0].rels.length, 2, 'both old URIs attached as dc:replaces onto the single created item');
+	} finally {
+		clearRelinkedItemUris();
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('v0.6.4: non-DOI exact title+author+year dedup, schema-aware CSL fields, selective UI & multi-doc refresh guard', async () => {
+	const prevZotero = globalThis.Zotero;
+	clearRelinkedItemUris();
+
+	const existingPreprint = createItemStub(701, { title: 'Quantum Spin Hall Effect in Monolayer WTe2', key: 'PRE701' });
+	existingPreprint.firstCreator = 'Qian et al.';
+	existingPreprint.getField = (f) => (f === 'title' ? 'Quantum Spin Hall Effect in Monolayer WTe2' : f === 'date' ? '2024-03' : '');
+
+	const created = [];
+	let seq = 900;
+	class SchemaAwareItem {
+		constructor(itemType) {
+			this.id = 0;
+			this.libraryID = 1;
+			this.itemType = itemType;
+			this.fields = {};
+			this.creators = [];
+			this.rels = [];
+		}
+		getField(k) { return this.fields[k] || ''; }
+		setField(k, v) {
+			if (this.itemType === 'bookSection' && k === 'publicationTitle') throw new Error('Invalid field publicationTitle for bookSection');
+			if (this.itemType === 'conferencePaper' && k === 'publicationTitle') throw new Error('Invalid field publicationTitle for conferencePaper');
+			this.fields[k] = v;
+		}
+		getCreators() { return this.creators; }
+		setCreators(c) { this.creators = c; }
+		hasRelation(p, u) { return this.rels.some(([rp, ru]) => rp === p && ru === u); }
+		addRelation(p, u) { this.rels.push([p, u]); return true; }
+		async saveTx() { if (!this.id) { this.id = ++seq; created.push(this); } return this.id; }
+	}
+
+	globalThis.Zotero = {
+		isWin: true,
+		Item: SchemaAwareItem,
+		Relations: { replacedItemPredicate: 'dc:replaces' },
+		Libraries: { userLibraryID: 1, get: () => ({ editable: true }) },
+		Search: class {
+			constructor() { this.conds = []; }
+			addCondition(f, op, v) { this.conds.push([f, op, v]); }
+			async search() {
+				const t = this.conds.find((c) => c[0] === 'title');
+				if (t && /Quantum Spin Hall Effect/i.test(t[2])) return [701];
+				return [];
+			}
+		},
+		Items: {
+			get: (id) => (id === 701 ? existingPreprint : null),
+			getAsync: async (id) => (id === 701 ? existingPreprint : null),
+		},
+		Integration: {
+			Interface: class { async refresh() { throw new Error('Must NOT refresh wrong foreground Word doc!'); } },
+			getApplication: () => ({ getActiveDocument: async () => ({}) }),
+			execCommand: async () => {},
+		},
+		Prefs: { get: () => '', set: () => {}, registerObserver: () => 0, unregisterObserver: () => {} },
+	};
+
+	try {
+		const orphans = [
+			// 1. Non-DOI preprint already in library -> matched by exact title + author surname + year!
+			{
+				key: 'o-nodoi',
+				kind: 'missing',
+				ordinal: 1,
+				shortText: '[1]',
+				title: 'Quantum Spin Hall Effect in Monolayer WTe2',
+				uris: ['http://zotero.org/users/1/items/OLDWTE21'],
+				itemData: {
+					type: 'article',
+					title: 'Quantum Spin Hall Effect in Monolayer WTe2',
+					author: [{ family: 'Qian', given: 'Xiaofeng' }],
+					issued: { 'date-parts': [[2024]] },
+				},
+			},
+			// 2. Book chapter -> must populate `bookTitle` (not throw on `publicationTitle`)
+			{
+				key: 'o-chap',
+				kind: 'missing',
+				ordinal: 2,
+				shortText: '[2]',
+				title: '2D Ferroelectrics Chapter',
+				uris: ['http://zotero.org/users/1/items/OLDCHAP2'],
+				itemData: {
+					type: 'chapter',
+					title: '2D Ferroelectrics Chapter',
+					'container-title': 'Handbook of Low-Dimensional Materials',
+					publisher: 'Springer',
+					author: [{ family: 'Wang' }],
+					issued: { 'date-parts': [[2025]] },
+				},
+			},
+			// 3. Conference paper + Nature Comm electronic article `number` + `container-title-short`
+			{
+				key: 'o-artnum',
+				kind: 'missing',
+				ordinal: 3,
+				shortText: '[3]',
+				title: 'Exciton Funneling Study',
+				itemData: {
+					type: 'article-journal',
+					title: 'Exciton Funneling Study',
+					'container-title': 'Nature Communications',
+					'container-title-short': 'Nat. Commun.',
+					volume: '16',
+					number: '4821',
+					DOI: '10.1038/s41467-025-04821-x',
+				},
+			},
+			// 4. Unchecked item excluded by user in UI
+			{
+				key: 'o-skip-user',
+				kind: 'missing',
+				ordinal: 4,
+				shortText: '[4]',
+				title: 'User Unchecked Citation',
+				itemData: { type: 'article-journal', title: 'User Unchecked Citation', DOI: '10.1000/unchecked' },
+			},
+		];
+
+		// Test OrphanSelectionState & expand/collapse + selective checkbox UI model
+		const selState = new OrphanSelectionState();
+		assert.equal(selState.syncSnapshot('si-doc', orphans), true, 'auto-opens once on fresh orphan set');
+		assert.equal(selState.syncSnapshot('si-doc', orphans), false, 'does not repeatedly force-open on same set');
+		selState.toggleKey('o-skip-user');
+
+		const collapsedModel = buildOrphanBannerModel(orphans, true, { uncheckedKeys: selState.uncheckedKeys, expanded: false });
+		assert.equal(collapsedModel.showToggle, true);
+		assert.equal(collapsedModel.rows.length, 3, 'collapsed view shows compact top 3 rows');
+		assert.match(collapsedModel.buttonLabel, /找回已选 3 篇/);
+
+		const selectedKeys = selState.getSelectedRecoverableKeys(orphans);
+		assert.deepEqual(selectedKeys, ['o-nodoi', 'o-chap', 'o-artnum']);
+
+		// Verify multi-Word-window guard + Spotlight command registration
+		const kernel = new PluginKernel({ id: 'bridgeflow@groele', version: '0.6.4', rootURI: 'chrome://bridgeflow/' });
+		const services = new ServiceContainer(kernel);
+		services.win32.probeForegroundWordTitle = () => 'Main_Manuscript.docx - Microsoft Word';
+		const workspace = new WorkspaceDomainModule(kernel, services);
+		const wordMod = new WordCiteDomainModule(kernel, services);
+		const bridge = new SpotlightFusionBridge(kernel, workspace, wordMod);
+		try {
+			workspace.start();
+			wordMod.start();
+			bridge.start();
+
+			wordMod.tracker.syncSessions([
+				{ sessionID: 'si-doc', documentPath: 'D:\\Supporting_Information.docx', citations: [], orphans },
+				{ sessionID: 'main-doc', documentPath: 'D:\\Main_Manuscript.docx', citations: [{ itemID: 701, ordinal: 1, shortText: '[1]' }], orphans: [] },
+			]);
+			// Switch active tracked session back to si-doc while Main_Manuscript.docx remains foregrounded in Windows
+			wordMod.tracker.setActiveSession('si-doc');
+
+			const spotCommands = workspace.spotlight.query('> 找回', {});
+			assert.ok(spotCommands.some((c) => c.id === 'cmd:recover-word-orphans:si-doc'), 'Spotlight exposes 0-selection orphan recovery command');
+
+			const res = await new Promise((resolve) => {
+				kernel.bus.on('word:recover-orphans-result', resolve);
+				kernel.bus.emit('word:recover-orphans-request', { sessionID: 'si-doc', keys: selectedKeys, requestId: 'r-v064' });
+			});
+
+			assert.equal(res.existingCount, 1, 'non-DOI preprint matched existing item 701 without duplicating');
+			assert.equal(existingPreprint.hasRelation('dc:replaces', 'http://zotero.org/users/1/items/OLDWTE21'), true);
+			assert.equal(res.importedCount, 2, 'book chapter + journal article imported; unchecked #4 excluded');
+			assert.equal(res.refreshed, undefined, 'skipped auto-refresh because Main_Manuscript.docx was in foreground instead of Supporting_Information.docx');
+			assert.deepEqual(res.recoveredItemIDs?.length, 3);
+
+			const chapItem = created.find((x) => x.itemType === 'bookSection');
+			assert.equal(chapItem?.fields.bookTitle, 'Handbook of Low-Dimensional Materials');
+			const artItem = created.find((x) => x.itemType === 'journalArticle');
+			assert.equal(artItem?.fields.journalAbbreviation, 'Nat. Commun.');
+			assert.equal(artItem?.fields.pages, '4821', 'electronic article number mapped to pages');
+
+			const richReceipt = formatRecoverReceipt({ ...res, collectionName: 'Supporting Information.docx' }, true);
+			assert.equal(richReceipt.headline, '✓ 已成功找回 3 篇缺失引文');
+			assert.ok(richReceipt.chips?.some((c) => c.text.includes('备份重建 2 篇')));
+			assert.ok(richReceipt.chips?.some((c) => c.text.includes('复用已有 1 篇')));
+			assert.ok(richReceipt.actions?.some((a) => a.kind === 'refresh-word'), 'offers 1-click Refresh Word action when auto-refresh was deferred');
+			assert.ok(richReceipt.actions?.some((a) => a.kind === 'locate-recovered' && a.itemIDs?.length === 3), 'offers 1-click Locate action for recovered items');
+		} finally {
+			bridge.stop();
+			wordMod.stop();
+			workspace.stop();
+		}
 	} finally {
 		clearRelinkedItemUris();
 		globalThis.Zotero = prevZotero;

@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.3 - Preferences controller. */
+/* Zotero BridgeFlow v0.6.4 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -201,7 +201,12 @@
     const desc = PREF_SCHEMA[key];
     const def = desc.defaultValue;
     if (raw === void 0 || raw === null || raw === "undefined" || raw === "null") return def;
-    if (typeof def === "boolean") return Boolean(raw);
+    if (typeof def === "boolean") {
+      if (typeof raw === "boolean") return raw;
+      if (raw === "true" || raw === 1 || raw === "1") return true;
+      if (raw === "false" || raw === 0 || raw === "0") return false;
+      return def;
+    }
     if (typeof def === "number") {
       const n = typeof raw === "number" ? raw : Number(raw);
       if (!Number.isFinite(n)) return def;
@@ -1259,8 +1264,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.3" }));
-        versionEl.textContent = `v${"0.6.3"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.4" }));
+        versionEl.textContent = `v${"0.6.4"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

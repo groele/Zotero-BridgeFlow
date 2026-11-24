@@ -34,6 +34,28 @@ export class SpotlightFusionBridge implements BridgeModule {
 					const out: SpotlightItemResult[] = [];
 					const active = this.wordCite.tracker.getActiveSession();
 
+					for (const ses of this.wordCite.tracker.getAllSessions()) {
+						if (!ses.orphans.length) continue;
+						const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ') + (ses.orphans.length > 4 ? '…' : '');
+						const recoverTitle = `> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`;
+						if (!term || recoverTitle.toLowerCase().includes(term) || 'recover orphan word 找回 恢复 缺失 断链 重连'.includes(term)) {
+							out.push({
+								id: `cmd:recover-word-orphans:${ses.sessionID}`,
+								category: 'command',
+								title: recoverTitle,
+								subtitle: `单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
+								badge: '修复',
+								action: () => {
+									this.kernel.bus.emit('word:recover-orphans-request', {
+										sessionID: ses.sessionID,
+										source: 'spotlight',
+										win,
+									});
+								},
+							});
+						}
+					}
+
 					if (active) {
 						// 1. One-click command to group open tabs cited in the active Word document
 						const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;

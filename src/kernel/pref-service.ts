@@ -19,7 +19,12 @@ export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): Pre
 	const desc = PREF_SCHEMA[key] as PrefDescriptor;
 	const def = desc.defaultValue;
 	if (raw === undefined || raw === null || raw === 'undefined' || raw === 'null') return def as PrefValue<K>;
-	if (typeof def === 'boolean') return Boolean(raw) as PrefValue<K>;
+	if (typeof def === 'boolean') {
+		if (typeof raw === 'boolean') return raw as PrefValue<K>;
+		if (raw === 'true' || raw === 1 || raw === '1') return true as PrefValue<K>;
+		if (raw === 'false' || raw === 0 || raw === '0') return false as PrefValue<K>;
+		return def as PrefValue<K>;
+	}
 	if (typeof def === 'number') {
 		const n = typeof raw === 'number' ? raw : Number(raw);
 		if (!Number.isFinite(n)) return def as PrefValue<K>;
