@@ -18,7 +18,7 @@ export function getGallerySourceSnapshot(win: Window): GallerySourceSnapshot {
 	const searchText = typeof pane?.getSearchFilterBoxValue === 'function' ? pane.getSearchFilterBoxValue() : '';
 	const context = `${colRow?.id ?? colRow?.type ?? 'root'}|${view?.sortColumnId ?? ''}|${view?.sortDirection ?? ''}|${searchText ?? ''}`;
 	const ids: number[] = [];
-	const rowCount = Math.min(Number(view?.rowCount || 0), 20_000);
+	const rowCount = Math.min(Number(view?.rowCount || 0), 5000);
 	for (let i = 0; i < rowCount; i++) {
 		const ref = view?.getRow?.(i)?.ref;
 		const id = Number(ref?.id || 0);

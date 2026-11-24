@@ -10,8 +10,10 @@ import { bindCustomStatusColorPersistence, loadCustomStatusColors } from '../../
 import { openAnnotationMatrixModal } from './annotation-matrix-modal.ts';
 import { ReaderAnnotationTools } from './annotation-tools.ts';
 import { openCollectionNotesHubModal } from './collection-notes-hub.ts';
-import type { VisualNotesDataSource } from './data-source.ts';
+import { clearExtraRemarkCache, type VisualNotesDataSource } from './data-source.ts';
+import { clearGalleryCardCache } from './gallery-board-helpers.ts';
 import { GalleryBoardController } from './gallery-view.ts';
+import { resolveAffectedVisualItemIDs } from './hub-cache.ts';
 import { InfoBriefNoteController } from './info-brief-note.ts';
 import { ReadingColumnsController, RemarkColumnController } from './library-columns.ts';
 import { StatusRatingColumnsController } from './status-rating-columns.ts';
@@ -36,6 +38,7 @@ export class VisualNotesDomainModule implements DomainModule {
 	private dataSource?: VisualNotesDataSource;
 	private active = false;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	private dirtyItemIDs: Set<number> | null = new Set();
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
 		this.kernel = kernel;
@@ -193,15 +196,16 @@ export class VisualNotesDomainModule implements DomainModule {
 
 		this.disposables.add(
 			this.kernel.bus.on('visual-notes:reading-updated', () => {
-				if (this.active) this.scheduleLibraryRefresh();
+				// 15s reading ticks only update progress bars/heatmaps; never wipe annotation caches or tear down open Gallery covers.
+				if (this.active) this.titleHeatmap.refreshWindows();
 			}),
 		);
 
 		this.disposables.add(
-			this.kernel.notifier.subscribe(['item'], ({ event }) => {
+			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
 				if (!this.active) return;
 				if (event === 'modify' || event === 'add' || event === 'trash' || event === 'restore') {
-					this.scheduleLibraryRefresh();
+					this.scheduleLibraryRefresh(50, resolveAffectedVisualItemIDs(ids));
 				}
 			}),
 		);
@@ -230,23 +234,29 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.galleryBoard.detachWindow(win);
 	}
 
-	scheduleLibraryRefresh(delayMs = 50): void {
+	scheduleLibraryRefresh(delayMs = 50, affectedIDs?: ReadonlySet<number>): void {
 		if (!this.active) return;
+		if (!affectedIDs) this.dirtyItemIDs = null;
+		else if (this.dirtyItemIDs !== null) for (const id of affectedIDs) this.dirtyItemIDs.add(id);
 		if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
-			if (this.active) this.refreshLibraryViews();
+			const scoped = this.dirtyItemIDs ?? undefined;
+			this.dirtyItemIDs = new Set();
+			if (this.active) this.refreshLibraryViews(scoped);
 		}, delayMs);
 	}
 
-	refreshLibraryViews(): void {
+	refreshLibraryViews(affectedIDs?: Iterable<number>): void {
 		if (!this.active) return;
 		if (this.refreshTimer !== null) {
 			clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
 		}
-		this.readingColumns.clearCache();
-		this.statusRatingColumns.clearCache();
+		this.readingColumns.clearCache(affectedIDs);
+		this.statusRatingColumns.clearCache(affectedIDs);
+		clearGalleryCardCache(affectedIDs);
+		clearExtraRemarkCache(affectedIDs);
 		this.infoBriefNote.refresh();
 		this.titleHeatmap.refreshWindows();
 		this.galleryBoard.refreshWindows();

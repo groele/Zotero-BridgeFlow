@@ -3,13 +3,11 @@ import type { TypedEventBus } from '../../kernel/event-bus.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
 import {
-	collectHubAnnotations,
-	collectHubNotes,
 	renderCollectionHubMarkdown,
-	resolveHubScopeItems,
 	saveCollectionHubAsZoteroNote,
 	type HubScopeMode,
 } from '../../services/collection-notes.ts';
+import { createHubScopeMemo } from './hub-cache.ts';
 import { openAnnotationMatrixModal } from './annotation-matrix-modal.ts';
 import { ensureMatrixStyles, extractQueryTerms, writeMatrixClipboard } from './annotation-matrix-ui.ts';
 import {
@@ -88,7 +86,7 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 		b.type = 'button';
 		b.className = 'zbf-notebook-seg-btn';
 		b.textContent = label;
-		b.addEventListener('click', () => { activeScope = mode; activeColor = ''; renderAll(); });
+		b.addEventListener('click', () => { activeScope = mode; activeColor = ''; scopeMemo.invalidate(); renderAll(); });
 		scopeBtns.set(mode, b);
 		scopeSeg.appendChild(b);
 	}
@@ -186,21 +184,17 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 	searchInput.addEventListener('input', () => { syncClearBtn(); if (!composing) scheduleRender(); });
 	syncClearBtn();
 
-	let latestScope = resolveHubScopeItems(options.win, activeScope, zh);
+	const scopeMemo = createHubScopeMemo({
+		win: options.win,
+		zh,
+		getColorJson: () => options.prefs.get('inspector.annotations.colorLabels'),
+		getBriefNote: (it) => readItemRemarkWithFallback(it, options.dataSource),
+	});
+	let latestScope = scopeMemo.compute(activeScope, '', '', ignoreFigTable).scope;
 	const computeCurrent = () => {
-		latestScope = resolveHubScopeItems(options.win, activeScope, zh);
-		const colorJson = options.prefs.get('inspector.annotations.colorLabels');
-		const annData = collectHubAnnotations(latestScope.items, colorJson, {
-			query: searchInput.value,
-			colorLabel: activeColor,
-			ignoreFigureTable: ignoreFigTable,
-		});
-		const notesData = collectHubNotes(
-			latestScope.items,
-			(it) => readItemRemarkWithFallback(it, options.dataSource),
-			searchInput.value,
-		);
-		return { annData, notesData };
+		const res = scopeMemo.compute(activeScope, searchInput.value, activeColor, ignoreFigTable);
+		latestScope = res.scope;
+		return { annData: res.annData, notesData: res.notesData };
 	};
 
 	const renderAll = () => {
@@ -267,7 +261,8 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 			renderHubNotesList({
 				doc, win: options.win, scroll, selection, entries: notesData.entries,
 				syncExtra: Boolean(options.prefs.get('workspace.syncRemarkToExtra')),
-				dataSource: options.dataSource, terms, zh, onRemarkMutated: options.onRemarkMutated, onStatus, onOpenItem,
+				dataSource: options.dataSource, terms, zh,
+				onRemarkMutated: () => { scopeMemo.invalidate(); options.onRemarkMutated?.(); }, onStatus, onOpenItem,
 			});
 		}
 	};

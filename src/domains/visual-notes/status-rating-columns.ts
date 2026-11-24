@@ -107,8 +107,8 @@ export class StatusRatingColumnsController {
 		unregisterAllSafe(this.registeredKeys);
 	}
 
-	clearCache(): void {
-		clearStatusRatingCaches();
+	clearCache(itemIDs?: Iterable<number>): void {
+		clearStatusRatingCaches(itemIDs);
 	}
 
 	refreshColumns(): void {

@@ -58,9 +58,12 @@ function getLru<V>(map: Map<string, V>, key: string): V | undefined {
 	return hit;
 }
 
-export function clearStatusRatingCaches(): void {
-	ratingCache.clear();
-	statusCache.clear();
+export function clearStatusRatingCaches(itemIDs?: Iterable<number>): void {
+	if (!itemIDs) { ratingCache.clear(); statusCache.clear(); return; }
+	const targets = new Set(itemIDs);
+	for (const m of [ratingCache, statusCache]) {
+		for (const k of m.keys()) if (targets.has(Number(k.split(':', 1)[0]))) m.delete(k);
+	}
 }
 
 export function isStatusTagName(tagName: string, excludedTag = '/Citations'): boolean {

@@ -95,34 +95,6 @@ async function locateAttachmentPdf(attID: number, width: number): Promise<{ key:
 	} catch { return null; }
 }
 
-async function identifyAttachmentPdf(attID: number, width: number, verify = false): Promise<{ key: string; stamp: string; revision: string } | null> {
-	const located = await locateAttachmentPdf(attID, width);
-	if (!located) return null;
-	const zotero = (globalThis as any).Zotero;
-	const ioUtils = (globalThis as any).IOUtils || zotero?.getMainWindow?.()?.IOUtils;
-	let fp = fingerprints.get(located.path);
-	if (verify || fp?.stamp !== located.stamp) {
-		const hashPromise = (async () => {
-			const digest = typeof ioUtils?.computeHexDigest === 'function'
-				? `sha256:${await ioUtils.computeHexDigest(located.path, 'sha256')}`
-				: typeof zotero?.Utilities?.Internal?.md5Async === 'function'
-					? `md5:${await zotero.Utilities.Internal.md5Async(located.path)}`
-					: `stamp:${located.stamp}`;
-			const after = await ioUtils.stat(located.path);
-			if (JSON.stringify([after.lastModified, after.size]) !== located.stamp) throw new Error('PDF modified during hash');
-			return digest;
-		})();
-		fp = { stamp: located.stamp, hashPromise };
-		setBounded(fingerprints, located.path, fp);
-	}
-	try {
-		return { key: located.key, stamp: located.stamp, revision: await fp.hashPromise };
-	} catch {
-		if (fingerprints.get(located.path) === fp) fingerprints.delete(located.path);
-		return null;
-	}
-}
-
 function triggerCoverCacheSweep(): void {
 	if (sweepingPromise || Date.now() - lastSweepAt < 3600_000) return;
 	const dir = getCoversDir();
@@ -192,9 +164,9 @@ async function writeDiskEnvelope(key: string, payload: { revision: string; stamp
 	}
 }
 
-const defaultScrollIdle = createGalleryScrollIdle(260);
-const renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
-const ioQueue = createGalleryWorkQueue(async () => {}, 2);
+const defaultScrollIdle = createGalleryScrollIdle(100);
+const renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 3);
+const ioQueue = createGalleryWorkQueue(async () => {}, 8);
 const activeJobs = new Map<string, {
 	controller: AbortController;
 	subscribers: Set<{ signal: AbortSignal; priority: () => number; onPreview?: (url: string) => void }>;
@@ -234,17 +206,14 @@ export function requestGalleryPdfCover(opts: {
 		const promise = (async (): Promise<string | null> => {
 			const sig = controller.signal;
 			const hint = await ioQueue(() => locateAttachmentPdf(attID, width), sig, rank);
-			const cand = hint && !sig.aborted ? await ioQueue(() => readDiskEnvelope(hint.key), sig, rank) : null;
-			if (cand && hint && cand.stamp === hint.stamp && !sig.aborted) {
-				for (const sub of subscribers) if (!sub.signal.aborted) sub.onPreview?.(cand.url);
-			}
-			const ident = await ioQueue(() => identifyAttachmentPdf(attID, width), sig, rank);
 			if (sig.aborted) return null;
-			if (ident) {
-				const verified = (hint?.key === ident.key ? cand : await ioQueue(() => readDiskEnvelope(ident.key), sig, rank));
-				if (verified && verified.revision === ident.revision) {
-					setMemLru(attID, verified.url);
-					return verified.url;
+			if (hint) {
+				const cand = await ioQueue(() => readDiskEnvelope(hint.key), sig, rank);
+				if (sig.aborted) return null;
+				// Fast O(1) stat [lastModified, size] match avoids reading & SHA-256 hashing multi-MB PDFs on disk cache hits.
+				if (cand && (cand.stamp === hint.stamp || (!cand.stamp && cand.revision))) {
+					setMemLru(attID, cand.url);
+					return cand.url;
 				}
 			}
 			const rendered = await renderQueue(async () => {
@@ -255,8 +224,10 @@ export function requestGalleryPdfCover(opts: {
 				const timer = setTimeout(() => timeoutCtrl.abort(), 15_000);
 				try {
 					const host = (globalThis as any).Zotero;
-					const viaPreview = await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host, (s) => defaultScrollIdle.wait(s));
-					return viaPreview || (await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host));
+					// Direct PDF.js page-1 rasterization is ~20x faster than spawning an offscreen <attachment-preview> reader iframe.
+					const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host, hint?.path);
+					if (viaDirect) return viaDirect;
+					return await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host, (s) => defaultScrollIdle.wait(s));
 				} finally {
 					clearTimeout(timer);
 					sig.removeEventListener('abort', onParentAbort);
@@ -267,8 +238,8 @@ export function requestGalleryPdfCover(opts: {
 				return null;
 			}
 			setMemLru(attID, rendered);
-			if (ident && !sig.aborted) {
-				void writeDiskEnvelope(ident.key, { revision: ident.revision, stamp: ident.stamp, url: rendered });
+			if (hint && !sig.aborted) {
+				void writeDiskEnvelope(hint.key, { revision: `stamp:${hint.stamp}`, stamp: hint.stamp, url: rendered });
 			}
 			return rendered;
 		})().catch(() => null).finally(() => {

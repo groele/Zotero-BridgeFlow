@@ -21,6 +21,7 @@ interface WindowGalleryState {
 	readingSelection: { itemID: number }; columnOrders: Map<GalleryGroupBy, string[]>; measurements: Map<string, number>;
 	tbGroup: HTMLElement | null; btnGallery: HTMLButtonElement | null; btnHub: HTMLButtonElement | null;
 	panel: HTMLElement | null; layout: GalleryVirtualLayoutController | null; viewportDispose: (() => void) | null;
+	queryTimer: ReturnType<typeof setTimeout> | null;
 	visibilityGuard: ReturnType<typeof createGalleryVisibilityGuard> | null;
 	paneAdapter: ZoteroPaneGalleryAdapter | null;
 }
@@ -70,7 +71,7 @@ export class GalleryBoardController {
 			sortField: 'dateModified', query: '', selectedIDs: new Set(), anchorItemID: 0,
 			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(),
 			tbGroup: null, btnGallery: null, btnHub: null, panel: null, layout: null,
-			viewportDispose: null, visibilityGuard: null, paneAdapter: null,
+			viewportDispose: null, queryTimer: null, visibilityGuard: null, paneAdapter: null,
 		};
 		this.states.set(win, st);
 		this.syncWindow(st);
@@ -115,16 +116,15 @@ export class GalleryBoardController {
 
 	private disposeViewport(st: WindowGalleryState): void {
 		st.layout = null;
-		if (st.viewportDispose) {
-			const fn = st.viewportDispose;
-			st.viewportDispose = null;
-			try { fn(); } catch { /* ignore */ }
-		}
+		const fn = st.viewportDispose;
+		st.viewportDispose = null;
+		try { fn?.(); } catch { /* ignore */ }
 	}
 
 	detachWindow(win: Window): void {
 		const st = this.states.get(win);
 		if (!st) return;
+		if (st.queryTimer !== null) { clearTimeout(st.queryTimer); st.queryTimer = null; }
 		this.disposeViewport(st);
 		this.setGalleryOpen(st, false);
 		st.visibilityGuard?.destroy();
@@ -155,18 +155,11 @@ export class GalleryBoardController {
 	}
 
 	toggleWindowGallery(win: Window, mode?: GalleryMode): void {
-		let st = this.states.get(win);
-		if (!st) {
-			this.attachWindow(win);
-			st = this.states.get(win);
-		}
+		if (!this.states.has(win)) this.attachWindow(win);
+		const st = this.states.get(win);
 		if (!st) return;
-		if (mode) {
-			st.mode = mode;
-			this.setGalleryOpen(st, true);
-		} else {
-			this.setGalleryOpen(st, !st.open);
-		}
+		if (mode) { st.mode = mode; this.setGalleryOpen(st, true); }
+		else this.setGalleryOpen(st, !st.open);
 	}
 
 	private syncWindow(st: WindowGalleryState): void {
@@ -304,7 +297,7 @@ export class GalleryBoardController {
 					},
 					onRated: () => {
 						this.onMutated();
-						this.renderPanel(st, true);
+						if (st.sortField === 'rating' || (st.mode === 'board' && st.groupBy === 'rating')) this.renderPanel(st, true);
 					},
 				}),
 				onColumnOrderChange: (nextKeys) => {
@@ -345,7 +338,11 @@ export class GalleryBoardController {
 				onModeChange: (m) => { st.mode = m; this.kernel.prefs.set('visualNotes.gallery.defaultMode', m); this.renderPanel(st); },
 				onGroupByChange: (g) => { st.groupBy = g; this.kernel.prefs.set('visualNotes.gallery.groupBy', g); this.renderPanel(st); },
 				onSortChange: (s) => { st.sortField = s; this.renderPanel(st); },
-				onQueryInput: (q) => { st.query = q; this.renderPanel(st, true); },
+				onQueryInput: (q) => {
+					st.query = q;
+					if (st.queryTimer !== null) clearTimeout(st.queryTimer);
+					st.queryTimer = setTimeout(() => { st.queryTimer = null; if (st.open) this.renderPanel(st, true); }, 110);
+				},
 			}));
 			panel.appendChild(bodyViewport);
 		}

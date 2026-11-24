@@ -68,6 +68,23 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 		});
 	};
 
+	const isNearViewport = (card: HTMLElement): boolean => {
+		const vr = viewport.getBoundingClientRect?.();
+		const cr = card.getBoundingClientRect?.();
+		if (!vr || !cr || (vr.width === 0 && vr.height === 0)) return true;
+		return cr.bottom >= vr.top - 300 && cr.top <= vr.bottom + 300 && cr.right >= vr.left - 220 && cr.left <= vr.right + 220;
+	};
+
+	const trySyncCover = (card: HTMLElement): boolean => {
+		const coverEl = card.querySelector('.zbf-gal-cover[data-pdf-att-id]') as HTMLElement | null;
+		if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return true;
+		const attID = Number(coverEl.getAttribute('data-pdf-att-id') || 0);
+		if (!attID) return true;
+		const mem = getCachedPdfCoverSync(attID);
+		if (mem) { applyCoverUrl(coverEl, doc, mem); return true; }
+		return false;
+	};
+
 	const ensureObserver = (): IntersectionObserver | null => {
 		if (observer || !viewport.isConnected) return observer;
 		const IO = (doc.defaultView as any)?.IntersectionObserver || (globalThis as any).IntersectionObserver;
@@ -79,7 +96,7 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 				if (entry.isIntersecting) startCard(card);
 				else if (!card.contains(doc.activeElement)) cancelCard(card);
 			}
-		}, { root: viewport, rootMargin: '240px 0px' }) as IntersectionObserver;
+		}, { root: viewport, rootMargin: '280px 180px' }) as IntersectionObserver;
 		observer = obs;
 		for (const c of tracked) {
 			if (c.isConnected) obs.observe(c);
@@ -94,16 +111,18 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 	return {
 		observeCard(card: HTMLElement) {
 			if (disposed) return;
+			if (trySyncCover(card)) return;
 			tracked.add(card);
 			const obs = ensureObserver();
 			if (obs && card.isConnected) obs.observe(card);
-			if (viewport.isConnected && card.isConnected) startCard(card);
+			if (viewport.isConnected && card.isConnected && (!obs || isNearViewport(card))) startCard(card);
 		},
 		activate() {
 			if (disposed) return;
-			ensureObserver();
+			const obs = ensureObserver();
 			for (const c of tracked) {
-				if (c.isConnected) startCard(c);
+				if (!c.isConnected || trySyncCover(c)) continue;
+				if (!obs || isNearViewport(c)) startCard(c);
 			}
 		},
 		unobserveCard(card: HTMLElement) {

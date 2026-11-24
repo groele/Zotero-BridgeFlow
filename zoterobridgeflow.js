@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.1 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.6.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -1952,6 +1952,81 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
+  // src/services/html-sanitizer.ts
+  var ALLOWED_TAGS = /* @__PURE__ */ new Set([
+    "a",
+    "b",
+    "i",
+    "u",
+    "em",
+    "strong",
+    "sub",
+    "sup",
+    "small",
+    "span",
+    "div",
+    "p",
+    "br",
+    "ol",
+    "ul",
+    "li"
+  ]);
+  var VOID_TAGS = /* @__PURE__ */ new Set(["br"]);
+  var SAFE_STYLE_RE = /^[\w\s:;.,%#()'"-]*$/;
+  var SAFE_HREF_RE = /^(?:https?:|doi:|mailto:)/i;
+  function escapeHtmlText(value) {
+    return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function escapeAttribute(value) {
+    return escapeHtmlText(value).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+  function serializeNode(node, out) {
+    if (node.nodeType === 3) {
+      out.push(escapeHtmlText(node.textContent || ""));
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const el = node;
+    const tag = el.localName.toLowerCase();
+    if (!ALLOWED_TAGS.has(tag)) {
+      if (tag === "script" || tag === "style" || tag === "iframe" || tag === "object" || tag === "embed") return;
+      for (const child of Array.from(el.childNodes)) serializeNode(child, out);
+      return;
+    }
+    let attrs = "";
+    const className = el.getAttribute("class");
+    if (className && /^[\w\s-]+$/.test(className)) attrs += ` class="${escapeAttribute(className)}"`;
+    const style = el.getAttribute("style");
+    if (style && SAFE_STYLE_RE.test(style) && !/url\s*\(|expression\s*\(/i.test(style)) {
+      attrs += ` style="${escapeAttribute(style)}"`;
+    }
+    if (tag === "a") {
+      const href = (el.getAttribute("href") || "").trim();
+      if (SAFE_HREF_RE.test(href)) attrs += ` href="${escapeAttribute(href)}" rel="noreferrer"`;
+    }
+    if (VOID_TAGS.has(tag)) {
+      out.push(`<${tag}${attrs}/>`);
+      return;
+    }
+    out.push(`<${tag}${attrs}>`);
+    for (const child of Array.from(el.childNodes)) serializeNode(child, out);
+    out.push(`</${tag}>`);
+  }
+  function sanitizeCitationHtml(doc, html) {
+    const source = String(html || "");
+    if (!source) return "";
+    const Parser = doc?.defaultView?.DOMParser || globalThis.DOMParser;
+    if (!Parser) return escapeHtmlText(source.replace(/<[^>]*>/g, ""));
+    try {
+      const parsed = new Parser().parseFromString(source, "text/html");
+      const out = [];
+      for (const child of Array.from(parsed?.body?.childNodes || [])) serializeNode(child, out);
+      return out.join("");
+    } catch {
+      return escapeHtmlText(source.replace(/<[^>]*>/g, ""));
+    }
+  }
+
   // src/domains/inspector/csl-preview-section.ts
   var ERROR_L10N = {
     "no-style": ["zbf-preview-no-style", "QuickCopy 未选择参考文献样式，请在 Zotero 或 BridgeFlow 设置中配置样式。"],
@@ -2136,7 +2211,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const blocks = Object.entries(payload).map(([kind, content]) => {
         if (!content) return "";
         const fallbackLabel = kind === "citation" ? "复制正文引用" : "复制参考文献";
-        return `<section class="zotero-preview-block"><div class="zotero-preview-block-row"><div class="zotero-preview-block-body">${content.html || escapeHTML(content.text)}</div><div class="zotero-preview-block-toolbar"><span class="zotero-preview-copy" role="button" tabindex="0" title="${fallbackLabel}" aria-label="${fallbackLabel}" data-l10n-id="zbf-preview-copy-${kind}" data-copy-citation="${kind === "citation"}">${CLIPBOARD_ICON_SVG}</span></div></div></section>`;
+        return `<section class="zotero-preview-block"><div class="zotero-preview-block-row"><div class="zotero-preview-block-body">${sanitizeCitationHtml(st.doc, content.html) || escapeHTML(content.text)}</div><div class="zotero-preview-block-toolbar"><span class="zotero-preview-copy" role="button" tabindex="0" title="${fallbackLabel}" aria-label="${fallbackLabel}" data-l10n-id="zbf-preview-copy-${kind}" data-copy-citation="${kind === "citation"}">${CLIPBOARD_ICON_SVG}</span></div></div></section>`;
       }).filter(Boolean);
       let html = blocks.join('<hr class="zotero-preview-separator"/>');
       if (st.omitted > 0) {
@@ -2224,12 +2299,46 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
-  // src/domains/inspector/pdf-renderer.ts
+  // src/services/pdfjs-loader.ts
   var PDFJS_MODULE_URL = "resource://zotero/reader/pdf/build/pdf.mjs";
   var PDFJS_WORKER_URL = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
   var PDFJS_CMAP_URL = "resource://zotero/reader/pdf/web/cmaps/";
   var PDFJS_FONT_URL = "resource://zotero/reader/pdf/web/standard_fonts/";
-  var cachedPdfJsLib = null;
+  var cachedPdfJs = null;
+  function tryImportEsModule(cu, url) {
+    if (typeof cu?.importESModule !== "function") return null;
+    for (const opts of [{ global: "current" }, void 0]) {
+      try {
+        const mod = opts ? cu.importESModule(url, opts) : cu.importESModule(url);
+        if (mod) return mod;
+      } catch {
+      }
+    }
+    return null;
+  }
+  function getSharedPdfJsSync(win) {
+    if (cachedPdfJs) return cachedPdfJs;
+    const hostWin = win || globalThis.Zotero?.getMainWindow?.();
+    const winCu = hostWin?.ChromeUtils;
+    const globalCu = globalThis.ChromeUtils;
+    const workerMod = tryImportEsModule(winCu, PDFJS_WORKER_URL) || tryImportEsModule(globalCu, PDFJS_WORKER_URL);
+    if (workerMod) {
+      try {
+        globalThis.pdfjsWorker = workerMod;
+        if (hostWin && !hostWin.pdfjsWorker) hostWin.pdfjsWorker = workerMod;
+      } catch {
+      }
+    }
+    const mod = tryImportEsModule(winCu, PDFJS_MODULE_URL) || tryImportEsModule(globalCu, PDFJS_MODULE_URL);
+    if (typeof mod?.getDocument !== "function") return null;
+    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
+      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+    }
+    cachedPdfJs = mod;
+    return mod;
+  }
+
+  // src/domains/inspector/pdf-renderer.ts
   function isPdfAttachment(att) {
     if (!att || att.deleted || att.isTrashed?.()) return false;
     if (typeof att.isPDFAttachment === "function") return Boolean(att.isPDFAttachment());
@@ -2366,51 +2475,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     throw new Error("No file reader available for PDF preview");
   }
-  function tryImportModule(cu, url) {
-    if (!cu?.importESModule) return null;
-    for (const opts of [{ global: "current" }, null]) {
-      try {
-        const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
-        if (mod) return mod;
-      } catch {
-      }
-    }
-    return null;
-  }
   async function loadPdfJsLib(win) {
-    if (cachedPdfJsLib) return cachedPdfJsLib;
-    const zotero = globalThis.Zotero;
-    const hostWin = win || zotero?.getMainWindow?.();
-    if (hostWin && !globalThis.window) {
-      try {
-        globalThis.window = hostWin;
-        globalThis.document = hostWin.document;
-      } catch {
-      }
-    }
-    const winCu = hostWin?.ChromeUtils;
-    const globalCu = globalThis.ChromeUtils;
-    const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
-    if (workerMod) {
-      try {
-        globalThis.pdfjsWorker = workerMod;
-        if (hostWin) hostWin.pdfjsWorker = workerMod;
-      } catch {
-      }
-    }
-    let mod = tryImportModule(winCu, PDFJS_MODULE_URL) || tryImportModule(globalCu, PDFJS_MODULE_URL);
-    if (typeof mod?.getDocument !== "function") {
-      try {
-        mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL);
-      } catch {
-        mod = null;
-      }
-    }
-    if (typeof mod?.getDocument !== "function") throw new Error("Failed to load Zotero PDF.js module");
-    if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
-      mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-    }
-    cachedPdfJsLib = mod;
+    const mod = getSharedPdfJsSync(win);
+    if (!mod) throw new Error("Failed to load Zotero PDF.js module");
     return mod;
   }
   async function openPdfDocumentFromFile(filePath, doc) {
@@ -4993,6 +5060,40 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     return globalThis.PathUtils?.join(directory, name) ?? directory + "/" + name;
   }
 
+  // src/services/safe-io.ts
+  async function readTextOutcome(path) {
+    const ioUtils = globalThis.IOUtils;
+    if (!ioUtils?.exists || !ioUtils?.readUTF8) return { status: "missing" };
+    try {
+      if (!await ioUtils.exists(path)) return { status: "missing" };
+    } catch (error) {
+      return { status: "error", error };
+    }
+    try {
+      return { status: "ok", text: String(await ioUtils.readUTF8(path)) };
+    } catch (error) {
+      return { status: "error", error };
+    }
+  }
+  async function quarantineFile(path) {
+    const ioUtils = globalThis.IOUtils;
+    if (typeof ioUtils?.copy !== "function") return false;
+    try {
+      await ioUtils.copy(path, `${path}.corrupt-${Date.now()}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async function copyToBackup(path, backupPath) {
+    const ioUtils = globalThis.IOUtils;
+    if (typeof ioUtils?.copy !== "function" || typeof ioUtils?.exists !== "function") return;
+    try {
+      if (await ioUtils.exists(path)) await ioUtils.copy(path, backupPath);
+    } catch {
+    }
+  }
+
   // src/services/item-ratings-cache.ts
   var FORMAT_ID = "zotero-bridgeflow-item-ratings";
   var MAX_RATING = 5;
@@ -5031,6 +5132,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     lastError = "";
     directory;
     initialized = false;
+    readFailed = false;
     constructor(customDir = "") {
       this.directory = cacheDirectory(customDir);
     }
@@ -5052,6 +5154,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     async init() {
       this.initialized = true;
+      this.readFailed = false;
       const disk = await this.loadFromDisk();
       if (disk) {
         for (const [k, v] of Object.entries(disk)) {
@@ -5059,6 +5162,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         }
         return true;
       }
+      if (this.readFailed) return false;
       await this.flushNow();
       return false;
     }
@@ -5137,6 +5241,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (!ioUtils?.writeUTF8) return true;
       const payload = this.exportJson();
       const run = async () => {
+        if (this.readFailed) {
+          this.lastError = "existing ratings file unreadable; write skipped";
+          return false;
+        }
         if (payload === this.lastWrittenJson) return true;
         try {
           await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
@@ -5171,16 +5279,21 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         );
       }
       for (const p of candidates) {
-        try {
-          if (!await ioUtils.exists(p)) continue;
-          const raw = await ioUtils.readUTF8(p);
-          if (!raw) continue;
-          const parsed = parseRatingsPayload(raw);
-          if (!parsed) continue;
-          this.lastWrittenJson = p === this.getFilePath() ? raw : "";
-          return parsed;
-        } catch {
+        const outcome = await readTextOutcome(p);
+        if (outcome.status === "missing") continue;
+        if (outcome.status === "error") {
+          this.readFailed = true;
+          continue;
         }
+        if (!outcome.text) continue;
+        const parsed = parseRatingsPayload(outcome.text);
+        if (!parsed) {
+          await quarantineFile(p);
+          continue;
+        }
+        this.lastWrittenJson = p === this.getFilePath() ? outcome.text : "";
+        this.readFailed = false;
+        return parsed;
       }
       return null;
     }
@@ -5377,9 +5490,16 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return hit;
   }
-  function clearStatusRatingCaches() {
-    ratingCache.clear();
-    statusCache.clear();
+  function clearStatusRatingCaches(itemIDs) {
+    if (!itemIDs) {
+      ratingCache.clear();
+      statusCache.clear();
+      return;
+    }
+    const targets = new Set(itemIDs);
+    for (const m of [ratingCache, statusCache]) {
+      for (const k of m.keys()) if (targets.has(Number(k.split(":", 1)[0]))) m.delete(k);
+    }
   }
   function isStatusTagName(tagName, excludedTag = "/Citations") {
     const t = String(tagName || "").trim();
@@ -7648,6 +7768,89 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
   }
 
+  // src/domains/visual-notes/hub-cache.ts
+  function matchesNotesQuery(haystack, rawQuery) {
+    const q = String(rawQuery || "").trim().toLowerCase();
+    if (!q) return true;
+    const hay = haystack.toLowerCase();
+    const orParts = q.split("||").map((s) => s.trim()).filter(Boolean);
+    return !orParts.length || orParts.some((clause) => {
+      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
+      return andTerms.length > 0 && andTerms.every((t) => hay.includes(t));
+    });
+  }
+  function createHubScopeMemo(opts) {
+    let cachedMode = null;
+    let cachedColorRaw = "";
+    let scopeRes = resolveHubScopeItems(opts.win, "collection", opts.zh);
+    let rawAnnotations = [];
+    let colorHexByLabel = /* @__PURE__ */ new Map();
+    let rawNoteRecords = [];
+    const invalidate = () => {
+      cachedMode = null;
+    };
+    const ensureScope = (mode) => {
+      const colorRaw = String(opts.getColorJson() || "");
+      if (cachedMode === mode && cachedColorRaw === colorRaw) return;
+      cachedMode = mode;
+      cachedColorRaw = colorRaw;
+      scopeRes = resolveHubScopeItems(opts.win, mode, opts.zh);
+      const semantics = parseColorSemantics(colorRaw);
+      colorHexByLabel = /* @__PURE__ */ new Map();
+      for (const [hex, lbl] of Object.entries(semantics)) {
+        if (!colorHexByLabel.has(lbl)) colorHexByLabel.set(lbl, hex);
+      }
+      rawAnnotations = collectItemAnnotations(scopeRes.items, semantics);
+      const allNotes = collectHubNotes(scopeRes.items, opts.getBriefNote, "");
+      rawNoteRecords = allNotes.entries.map((entry) => ({
+        entry,
+        hay: [entry.title, entry.creatorYear, entry.briefNote, ...entry.childNotes.map((n) => `${n.heading} ${n.snippet}`)].join(" "),
+        metaHay: `${entry.title} ${entry.creatorYear}`
+      }));
+    };
+    const compute = (mode, query, colorLabel, ignoreFigureTable) => {
+      ensureScope(mode);
+      const base = ignoreFigureTable ? rawAnnotations.filter((a) => !isFigureOrTableAnnotation(a)) : rawAnnotations;
+      const colorCounts = /* @__PURE__ */ new Map();
+      for (const a of base) colorCounts.set(a.colorLabel, (colorCounts.get(a.colorLabel) || 0) + 1);
+      const annotations = filterCollectedAnnotations(base, { query, colorLabel });
+      const qTrim = query.trim();
+      const entries = [];
+      let totalBriefNotes = 0;
+      let totalChildNotes = 0;
+      for (const rec of rawNoteRecords) {
+        if (qTrim) {
+          if (!matchesNotesQuery(rec.hay, qTrim)) continue;
+          if (!rec.entry.briefNote && !rec.entry.childNotes.length && !matchesNotesQuery(rec.metaHay, qTrim)) continue;
+        }
+        if (rec.entry.briefNote) totalBriefNotes++;
+        totalChildNotes += rec.entry.childNotes.length;
+        entries.push(rec.entry);
+      }
+      return {
+        scope: scopeRes,
+        annData: { totalBeforeFilter: base.length, annotations, colorCounts, colorHexByLabel },
+        notesData: { entries, totalChildNotes, totalBriefNotes }
+      };
+    };
+    return { compute, invalidate, matchesAnnotationQuery };
+  }
+  function resolveAffectedVisualItemIDs(rawIDs) {
+    const out = /* @__PURE__ */ new Set();
+    const hostItems = globalThis.Zotero?.Items;
+    for (const raw of rawIDs) {
+      let curID = Number(raw || 0);
+      for (let hop = 0; hop < 3 && Number.isInteger(curID) && curID > 0; hop++) {
+        out.add(curID);
+        const obj = hostItems?.get?.(curID);
+        const nextParent = Number(obj?.parentItemID || obj?.parentID || 0);
+        if (!nextParent || nextParent === curID) break;
+        curID = nextParent;
+      }
+    }
+    return out;
+  }
+
   // src/domains/visual-notes/gallery-styles.ts
   var GALLERY_STYLE_ID = "zbf-gallery-board-style";
   var GALLERY_BOARD_CSS = `
@@ -7820,7 +8023,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const totalCount = entries.reduce((sum, e) => sum + e.count, 0);
     let active;
     let resizeObs = null;
+    let masonryRaf = 0;
     const disposeObserver = () => {
+      if (masonryRaf && typeof doc.defaultView?.cancelAnimationFrame === "function") {
+        doc.defaultView.cancelAnimationFrame(masonryRaf);
+      }
+      masonryRaf = 0;
       try {
         resizeObs?.disconnect();
       } catch {
@@ -7834,21 +8042,25 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const grid = galEl(doc, "div");
       grid.className = "zbf-reading-grid";
       const renderedItems = [];
-      for (const entry of entries) {
-        const holder = galEl(doc, "div");
-        render(entry, holder);
-        const cardNode = holder.firstElementChild || holder;
-        const weight = entry.weight ?? 1.6 + Math.max(1, entry.count) * 2.4;
-        renderedItems.push({ node: cardNode, weight });
-      }
+      let cols = [];
+      let heights = [];
       let currentCols = 0;
+      const placeItem = (item) => {
+        if (!cols.length) return;
+        let best = 0;
+        for (let i = 1; i < cols.length; i++) {
+          if (heights[i] < heights[best]) best = i;
+        }
+        cols[best].appendChild(item.node);
+        heights[best] += item.weight;
+      };
       const distribute = (colCount) => {
-        const nextCols = Math.max(1, Math.min(colCount, renderedItems.length));
+        const nextCols = Math.max(1, Math.min(colCount, entries.length));
         if (nextCols === currentCols) return;
         currentCols = nextCols;
         grid.replaceChildren();
-        const cols = [];
-        const heights = [];
+        cols = [];
+        heights = [];
         for (let i = 0; i < nextCols; i++) {
           const col = galEl(doc, "div");
           col.className = "zbf-masonry-col";
@@ -7856,18 +8068,35 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           heights.push(0);
           grid.appendChild(col);
         }
-        for (const item of renderedItems) {
-          let best = 0;
-          for (let i = 1; i < nextCols; i++) {
-            if (heights[i] < heights[best]) best = i;
-          }
-          cols[best].appendChild(item.node);
-          heights[best] += item.weight;
-        }
+        for (const item of renderedItems) placeItem(item);
       };
       page.appendChild(grid);
       const initWidth = page.clientWidth || (doc.defaultView?.innerWidth ? doc.defaultView.innerWidth - 280 : 1200);
       distribute(resolveMasonryCols(initWidth));
+      const raf = doc.defaultView?.requestAnimationFrame?.bind(doc.defaultView);
+      const initialBatch = raf ? Math.min(entries.length, 24) : entries.length;
+      let cursor = 0;
+      const appendBatch = (limit) => {
+        const stop = Math.min(entries.length, cursor + limit);
+        for (; cursor < stop; cursor++) {
+          const entry = entries[cursor];
+          const holder = galEl(doc, "div");
+          render(entry, holder);
+          const cardNode = holder.firstElementChild || holder;
+          const weight = entry.weight ?? 1.6 + Math.max(1, entry.count) * 2.4;
+          const item = { node: cardNode, weight };
+          renderedItems.push(item);
+          placeItem(item);
+        }
+      };
+      appendBatch(initialBatch);
+      const pumpRemaining = () => {
+        masonryRaf = 0;
+        if (!grid.isConnected || cursor >= entries.length) return;
+        appendBatch(28);
+        if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
+      };
+      if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
       const RO = doc.defaultView?.ResizeObserver || globalThis.ResizeObserver;
       if (typeof RO === "function") {
         const obs = new RO((recs) => {
@@ -8068,6 +8297,19 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     if (item.isAttachment?.() && item.parentItemID) return Number(item.parentItemID) || 0;
     return Number(item.id || 0);
   }
+  var EXTRA_REMARK_CACHE_LIMIT = 5e3;
+  var extraRemarkCache = /* @__PURE__ */ new Map();
+  function clearExtraRemarkCache(itemIDs) {
+    if (!itemIDs) {
+      extraRemarkCache.clear();
+      return;
+    }
+    const targets = new Set(itemIDs);
+    if (!targets.size) return;
+    for (const key of extraRemarkCache.keys()) {
+      if (targets.has(Number(key.split(":", 1)[0]))) extraRemarkCache.delete(key);
+    }
+  }
   function readItemRemarkWithFallback(item, dataSource) {
     if (!item) return "";
     const id = Number(item.id || 0);
@@ -8080,22 +8322,39 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const parentCached = dataSource.getRemark(parentID);
       if (parentCached) return parentCached;
     }
-    const attIDs = dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function" ? item.getAttachments() || [] : [];
-    if (dataSource) {
-      for (const attID of attIDs) {
+    const hostItems = globalThis.Zotero?.Items;
+    const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
+    const targetID = Number(targetItem?.id || 0);
+    const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? "");
+    const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : "";
+    if (cacheKey && extraRemarkCache.has(cacheKey)) {
+      const hit = extraRemarkCache.get(cacheKey);
+      if (hit) return hit;
+      if (!dataSource) return "";
+    }
+    if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function") {
+      for (const attID of item.getAttachments() || []) {
         const attCached = dataSource.getRemark(attID);
         if (attCached) return attCached;
       }
     }
-    const hostItems = globalThis.Zotero?.Items;
-    const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
-    return getItemBriefNote(targetItem);
+    if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey);
+    const resolved = getItemBriefNote(targetItem);
+    if (cacheKey) {
+      if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
+        const oldest = extraRemarkCache.keys().next().value;
+        if (oldest !== void 0) extraRemarkCache.delete(oldest);
+      }
+      extraRemarkCache.set(cacheKey, resolved);
+    }
+    return resolved;
   }
   function writeItemRemarkWithSync(item, remark, syncToExtra, dataSource) {
     if (!item) return;
     const clean = String(remark || "").replace(/[\r\n]+/g, " ").trim();
     const id = Number(item.id || 0);
     const parentID = resolveParentItemID(item);
+    if (id > 0 || parentID > 0) clearExtraRemarkCache([id, parentID].filter((n) => n > 0));
     if (dataSource) {
       if (id > 0) dataSource.setRemark(id, clean);
       if (parentID > 0 && parentID !== id) dataSource.setRemark(parentID, clean);
@@ -8455,6 +8714,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       b.addEventListener("click", () => {
         activeScope = mode;
         activeColor = "";
+        scopeMemo.invalidate();
         renderAll();
       });
       scopeBtns.set(mode, b);
@@ -8576,21 +8836,17 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (!composing) scheduleRender();
     });
     syncClearBtn();
-    let latestScope = resolveHubScopeItems(options.win, activeScope, zh);
+    const scopeMemo = createHubScopeMemo({
+      win: options.win,
+      zh,
+      getColorJson: () => options.prefs.get("inspector.annotations.colorLabels"),
+      getBriefNote: (it) => readItemRemarkWithFallback(it, options.dataSource)
+    });
+    let latestScope = scopeMemo.compute(activeScope, "", "", ignoreFigTable).scope;
     const computeCurrent = () => {
-      latestScope = resolveHubScopeItems(options.win, activeScope, zh);
-      const colorJson = options.prefs.get("inspector.annotations.colorLabels");
-      const annData = collectHubAnnotations(latestScope.items, colorJson, {
-        query: searchInput.value,
-        colorLabel: activeColor,
-        ignoreFigureTable: ignoreFigTable
-      });
-      const notesData = collectHubNotes(
-        latestScope.items,
-        (it) => readItemRemarkWithFallback(it, options.dataSource),
-        searchInput.value
-      );
-      return { annData, notesData };
+      const res = scopeMemo.compute(activeScope, searchInput.value, activeColor, ignoreFigTable);
+      latestScope = res.scope;
+      return { annData: res.annData, notesData: res.notesData };
     };
     const renderAll = () => {
       const { annData, notesData } = computeCurrent();
@@ -8666,7 +8922,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           dataSource: options.dataSource,
           terms,
           zh,
-          onRemarkMutated: options.onRemarkMutated,
+          onRemarkMutated: () => {
+            scopeMemo.invalidate();
+            options.onRemarkMutated?.();
+          },
           onStatus,
           onOpenItem
         });
@@ -8765,7 +9024,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     searchInput.focus?.();
   }
 
-  // src/domains/visual-notes/gallery-board-helpers.ts
+  // src/domains/visual-notes/gallery-card-cache.ts
   var ITEM_TYPE_ZH = {
     journalArticle: "期刊文章",
     conferencePaper: "会议论文",
@@ -8776,14 +9035,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     report: "研究报告",
     webpage: "网页资料"
   };
-  var SOFT_TINTS = [
-    { pillBg: "#ffe4e6", pillFg: "#9f1239", surface: "rgba(244,63,94,0.045)" },
-    { pillBg: "#dcfce7", pillFg: "#166534", surface: "rgba(34,197,94,0.045)" },
-    { pillBg: "#e0e7ff", pillFg: "#3730a3", surface: "rgba(99,102,241,0.045)" },
-    { pillBg: "#fef3c7", pillFg: "#92400e", surface: "rgba(245,158,11,0.045)" },
-    { pillBg: "#e0f2fe", pillFg: "#075985", surface: "rgba(14,165,233,0.045)" },
-    { pillBg: "#f3e8ff", pillFg: "#6b21a8", surface: "rgba(168,85,247,0.045)" }
-  ];
+  var CARD_STATIC_CACHE_LIMIT = 5e3;
+  var cardStaticCache = /* @__PURE__ */ new Map();
+  function clearGalleryCardCache(itemIDs) {
+    if (!itemIDs) {
+      cardStaticCache.clear();
+      return;
+    }
+    const targets = new Set(itemIDs);
+    if (!targets.size) return;
+    for (const key of cardStaticCache.keys()) {
+      const id = Number(key.split(":", 1)[0]);
+      if (targets.has(id)) cardStaticCache.delete(key);
+    }
+  }
   function safeField(item, field) {
     try {
       return String(item?.getField?.(field) || "").trim();
@@ -8800,13 +9065,12 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   }
   function formatCreatorLine(item, zh) {
     const first = String(item?.firstCreator || "").trim();
+    if (first && (first.includes("等") || first.toLowerCase().includes("et al"))) return first;
     try {
       const creators = item?.getCreators?.();
       if (Array.isArray(creators) && creators.length > 1) {
         const lead = String(creators[0]?.lastName || creators[0]?.name || first).trim();
-        if (lead && !lead.includes("等") && !lead.toLowerCase().includes("et al")) {
-          return zh ? `${lead} 等` : `${lead} et al.`;
-        }
+        if (lead) return zh ? `${lead} 等` : `${lead} et al.`;
       }
     } catch {
     }
@@ -8840,6 +9104,59 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     return out;
   }
+  function resolveCachedCardStatic(ref, itemID, zh, excludedStatusTag) {
+    const stamp = String(ref.version ?? ref.dateModified ?? "");
+    const cacheKey = stamp ? `${itemID}:${stamp}:${excludedStatusTag}:${zh ? 1 : 0}` : "";
+    if (cacheKey) {
+      const hit = cardStaticCache.get(cacheKey);
+      if (hit) {
+        cardStaticCache.delete(cacheKey);
+        cardStaticCache.set(cacheKey, hit);
+        return hit;
+      }
+    }
+    const title = safeField(ref, "title") || String(ref.title || `#${itemID}`);
+    const rawDate = safeField(ref, "year") || safeField(ref, "date");
+    const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(rawDate);
+    const year = yearMatch ? yearMatch[1] : rawDate.slice(0, 4);
+    const creator = formatCreatorLine(ref, zh);
+    const venue = resolveVenue(ref);
+    const itemType = String(ref.itemType || globalThis.Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || "journalArticle");
+    const tags = extractCleanTags(ref, excludedStatusTag);
+    const status = getItemStatus(ref, excludedStatusTag);
+    const built = {
+      title,
+      creator,
+      year,
+      venue,
+      itemType,
+      itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : "") || itemType,
+      dateModified: String(ref.dateModified || ""),
+      pdfAttachmentID: resolvePrimaryPdfAttachmentID(ref),
+      abstractExcerpt: safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620),
+      tags,
+      status,
+      baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ""} ${tags.join(" ")}`.toLowerCase()
+    };
+    if (cacheKey) {
+      if (cardStaticCache.size >= CARD_STATIC_CACHE_LIMIT) {
+        const oldest = cardStaticCache.keys().next().value;
+        if (oldest !== void 0) cardStaticCache.delete(oldest);
+      }
+      cardStaticCache.set(cacheKey, built);
+    }
+    return built;
+  }
+
+  // src/domains/visual-notes/gallery-board-helpers.ts
+  var SOFT_TINTS = [
+    { pillBg: "#ffe4e6", pillFg: "#9f1239", surface: "rgba(244,63,94,0.045)" },
+    { pillBg: "#dcfce7", pillFg: "#166534", surface: "rgba(34,197,94,0.045)" },
+    { pillBg: "#e0e7ff", pillFg: "#3730a3", surface: "rgba(99,102,241,0.045)" },
+    { pillBg: "#fef3c7", pillFg: "#92400e", surface: "rgba(245,158,11,0.045)" },
+    { pillBg: "#e0f2fe", pillFg: "#075985", surface: "rgba(14,165,233,0.045)" },
+    { pillBg: "#f3e8ff", pillFg: "#6b21a8", surface: "rgba(168,85,247,0.045)" }
+  ];
   function extractGalleryCards(win, deps) {
     const zh = deps.zh ?? Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
     const view = win?.ZoteroPane?.itemsView;
@@ -8859,31 +9176,30 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       if (!itemID || seen.has(itemID)) continue;
       seen.add(itemID);
       rawItems.push(ref);
-      const title = safeField(ref, "title") || String(ref.title || `#${itemID}`);
-      const rawDate = safeField(ref, "year") || safeField(ref, "date");
-      const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(rawDate);
-      const itemType = String(ref.itemType || globalThis.Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || "journalArticle");
+      const stat = resolveCachedCardStatic(ref, itemID, zh, deps.excludedStatusTag);
       const prog = deps.getReadProgress(ref);
       const readRatio = prog?.totalPages && prog.totalPages > 0 && prog.lastPage ? Math.min(1, Math.max(0, prog.lastPage / prog.totalPages)) : 0;
+      const briefNote = deps.getBriefNote(ref);
       cards.push({
         item: ref,
         itemID,
-        title,
-        creator: formatCreatorLine(ref, zh),
-        year: yearMatch ? yearMatch[1] : rawDate.slice(0, 4),
-        venue: resolveVenue(ref),
-        itemType,
-        itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : "") || itemType,
-        dateModified: String(ref.dateModified || ""),
-        pdfAttachmentID: resolvePrimaryPdfAttachmentID(ref),
-        abstractExcerpt: safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620),
-        tags: extractCleanTags(ref, deps.excludedStatusTag),
-        status: getItemStatus(ref, deps.excludedStatusTag),
+        title: stat.title,
+        creator: stat.creator,
+        year: stat.year,
+        venue: stat.venue,
+        itemType: stat.itemType,
+        itemTypeLabel: stat.itemTypeLabel,
+        dateModified: stat.dateModified,
+        pdfAttachmentID: stat.pdfAttachmentID,
+        abstractExcerpt: stat.abstractExcerpt,
+        tags: stat.tags,
+        status: stat.status,
         rating: getItemRating(ref, deps.ratingStorage),
-        briefNote: deps.getBriefNote(ref),
+        briefNote,
         readSeconds: Number(prog?.readSeconds || 0),
         readRatio,
-        readText: formatReadingProgress(prog).text
+        readText: formatReadingProgress(prog).text,
+        searchLower: briefNote ? `${stat.baseSearchLower} ${briefNote.toLowerCase()}` : stat.baseSearchLower
       });
     }
     return { cards, rawItems };
@@ -9162,11 +9478,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   }
 
   // src/services/pdf-cover-renderer.ts
-  var PDFJS_MODULE_URL2 = "resource://zotero/reader/pdf/build/pdf.mjs";
-  var PDFJS_WORKER_URL2 = "resource://zotero/reader/pdf/build/pdf.worker.mjs";
-  var PDFJS_CMAP_URL2 = "resource://zotero/reader/pdf/web/cmaps/";
-  var PDFJS_FONT_URL2 = "resource://zotero/reader/pdf/web/standard_fonts/";
-  var cachedPdfJs = null;
   function unwrapWindow(win) {
     if (!win) return void 0;
     try {
@@ -9380,84 +9691,81 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       }
     }
   }
-  function tryImportModule2(cu, url) {
-    if (!cu?.importESModule) return null;
-    for (const opts of [{ global: "current" }, null]) {
-      try {
-        const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
-        if (mod) return mod;
-      } catch {
-      }
-    }
-    return null;
-  }
-  async function renderFallbackPdfJsCover(attachmentID, width, signal, doc, zoteroHost) {
+  async function renderFallbackPdfJsCover(attachmentID, width, signal, doc, zoteroHost, knownPath) {
     if (signal.aborted || !doc) return false;
+    let loadingTask = null;
     let pdfDoc = null;
     let page = null;
-    try {
-      if (!cachedPdfJs) {
-        const winCu = doc.defaultView?.ChromeUtils;
-        const globalCu = globalThis.ChromeUtils;
-        const workerMod = tryImportModule2(winCu, PDFJS_WORKER_URL2) || tryImportModule2(globalCu, PDFJS_WORKER_URL2);
-        if (workerMod) {
-          try {
-            globalThis.pdfjsWorker = workerMod;
-          } catch {
-          }
-        }
-        let mod = tryImportModule2(winCu, PDFJS_MODULE_URL2) || tryImportModule2(globalCu, PDFJS_MODULE_URL2);
-        if (typeof mod?.getDocument !== "function") {
-          try {
-            mod = await new Function("u", "return import(u)")(PDFJS_MODULE_URL2);
-          } catch {
-            mod = null;
-          }
-        }
-        if (typeof mod?.getDocument === "function") {
-          if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL2;
-          cachedPdfJs = mod;
-        }
+    let renderTask = null;
+    let canvas = null;
+    const onAbort = () => {
+      try {
+        renderTask?.cancel?.();
+      } catch {
       }
-      if (!cachedPdfJs) return false;
-      const att = zoteroHost?.Items?.get?.(attachmentID) || await zoteroHost?.Items?.getAsync?.(attachmentID);
-      const path = await att?.getFilePathAsync?.().catch(() => null) || att?.getFilePath?.();
+      try {
+        void loadingTask?.destroy?.();
+      } catch {
+      }
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      const pdfJs = getSharedPdfJsSync(doc.defaultView);
+      if (!pdfJs) return false;
+      let path = knownPath || "";
+      if (!path) {
+        const att = zoteroHost?.Items?.get?.(attachmentID) || await zoteroHost?.Items?.getAsync?.(attachmentID);
+        path = await att?.getFilePathAsync?.().catch(() => null) || att?.getFilePath?.() || "";
+      }
       const ioUtils = globalThis.IOUtils || zoteroHost?.getMainWindow?.()?.IOUtils;
       if (!path || !ioUtils?.read || signal.aborted) return false;
       const raw = await ioUtils.read(path);
       const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
       if (!bytes.length || signal.aborted) return false;
-      pdfDoc = await cachedPdfJs.getDocument({
+      loadingTask = pdfJs.getDocument({
         data: bytes,
         ownerDocument: doc,
         isEvalSupported: false,
         useWorkerFetch: false,
-        cMapUrl: PDFJS_CMAP_URL2,
+        disableAutoFetch: true,
+        disableStream: true,
+        cMapUrl: PDFJS_CMAP_URL,
         cMapPacked: true,
-        standardFontDataUrl: PDFJS_FONT_URL2
-      }).promise;
-      page = await pdfDoc.getPage(1);
+        standardFontDataUrl: PDFJS_FONT_URL
+      });
+      pdfDoc = await waitWithSignal(loadingTask.promise, signal);
+      page = await waitWithSignal(pdfDoc.getPage(1), signal);
       const baseVp = page.getViewport({ scale: 1 });
       const vp = page.getViewport({ scale: width / Math.max(1, baseVp.width) });
-      const c = doc.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
-      c.width = Math.max(1, Math.ceil(vp.width));
-      c.height = Math.max(1, Math.ceil(vp.height));
-      const ctx = c.getContext("2d");
+      canvas = doc.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
+      canvas.width = Math.max(1, Math.ceil(vp.width));
+      canvas.height = Math.max(1, Math.ceil(vp.height));
+      const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) return false;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, c.width, c.height);
-      await page.render({ canvasContext: ctx, viewport: vp }).promise;
-      const url = c.toDataURL("image/jpeg", 0.88);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      renderTask = page.render({ canvasContext: ctx, viewport: vp });
+      await waitWithSignal(renderTask.promise, signal);
+      const url = canvas.toDataURL("image/jpeg", 0.85);
       return url.startsWith("data:image/") ? url : false;
     } catch {
       return false;
     } finally {
+      signal.removeEventListener("abort", onAbort);
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
       try {
         page?.cleanup?.();
       } catch {
       }
       try {
         await pdfDoc?.destroy?.();
+      } catch {
+      }
+      try {
+        await loadingTask?.destroy?.();
       } catch {
       }
     }
@@ -9470,7 +9778,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var TARGET_COVER_WIDTH = 480;
   var FAIL_COOLDOWN_MS = 45e3;
   var memCoverCache = /* @__PURE__ */ new Map();
-  var fingerprints = /* @__PURE__ */ new Map();
   var attPathByID = /* @__PURE__ */ new Map();
   var touchedAt = /* @__PURE__ */ new Map();
   var writingPaths = /* @__PURE__ */ new Set();
@@ -9535,29 +9842,6 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         stamp: JSON.stringify([stat.lastModified, stat.size])
       };
     } catch {
-      return null;
-    }
-  }
-  async function identifyAttachmentPdf(attID, width, verify = false) {
-    const located = await locateAttachmentPdf(attID, width);
-    if (!located) return null;
-    const zotero = globalThis.Zotero;
-    const ioUtils = globalThis.IOUtils || zotero?.getMainWindow?.()?.IOUtils;
-    let fp = fingerprints.get(located.path);
-    if (verify || fp?.stamp !== located.stamp) {
-      const hashPromise = (async () => {
-        const digest = typeof ioUtils?.computeHexDigest === "function" ? `sha256:${await ioUtils.computeHexDigest(located.path, "sha256")}` : typeof zotero?.Utilities?.Internal?.md5Async === "function" ? `md5:${await zotero.Utilities.Internal.md5Async(located.path)}` : `stamp:${located.stamp}`;
-        const after = await ioUtils.stat(located.path);
-        if (JSON.stringify([after.lastModified, after.size]) !== located.stamp) throw new Error("PDF modified during hash");
-        return digest;
-      })();
-      fp = { stamp: located.stamp, hashPromise };
-      setBounded(fingerprints, located.path, fp);
-    }
-    try {
-      return { key: located.key, stamp: located.stamp, revision: await fp.hashPromise };
-    } catch {
-      if (fingerprints.get(located.path) === fp) fingerprints.delete(located.path);
       return null;
     }
   }
@@ -9636,10 +9920,10 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       triggerCoverCacheSweep();
     }
   }
-  var defaultScrollIdle = createGalleryScrollIdle(260);
-  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
+  var defaultScrollIdle = createGalleryScrollIdle(100);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 3);
   var ioQueue = createGalleryWorkQueue(async () => {
-  }, 2);
+  }, 8);
   var activeJobs = /* @__PURE__ */ new Map();
   function notifyGalleryCoverScroll(paused) {
     if (typeof paused === "boolean") defaultScrollIdle.setPaused(paused);
@@ -9665,17 +9949,13 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       const promise = (async () => {
         const sig = controller.signal;
         const hint = await ioQueue(() => locateAttachmentPdf(attID, width), sig, rank);
-        const cand = hint && !sig.aborted ? await ioQueue(() => readDiskEnvelope(hint.key), sig, rank) : null;
-        if (cand && hint && cand.stamp === hint.stamp && !sig.aborted) {
-          for (const sub2 of subscribers) if (!sub2.signal.aborted) sub2.onPreview?.(cand.url);
-        }
-        const ident = await ioQueue(() => identifyAttachmentPdf(attID, width), sig, rank);
         if (sig.aborted) return null;
-        if (ident) {
-          const verified = hint?.key === ident.key ? cand : await ioQueue(() => readDiskEnvelope(ident.key), sig, rank);
-          if (verified && verified.revision === ident.revision) {
-            setMemLru(attID, verified.url);
-            return verified.url;
+        if (hint) {
+          const cand = await ioQueue(() => readDiskEnvelope(hint.key), sig, rank);
+          if (sig.aborted) return null;
+          if (cand && (cand.stamp === hint.stamp || !cand.stamp && cand.revision)) {
+            setMemLru(attID, cand.url);
+            return cand.url;
           }
         }
         const rendered = await renderQueue(async () => {
@@ -9686,8 +9966,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           const timer = setTimeout(() => timeoutCtrl.abort(), 15e3);
           try {
             const host2 = globalThis.Zotero;
-            const viaPreview = await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host2, (s) => defaultScrollIdle.wait(s));
-            return viaPreview || await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host2);
+            const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host2, hint?.path);
+            if (viaDirect) return viaDirect;
+            return await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host2, (s) => defaultScrollIdle.wait(s));
           } finally {
             clearTimeout(timer);
             sig.removeEventListener("abort", onParentAbort);
@@ -9698,8 +9979,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           return null;
         }
         setMemLru(attID, rendered);
-        if (ident && !sig.aborted) {
-          void writeDiskEnvelope(ident.key, { revision: ident.revision, stamp: ident.stamp, url: rendered });
+        if (hint && !sig.aborted) {
+          void writeDiskEnvelope(hint.key, { revision: `stamp:${hint.stamp}`, stamp: hint.stamp, url: rendered });
         }
         return rendered;
       })().catch(() => null).finally(() => {
@@ -10031,7 +10312,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     const searchText = typeof pane?.getSearchFilterBoxValue === "function" ? pane.getSearchFilterBoxValue() : "";
     const context = `${colRow?.id ?? colRow?.type ?? "root"}|${view?.sortColumnId ?? ""}|${view?.sortDirection ?? ""}|${searchText ?? ""}`;
     const ids = [];
-    const rowCount = Math.min(Number(view?.rowCount || 0), 2e4);
+    const rowCount = Math.min(Number(view?.rowCount || 0), 5e3);
     for (let i = 0; i < rowCount; i++) {
       const ref = view?.getRow?.(i)?.ref;
       const id = Number(ref?.id || 0);
@@ -10407,6 +10688,24 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         if (tasks.get(card) === ctrl) tasks.delete(card);
       });
     };
+    const isNearViewport = (card) => {
+      const vr = viewport.getBoundingClientRect?.();
+      const cr = card.getBoundingClientRect?.();
+      if (!vr || !cr || vr.width === 0 && vr.height === 0) return true;
+      return cr.bottom >= vr.top - 300 && cr.top <= vr.bottom + 300 && cr.right >= vr.left - 220 && cr.left <= vr.right + 220;
+    };
+    const trySyncCover = (card) => {
+      const coverEl = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
+      if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return true;
+      const attID = Number(coverEl.getAttribute("data-pdf-att-id") || 0);
+      if (!attID) return true;
+      const mem = getCachedPdfCoverSync(attID);
+      if (mem) {
+        applyCoverUrl(coverEl, doc, mem);
+        return true;
+      }
+      return false;
+    };
     const ensureObserver = () => {
       if (observer || !viewport.isConnected) return observer;
       const IO = doc.defaultView?.IntersectionObserver || globalThis.IntersectionObserver;
@@ -10418,7 +10717,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           if (entry.isIntersecting) startCard(card);
           else if (!card.contains(doc.activeElement)) cancelCard(card);
         }
-      }, { root: viewport, rootMargin: "240px 0px" });
+      }, { root: viewport, rootMargin: "280px 180px" });
       observer = obs;
       for (const c of tracked) {
         if (c.isConnected) obs.observe(c);
@@ -10431,16 +10730,18 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     return {
       observeCard(card) {
         if (disposed) return;
+        if (trySyncCover(card)) return;
         tracked.add(card);
         const obs = ensureObserver();
         if (obs && card.isConnected) obs.observe(card);
-        if (viewport.isConnected && card.isConnected) startCard(card);
+        if (viewport.isConnected && card.isConnected && (!obs || isNearViewport(card))) startCard(card);
       },
       activate() {
         if (disposed) return;
-        ensureObserver();
+        const obs = ensureObserver();
         for (const c of tracked) {
-          if (c.isConnected) startCard(c);
+          if (!c.isConnected || trySyncCover(c)) continue;
+          if (!obs || isNearViewport(c)) startCard(c);
         }
       },
       unobserveCard(card) {
@@ -11126,6 +11427,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
         panel: null,
         layout: null,
         viewportDispose: null,
+        queryTimer: null,
         visibilityGuard: null,
         paneAdapter: null
       };
@@ -11168,18 +11470,20 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
     }
     disposeViewport(st) {
       st.layout = null;
-      if (st.viewportDispose) {
-        const fn = st.viewportDispose;
-        st.viewportDispose = null;
-        try {
-          fn();
-        } catch {
-        }
+      const fn = st.viewportDispose;
+      st.viewportDispose = null;
+      try {
+        fn?.();
+      } catch {
       }
     }
     detachWindow(win) {
       const st = this.states.get(win);
       if (!st) return;
+      if (st.queryTimer !== null) {
+        clearTimeout(st.queryTimer);
+        st.queryTimer = null;
+      }
       this.disposeViewport(st);
       this.setGalleryOpen(st, false);
       st.visibilityGuard?.destroy();
@@ -11206,18 +11510,13 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
       }
     }
     toggleWindowGallery(win, mode) {
-      let st = this.states.get(win);
-      if (!st) {
-        this.attachWindow(win);
-        st = this.states.get(win);
-      }
+      if (!this.states.has(win)) this.attachWindow(win);
+      const st = this.states.get(win);
       if (!st) return;
       if (mode) {
         st.mode = mode;
         this.setGalleryOpen(st, true);
-      } else {
-        this.setGalleryOpen(st, !st.open);
-      }
+      } else this.setGalleryOpen(st, !st.open);
     }
     syncWindow(st) {
       const doc = st.win.document;
@@ -11362,7 +11661,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
             },
             onRated: () => {
               this.onMutated();
-              this.renderPanel(st, true);
+              if (st.sortField === "rating" || st.mode === "board" && st.groupBy === "rating") this.renderPanel(st, true);
             }
           }),
           onColumnOrderChange: (nextKeys) => {
@@ -11435,7 +11734,11 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
           },
           onQueryInput: (q) => {
             st.query = q;
-            this.renderPanel(st, true);
+            if (st.queryTimer !== null) clearTimeout(st.queryTimer);
+            st.queryTimer = setTimeout(() => {
+              st.queryTimer = null;
+              if (st.open) this.renderPanel(st, true);
+            }, 110);
           }
         }));
         panel.appendChild(bodyViewport);
@@ -11799,8 +12102,16 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       for (const w of wins) closeVisualColumnPopover(w?.document);
       flushUnregisterColumns(this.registeredKeys);
     }
-    clearCache() {
-      this.annSummaryCache.clear();
+    clearCache(itemIDs) {
+      if (!itemIDs) {
+        this.annSummaryCache.clear();
+        return;
+      }
+      const targets = new Set(itemIDs);
+      if (!targets.size) return;
+      for (const k of this.annSummaryCache.keys()) {
+        if (targets.has(Number(k.split(":", 1)[0]))) this.annSummaryCache.delete(k);
+      }
     }
     refreshColumns() {
       this.clearCache();
@@ -12023,8 +12334,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       for (const w of wins) closeStatusPickerPopover(w?.document);
       unregisterAllSafe(this.registeredKeys);
     }
-    clearCache() {
-      clearStatusRatingCaches();
+    clearCache(itemIDs) {
+      clearStatusRatingCaches(itemIDs);
     }
     refreshColumns() {
       this.clearCache();
@@ -12533,6 +12844,7 @@ ${summary}` : summary;
     dataSource;
     active = false;
     refreshTimer = null;
+    dirtyItemIDs = /* @__PURE__ */ new Set();
     constructor(kernel, services) {
       this.kernel = kernel;
       this.services = services;
@@ -12682,14 +12994,14 @@ ${summary}` : summary;
       );
       this.disposables.add(
         this.kernel.bus.on("visual-notes:reading-updated", () => {
-          if (this.active) this.scheduleLibraryRefresh();
+          if (this.active) this.titleHeatmap.refreshWindows();
         })
       );
       this.disposables.add(
-        this.kernel.notifier.subscribe(["item"], ({ event }) => {
+        this.kernel.notifier.subscribe(["item"], ({ event, ids }) => {
           if (!this.active) return;
           if (event === "modify" || event === "add" || event === "trash" || event === "restore") {
-            this.scheduleLibraryRefresh();
+            this.scheduleLibraryRefresh(50, resolveAffectedVisualItemIDs(ids));
           }
         })
       );
@@ -12714,22 +13026,28 @@ ${summary}` : summary;
       this.titleHeatmap.detachWindow(win);
       this.galleryBoard.detachWindow(win);
     }
-    scheduleLibraryRefresh(delayMs = 50) {
+    scheduleLibraryRefresh(delayMs = 50, affectedIDs) {
       if (!this.active) return;
+      if (!affectedIDs) this.dirtyItemIDs = null;
+      else if (this.dirtyItemIDs !== null) for (const id of affectedIDs) this.dirtyItemIDs.add(id);
       if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
       this.refreshTimer = setTimeout(() => {
         this.refreshTimer = null;
-        if (this.active) this.refreshLibraryViews();
+        const scoped = this.dirtyItemIDs ?? void 0;
+        this.dirtyItemIDs = /* @__PURE__ */ new Set();
+        if (this.active) this.refreshLibraryViews(scoped);
       }, delayMs);
     }
-    refreshLibraryViews() {
+    refreshLibraryViews(affectedIDs) {
       if (!this.active) return;
       if (this.refreshTimer !== null) {
         clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
       }
-      this.readingColumns.clearCache();
-      this.statusRatingColumns.clearCache();
+      this.readingColumns.clearCache(affectedIDs);
+      this.statusRatingColumns.clearCache(affectedIDs);
+      clearGalleryCardCache(affectedIDs);
+      clearExtraRemarkCache(affectedIDs);
       this.infoBriefNote.refresh();
       this.titleHeatmap.refreshWindows();
       this.galleryBoard.refreshWindows();
@@ -13904,15 +14222,62 @@ ${summary}` : summary;
     } catch {
     }
   }
+  function normalizeDoi(raw) {
+    return String(raw ?? "").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").replace(/^doi:\s*/i, "").toLowerCase();
+  }
+  function resolveOrphanLibraryID(orphan, fallbackLibraryID) {
+    const host2 = globalThis.Zotero;
+    for (const uri of orphan.uris || []) {
+      const match = String(uri).match(/\/groups\/(\d+)\/items\//);
+      if (!match) continue;
+      try {
+        const libraryID = host2?.Groups?.getLibraryIDFromGroupID?.(Number(match[1]));
+        if (Number.isSafeInteger(libraryID) && libraryID > 0 && host2?.Libraries?.get?.(libraryID)?.editable !== false) {
+          return libraryID;
+        }
+      } catch {
+      }
+    }
+    return fallbackLibraryID;
+  }
+  async function findExistingItemByDoi(libraryID, doi) {
+    const host2 = globalThis.Zotero;
+    if (!doi || typeof host2?.Search !== "function") return null;
+    try {
+      const search = new host2.Search();
+      search.libraryID = libraryID;
+      search.addCondition("DOI", "is", doi);
+      const ids = await search.search();
+      for (const id of ids || []) {
+        const candidate = await host2.Items?.getAsync?.(id) ?? host2.Items?.get?.(id);
+        if (candidate && !candidate.deleted && candidate.isRegularItem?.() !== false) return candidate;
+      }
+    } catch {
+    }
+    return null;
+  }
   async function importOrphanFromMetadata(orphan, libraryID, targetCollectionID) {
     const ZoteroObj = globalThis.Zotero;
     const ItemCtor = ZoteroObj?.Item;
-    if (typeof ItemCtor !== "function") return false;
+    if (typeof ItemCtor !== "function") return "failed";
     const data = orphan.itemData || {};
+    const targetLibraryID = resolveOrphanLibraryID(orphan, libraryID);
+    const doi = normalizeDoi(data.DOI);
+    const duplicate = await findExistingItemByDoi(targetLibraryID, doi);
+    if (duplicate) {
+      if (targetCollectionID && typeof duplicate.addToCollection === "function" && duplicate.libraryID === libraryID) {
+        try {
+          duplicate.addToCollection(targetCollectionID);
+          await duplicate.saveTx?.();
+        } catch {
+        }
+      }
+      return "existing";
+    }
     const rawType = String(data.type || "article-journal").trim();
     const itemType = CSL_TO_ZOTERO_TYPE[rawType] || "journalArticle";
     const item = new ItemCtor(itemType);
-    item.libraryID = libraryID;
+    item.libraryID = targetLibraryID;
     setFieldIfPresent(item, "title", data.title || orphan.title);
     setFieldIfPresent(item, "publicationTitle", data["container-title"]);
     setFieldIfPresent(item, "volume", data.volume);
@@ -13933,7 +14298,7 @@ ${summary}` : summary;
       } catch {
       }
     }
-    if (targetCollectionID && typeof item.addToCollection === "function") {
+    if (targetCollectionID && typeof item.addToCollection === "function" && targetLibraryID === libraryID) {
       try {
         item.addToCollection(targetCollectionID);
       } catch {
@@ -13941,9 +14306,9 @@ ${summary}` : summary;
     }
     if (typeof item.saveTx === "function") {
       await item.saveTx();
-      return true;
+      return "imported";
     }
-    return false;
+    return "failed";
   }
   async function recoverOrphanCitations(orphans, options) {
     const ZoteroObj = globalThis.Zotero;
@@ -13954,6 +14319,7 @@ ${summary}` : summary;
     let restoredCount = 0;
     let importedCount = 0;
     let skippedCount = 0;
+    let existingCount = 0;
     for (const orphan of targets) {
       try {
         if (orphan.kind === "trashed" && orphan.itemID) {
@@ -13973,8 +14339,9 @@ ${summary}` : summary;
             }
           }
         }
-        const ok = await importOrphanFromMetadata(orphan, libraryID, options?.targetCollectionID);
-        if (ok) importedCount += 1;
+        const outcome = await importOrphanFromMetadata(orphan, libraryID, options?.targetCollectionID);
+        if (outcome === "imported") importedCount += 1;
+        else if (outcome === "existing") existingCount += 1;
         else skippedCount += 1;
       } catch {
         skippedCount += 1;
@@ -13984,6 +14351,7 @@ ${summary}` : summary;
       restoredCount,
       importedCount,
       skippedCount,
+      ...existingCount ? { existingCount } : {},
       ...options?.collectionName ? { collectionName: options.collectionName } : {}
     };
   }
@@ -14290,53 +14658,66 @@ ${summary}` : summary;
       const nextTag = this.sanitizeTagText(this.prefs.get("wordCite.citationTags.text"));
       let added = 0;
       let removed = 0;
+      const saveItemInTx = async (item) => {
+        if (typeof globalThis.Zotero?.DB?.executeTransaction === "function" && typeof item?.save === "function") {
+          await item.save({ skipDateModifiedUpdate: true });
+        } else {
+          await item?.saveTx?.({ skipDateModifiedUpdate: true });
+        }
+      };
+      const runBatch = async (work) => {
+        const db = globalThis.Zotero?.DB;
+        return typeof db?.executeTransaction === "function" ? db.executeTransaction(work) : work();
+      };
       try {
-        if (nextTag !== this.activeTagText) {
-          const prevTag = this.activeTagText;
-          this.activeTagText = nextTag;
-          for (const id of [...this.managedItemIDs]) {
-            const item = resolveItem(id);
-            if (!isItemWritable(item)) continue;
-            if (item.hasTag?.(prevTag)) {
-              item.removeTag?.(prevTag);
-              if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
-              await item.saveTx?.();
+        return await runBatch(async () => {
+          if (nextTag !== this.activeTagText) {
+            const prevTag = this.activeTagText;
+            this.activeTagText = nextTag;
+            for (const id of [...this.managedItemIDs]) {
+              const item = resolveItem(id);
+              if (!isItemWritable(item)) continue;
+              if (item.hasTag?.(prevTag)) {
+                item.removeTag?.(prevTag);
+                if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
+                await saveItemInTx(item);
+              }
             }
           }
-        }
-        if (!enabled) {
+          if (!enabled) {
+            for (const id of [...this.managedItemIDs]) {
+              const item = resolveItem(id);
+              if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
+                item.removeTag?.(this.activeTagText);
+                await saveItemInTx(item);
+                removed++;
+              }
+              this.managedItemIDs.delete(id);
+            }
+            return { added, removed };
+          }
+          for (const id of citedUnion) {
+            const item = resolveItem(id);
+            if (!isItemWritable(item)) continue;
+            if (!item.hasTag?.(this.activeTagText)) {
+              item.addTag?.(this.activeTagText);
+              await saveItemInTx(item);
+              this.managedItemIDs.add(id);
+              added++;
+            }
+          }
           for (const id of [...this.managedItemIDs]) {
+            if (citedUnion.has(id)) continue;
             const item = resolveItem(id);
             if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
               item.removeTag?.(this.activeTagText);
-              await item.saveTx?.();
+              await saveItemInTx(item);
               removed++;
             }
             this.managedItemIDs.delete(id);
           }
           return { added, removed };
-        }
-        for (const id of citedUnion) {
-          const item = resolveItem(id);
-          if (!isItemWritable(item)) continue;
-          if (!item.hasTag?.(this.activeTagText)) {
-            item.addTag?.(this.activeTagText);
-            await item.saveTx?.();
-            this.managedItemIDs.add(id);
-            added++;
-          }
-        }
-        for (const id of [...this.managedItemIDs]) {
-          if (citedUnion.has(id)) continue;
-          const item = resolveItem(id);
-          if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-            item.removeTag?.(this.activeTagText);
-            await item.saveTx?.();
-            removed++;
-          }
-          this.managedItemIDs.delete(id);
-        }
-        return { added, removed };
+        });
       } finally {
         this.savePersistedIDs();
       }
@@ -21982,6 +22363,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     dirty = false;
     writes = Promise.resolve(true);
     saveTimer = null;
+    writeBlocked = false;
+    lastBackupAt = 0;
     saveFailed = false;
     statusListeners = /* @__PURE__ */ new Set();
     onStatusChange(listener) {
@@ -21989,6 +22372,10 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return () => this.statusListeners.delete(listener);
     }
     async retrySave() {
+      if (this.writeBlocked) {
+        await this.loadFromDisk();
+        if (!this.writeBlocked) this.dirty = true;
+      }
       return this.flushToDisk();
     }
     configure(partial) {
@@ -22012,6 +22399,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     getFilePath() {
       return cacheFile(this.getDirectoryPath(), "citation-history.json");
+    }
+    getBackupFilePath() {
+      return cacheFile(this.getDirectoryPath(), "citation-history.bak.json");
     }
     record(entry) {
       const key = normalizeCitationKey(entry.text);
@@ -22044,7 +22434,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       rec.lastAccessedAt = Date.now();
       rec.hitCount += 1;
       this.dirty = true;
-      this.scheduleSave();
+      this.scheduleSave(5e3);
       return rec;
     }
     searchFuzzy(query, limit = 5) {
@@ -22072,49 +22462,69 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.dirty = true;
       this.scheduleSave();
     }
-    async init() {
-      if (this.initialized) return;
-      this.initialized = true;
-      const ioUtils = globalThis.IOUtils;
-      if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
-      const paths = [this.getFilePath()];
+    historyLoadPaths() {
+      const paths = [this.getFilePath(), this.getBackupFilePath()];
       if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), "citation-history.json"));
       const dataDir = globalThis.Zotero?.DataDirectory?.dir;
       const pathUtils = globalThis.PathUtils;
       if (!this.config.customDir && dataDir && pathUtils?.join) {
         paths.push(pathUtils.join(dataDir, "viewflow-cache", "viewflow-history.json"));
       }
+      return paths;
+    }
+    /** Loads records from the first readable file. Unreadable (locked) files block writes; corrupt files are quarantined. */
+    async loadFromDisk() {
+      const paths = this.historyLoadPaths();
+      let loaded = false;
+      let readFailed = false;
       for (const filePath of paths) {
-        try {
-          if (!await ioUtils.exists(filePath)) continue;
-          const parsed = JSON.parse(await ioUtils.readUTF8(filePath));
-          const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
-          for (const raw of list) {
-            if (!raw?.text || !raw?.itemID) continue;
-            const key = normalizeCitationKey(raw.text);
-            if (!this.records.has(key)) {
-              this.records.set(key, {
-                key,
-                text: String(raw.text),
-                libraryID: Number(raw.libraryID || 1),
-                itemKey: String(raw.itemKey || ""),
-                itemID: Number(raw.itemID),
-                title: String(raw.title || ""),
-                style: String(raw.style || ""),
-                copiedAt: Number(raw.copiedAt || Date.now()),
-                lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
-                hitCount: Number(raw.hitCount || 1)
-              });
-            }
-          }
-          if (filePath !== paths[0]) {
-            this.dirty = true;
-            this.scheduleSave();
-          }
-          break;
-        } catch {
+        const outcome = await readTextOutcome(filePath);
+        if (outcome.status === "missing") continue;
+        if (outcome.status === "error") {
+          readFailed = true;
+          continue;
         }
+        if (!outcome.text.trim()) continue;
+        let parsed;
+        try {
+          parsed = JSON.parse(outcome.text);
+        } catch {
+          await quarantineFile(filePath);
+          continue;
+        }
+        const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
+        for (const raw of list) {
+          if (!raw?.text || !raw?.itemID) continue;
+          const key = normalizeCitationKey(raw.text);
+          if (this.records.has(key)) continue;
+          this.records.set(key, {
+            key,
+            text: String(raw.text),
+            libraryID: Number(raw.libraryID || 1),
+            itemKey: String(raw.itemKey || ""),
+            itemID: Number(raw.itemID),
+            title: String(raw.title || ""),
+            style: String(raw.style || ""),
+            copiedAt: Number(raw.copiedAt || Date.now()),
+            lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
+            hitCount: Number(raw.hitCount || 1)
+          });
+        }
+        loaded = true;
+        if (filePath !== paths[0]) {
+          this.dirty = true;
+          this.scheduleSave();
+        }
+        break;
       }
+      this.writeBlocked = readFailed && !loaded;
+    }
+    async init() {
+      if (this.initialized) return;
+      this.initialized = true;
+      const ioUtils = globalThis.IOUtils;
+      if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
+      await this.loadFromDisk();
       this.pruneExpired();
       this.enforceEviction();
     }
@@ -22147,14 +22557,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         this.records.delete(entries[i].key);
       }
     }
-    scheduleSave() {
+    scheduleSave(delayMs = 400) {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8 || !this.dirty) return;
       if (this.saveTimer) clearTimeout(this.saveTimer);
       this.saveTimer = setTimeout(() => {
         this.saveTimer = null;
         void this.flushToDisk();
-      }, 400);
+      }, delayMs);
     }
     flushToDisk() {
       this.writes = this.writes.then(() => this.writeRecords());
@@ -22163,8 +22573,23 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     async writeRecords() {
       const ioUtils = globalThis.IOUtils;
       if (!ioUtils?.writeUTF8) return true;
+      if (this.writeBlocked) {
+        this.dirty = true;
+        this.saveFailed = true;
+        for (const fn of this.statusListeners) {
+          try {
+            fn();
+          } catch {
+          }
+        }
+        return false;
+      }
       try {
         await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
+        if (Date.now() - this.lastBackupAt > 6e5) {
+          this.lastBackupAt = Date.now();
+          await copyToBackup(this.getFilePath(), this.getBackupFilePath());
+        }
         const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}
 `;
         this.dirty = false;
@@ -22687,6 +23112,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     panePositions;
     win32;
     kernel;
+    cacheRootApplied = false;
     constructor(kernel) {
       this.kernel = kernel;
       this.csl = new CslFormattingEngine(kernel.prefs);
@@ -22730,8 +23156,11 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         maxEntries: this.kernel.prefs.get("inspector.lookup.cacheMaxEntries"),
         ttlDays: this.kernel.prefs.get("inspector.lookup.cacheTtlDays")
       });
-      this.ratings.configure(customDir);
-      configurePdfCoverCacheDirectory(customDir);
+      if (!this.cacheRootApplied) {
+        this.cacheRootApplied = true;
+        this.ratings.configure(customDir);
+        configurePdfCoverCacheDirectory(customDir);
+      }
     }
     dispose() {
       this.panePositions.dispose();

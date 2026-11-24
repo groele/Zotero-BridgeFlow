@@ -43,19 +43,22 @@ async function populateCslStyles(doc: Document, prefs: UnifiedPrefService): Prom
 		const createXul = (tag: string): Element =>
 			typeof (doc as any).createXULElement === 'function' ? (doc as any).createXULElement(tag) : doc.createElement(tag);
 		popup.textContent = '';
+		const frag = typeof doc.createDocumentFragment === 'function' ? doc.createDocumentFragment() : null;
+		const sink = frag || popup;
 		const autoItem = createXul('menuitem');
 		autoItem.setAttribute('value', '');
 		autoItem.setAttribute('data-l10n-id', 'zbf-opt-style-quickcopy');
 		autoItem.setAttribute('label', tLocale('跟随 Zotero 快速复制（Quick Copy）默认样式', 'Follow Zotero Quick Copy default style', doc));
-		popup.appendChild(autoItem);
+		sink.appendChild(autoItem);
 		const selectedStyle = String(prefs.get('inspector.cslPreview.citationstyle') || '');
 		for (const style of (hostStyles.getVisible?.() || []) as Array<{ styleID: string; title: string }>) {
 			if (!style?.styleID) continue;
 			const item = createXul('menuitem');
 			item.setAttribute('value', style.styleID);
 			item.setAttribute('label', style.title || style.styleID);
-			popup.appendChild(item);
+			sink.appendChild(item);
 		}
+		if (frag) popup.appendChild(frag);
 		menu.value = selectedStyle;
 		menu.setAttribute('value', selectedStyle);
 		syncMenulistLabels(doc);

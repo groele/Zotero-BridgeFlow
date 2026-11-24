@@ -1,5 +1,6 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../kernel/types.ts';
+import { sanitizeCitationHtml } from '../../services/html-sanitizer.ts';
 import { deduplicateRegularItems } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
@@ -230,7 +231,7 @@ export class CslPreviewSectionController {
 			const fallbackLabel = kind === 'citation' ? '复制正文引用' : '复制参考文献';
 			return (
 				`<section class="zotero-preview-block"><div class="zotero-preview-block-row">` +
-				`<div class="zotero-preview-block-body">${content.html || escapeHTML(content.text)}</div>` +
+				`<div class="zotero-preview-block-body">${sanitizeCitationHtml(st.doc, content.html) || escapeHTML(content.text)}</div>` +
 				`<div class="zotero-preview-block-toolbar">` +
 				`<span class="zotero-preview-copy" role="button" tabindex="0" title="${fallbackLabel}" aria-label="${fallbackLabel}" data-l10n-id="zbf-preview-copy-${kind}" data-copy-citation="${kind === 'citation'}">${CLIPBOARD_ICON_SVG}</span>` +
 				`</div></div></section>`

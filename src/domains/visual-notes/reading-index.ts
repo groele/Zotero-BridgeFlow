@@ -47,8 +47,13 @@ export function mountReadingIndex<T extends ReadingEntry>(
 	const totalCount = entries.reduce((sum, e) => sum + e.count, 0);
 	let active: HTMLButtonElement | undefined;
 	let resizeObs: ResizeObserver | null = null;
+	let masonryRaf = 0;
 
 	const disposeObserver = () => {
+		if (masonryRaf && typeof doc.defaultView?.cancelAnimationFrame === 'function') {
+			doc.defaultView.cancelAnimationFrame(masonryRaf);
+		}
+		masonryRaf = 0;
 		try { resizeObs?.disconnect(); } catch { /* ignore */ }
 		resizeObs = null;
 	};
@@ -60,22 +65,27 @@ export function mountReadingIndex<T extends ReadingEntry>(
 		const grid = galEl(doc, 'div');
 		grid.className = 'zbf-reading-grid';
 		const renderedItems: Array<{ node: HTMLElement; weight: number }> = [];
-		for (const entry of entries) {
-			const holder = galEl(doc, 'div');
-			render(entry, holder);
-			const cardNode = (holder.firstElementChild as HTMLElement) || holder;
-			const weight = entry.weight ?? (1.6 + Math.max(1, entry.count) * 2.4);
-			renderedItems.push({ node: cardNode, weight });
-		}
-
+		let cols: HTMLElement[] = [];
+		let heights: number[] = [];
 		let currentCols = 0;
+
+		const placeItem = (item: { node: HTMLElement; weight: number }) => {
+			if (!cols.length) return;
+			let best = 0;
+			for (let i = 1; i < cols.length; i++) {
+				if (heights[i] < heights[best]) best = i;
+			}
+			cols[best].appendChild(item.node);
+			heights[best] += item.weight;
+		};
+
 		const distribute = (colCount: number) => {
-			const nextCols = Math.max(1, Math.min(colCount, renderedItems.length));
+			const nextCols = Math.max(1, Math.min(colCount, entries.length));
 			if (nextCols === currentCols) return;
 			currentCols = nextCols;
 			grid.replaceChildren();
-			const cols: HTMLElement[] = [];
-			const heights: number[] = [];
+			cols = [];
+			heights = [];
 			for (let i = 0; i < nextCols; i++) {
 				const col = galEl(doc, 'div');
 				col.className = 'zbf-masonry-col';
@@ -83,19 +93,37 @@ export function mountReadingIndex<T extends ReadingEntry>(
 				heights.push(0);
 				grid.appendChild(col);
 			}
-			for (const item of renderedItems) {
-				let best = 0;
-				for (let i = 1; i < nextCols; i++) {
-					if (heights[i] < heights[best]) best = i;
-				}
-				cols[best].appendChild(item.node);
-				heights[best] += item.weight;
-			}
+			for (const item of renderedItems) placeItem(item);
 		};
 
 		page.appendChild(grid);
 		const initWidth = page.clientWidth || (doc.defaultView?.innerWidth ? doc.defaultView.innerWidth - 280 : 1200);
 		distribute(resolveMasonryCols(initWidth));
+
+		const raf = doc.defaultView?.requestAnimationFrame?.bind(doc.defaultView);
+		const initialBatch = raf ? Math.min(entries.length, 24) : entries.length;
+		let cursor = 0;
+		const appendBatch = (limit: number) => {
+			const stop = Math.min(entries.length, cursor + limit);
+			for (; cursor < stop; cursor++) {
+				const entry = entries[cursor];
+				const holder = galEl(doc, 'div');
+				render(entry, holder);
+				const cardNode = (holder.firstElementChild as HTMLElement) || holder;
+				const weight = entry.weight ?? (1.6 + Math.max(1, entry.count) * 2.4);
+				const item = { node: cardNode, weight };
+				renderedItems.push(item);
+				placeItem(item);
+			}
+		};
+		appendBatch(initialBatch);
+		const pumpRemaining = () => {
+			masonryRaf = 0;
+			if (!grid.isConnected || cursor >= entries.length) return;
+			appendBatch(28);
+			if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
+		};
+		if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
 
 		const RO = (doc.defaultView as any)?.ResizeObserver || (globalThis as any).ResizeObserver;
 		if (typeof RO === 'function') {

@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.1 - Preferences controller. */
+/* Zotero BridgeFlow v0.6.2 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -852,10 +852,10 @@
       return null;
     }
   }
-  var defaultScrollIdle = createGalleryScrollIdle(260);
-  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
+  var defaultScrollIdle = createGalleryScrollIdle(100);
+  var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 3);
   var ioQueue = createGalleryWorkQueue(async () => {
-  }, 2);
+  }, 8);
   var activeJobs = /* @__PURE__ */ new Map();
   async function clearPdfCoverCache(customDir = "") {
     memCoverCache.clear();
@@ -1225,19 +1225,22 @@
       if (!menu || !popup) return;
       const createXul = (tag) => typeof doc.createXULElement === "function" ? doc.createXULElement(tag) : doc.createElement(tag);
       popup.textContent = "";
+      const frag = typeof doc.createDocumentFragment === "function" ? doc.createDocumentFragment() : null;
+      const sink = frag || popup;
       const autoItem = createXul("menuitem");
       autoItem.setAttribute("value", "");
       autoItem.setAttribute("data-l10n-id", "zbf-opt-style-quickcopy");
       autoItem.setAttribute("label", tLocale("跟随 Zotero 快速复制（Quick Copy）默认样式", "Follow Zotero Quick Copy default style", doc));
-      popup.appendChild(autoItem);
+      sink.appendChild(autoItem);
       const selectedStyle = String(prefs.get("inspector.cslPreview.citationstyle") || "");
       for (const style of hostStyles.getVisible?.() || []) {
         if (!style?.styleID) continue;
         const item = createXul("menuitem");
         item.setAttribute("value", style.styleID);
         item.setAttribute("label", style.title || style.styleID);
-        popup.appendChild(item);
+        sink.appendChild(item);
       }
+      if (frag) popup.appendChild(frag);
       menu.value = selectedStyle;
       menu.setAttribute("value", selectedStyle);
       syncMenulistLabels(doc);
@@ -1256,8 +1259,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.1" }));
-        versionEl.textContent = `v${"0.6.1"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.2" }));
+        versionEl.textContent = `v${"0.6.2"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

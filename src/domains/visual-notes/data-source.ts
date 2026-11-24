@@ -14,6 +14,21 @@ export function resolveParentItemID(item: any): number {
 	return Number(item.id || 0);
 }
 
+const EXTRA_REMARK_CACHE_LIMIT = 5000;
+const extraRemarkCache = new Map<string, string>();
+
+export function clearExtraRemarkCache(itemIDs?: Iterable<number>): void {
+	if (!itemIDs) {
+		extraRemarkCache.clear();
+		return;
+	}
+	const targets = new Set(itemIDs);
+	if (!targets.size) return;
+	for (const key of extraRemarkCache.keys()) {
+		if (targets.has(Number(key.split(':', 1)[0]))) extraRemarkCache.delete(key);
+	}
+}
+
 export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDataSource): string {
 	if (!item) return '';
 	const id = Number(item.id || 0);
@@ -26,16 +41,32 @@ export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDa
 		const parentCached = dataSource.getRemark(parentID);
 		if (parentCached) return parentCached;
 	}
-	const attIDs: number[] = dataSource && isRegularValidItem(item) && typeof item.getAttachments === 'function' ? (item.getAttachments() || []) : [];
-	if (dataSource) {
-		for (const attID of attIDs) {
+	const hostItems = (globalThis as any).Zotero?.Items;
+	const targetItem = parentID > 0 && parentID !== id ? (hostItems?.get?.(parentID) || item) : item;
+	const targetID = Number(targetItem?.id || 0);
+	const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? '');
+	const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : '';
+	if (cacheKey && extraRemarkCache.has(cacheKey)) {
+		const hit = extraRemarkCache.get(cacheKey)!;
+		if (hit) return hit;
+		if (!dataSource) return '';
+	}
+	if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === 'function') {
+		for (const attID of item.getAttachments() || []) {
 			const attCached = dataSource.getRemark(attID);
 			if (attCached) return attCached;
 		}
 	}
-	const hostItems = (globalThis as any).Zotero?.Items;
-	const targetItem = parentID > 0 && parentID !== id ? (hostItems?.get?.(parentID) || item) : item;
-	return getItemBriefNote(targetItem);
+	if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey)!;
+	const resolved = getItemBriefNote(targetItem);
+	if (cacheKey) {
+		if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
+			const oldest = extraRemarkCache.keys().next().value;
+			if (oldest !== undefined) extraRemarkCache.delete(oldest);
+		}
+		extraRemarkCache.set(cacheKey, resolved);
+	}
+	return resolved;
 }
 
 export function writeItemRemarkWithSync(
@@ -48,6 +79,7 @@ export function writeItemRemarkWithSync(
 	const clean = String(remark || '').replace(/[\r\n]+/g, ' ').trim();
 	const id = Number(item.id || 0);
 	const parentID = resolveParentItemID(item);
+	if (id > 0 || parentID > 0) clearExtraRemarkCache([id, parentID].filter((n) => n > 0));
 	if (dataSource) {
 		if (id > 0) dataSource.setRemark(id, clean);
 		if (parentID > 0 && parentID !== id) dataSource.setRemark(parentID, clean);

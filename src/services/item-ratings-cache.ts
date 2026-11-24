@@ -1,4 +1,5 @@
 import { cacheDirectory, cacheFile } from './cache-directory.ts';
+import { quarantineFile, readTextOutcome } from './safe-io.ts';
 
 export interface ItemRatingsFilePayload {
 	readonly format: 'zotero-bridgeflow-item-ratings';
@@ -53,6 +54,7 @@ export class ItemRatingsDiskCache {
 	public lastError = '';
 	private directory: string;
 	private initialized = false;
+	private readFailed = false;
 
 	constructor(customDir = '') {
 		this.directory = cacheDirectory(customDir);
@@ -72,6 +74,7 @@ export class ItemRatingsDiskCache {
 
 	async init(): Promise<boolean> {
 		this.initialized = true;
+		this.readFailed = false;
 		const disk = await this.loadFromDisk();
 		if (disk) {
 			for (const [k, v] of Object.entries(disk)) {
@@ -79,6 +82,8 @@ export class ItemRatingsDiskCache {
 			}
 			return true;
 		}
+		// An unreadable (locked) file must never be replaced by an empty ratings payload.
+		if (this.readFailed) return false;
 		await this.flushNow();
 		return false;
 	}
@@ -165,6 +170,7 @@ export class ItemRatingsDiskCache {
 		const payload = this.exportJson();
 
 		const run = async (): Promise<boolean> => {
+			if (this.readFailed) { this.lastError = 'existing ratings file unreadable; write skipped'; return false; }
 			if (payload === this.lastWrittenJson) return true;
 			try {
 				await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
@@ -198,15 +204,15 @@ export class ItemRatingsDiskCache {
 			);
 		}
 		for (const p of candidates) {
-			try {
-				if (!(await ioUtils.exists(p))) continue;
-				const raw = await ioUtils.readUTF8(p);
-				if (!raw) continue;
-				const parsed = parseRatingsPayload(raw);
-				if (!parsed) continue;
-				this.lastWrittenJson = p === this.getFilePath() ? raw : '';
-				return parsed;
-			} catch { /* try next */ }
+			const outcome = await readTextOutcome(p);
+			if (outcome.status === 'missing') continue;
+			if (outcome.status === 'error') { this.readFailed = true; continue; }
+			if (!outcome.text) continue;
+			const parsed = parseRatingsPayload(outcome.text);
+			if (!parsed) { await quarantineFile(p); continue; }
+			this.lastWrittenJson = p === this.getFilePath() ? outcome.text : '';
+			this.readFailed = false;
+			return parsed;
 		}
 		return null;
 	}

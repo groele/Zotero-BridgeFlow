@@ -1,4 +1,5 @@
 import { cacheDirectory, cacheFile } from './cache-directory.ts';
+import { copyToBackup, quarantineFile, readTextOutcome } from './safe-io.ts';
 export interface CitationHistoryRecord {
 	readonly key: string;
 	readonly text: string;
@@ -37,6 +38,8 @@ export class CitationHistoryStore {
 	private dirty = false;
 	private writes = Promise.resolve(true);
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+	private writeBlocked = false;
+	private lastBackupAt = 0;
 	public saveFailed = false;
 	private readonly statusListeners = new Set<() => void>();
 
@@ -46,6 +49,10 @@ export class CitationHistoryStore {
 	}
 
 	async retrySave(): Promise<boolean> {
+		if (this.writeBlocked) {
+			await this.loadFromDisk();
+			if (!this.writeBlocked) this.dirty = true;
+		}
 		return this.flushToDisk();
 	}
 
@@ -70,6 +77,8 @@ export class CitationHistoryStore {
 	getDirectoryPath(): string { return cacheDirectory(this.config.customDir); }
 
 	getFilePath(): string { return cacheFile(this.getDirectoryPath(), 'citation-history.json'); }
+
+	getBackupFilePath(): string { return cacheFile(this.getDirectoryPath(), 'citation-history.bak.json'); }
 
 	record(entry: Omit<CitationHistoryRecord, 'key' | 'copiedAt' | 'lastAccessedAt' | 'hitCount'>): CitationHistoryRecord | null {
 		const key = normalizeCitationKey(entry.text);
@@ -103,7 +112,7 @@ export class CitationHistoryStore {
 		rec.lastAccessedAt = Date.now();
 		rec.hitCount += 1;
 		this.dirty = true;
-		this.scheduleSave();
+		this.scheduleSave(5000);
 		return rec;
 	}
 
@@ -134,47 +143,65 @@ export class CitationHistoryStore {
 		this.scheduleSave();
 	}
 
-	async init(): Promise<void> {
-		if (this.initialized) return;
-		this.initialized = true;
-		const ioUtils = (globalThis as any).IOUtils;
-		if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
-
-		const paths = [this.getFilePath()];
+	private historyLoadPaths(): string[] {
+		const paths = [this.getFilePath(), this.getBackupFilePath()];
 		if (this.config.customDir) paths.push(cacheFile(cacheDirectory(), 'citation-history.json'));
 		const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
 		const pathUtils = (globalThis as any).PathUtils;
 		if (!this.config.customDir && dataDir && pathUtils?.join) {
 			paths.push(pathUtils.join(dataDir, 'viewflow-cache', 'viewflow-history.json'));
 		}
+		return paths;
+	}
 
+	/** Loads records from the first readable file. Unreadable (locked) files block writes; corrupt files are quarantined. */
+	private async loadFromDisk(): Promise<void> {
+		const paths = this.historyLoadPaths();
+		let loaded = false;
+		let readFailed = false;
 		for (const filePath of paths) {
+			const outcome = await readTextOutcome(filePath);
+			if (outcome.status === 'missing') continue;
+			if (outcome.status === 'error') { readFailed = true; continue; }
+			if (!outcome.text.trim()) continue;
+			let parsed: any;
 			try {
-				if (!(await ioUtils.exists(filePath))) continue;
-				const parsed = JSON.parse(await ioUtils.readUTF8(filePath));
-				const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
-				for (const raw of list) {
-					if (!raw?.text || !raw?.itemID) continue;
-					const key = normalizeCitationKey(raw.text);
-					if (!this.records.has(key)) {
-						this.records.set(key, {
-							key,
-							text: String(raw.text),
-							libraryID: Number(raw.libraryID || 1),
-							itemKey: String(raw.itemKey || ''),
-							itemID: Number(raw.itemID),
-							title: String(raw.title || ''),
-							style: String(raw.style || ''),
-							copiedAt: Number(raw.copiedAt || Date.now()),
-							lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
-							hitCount: Number(raw.hitCount || 1),
-						});
-					}
-				}
-				if (filePath !== paths[0]) { this.dirty = true; this.scheduleSave(); }
-				break;
-			} catch { /* self-heal corrupted file */ }
+				parsed = JSON.parse(outcome.text);
+			} catch {
+				await quarantineFile(filePath);
+				continue;
+			}
+			const list = Array.isArray(parsed?.records) ? parsed.records : Array.isArray(parsed) ? parsed : [];
+			for (const raw of list) {
+				if (!raw?.text || !raw?.itemID) continue;
+				const key = normalizeCitationKey(raw.text);
+				if (this.records.has(key)) continue;
+				this.records.set(key, {
+					key,
+					text: String(raw.text),
+					libraryID: Number(raw.libraryID || 1),
+					itemKey: String(raw.itemKey || ''),
+					itemID: Number(raw.itemID),
+					title: String(raw.title || ''),
+					style: String(raw.style || ''),
+					copiedAt: Number(raw.copiedAt || Date.now()),
+					lastAccessedAt: Number(raw.lastAccessedAt || raw.copiedAt || Date.now()),
+					hitCount: Number(raw.hitCount || 1),
+				});
+			}
+			loaded = true;
+			if (filePath !== paths[0]) { this.dirty = true; this.scheduleSave(); }
+			break;
 		}
+		this.writeBlocked = readFailed && !loaded;
+	}
+
+	async init(): Promise<void> {
+		if (this.initialized) return;
+		this.initialized = true;
+		const ioUtils = (globalThis as any).IOUtils;
+		if (!ioUtils?.exists || !ioUtils?.readUTF8) return;
+		await this.loadFromDisk();
 		this.pruneExpired();
 		this.enforceEviction();
 	}
@@ -211,14 +238,14 @@ export class CitationHistoryStore {
 		}
 	}
 
-	private scheduleSave(): void {
+	private scheduleSave(delayMs = 400): void {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8 || !this.dirty) return;
 		if (this.saveTimer) clearTimeout(this.saveTimer);
 		this.saveTimer = setTimeout(() => {
 			this.saveTimer = null;
 			void this.flushToDisk();
-		}, 400);
+		}, delayMs);
 	}
 
 	private flushToDisk(): Promise<boolean> {
@@ -229,8 +256,19 @@ export class CitationHistoryStore {
 	private async writeRecords(): Promise<boolean> {
 		const ioUtils = (globalThis as any).IOUtils;
 		if (!ioUtils?.writeUTF8) return true;
+		if (this.writeBlocked) {
+			// The existing history could not be read; refuse to overwrite it with a partial list.
+			this.dirty = true;
+			this.saveFailed = true;
+			for (const fn of this.statusListeners) { try { fn(); } catch { /* ignore */ } }
+			return false;
+		}
 		try {
 			await ioUtils.makeDirectory?.(this.getDirectoryPath(), { ignoreExisting: true });
+			if (Date.now() - this.lastBackupAt > 600_000) {
+				this.lastBackupAt = Date.now();
+				await copyToBackup(this.getFilePath(), this.getBackupFilePath());
+			}
 			const payload = `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}\n`;
 			this.dirty = false;
 			await ioUtils.writeUTF8(this.getFilePath(), payload, { tmpPath: this.getFilePath() + '.tmp' });

@@ -169,8 +169,16 @@ export class ReadingColumnsController {
 		flushUnregisterColumns(this.registeredKeys);
 	}
 
-	clearCache(): void {
-		this.annSummaryCache.clear();
+	clearCache(itemIDs?: Iterable<number>): void {
+		if (!itemIDs) {
+			this.annSummaryCache.clear();
+			return;
+		}
+		const targets = new Set(itemIDs);
+		if (!targets.size) return;
+		for (const k of this.annSummaryCache.keys()) {
+			if (targets.has(Number(k.split(':', 1)[0]))) this.annSummaryCache.delete(k);
+		}
 	}
 
 	refreshColumns(): void {

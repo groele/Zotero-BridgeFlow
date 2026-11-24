@@ -4,6 +4,7 @@ import {
 	getPdfAttachmentSortRank,
 	normalizeToRegularItemAsync,
 } from '../../services/item-resolution.ts';
+import { getSharedPdfJsSync, PDFJS_CMAP_URL, PDFJS_FONT_URL } from '../../services/pdfjs-loader.ts';
 
 export interface PdfViewport {
 	width: number;
@@ -54,13 +55,6 @@ export interface SameItemPdfContext {
 	currentAttachmentID: number;
 	entries: PdfAttachmentEntry[];
 }
-
-const PDFJS_MODULE_URL = 'resource://zotero/reader/pdf/build/pdf.mjs';
-const PDFJS_WORKER_URL = 'resource://zotero/reader/pdf/build/pdf.worker.mjs';
-const PDFJS_CMAP_URL = 'resource://zotero/reader/pdf/web/cmaps/';
-const PDFJS_FONT_URL = 'resource://zotero/reader/pdf/web/standard_fonts/';
-
-let cachedPdfJsLib: PdfJsLib | null = null;
 
 function isPdfAttachment(att: any): boolean {
 	if (!att || att.deleted || att.isTrashed?.()) return false;
@@ -215,51 +209,9 @@ async function readPdfBytes(filePath: string): Promise<Uint8Array> {
 	throw new Error('No file reader available for PDF preview');
 }
 
-function tryImportModule(cu: any, url: string): any {
-	if (!cu?.importESModule) return null;
-	for (const opts of [{ global: 'current' }, null] as const) {
-		try {
-			const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
-			if (mod) return mod;
-		} catch { /* fallback */ }
-	}
-	return null;
-}
-
 async function loadPdfJsLib(win?: Window | null): Promise<PdfJsLib> {
-	if (cachedPdfJsLib) return cachedPdfJsLib;
-	const zotero = (globalThis as any).Zotero;
-	const hostWin = (win || zotero?.getMainWindow?.()) as any;
-	if (hostWin && !(globalThis as any).window) {
-		try {
-			(globalThis as any).window = hostWin;
-			(globalThis as any).document = hostWin.document;
-		} catch { /* ignore */ }
-	}
-	const winCu = hostWin?.ChromeUtils;
-	const globalCu = (globalThis as any).ChromeUtils;
-	const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
-	if (workerMod) {
-		try {
-			(globalThis as any).pdfjsWorker = workerMod;
-			if (hostWin) hostWin.pdfjsWorker = workerMod;
-		} catch { /* ignore */ }
-	}
-	let mod: PdfJsLib | null =
-		(tryImportModule(winCu, PDFJS_MODULE_URL) as PdfJsLib | null) ||
-		(tryImportModule(globalCu, PDFJS_MODULE_URL) as PdfJsLib | null);
-	if (typeof mod?.getDocument !== 'function') {
-		try {
-			mod = (await (new Function('u', 'return import(u)')(PDFJS_MODULE_URL))) as PdfJsLib;
-		} catch {
-			mod = null;
-		}
-	}
-	if (typeof mod?.getDocument !== 'function') throw new Error('Failed to load Zotero PDF.js module');
-	if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) {
-		mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-	}
-	cachedPdfJsLib = mod;
+	const mod = getSharedPdfJsSync(win) as PdfJsLib | null;
+	if (!mod) throw new Error('Failed to load Zotero PDF.js module');
 	return mod;
 }
 

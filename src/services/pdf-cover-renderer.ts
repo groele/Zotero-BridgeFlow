@@ -1,11 +1,5 @@
 import { makeAbortController } from './pdf-cover-queue.ts';
-
-const PDFJS_MODULE_URL = 'resource://zotero/reader/pdf/build/pdf.mjs';
-const PDFJS_WORKER_URL = 'resource://zotero/reader/pdf/build/pdf.worker.mjs';
-const PDFJS_CMAP_URL = 'resource://zotero/reader/pdf/web/cmaps/';
-const PDFJS_FONT_URL = 'resource://zotero/reader/pdf/web/standard_fonts/';
-
-let cachedPdfJs: any = null;
+import { getSharedPdfJsSync, PDFJS_CMAP_URL, PDFJS_FONT_URL } from './pdfjs-loader.ts';
 
 function unwrapWindow(win: any): any {
 	if (!win) return undefined;
@@ -216,73 +210,71 @@ export async function renderAttachmentPreviewCover(
 	}
 }
 
-function tryImportModule(cu: any, url: string): any {
-	if (!cu?.importESModule) return null;
-	for (const opts of [{ global: 'current' }, null] as const) {
-		try {
-			const mod = opts !== null ? cu.importESModule(url, opts) : cu.importESModule(url);
-			if (mod) return mod;
-		} catch { /* fallback */ }
-	}
-	return null;
-}
-
 export async function renderFallbackPdfJsCover(
 	attachmentID: number,
 	width: number,
 	signal: AbortSignal,
 	doc: Document,
 	zoteroHost: any,
+	knownPath?: string,
 ): Promise<string | false> {
 	if (signal.aborted || !doc) return false;
+	let loadingTask: any = null;
 	let pdfDoc: any = null;
 	let page: any = null;
+	let renderTask: any = null;
+	let canvas: HTMLCanvasElement | null = null;
+	const onAbort = () => {
+		try { renderTask?.cancel?.(); } catch { /* ignore */ }
+		try { void loadingTask?.destroy?.(); } catch { /* ignore */ }
+	};
+	signal.addEventListener('abort', onAbort, { once: true });
 	try {
-		if (!cachedPdfJs) {
-			const winCu = (doc.defaultView as any)?.ChromeUtils;
-			const globalCu = (globalThis as any).ChromeUtils;
-			const workerMod = tryImportModule(winCu, PDFJS_WORKER_URL) || tryImportModule(globalCu, PDFJS_WORKER_URL);
-			if (workerMod) {
-				try { (globalThis as any).pdfjsWorker = workerMod; } catch { /* ignore */ }
-			}
-			let mod = tryImportModule(winCu, PDFJS_MODULE_URL) || tryImportModule(globalCu, PDFJS_MODULE_URL);
-			if (typeof mod?.getDocument !== 'function') {
-				try { mod = await (new Function('u', 'return import(u)')(PDFJS_MODULE_URL)); } catch { mod = null; }
-			}
-			if (typeof mod?.getDocument === 'function') {
-				if (mod.GlobalWorkerOptions && !mod.GlobalWorkerOptions.workerSrc) mod.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-				cachedPdfJs = mod;
-			}
+		const pdfJs = getSharedPdfJsSync(doc.defaultView);
+		if (!pdfJs) return false;
+		let path = knownPath || '';
+		if (!path) {
+			const att = zoteroHost?.Items?.get?.(attachmentID) || (await zoteroHost?.Items?.getAsync?.(attachmentID));
+			path = (await att?.getFilePathAsync?.().catch(() => null)) || att?.getFilePath?.() || '';
 		}
-		if (!cachedPdfJs) return false;
-		const att = zoteroHost?.Items?.get?.(attachmentID) || (await zoteroHost?.Items?.getAsync?.(attachmentID));
-		const path = (await att?.getFilePathAsync?.().catch(() => null)) || att?.getFilePath?.();
 		const ioUtils = (globalThis as any).IOUtils || zoteroHost?.getMainWindow?.()?.IOUtils;
 		if (!path || !ioUtils?.read || signal.aborted) return false;
 		const raw = await ioUtils.read(path);
 		const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
 		if (!bytes.length || signal.aborted) return false;
-		pdfDoc = await cachedPdfJs.getDocument({
-			data: bytes, ownerDocument: doc, isEvalSupported: false, useWorkerFetch: false,
-			cMapUrl: PDFJS_CMAP_URL, cMapPacked: true, standardFontDataUrl: PDFJS_FONT_URL,
-		}).promise;
-		page = await pdfDoc.getPage(1);
+		loadingTask = pdfJs.getDocument({
+			data: bytes,
+			ownerDocument: doc,
+			isEvalSupported: false,
+			useWorkerFetch: false,
+			disableAutoFetch: true,
+			disableStream: true,
+			cMapUrl: PDFJS_CMAP_URL,
+			cMapPacked: true,
+			standardFontDataUrl: PDFJS_FONT_URL,
+		});
+		pdfDoc = await waitWithSignal(loadingTask.promise, signal);
+		page = await waitWithSignal(pdfDoc.getPage(1), signal);
 		const baseVp = page.getViewport({ scale: 1 });
 		const vp = page.getViewport({ scale: width / Math.max(1, baseVp.width) });
-		const c = doc.createElementNS('http://www.w3.org/1999/xhtml', 'canvas') as HTMLCanvasElement;
-		c.width = Math.max(1, Math.ceil(vp.width));
-		c.height = Math.max(1, Math.ceil(vp.height));
-		const ctx = c.getContext('2d');
+		canvas = doc.createElementNS('http://www.w3.org/1999/xhtml', 'canvas') as HTMLCanvasElement;
+		canvas.width = Math.max(1, Math.ceil(vp.width));
+		canvas.height = Math.max(1, Math.ceil(vp.height));
+		const ctx = canvas.getContext('2d', { alpha: false });
 		if (!ctx) return false;
 		ctx.fillStyle = '#ffffff';
-		ctx.fillRect(0, 0, c.width, c.height);
-		await page.render({ canvasContext: ctx, viewport: vp }).promise;
-		const url = c.toDataURL('image/jpeg', 0.88);
+		ctx.fillRect(0, 0, canvas.width, canvas.height);
+		renderTask = page.render({ canvasContext: ctx, viewport: vp });
+		await waitWithSignal(renderTask.promise, signal);
+		const url = canvas.toDataURL('image/jpeg', 0.85);
 		return url.startsWith('data:image/') ? url : false;
 	} catch {
 		return false;
 	} finally {
+		signal.removeEventListener('abort', onAbort);
+		if (canvas) { canvas.width = 0; canvas.height = 0; }
 		try { page?.cleanup?.(); } catch { /* ignore */ }
 		try { await pdfDoc?.destroy?.(); } catch { /* ignore */ }
+		try { await loadingTask?.destroy?.(); } catch { /* ignore */ }
 	}
 }

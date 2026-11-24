@@ -19,6 +19,7 @@ export class ServiceContainer {
 	public readonly win32: Win32BridgeService;
 
 	private readonly kernel: PluginKernel;
+	private cacheRootApplied = false;
 
 	constructor(kernel: PluginKernel) {
 		this.kernel = kernel;
@@ -68,8 +69,12 @@ export class ServiceContainer {
 			maxEntries: this.kernel.prefs.get('inspector.lookup.cacheMaxEntries'),
 			ttlDays: this.kernel.prefs.get('inspector.lookup.cacheTtlDays'),
 		});
-		this.ratings.configure(customDir);
-		configurePdfCoverCacheDirectory(customDir);
+		// The cache root is resolved once per startup (the settings text says "takes effect after restart").
+		if (!this.cacheRootApplied) {
+			this.cacheRootApplied = true;
+			this.ratings.configure(customDir);
+			configurePdfCoverCacheDirectory(customDir);
+		}
 	}
 
 	dispose(): void {

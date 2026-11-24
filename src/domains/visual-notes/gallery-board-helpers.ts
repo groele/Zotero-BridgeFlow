@@ -1,8 +1,5 @@
-import { isRegularValidItem } from '../../services/item-resolution.ts';
 import {
 	getItemRating,
-	getItemStatus,
-	isStarRatingTag,
 	listAvailableStatuses,
 	setItemRating,
 	setItemStatus,
@@ -10,6 +7,9 @@ import {
 	type StatusOption,
 } from '../../services/item-status-rating.ts';
 import { formatReadingProgress, type TabReadingProgress } from '../../services/reading-stats.ts';
+import { clearGalleryCardCache, resolveCachedCardStatic } from './gallery-card-cache.ts';
+
+export { clearGalleryCardCache };
 
 export type GalleryMode = 'gallery' | 'board';
 export type GalleryContentTab = 'items' | 'notes' | 'annotations';
@@ -35,6 +35,7 @@ export interface GalleryCardModel {
 	readonly readSeconds: number;
 	readonly readRatio: number;
 	readonly readText: string;
+	readonly searchLower?: string;
 }
 
 export interface KanbanColumnModel {
@@ -48,17 +49,6 @@ export interface KanbanColumnModel {
 	readonly cards: GalleryCardModel[];
 }
 
-const ITEM_TYPE_ZH: Readonly<Record<string, string>> = {
-	journalArticle: '期刊文章',
-	conferencePaper: '会议论文',
-	thesis: '学位论文',
-	book: '专著',
-	bookSection: '图书章节',
-	preprint: '预印本',
-	report: '研究报告',
-	webpage: '网页资料',
-};
-
 const SOFT_TINTS = [
 	{ pillBg: '#ffe4e6', pillFg: '#9f1239', surface: 'rgba(244,63,94,0.045)' },
 	{ pillBg: '#dcfce7', pillFg: '#166534', surface: 'rgba(34,197,94,0.045)' },
@@ -67,61 +57,6 @@ const SOFT_TINTS = [
 	{ pillBg: '#e0f2fe', pillFg: '#075985', surface: 'rgba(14,165,233,0.045)' },
 	{ pillBg: '#f3e8ff', pillFg: '#6b21a8', surface: 'rgba(168,85,247,0.045)' },
 ] as const;
-
-function safeField(item: any, field: string): string {
-	try { return String(item?.getField?.(field) || '').trim(); } catch { return ''; }
-}
-
-function resolveVenue(item: any): string {
-	for (const f of ['publicationTitle', 'proceedingsTitle', 'conferenceName', 'university', 'publisher', 'repository']) {
-		const val = safeField(item, f);
-		if (val) return val;
-	}
-	return '';
-}
-
-function formatCreatorLine(item: any, zh: boolean): string {
-	const first = String(item?.firstCreator || '').trim();
-	try {
-		const creators = item?.getCreators?.();
-		if (Array.isArray(creators) && creators.length > 1) {
-			const lead = String(creators[0]?.lastName || creators[0]?.name || first).trim();
-			if (lead && !lead.includes('等') && !lead.toLowerCase().includes('et al')) {
-				return zh ? `${lead} 等` : `${lead} et al.`;
-			}
-		}
-	} catch { /* ignore */ }
-	return first;
-}
-
-function resolvePrimaryPdfAttachmentID(item: any): number {
-	try {
-		const attIDs: number[] = isRegularValidItem(item) && typeof item?.getAttachments === 'function' ? (item.getAttachments() || []) : [];
-		const hostItems = (globalThis as any).Zotero?.Items;
-		for (const rawId of attIDs) {
-			const id = Number(rawId) || 0;
-			if (!id) continue;
-			const att = hostItems?.get?.(id);
-			if (!att) return id;
-			if (att.deleted) continue;
-			const ct = String(att.attachmentContentType || '').toLowerCase();
-			const fn = String(att.attachmentFilename || att.getField?.('title') || '').toLowerCase();
-			if (ct === 'application/pdf' || fn.endsWith('.pdf') || att.isPDFAttachment?.()) return id;
-		}
-	} catch { /* ignore */ }
-	return 0;
-}
-
-function extractCleanTags(item: any, excludedStatusTag: string): string[] {
-	if (typeof item?.getTags !== 'function') return [];
-	const excludedLower = String(excludedStatusTag || '/Citations').trim().toLowerCase();
-	const out: string[] = [];
-	for (const entry of item.getTags() || []) {
-		const t = String(entry?.tag || '').trim();
-		if (t && t.toLowerCase() !== excludedLower && isStarRatingTag(t) === 0) out.push(t);
-	}
-	return out;
-}
 
 export function extractGalleryCards(
 	win: Window,
@@ -153,34 +88,33 @@ export function extractGalleryCards(
 		seen.add(itemID);
 		rawItems.push(ref);
 
-		const title = safeField(ref, 'title') || String(ref.title || `#${itemID}`);
-		const rawDate = safeField(ref, 'year') || safeField(ref, 'date');
-		const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(rawDate);
-		const itemType = String(ref.itemType || (globalThis as any).Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || 'journalArticle');
+		const stat = resolveCachedCardStatic(ref, itemID, zh, deps.excludedStatusTag);
 		const prog = deps.getReadProgress(ref);
 		const readRatio = prog?.totalPages && prog.totalPages > 0 && prog.lastPage
 			? Math.min(1, Math.max(0, prog.lastPage / prog.totalPages))
 			: 0;
 
+		const briefNote = deps.getBriefNote(ref);
 		cards.push({
 			item: ref,
 			itemID,
-			title,
-			creator: formatCreatorLine(ref, zh),
-			year: yearMatch ? yearMatch[1] : rawDate.slice(0, 4),
-			venue: resolveVenue(ref),
-			itemType,
-			itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : '') || itemType,
-			dateModified: String(ref.dateModified || ''),
-			pdfAttachmentID: resolvePrimaryPdfAttachmentID(ref),
-			abstractExcerpt: safeField(ref, 'abstractNote').replace(/\s+/g, ' ').slice(0, 620),
-			tags: extractCleanTags(ref, deps.excludedStatusTag),
-			status: getItemStatus(ref, deps.excludedStatusTag),
+			title: stat.title,
+			creator: stat.creator,
+			year: stat.year,
+			venue: stat.venue,
+			itemType: stat.itemType,
+			itemTypeLabel: stat.itemTypeLabel,
+			dateModified: stat.dateModified,
+			pdfAttachmentID: stat.pdfAttachmentID,
+			abstractExcerpt: stat.abstractExcerpt,
+			tags: stat.tags,
+			status: stat.status,
 			rating: getItemRating(ref, deps.ratingStorage),
-			briefNote: deps.getBriefNote(ref),
+			briefNote,
 			readSeconds: Number(prog?.readSeconds || 0),
 			readRatio,
 			readText: formatReadingProgress(prog).text,
+			searchLower: briefNote ? `${stat.baseSearchLower} ${briefNote.toLowerCase()}` : stat.baseSearchLower,
 		});
 	}
 	return { cards, rawItems };

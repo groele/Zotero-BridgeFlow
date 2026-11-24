@@ -119,6 +119,8 @@ export interface WordRecoverOrphansResultPayload {
 	readonly restoredCount: number;
 	readonly importedCount: number;
 	readonly skippedCount: number;
+	/** Orphans whose DOI already exists in the library, so no duplicate item was created. */
+	readonly existingCount?: number;
 	readonly collectionName?: string;
 	readonly error?: string;
 }
