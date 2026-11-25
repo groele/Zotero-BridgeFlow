@@ -122,7 +122,7 @@ export function openReadingInsightsPopover(options: {
 			bar.type = 'button';
 			bar.className = 'zbf-vc-hbar';
 			bar.style.height = `${Math.max(14, Math.round(ratio * 100))}%`;
-			bar.style.background = ratio > 0 ? heatColor : 'rgba(148,163,184,0.22)';
+			bar.style.backgroundColor = ratio > 0 ? heatColor : 'rgba(148,163,184,0.22)';
 			bar.style.opacity = ratio > 0 ? String((0.32 + ratio * 0.68).toFixed(2)) : '0.45';
 			const secTip = bestSecInBin > 0 ? ` · ${formatSubMinuteDuration(bestSecInBin)}` : '';
 			bar.title = zh ? `p.${targetPage}${secTip}（点击直跳 PDF 第 ${targetPage} 页）` : `p.${targetPage}${secTip} (click to jump)`;
@@ -228,7 +228,7 @@ export function openAnnotationBreakdownPopover(options: {
 		lbl.className = 'zbf-vc-dist-lbl';
 		const dot = vcEl(doc, 'span');
 		dot.className = 'zbf-ann-dot';
-		dot.style.background = d.hex;
+		dot.style.backgroundColor = d.hex;
 		const txt = vcEl(doc, 'span');
 		txt.textContent = d.label;
 		lbl.append(dot, txt);
@@ -237,7 +237,7 @@ export function openAnnotationBreakdownPopover(options: {
 		const fill = vcEl(doc, 'div');
 		fill.className = 'zbf-vc-dist-fill';
 		fill.style.width = `${Math.max(8, Math.round((d.count / collected.length) * 100))}%`;
-		fill.style.background = d.hex;
+		fill.style.backgroundColor = d.hex;
 		track.appendChild(fill);
 		const cnt = vcEl(doc, 'span');
 		cnt.className = 'zbf-vc-dist-cnt';
@@ -256,7 +256,7 @@ export function openAnnotationBreakdownPopover(options: {
 		btn.className = 'zbf-vc-snippet';
 		const dot = vcEl(doc, 'span');
 		dot.className = 'zbf-ann-dot';
-		dot.style.background = a.color || '#64748b';
+		dot.style.backgroundColor = a.color || '#64748b';
 		dot.style.marginTop = '5px';
 		const txt = vcEl(doc, 'span');
 		txt.className = 'zbf-vc-snippet-txt';

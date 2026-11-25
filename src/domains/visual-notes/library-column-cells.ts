@@ -87,7 +87,7 @@ export function buildReadTimeCell(opts: {
 	const fill = vcEl(doc, 'span');
 	fill.className = 'zbf-read-bar-fill';
 	fill.style.width = `${Math.max(8, Math.round(ratio * 100))}%`;
-	fill.style.background = prog.readSeconds >= 900 ? '#d97706' : prog.readSeconds >= 180 ? '#2563eb' : '#0d9488';
+	fill.style.backgroundColor = prog.readSeconds >= 900 ? '#d97706' : prog.readSeconds >= 180 ? '#2563eb' : '#0d9488';
 	bar.appendChild(fill);
 	chip.appendChild(bar);
 
@@ -158,7 +158,7 @@ export function buildAnnotationCell(opts: {
 		const seg = vcEl(doc, 'span');
 		seg.className = 'zbf-ann-seg';
 		seg.style.flexGrow = String(b.count);
-		seg.style.background = b.hex;
+		seg.style.backgroundColor = b.hex;
 		stack.appendChild(seg);
 	}
 	const dots = vcEl(doc, 'span');
@@ -168,7 +168,7 @@ export function buildAnnotationCell(opts: {
 		dItem.className = 'zbf-ann-dot-item';
 		const dot = vcEl(doc, 'span');
 		dot.className = 'zbf-ann-dot';
-		dot.style.background = b.hex;
+		dot.style.backgroundColor = b.hex;
 		const lbl = vcEl(doc, 'span');
 		lbl.className = 'zbf-ann-dot-lbl';
 		lbl.textContent = b.label;

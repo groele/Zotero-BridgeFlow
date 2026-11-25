@@ -7,14 +7,28 @@ export interface PerfRecord {
 export class KernelLogger {
 	private debugEnabled = false;
 	private slowThresholdMs = 50;
+	private healthWindowMs = 300_000;
 	private readonly slowRecords: PerfRecord[] = [];
 	private readonly maxRecords = 100;
 
-	configure(options: { debug?: boolean; slowThresholdMs?: number }): void {
+	configure(options: { debug?: boolean; slowThresholdMs?: number; healthWindowMs?: number }): void {
 		if (typeof options.debug === 'boolean') this.debugEnabled = options.debug;
 		if (typeof options.slowThresholdMs === 'number' && Number.isFinite(options.slowThresholdMs)) {
 			this.slowThresholdMs = Math.max(5, Math.min(5000, Math.round(options.slowThresholdMs)));
 		}
+		if (typeof options.healthWindowMs === 'number' && Number.isFinite(options.healthWindowMs)) {
+			this.healthWindowMs = Math.max(10_000, Math.min(3_600_000, Math.round(options.healthWindowMs)));
+			this.pruneExpired();
+		}
+	}
+
+	private pruneExpired(now = Date.now()): void {
+		const cutoff = now - this.healthWindowMs;
+		let dropCount = 0;
+		while (dropCount < this.slowRecords.length && this.slowRecords[dropCount].timestamp < cutoff) {
+			dropCount++;
+		}
+		if (dropCount > 0) this.slowRecords.splice(0, dropCount);
 	}
 
 	debug(scope: string, message: string, detail?: unknown): void {
@@ -36,7 +50,9 @@ export class KernelLogger {
 
 	recordPerf(op: string, durationMs: number): void {
 		if (durationMs < this.slowThresholdMs) return;
-		this.slowRecords.push({ op, durationMs, timestamp: Date.now() });
+		const now = Date.now();
+		this.pruneExpired(now);
+		this.slowRecords.push({ op, durationMs, timestamp: now });
 		if (this.slowRecords.length > this.maxRecords) {
 			this.slowRecords.splice(0, this.slowRecords.length - this.maxRecords);
 		}
@@ -44,6 +60,7 @@ export class KernelLogger {
 	}
 
 	getSlowRecords(): readonly PerfRecord[] {
+		this.pruneExpired();
 		return this.slowRecords;
 	}
 

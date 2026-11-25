@@ -1,5 +1,6 @@
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { Disposable, SpotlightItemResult, SpotlightProvider } from '../../kernel/types.ts';
+import { stripItemTitleMarkup } from '../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from './state-store.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 
@@ -36,6 +37,18 @@ export class WorkspaceSpotlightEngine {
 		const needle = tabList ? '' : term;
 		const results: SpotlightItemResult[] = [];
 		const limit = term ? 40 : 12;
+		if (term === '>recent') {
+			for (const rec of this.tabs.getRecentlyClosed(win)) {
+				results.push({
+					id: 'closed:' + rec.key,
+					category: 'tab',
+					title: stripItemTitleMarkup(rec.title) || rec.key,
+					badge: '已关闭',
+					action: () => { void this.tabs.openVirtualOrItem(win, rec.itemID, rec.groupId || undefined, false); },
+				});
+				if (results.length === limit) return results;
+			}
+		}
 		// Read titles already shown by the host. Projecting full workspace tabs also
 		// visits virtual members and fetches library metadata for each window.
 		const nativeTabs: { id: string; type: string; title?: string; data?: { itemID?: number } }[] =
@@ -46,8 +59,10 @@ export class WorkspaceSpotlightEngine {
 		for (const tab of source) {
 			if (tab.type === 'library') continue;
 			const key = tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id;
-			const title = tab.title || key;
-			const remark = this.prefs.get('workspace.enableTabRemarks') ? this.store.state.remarks[key] || '' : '';
+			const title = stripItemTitleMarkup(tab.title || '') || key;
+			const remark = this.prefs.get('workspace.enableTabRemarks')
+				? (tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks[key] || '')
+				: '';
 			if (needle && !(title + ' ' + remark).toLowerCase().includes(needle)) continue;
 			results.push({ id: 'tab:' + key, category: 'tab', title, subtitle: remark,
 				action: () => { this.tabs.selectTab(win, tab.id); } });
@@ -73,6 +88,14 @@ export class WorkspaceSpotlightEngine {
 			}
 		}
 		if (needle.length >= 2 && !needle.startsWith('@')) {
+			for (const provider of this.providers) {
+				try {
+					for (const hit of provider.query(needle, win)) {
+						results.push(hit);
+						if (results.length === limit) return results;
+					}
+				} catch { /* isolate providers */ }
+			}
 			for (const cmd of this.filterBuiltInCommands(needle, win)) {
 				results.push(cmd);
 				if (results.length === limit) break;

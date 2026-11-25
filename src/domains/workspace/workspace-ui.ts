@@ -32,6 +32,8 @@ export class WorkspaceWindowUI {
 	private destroyed = false;
 	private readonly lifetime: AbortController | null;
 	private readonly onActivity?: () => void;
+	private readonly onWindowBlur?: () => void;
+	private readonly boundReaderDocs = new WeakSet<Document>();
 	private lastActivitySentAt = 0;
 
 	private readonly onInputActivity = () => {
@@ -66,12 +68,14 @@ export class WorkspaceWindowUI {
 		tabs: WorkspaceTabController,
 		spotlightEngine: WorkspaceSpotlightEngine,
 		onActivity?: () => void,
+		onWindowBlur?: () => void,
 	) {
 		this.win = win;
 		this.doc = win.document;
 		this.prefs = prefs;
 		this.tabs = tabs;
 		this.onActivity = onActivity;
+		this.onWindowBlur = onWindowBlur;
 		this.lifetime = this.doc ? new ((win as Window & typeof globalThis).AbortController)() : null;
 		if (!this.doc || !this.lifetime) return;
 
@@ -92,6 +96,8 @@ export class WorkspaceWindowUI {
 		this.doc.addEventListener('keydown', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
 		this.doc.addEventListener('wheel', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
 		this.win.addEventListener('resize', this.onResize, { signal: this.lifetime.signal });
+		this.win.addEventListener('focus', this.onInputActivity, { signal: this.lifetime.signal });
+		this.win.addEventListener('blur', () => this.onWindowBlur?.(), { signal: this.lifetime.signal });
 		this.render();
 	}
 
@@ -108,6 +114,7 @@ export class WorkspaceWindowUI {
 	render(): TrackedTab[] {
 		if (this.destroyed || !this.doc) return [];
 		try {
+			this.bindOpenReaderDocs();
 			const snapshot = this.tabs.buildTrackedTabs(this.win);
 			this.sidebar?.render(snapshot);
 			this.horizontal?.render(snapshot);
@@ -115,6 +122,23 @@ export class WorkspaceWindowUI {
 		} catch (error) {
 			(globalThis as any).Zotero?.logError?.(error);
 			return [];
+		}
+	}
+
+	private bindOpenReaderDocs(): void {
+		if (!this.lifetime) return;
+		const nativeTabs: any[] = (this.win as any).Zotero_Tabs?._tabs ?? [];
+		for (const tab of nativeTabs) {
+			if (!tab?.id || tab.type === 'library') continue;
+			const iframeDoc = (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.id)
+				?._internalReader?._primaryView?._iframeWindow?.document as Document | undefined;
+			if (!iframeDoc || this.boundReaderDocs.has(iframeDoc)) continue;
+			this.boundReaderDocs.add(iframeDoc);
+			const sig = this.lifetime.signal;
+			iframeDoc.addEventListener('keydown', this.onKeydown, { capture: true, signal: sig });
+			iframeDoc.addEventListener('pointerdown', this.onInputActivity, { capture: true, passive: true, signal: sig });
+			iframeDoc.addEventListener('keydown', this.onInputActivity, { capture: true, passive: true, signal: sig });
+			iframeDoc.addEventListener('wheel', this.onInputActivity, { capture: true, passive: true, signal: sig });
 		}
 	}
 

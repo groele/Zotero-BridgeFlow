@@ -274,6 +274,11 @@ export async function focusOrOpenTrackedItem(
 				false,
 			);
 			if (openedParent) return 'opened';
+			const hostItems = (globalThis as any).Zotero?.Items;
+			const resolved = typeof hostItems?.get === 'function' ? hostItems.get(req.itemID) : undefined;
+			if (typeof hostItems?.get === 'function' && (!resolved || resolved.deleted || resolved.isRegularItem?.())) {
+				return 'not-found';
+			}
 		}
 		const reader = (globalThis as any).Zotero?.Reader;
 		const targetAttachmentID = req.attachmentID || req.itemID;

@@ -139,7 +139,7 @@ export class SidebarSelection {
 		this.unpinBtn.disabled = !count;
 		this.copyRefsBtn.hidden = !this.onCopySelected || !this.prefs.get('workspace.enableCopyReference');
 		this.copyRefsBtn.disabled = !count;
-		this.citeWordBtn.hidden = !this.onCiteSelected || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.dragCite.enable');
+		this.citeWordBtn.hidden = !this.onCiteSelected || !this.prefs.get('modules.wordCite.enable') || !this.prefs.get('wordCite.tabContextMenu.enable');
 		this.citeWordBtn.disabled = !count;
 		this.closeBtn.disabled = !count;
 	}

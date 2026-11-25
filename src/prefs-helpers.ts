@@ -1,3 +1,4 @@
+import { tLocale } from './kernel/locale.ts';
 import { UnifiedPrefService } from './kernel/pref-service.ts';
 import { initAnnotationColorEditor, syncAnnotationColorInputs } from './prefs-color-editor.ts';
 import {
@@ -65,7 +66,7 @@ export function bindPreferenceActions(
 				const mod = cu.importESModule('chrome://zotero/content/modules/filePicker.mjs');
 				const picker = new mod.FilePicker();
 				picker.init(targetWin, title, picker.modeSave ?? 1);
-				picker.appendFilter('JSON 文件', '*.json');
+				picker.appendFilter(tLocale('JSON 文件', 'JSON Files', doc), '*.json');
 				picker.defaultString = defaultName;
 				const rv = await picker.show();
 				if ((rv === picker.returnOK || rv === picker.returnReplace) && picker.file) {
@@ -78,81 +79,97 @@ export function bindPreferenceActions(
 
 	bindActionBtn(doc.getElementById('zbf-btn-export-reading'), () => {
 		void exportJsonBackup(
-			'导出阅读时长与热力图备份 (JSON)',
+			tLocale('导出阅读时长与热力图备份 (JSON)', 'Export Reading Progress & Heatmap Backup (JSON)', doc),
 			`BridgeFlow-ReadingProgress-${new Date().toISOString().slice(0, 10)}.json`,
 			getApp()?.workspace?.store?.exportReadingJson?.(),
 			'zbf-prefs-status-reading-exported',
-			'✓ 已导出阅读时长与热力图 JSON 备份',
+			tLocale('✓ 已导出阅读时长与热力图 JSON 备份', '✓ Exported reading progress & heatmap JSON backup', doc),
 		);
 	});
 
 	bindActionBtn(doc.getElementById('zbf-clear-reading-notes'), () => {
-		if (targetWin?.confirm && !targetWin.confirm('确定要清空所有文献的累计阅读时长与热力图记录吗？（不影响工作区分组与条目简记 Note，此操作不可撤销）')) {
+		if (targetWin?.confirm && !targetWin.confirm(tLocale(
+			'确定要清空所有文献的累计阅读时长与热力图记录吗？（不影响工作区分组与条目简记 Note，此操作不可撤销）',
+			'Clear all reading duration and heatmap records? (Workspace groups and brief notes are preserved; this cannot be undone.)',
+			doc,
+		))) {
 			return;
 		}
 		const app = getApp();
 		app?.workspace?.store?.clearReadingProgress?.();
 		app?.workspace?.refreshAllWindows?.();
 		app?.visualNotes?.refreshLibraryViews?.();
-		setStatusFeedback(doc, 'zbf-prefs-status-reading-cleared', '✓ 已清空阅读时长与热力图缓存（简记已保留）');
+		setStatusFeedback(doc, 'zbf-prefs-status-reading-cleared', tLocale('✓ 已清空阅读时长与热力图缓存（简记已保留）', '✓ Cleared reading progress & heatmap cache', doc));
 	});
 
 	bindActionBtn(doc.getElementById('zbf-btn-export-brief-notes'), () => {
 		void exportJsonBackup(
-			'导出条目简记 (Note) 备份 (JSON)',
+			tLocale('导出条目简记 (Note) 备份 (JSON)', 'Export Brief Notes Backup (JSON)', doc),
 			`BridgeFlow-BriefNotes-${new Date().toISOString().slice(0, 10)}.json`,
 			getApp()?.workspace?.store?.exportBriefNotesJson?.(),
 			'zbf-prefs-status-notes-exported',
-			'✓ 已导出独立简记 JSON 备份',
+			tLocale('✓ 已导出独立简记 JSON 备份', '✓ Exported brief notes JSON backup', doc),
 		);
 	});
 
 	bindActionBtn(doc.getElementById('zbf-clear-brief-notes'), async () => {
-		if (targetWin?.confirm && !targetWin.confirm('确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）')) {
+		if (targetWin?.confirm && !targetWin.confirm(tLocale(
+			'确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）',
+			'Clear all local brief notes in brief-notes.json? (Workspace, reading progress, and Zotero Extra remarks are untouched.)',
+			doc,
+		))) {
 			return;
 		}
 		const app = getApp();
 		const saved = await app?.workspace?.store?.clearBriefNotes?.();
 		if (!saved) {
-			setStatusFeedback(doc, 'zbf-prefs-status-notes-clear-failed', 'The local brief notes cache could not be fully cleared.');
+			setStatusFeedback(doc, 'zbf-prefs-status-notes-clear-failed', tLocale('未能完整清空本地简记缓存。', 'The local brief notes cache could not be fully cleared.', doc));
 			return;
 		}
 		app?.workspace?.refreshAllWindows?.();
 		app?.visualNotes?.refreshLibraryViews?.();
-		setStatusFeedback(doc, 'zbf-prefs-status-notes-cleared', '✓ 已清空本地简记缓存文件');
+		setStatusFeedback(doc, 'zbf-prefs-status-notes-cleared', tLocale('✓ 已清空本地简记缓存文件', '✓ Cleared local brief notes cache file', doc));
 	});
 
 	bindActionBtn(doc.getElementById('zbf-btn-export-ratings'), () => {
 		void exportJsonBackup(
-			'导出文献星级评价备份 (JSON)',
+			tLocale('导出文献星级评价备份 (JSON)', 'Export Star Ratings Backup (JSON)', doc),
 			`BridgeFlow-ItemRatings-${new Date().toISOString().slice(0, 10)}.json`,
 			getApp()?.services?.ratings?.exportJson?.(),
 			'zbf-prefs-status-ratings-exported',
-			'✓ 已导出星级评价 JSON 备份',
+			tLocale('✓ 已导出星级评价 JSON 备份', '✓ Exported item ratings JSON backup', doc),
 		);
 	});
 
 	bindActionBtn(doc.getElementById('zbf-clear-ratings-cache'), () => {
-		if (targetWin?.confirm && !targetWin.confirm('确定要清空本地独立缓存 item-ratings.json 中的文献星级评价吗？（不影响工作区、简记及 Zotero 原生字段）')) {
+		if (targetWin?.confirm && !targetWin.confirm(tLocale(
+			'确定要清空本地独立缓存 item-ratings.json 中的文献星级评价吗？（不影响工作区、简记及 Zotero 原生字段）',
+			'Clear all local star ratings in item-ratings.json? (Workspace, brief notes, and Zotero fields are untouched.)',
+			doc,
+		))) {
 			return;
 		}
 		const app = getApp();
 		app?.services?.ratings?.clearAll?.(true);
 		app?.visualNotes?.refreshLibraryViews?.();
-		setStatusFeedback(doc, 'zbf-prefs-status-ratings-cleared', '✓ 已清空本地星级评价缓存文件');
+		setStatusFeedback(doc, 'zbf-prefs-status-ratings-cleared', tLocale('✓ 已清空本地星级评价缓存文件', '✓ Cleared local item ratings cache file', doc));
 	});
 
 	bindActionBtn(doc.getElementById('zbf-clear-covers-cache'), () => {
-		if (targetWin?.confirm && !targetWin.confirm('确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。')) {
+		if (targetWin?.confirm && !targetWin.confirm(tLocale(
+			'确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。',
+			'Clear Gallery PDF cover thumbnail cache (covers/)? Thumbnails regenerate automatically on next open without affecting PDFs.',
+			doc,
+		))) {
 			return;
 		}
 		void clearPdfCoverCache().then((cleared) => {
 			if (!cleared) {
-				setStatusFeedback(doc, 'zbf-prefs-status-covers-clear-failed', 'PDF cover cache could not be fully cleared.');
+				setStatusFeedback(doc, 'zbf-prefs-status-covers-clear-failed', tLocale('无法完全清理画廊 PDF 封面缩略图缓存。', 'PDF cover cache could not be fully cleared.', doc));
 				return;
 			}
 			getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
-			setStatusFeedback(doc, 'zbf-prefs-status-covers-cleared', '✓ 已清空画廊 PDF 封面缩略图缓存');
+			setStatusFeedback(doc, 'zbf-prefs-status-covers-cleared', tLocale('✓ 已清空画廊 PDF 封面缩略图缓存', '✓ Cleared Gallery PDF cover thumbnail cache', doc));
 		});
 	});
 

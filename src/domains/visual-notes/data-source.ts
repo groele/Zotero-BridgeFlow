@@ -1,11 +1,16 @@
 import { isRegularValidItem } from '../../services/item-resolution.ts';
 import type { TabReadingProgress } from '../../services/reading-stats.ts';
-import { getItemBriefNote, syncItemRemarkToExtra } from '../../services/item-remark-sync.ts';
+import {
+	clearItemRemarkLocalSuppression,
+	getItemBriefNote,
+	markItemRemarkClearedLocally,
+	syncItemRemarkToExtra,
+} from '../../services/item-remark-sync.ts';
 
 export interface VisualNotesDataSource {
 	getReadingProgress(itemID: number): TabReadingProgress | undefined;
 	getRemark(itemID: number): string;
-	setRemark(itemID: number, remark: string): void;
+	setRemark(itemID: number, remark: string, skipExtraObserver?: boolean): void;
 	persistRemarks?(): Promise<boolean>;
 }
 
@@ -80,13 +85,17 @@ export function writeItemRemarkWithSync(
 	const clean = String(remark || '').replace(/[\r\n]+/g, ' ').trim();
 	const id = Number(item.id || 0);
 	const parentID = resolveParentItemID(item);
+	const targetID = parentID > 0 ? parentID : id;
+	if (targetID > 0) {
+		if (clean) clearItemRemarkLocalSuppression(targetID);
+		else markItemRemarkClearedLocally(targetID);
+	}
 	if (id > 0 || parentID > 0) clearExtraRemarkCache([id, parentID].filter((n) => n > 0));
 	if (dataSource) {
-		if (id > 0) dataSource.setRemark(id, clean);
-		if (parentID > 0 && parentID !== id) dataSource.setRemark(parentID, clean);
+		if (targetID > 0) dataSource.setRemark(targetID, clean, syncToExtra);
+		if (id > 0 && id !== targetID) dataSource.setRemark(id, clean, syncToExtra);
 	}
-	if (syncToExtra) {
-		const targetID = parentID > 0 ? parentID : id;
-		if (targetID > 0) void syncItemRemarkToExtra(targetID, clean);
+	if (syncToExtra && targetID > 0) {
+		void syncItemRemarkToExtra(targetID, clean);
 	}
 }

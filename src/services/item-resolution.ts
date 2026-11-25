@@ -6,13 +6,16 @@ export interface ResolvedPdfAttachment {
 }
 
 export function isItemTrashedOrDeleted(item: any): boolean {
-	if (!item || item.deleted) return true;
+	if (!item || item.deleted || item.inTrash === true) return true;
+	if (typeof item.inTrash === 'function' && item.inTrash()) return true;
 	return typeof item.isTrashed === 'function' ? Boolean(item.isTrashed()) : false;
 }
 
 export function isItemWritable(item: any): boolean {
-	if (isItemTrashedOrDeleted(item)) return false;
-	return typeof item.isEditable === 'function' ? Boolean(item.isEditable()) : true;
+	if (isItemTrashedOrDeleted(item) || item.editable === false) return false;
+	if (typeof item.isEditable === 'function' && !item.isEditable()) return false;
+	const lib = item.libraryID ? (globalThis as any).Zotero?.Libraries?.get?.(Number(item.libraryID)) : null;
+	return !lib || lib.editable !== false;
 }
 
 export function isRegularValidItem(item: any): boolean {

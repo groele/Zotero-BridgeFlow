@@ -100,7 +100,7 @@ export async function insertItemsIntoWord(
 
 			await citation.prepareForEditing();
 			let fieldIndex = -1;
-			if (!this.data.prefs.delayCitationUpdates || !Object.keys(this.citationsByItemID).length) {
+			if (!this.data?.prefs?.delayCitationUpdates || !Object.keys(this.citationsByItemID || {}).length) {
 				const findFieldIndex = this.getFields().then(async (fields) => {
 					for (const [index, candidate] of fields.entries()) {
 						if (await candidate.equals(activeField?._field)) {
@@ -108,7 +108,7 @@ export async function insertItemsIntoWord(
 							return index;
 						}
 					}
-					throw new Error('Could not locate the Word citation field');
+					return -1;
 				});
 				const [fieldResult, updateResult] = await Promise.allSettled([findFieldIndex, this.updateFromDocument(0)]);
 				if (fieldResult.status === 'rejected') throw fieldResult.reason;
@@ -133,7 +133,7 @@ export async function insertItemsIntoWord(
 
 			for (const cit of citations) {
 				const idx = (cit.fieldIndex ?? cit._fieldIndex)!;
-				if (refreshedFields) {
+				if (refreshedFields && refreshedFields[idx]) {
 					const rep = new integration.CitationField(refreshedFields[idx]);
 					if ('field' in cit) cit.field = rep;
 					else cit._field = rep;

@@ -1,4 +1,5 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
+import { isItemWritable } from '../../services/item-resolution.ts';
 import {
 	readItemRemarkWithFallback,
 	writeItemRemarkWithSync,
@@ -49,7 +50,7 @@ export class InfoBriefNoteController {
 				}) => {
 					const valid = Boolean(item && !item.deleted && (item.isRegularItem?.() || item.isAttachment?.()));
 					setEnabled?.(valid);
-					setEditable?.(Boolean(valid && (item?.editable ?? true)));
+					setEditable?.(Boolean(valid && (this.dataSource ? true : isItemWritable(item))));
 				},
 			});
 			if (typeof rowID === 'string' && rowID) {

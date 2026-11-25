@@ -8,10 +8,19 @@ import type { ReadingProgressDiskCache } from './reading-progress-cache.ts';
 import type { BriefNotesDiskCache } from './brief-notes-cache.ts';
 import {
 	MAX_MANUAL_SESSIONS,
+	MAX_REMARK_LENGTH,
 	MAX_ROLLING_SESSIONS,
+	type VirtualMemberMeta,
 	type WorkspaceSession,
 	type WorkspaceState,
 } from './types.ts';
+
+function assignSafeRecord<T>(target: Record<string, T>, source: Record<string, T>): void {
+	for (const [k, val] of Object.entries(source)) {
+		if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
+		target[k] = val;
+	}
+}
 
 export async function hydrateWorkspaceDiskCaches(store: {
 	state: WorkspaceState;
@@ -96,8 +105,8 @@ export function applySessionLayoutToState(
 		state.pinnedKeys = [...session.pinnedKeys];
 		state.collapsed = [...session.collapsed];
 		state.virtualMembers = { ...session.virtualMembers };
-		Object.assign(state.remarks, session.remarks);
-		Object.assign(state.remarkModes, session.remarkModes);
+		assignSafeRecord(state.remarks, session.remarks);
+		assignSafeRecord(state.remarkModes, session.remarkModes);
 		return hasNotes;
 	}
 	for (const sg of session.groups) {
@@ -143,12 +152,112 @@ export function saveWorkspaceSessionRecord(
 		virtualMembers: options.isTemplate ? {} : { ...(prior?.virtualMembers || {}), ...captured.virtualMembers },
 	};
 	if (options.rolling) {
+		const priorPreReplace = session.kind !== 'pre-replace'
+			? state.rollingSessions.find((s) => s.kind === 'pre-replace')
+			: undefined;
 		state.rollingSessions.unshift(session);
 		state.rollingSessions = state.rollingSessions.slice(0, MAX_ROLLING_SESSIONS);
+		if (priorPreReplace && !state.rollingSessions.some((s) => s.kind === 'pre-replace') && state.rollingSessions.length >= MAX_ROLLING_SESSIONS) {
+			state.rollingSessions[state.rollingSessions.length - 1] = priorPreReplace;
+		}
 	} else {
 		if (existingIdx >= 0) state.sessions.splice(existingIdx, 1);
 		state.sessions.unshift(session);
 		state.sessions = state.sessions.slice(0, MAX_MANUAL_SESSIONS);
 	}
 	return session;
+}
+
+export function getNormalizedItemRemark(state: WorkspaceState, itemID: number): string {
+	if (!Number.isInteger(itemID) || itemID <= 0) return '';
+	const direct = state.remarks[`item:${itemID}`];
+	if (direct) return direct;
+	const hostItems = (globalThis as any).Zotero?.Items;
+	const item = hostItems?.get?.(itemID);
+	if (item && (item.isAttachment?.() || item.isNote?.()) && item.parentItemID) {
+		const parentRemark = state.remarks[`item:${item.parentItemID}`];
+		if (parentRemark) return parentRemark;
+	}
+	const attIDs: number[] = typeof item?.getAttachments === 'function' ? item.getAttachments() || [] : [];
+	for (const attID of attIDs) {
+		const childRemark = state.remarks[`item:${attID}`];
+		if (childRemark) return childRemark;
+	}
+	for (const [k, vm] of Object.entries(state.virtualMembers)) {
+		if (vm.parentItemID === itemID && state.remarks[k]) return state.remarks[k];
+	}
+	return '';
+}
+
+export function setNormalizedItemRemark(
+	state: WorkspaceState,
+	itemID: number,
+	remark: string,
+	maxLen = MAX_REMARK_LENGTH,
+): boolean {
+	if (!Number.isInteger(itemID) || itemID <= 0) return false;
+	const clean = remark.trim().slice(0, maxLen);
+	const hostItems = (globalThis as any).Zotero?.Items;
+	const item = hostItems?.get?.(itemID);
+	const canonicalID = item && (item.isAttachment?.() || item.isNote?.()) && Number(item.parentItemID) > 0
+		? Number(item.parentItemID)
+		: itemID;
+	const canonicalKey = `item:${canonicalID}`;
+	const relatedKeys = new Set<string>();
+	if (canonicalID !== itemID) relatedKeys.add(`item:${itemID}`);
+	const parentObj = canonicalID === itemID ? item : hostItems?.get?.(canonicalID);
+	const attIDs: number[] = typeof parentObj?.getAttachments === 'function' ? parentObj.getAttachments() || [] : [];
+	for (const attID of attIDs) {
+		if (Number(attID) > 0 && Number(attID) !== canonicalID) relatedKeys.add(`item:${attID}`);
+	}
+	for (const [k, vm] of Object.entries(state.virtualMembers)) {
+		if (vm.parentItemID === canonicalID && k !== canonicalKey) relatedKeys.add(k);
+	}
+	let changed = false;
+	if (clean) {
+		if (state.remarks[canonicalKey] !== clean) {
+			state.remarks[canonicalKey] = clean;
+			changed = true;
+		}
+	} else if (canonicalKey in state.remarks) {
+		delete state.remarks[canonicalKey];
+		changed = true;
+	}
+	for (const rk of relatedKeys) {
+		if (rk in state.remarks) {
+			delete state.remarks[rk];
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+export function mergeImportedWorkspaceState(
+	current: WorkspaceState,
+	imported: WorkspaceState,
+): { state: WorkspaceState; hasReading: boolean; hasNotes: boolean } {
+	const hasReading = Boolean(Object.keys(imported.readingProgress).length || Object.keys(imported.lastViewedAt).length);
+	const hasNotes = Boolean(Object.keys(imported.remarks).length || Object.keys(imported.remarkModes).length);
+	const state: WorkspaceState = {
+		...imported,
+		lastViewedAt: { ...current.lastViewedAt, ...imported.lastViewedAt },
+		readingProgress: { ...current.readingProgress, ...imported.readingProgress },
+		remarks: { ...current.remarks, ...imported.remarks },
+		remarkModes: { ...current.remarkModes, ...imported.remarkModes },
+	};
+	return { state, hasReading, hasNotes };
+}
+
+export function saveVirtualMembersToState(state: WorkspaceState, metas: readonly VirtualMemberMeta[]): boolean {
+	let changed = false;
+	for (const meta of metas) {
+		const prev = state.virtualMembers[meta.key];
+		if (!prev || prev.title !== meta.title || prev.shortTitle !== meta.shortTitle || prev.filename !== meta.filename
+			|| prev.source !== meta.source || prev.creatorYear !== meta.creatorYear || prev.collection !== meta.collection
+			|| prev.parentItemID !== meta.parentItemID || prev.itemID !== meta.itemID || prev.type !== meta.type) {
+			state.virtualMembers[meta.key] = meta;
+			changed = true;
+		}
+	}
+	return changed;
 }

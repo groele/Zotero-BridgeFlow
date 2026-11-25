@@ -1,5 +1,18 @@
+import { isItemWritable } from './item-resolution.ts';
+
 const REMARK_PREFIX = 'BridgeFlow-Remark:';
 const REMARK_LINE_RE = /^BridgeFlow-Remark:\s*(.*)$/i;
+const inFlightRemarkOverrides = new Map<number, string>();
+const suppressedExtraItemIDs = new Set<number>();
+
+export function markItemRemarkClearedLocally(itemID: number): void {
+	if (itemID > 0) suppressedExtraItemIDs.add(itemID);
+}
+
+export function clearItemRemarkLocalSuppression(itemID?: number): void {
+	if (itemID === undefined) suppressedExtraItemIDs.clear();
+	else if (itemID > 0) suppressedExtraItemIDs.delete(itemID);
+}
 
 export function readRemarkFromExtra(extraText: string | null | undefined): string {
 	const raw = String(extraText || '');
@@ -26,6 +39,11 @@ export function upsertRemarkInExtra(extraText: string | null | undefined, remark
 export function getItemBriefNote(item: any, cachedRemark = ''): string {
 	const direct = String(cachedRemark || '').trim();
 	if (direct) return direct;
+	const itemID = Number(item?.id || 0);
+	if (itemID > 0) {
+		if (inFlightRemarkOverrides.has(itemID)) return inFlightRemarkOverrides.get(itemID) || '';
+		if (suppressedExtraItemIDs.has(itemID)) return '';
+	}
 	if (!item || typeof item.getField !== 'function') return '';
 	try {
 		return readRemarkFromExtra(String(item.getField('extra') || ''));
@@ -48,19 +66,27 @@ async function performExtraSync(itemOrID: any, remark: string): Promise<boolean>
 				|| (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
 			if (parent && !parent.deleted) item = parent;
 		}
-		if (!item?.isRegularItem?.() || typeof item.getField !== 'function' || typeof item.setField !== 'function') {
+		if (!isItemWritable(item) || !item?.isRegularItem?.() || typeof item.getField !== 'function' || typeof item.setField !== 'function') {
 			return false;
 		}
-		const prevExtra = String(item.getField('extra') || '');
-		const nextExtra = upsertRemarkInExtra(prevExtra, remark);
-		if (prevExtra === nextExtra) return true;
-		item.setField('extra', nextExtra);
-		if (typeof item.saveTx === 'function') {
-			await item.saveTx();
-		} else if (typeof item.save === 'function') {
-			await item.save();
+		const targetID = Number(item.id || 0);
+		if (targetID > 0) inFlightRemarkOverrides.set(targetID, remark.replace(/[\r\n]+/g, ' ').trim());
+		try {
+			const prevExtra = String(item.getField('extra') || '');
+			const nextExtra = upsertRemarkInExtra(prevExtra, remark);
+			if (prevExtra === nextExtra) return true;
+			item.setField('extra', nextExtra);
+			if (typeof item.saveTx === 'function') {
+				await item.saveTx();
+			} else if (typeof item.save === 'function') {
+				await item.save();
+			}
+			return true;
+		} finally {
+			if (targetID > 0 && !pendingSyncByItemID.has(targetID)) {
+				inFlightRemarkOverrides.delete(targetID);
+			}
 		}
-		return true;
 	} catch {
 		return false;
 	}
@@ -68,12 +94,17 @@ async function performExtraSync(itemOrID: any, remark: string): Promise<boolean>
 
 export function syncItemRemarkToExtra(itemOrID: any, remark: string): Promise<boolean> {
 	const rawID = typeof itemOrID === 'number' ? itemOrID : Number(itemOrID?.id || 0);
-	if (rawID <= 0) return performExtraSync(itemOrID, remark);
+	const clean = remark.replace(/[\r\n]+/g, ' ').trim();
+	if (rawID <= 0) return performExtraSync(itemOrID, clean);
+	inFlightRemarkOverrides.set(rawID, clean);
 	const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
-	const next = prev.then(() => performExtraSync(itemOrID, remark));
+	const next = prev.then(() => performExtraSync(itemOrID, clean));
 	pendingSyncByItemID.set(rawID, next);
 	void next.finally(() => {
-		if (pendingSyncByItemID.get(rawID) === next) pendingSyncByItemID.delete(rawID);
+		if (pendingSyncByItemID.get(rawID) === next) {
+			pendingSyncByItemID.delete(rawID);
+			inFlightRemarkOverrides.delete(rawID);
+		}
 	});
 	return next;
 }

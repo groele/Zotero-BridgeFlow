@@ -161,7 +161,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		if ((e as MouseEvent).button !== 1) return;
 		e.preventDefault();
 		e.stopPropagation();
-		if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true });
+		if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
 	});
 	row.addEventListener('contextmenu', (e) => {
 		if (!prefs.get('workspace.enableTabContextMenu')) return;

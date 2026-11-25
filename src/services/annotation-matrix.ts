@@ -41,9 +41,10 @@ export function filterCollectedAnnotations(
 	opts: AnnotationFilterOptions = {},
 ): CollectedAnnotation[] {
 	const wantedColor = String(opts.colorLabel || '').trim().toLowerCase();
+	const wantedHex = normalizeHexColor(wantedColor);
 	const wantedTag = String(opts.tag || '').trim().toLowerCase();
 	return list.filter((ann) => {
-		if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && normalizeHexColor(ann.color) !== wantedColor) {
+		if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && (!wantedHex || normalizeHexColor(ann.color) !== wantedHex)) {
 			return false;
 		}
 		if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
@@ -176,8 +177,11 @@ export async function saveMatrixAsZoteroNote(
 	const ItemCtor = ZoteroObj?.Item;
 	if (typeof ItemCtor !== 'function') return null;
 	try {
+		const userLibID = Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+		const reqLib = libraryID ? ZoteroObj?.Libraries?.get?.(libraryID) : null;
+		const targetLibID = libraryID && (!reqLib || reqLib.editable !== false) ? libraryID : userLibID;
 		const note = new ItemCtor('note');
-		note.libraryID = libraryID || Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+		note.libraryID = targetLibID;
 		note.setNote(renderMatrixHtmlNote(matrix, heading));
 		const id = await note.saveTx?.();
 		return Number(id || note.id || 0) || null;

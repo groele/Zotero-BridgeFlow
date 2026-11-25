@@ -5,7 +5,8 @@ const keys = v.array(text);
 const optionalText = v.optional(text);
 const count = v.pipe(v.number(), v.minValue(0));
 const strings = v.record(text, text);
-const group = v.strictObject({ id: text, name: text, color: text, memberKeys: keys });
+const hexColor = v.pipe(text, v.transform((c) => (/^#[0-9a-fA-F]{3,8}$/.test(c.trim()) ? c.trim() : '#2563EB')));
+const group = v.strictObject({ id: text, name: text, color: hexColor, memberKeys: keys });
 const virtualMember = v.strictObject({
 	key: text, itemID: count, parentItemID: v.optional(count), title: text, shortTitle: optionalText,
 	filename: optionalText, source: optionalText, creatorYear: optionalText, collection: optionalText, type: text,

@@ -5,6 +5,7 @@ import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
 import { syncNativeStatusTagDots } from '../../services/item-status-rating.ts';
+import { invalidatePdfCover } from '../../services/pdf-cover-service.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { bindCustomStatusColorPersistence, loadCustomStatusColors } from '../../services/status-tag-colors.ts';
 import { openAnnotationMatrixModal } from './annotation-matrix-modal.ts';
@@ -45,19 +46,11 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.services = services;
 		this.remarkColumn = new RemarkColumnController(kernel);
 		this.readingColumns = new ReadingColumnsController(kernel, undefined, {
-			onOpenItem: (itemID) => {
-				this.kernel.bus.emit('workspace:open-item-request', { itemID, preferExistingTab: true });
-			},
-			onOpenMatrix: (win, title, itemIDs) => {
-				this.openMatrixModal(win, title, itemIDs);
-			},
-			onOpenHub: (win) => {
-				this.openCollectionHub(win, 'annotations');
-			},
+			onOpenItem: (itemID) => this.kernel.bus.emit('workspace:open-item-request', { itemID, preferExistingTab: true }),
+			onOpenMatrix: (win, title, itemIDs) => this.openMatrixModal(win, title, itemIDs),
+			onOpenHub: (win) => this.openCollectionHub(win, 'annotations'),
 		});
-		this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => {
-			this.galleryBoard.refreshWindows();
-		});
+		this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => this.galleryBoard.refreshWindows());
 		this.infoBriefNote = new InfoBriefNoteController(kernel, () => {
 			this.remarkColumn.refresh();
 			this.galleryBoard.refreshWindows();
@@ -116,34 +109,23 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(
 				[
-					'visualNotes.infoBriefNote.enable', 'visualNotes.showTitleTagDots',
-					'visualNotes.statusColumn.enable', 'visualNotes.statusSyncZoteroTagColor',
-					'visualNotes.statusCustomColors',
-					'visualNotes.ratingColumn.enable',
-					'visualNotes.ratingStorage',
-					'visualNotes.gallery.enable',
-					'visualNotes.gallery.defaultMode',
-					'visualNotes.gallery.groupBy',
-					'visualNotes.gallery.cardDensity',
-					'visualNotes.gallery.cardWidth',
-					'visualNotes.gallery.coverHeight',
-					'visualNotes.gallery.showBriefNote',
-					'visualNotes.collectionHub.enable',
-					'workspace.remarkColumn.enable',
-					'workspace.readingColumn.enable',
-					'workspace.readingTitleHeatmap.enable',
-					'workspace.readingHeatmap.color',
-					'workspace.readingHeatmap.opacity',
-					'workspace.annotationColumn.enable',
-					'inspector.annotations.popupLabelsEnable',
-					'inspector.annotations.colorLabels',
-					'inspector.annotations.enabledColors',
+					'visualNotes.infoBriefNote.enable', 'visualNotes.showTitleTagDots', 'visualNotes.statusColumn.enable',
+					'visualNotes.statusSyncZoteroTagColor', 'visualNotes.statusCustomColors', 'visualNotes.ratingColumn.enable',
+					'visualNotes.ratingStorage', 'visualNotes.gallery.enable', 'visualNotes.gallery.defaultMode',
+					'visualNotes.gallery.groupBy', 'visualNotes.gallery.cardDensity', 'visualNotes.gallery.cardWidth',
+					'visualNotes.gallery.coverHeight', 'visualNotes.gallery.showBriefNote', 'visualNotes.collectionHub.enable',
+					'visualNotes.collectionHub.ignoreFigureTable', 'visualNotes.collectionHub.preferCommentOverQuote',
+					'workspace.remarkColumn.enable', 'workspace.readingColumn.enable', 'workspace.readingTitleHeatmap.enable',
+					'workspace.readingHeatmap.color', 'workspace.readingHeatmap.opacity', 'workspace.annotationColumn.enable',
+					'inspector.annotations.popupLabelsEnable', 'inspector.annotations.colorLabels',
+					'inspector.annotations.enabledColors', 'wordCite.citationTags.text',
 				],
 				(key) => {
 					if (!this.active) return;
 					this.syncFeatureStates();
 					if (key === 'visualNotes.statusCustomColors') {
 						loadCustomStatusColors(this.kernel.prefs.get('visualNotes.statusCustomColors'));
+						clearGalleryCardCache();
 						this.statusRatingColumns.refreshColumns();
 						this.galleryBoard.refreshWindows();
 					}
@@ -159,8 +141,13 @@ export class VisualNotesDomainModule implements DomainModule {
 					if (key === 'visualNotes.collectionHub.enable' && !this.kernel.prefs.get(key)) {
 						for (const win of this.windows) closeHubPage(win);
 					}
-					if (key === 'visualNotes.ratingStorage') {
+					if (key === 'visualNotes.ratingStorage' || key === 'wordCite.citationTags.text') {
+						clearGalleryCardCache();
 						this.statusRatingColumns.refreshColumns();
+						this.galleryBoard.refreshWindows();
+					}
+					if (key === 'visualNotes.collectionHub.ignoreFigureTable' || key === 'visualNotes.collectionHub.preferCommentOverQuote') {
+						this.galleryBoard.refreshWindows();
 					}
 				},
 			),
@@ -204,8 +191,11 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.disposables.add(
 			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
 				if (!this.active) return;
-				if (event === 'modify' || event === 'add' || event === 'trash' || event === 'restore') {
-					this.scheduleLibraryRefresh(50, resolveAffectedVisualItemIDs(ids));
+				if (event === 'modify' || event === 'trash' || event === 'delete') {
+					for (const raw of ids) { const n = Number(raw); if (n > 0) invalidatePdfCover(n); }
+				}
+				if (event === 'modify' || event === 'add' || event === 'trash' || event === 'restore' || event === 'delete') {
+					this.scheduleLibraryRefresh(50, event === 'delete' ? undefined : resolveAffectedVisualItemIDs(ids));
 				}
 			}),
 		);
@@ -248,17 +238,22 @@ export class VisualNotesDomainModule implements DomainModule {
 	}
 	refreshLibraryViews(affectedIDs?: Iterable<number>, readingOnly = false): void {
 		if (!this.active) return;
+		if (readingOnly) {
+			if (this.readingColumns.isReadTimeActive()) {
+				try { (globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.(); } catch { /* ignore */ }
+			}
+			this.titleHeatmap.refreshWindows();
+			return;
+		}
 		if (this.refreshTimer !== null) {
 			clearTimeout(this.refreshTimer);
 			this.refreshTimer = null;
 		}
 		this.readingColumns.clearCache(affectedIDs);
-		if (!readingOnly) {
-			this.statusRatingColumns.clearCache(affectedIDs);
-			clearGalleryCardCache(affectedIDs);
-			clearExtraRemarkCache(affectedIDs);
-			this.infoBriefNote.refresh();
-		}
+		this.statusRatingColumns.clearCache(affectedIDs);
+		clearGalleryCardCache(affectedIDs);
+		clearExtraRemarkCache(affectedIDs);
+		this.infoBriefNote.refresh();
 		this.titleHeatmap.refreshWindows();
 		this.galleryBoard.refreshWindows();
 	}
@@ -281,7 +276,7 @@ export class VisualNotesDomainModule implements DomainModule {
 	}
 
 	openMatrixModal(win: Window, title: string, itemIDs: readonly number[]): void {
-		if (!this.active) return;
+		if (!this.active || !this.kernel.prefs.get('workspace.enableAnnotationMatrix')) return;
 		openAnnotationMatrixModal({
 			win,
 			title,

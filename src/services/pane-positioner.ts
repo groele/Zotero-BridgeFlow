@@ -54,14 +54,29 @@ export class ItemPanePositionCoordinator {
 		else this.targets.set(key, { key, ...spec });
 	}
 
+	private pruneDisconnected(): void {
+		for (const [owner, obs] of this.observers.entries()) {
+			if ((owner as { isConnected?: boolean }).isConnected === false) {
+				obs.disconnect();
+				this.observers.delete(owner);
+				const t = this.timers.get(owner);
+				if (t !== undefined) { clearTimeout(t); this.timers.delete(owner); }
+				this.running.delete(owner);
+				this.dirty.delete(owner);
+			}
+		}
+	}
+
 	observeAndQueue(body: HTMLElement | null): void {
+		this.pruneDisconnected();
 		const owner = body?.closest?.('item-details') as PositionOwner | null;
-		if (!owner?.getPanes) return;
+		if (!owner?.getPanes || (owner as { isConnected?: boolean }).isConnected === false) return;
 		if (!this.observers.has(owner)) {
 			const parent = owner.getPanes().find((p) => p.contains?.(body!))?.parentNode;
 			const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
 			if (parent && Observer) {
 				const obs = new Observer(() => {
+					if ((owner as { isConnected?: boolean }).isConnected === false) { this.pruneDisconnected(); return; }
 					if (!this.running.has(owner)) this.queue(owner);
 				});
 				obs.observe(parent, { childList: true });
@@ -72,6 +87,7 @@ export class ItemPanePositionCoordinator {
 	}
 
 	queueAll(): void {
+		this.pruneDisconnected();
 		for (const owner of this.observers.keys()) {
 			this.queue(owner);
 		}
@@ -131,8 +147,9 @@ export class ItemPanePositionCoordinator {
 			const group = groups.get(position)!;
 			if (!group.length) continue;
 			const anchor = PANE_POSITION_ANCHORS[position];
+			const anchorMissing = anchor !== null && !native.includes(anchor);
 			const nativeIndex = anchor ? native.indexOf(anchor) : -1;
-			const nextNative = native[nativeIndex + 1];
+			const nextNative = anchorMissing ? undefined : native[nativeIndex + 1];
 			const index = position === 'zotero-editpane-related' || nextNative === undefined
 				? desired.length
 				: desired.indexOf(nextNative);

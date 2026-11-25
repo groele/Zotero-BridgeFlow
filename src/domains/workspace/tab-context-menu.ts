@@ -209,7 +209,7 @@ export class WorkspaceTabContextMenu {
 				const swatch = createWorkspaceElement(this.doc, 'button');
 				swatch.type = 'button';
 				swatch.className = `zbf-color-swatch${color === group.color ? ' active' : ''}`;
-				swatch.style.background = color;
+				swatch.style.backgroundColor = color;
 				swatch.title = color;
 				swatch.addEventListener('click', () => {
 					this.store.setGroupColor(group.id, color);

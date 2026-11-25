@@ -73,7 +73,11 @@ export function bindPreviewToolbar(
 		}
 	};
 	state.attSelect.addEventListener('change', () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
-	state.doc.addEventListener('zbf:pdf-folder-attachment-selected', ((ev: CustomEvent) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))) as EventListener, opts);
+	state.doc.addEventListener('zbf:pdf-folder-attachment-selected', ((ev: CustomEvent) => {
+		const owner = state.body.closest?.('item-details') || null;
+		if (ev?.detail?.owner && owner && ev.detail.owner !== owner) return;
+		selectAttachmentById(Number(ev?.detail?.attachmentID || 0));
+	}) as EventListener, opts);
 	state.pageLabel.addEventListener('click', () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, actions.onRenderError)), opts);
 	state.viewportEl.addEventListener('scroll', () => updatePreviewPageFromScroll(state), opts);
 	state.viewportEl.addEventListener('dblclick', (event: MouseEvent) => {

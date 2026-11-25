@@ -81,7 +81,8 @@ export function decorateSelectionPopupDoc(
 		const group = btn.parentElement ?? null;
 		const seen = groups.get(group) || new Set<string>();
 		groups.set(group, seen);
-		const disabledByPalette = Boolean(hex) && !activeSet.has(hex);
+		const slotHex = COLOR_KEYS[index] || '';
+		const disabledByPalette = Boolean(hex) && !activeSet.has(hex) && !(slotHex && activeSet.has(slotHex));
 		const isDup = !label || seen.has(label);
 		if ((disabledByPalette || isDup) && !isSelectedColorButton(btn)) {
 			span?.remove?.();

@@ -88,7 +88,7 @@ export function runWorkspaceMaintenance(ctx: {
 	}
 	if (ctx.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - lastRollingAt > 900_000) {
 		const openKeys = [...new Set([...ctx.windows].flatMap((win) => ctx.tabs.openKeys(win)))];
-		if (openKeys.length || ctx.store.state.groups.length > 0 || ctx.store.state.pinnedKeys.length > 0) {
+		if (openKeys.length || ctx.store.state.groups.some((g) => g.memberKeys.length > 0)) {
 			const time = new Date().toLocaleTimeString();
 			ctx.store.saveSession(tLocale(`自动滚动快照 ${time}`, `Auto Snapshot ${time}`), { rolling: true, openKeys });
 			lastRollingAt = Date.now();

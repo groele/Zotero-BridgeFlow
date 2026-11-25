@@ -76,8 +76,7 @@ function resolvePrimaryPdfAttachmentID(item: any): number {
 			const id = Number(rawId) || 0;
 			if (!id) continue;
 			const att = hostItems?.get?.(id);
-			if (!att) return id;
-			if (att.deleted) continue;
+			if (!att || att.deleted) continue;
 			const ct = String(att.attachmentContentType || '').toLowerCase();
 			const fn = String(att.attachmentFilename || att.getField?.('title') || '').toLowerCase();
 			if (ct === 'application/pdf' || fn.endsWith('.pdf') || att.isPDFAttachment?.()) return id;

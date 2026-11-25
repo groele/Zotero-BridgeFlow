@@ -1,12 +1,6 @@
 import {
-	pickBriefNotesState,
-	pickReadingNotesState,
-	pickReadingProgressState,
-	pickWorkspaceLayoutState,
-	readBackup,
-	readBriefNotesBackup,
-	readReadingProgressBackup,
-	readWorkspace,
+	pickBriefNotesState, pickReadingNotesState, pickReadingProgressState, pickWorkspaceLayoutState,
+	readBackup, readBriefNotesBackup, readReadingProgressBackup, readWorkspace,
 } from './workspace-schema.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import { tLocale } from '../../kernel/locale.ts';
@@ -15,18 +9,16 @@ import { ReadingProgressDiskCache } from './reading-progress-cache.ts';
 import { BriefNotesDiskCache } from './brief-notes-cache.ts';
 import { mergePageSeconds } from '../../services/reading-stats.ts';
 import {
-	applySessionLayoutToState,
-	captureWorkspaceLayout,
-	groupOfStateKey,
-	hydrateWorkspaceDiskCaches,
-	saveWorkspaceSessionRecord,
+	applySessionLayoutToState, captureWorkspaceLayout, getNormalizedItemRemark, groupOfStateKey,
+	hydrateWorkspaceDiskCaches, mergeImportedWorkspaceState, saveVirtualMembersToState,
+	saveWorkspaceSessionRecord, setNormalizedItemRemark,
 } from './workspace-session-ops.ts';
 import {
 	GROUP_PALETTE, MAX_MANUAL_SESSIONS, MAX_REMARK_LENGTH,
 	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
-type StoreChange = 'data' | 'session' | 'reading' | 'notes-local-clear';
+type StoreChange = 'data' | 'session' | 'reading' | 'notes-local-clear' | 'import';
 
 const createEmptyState = (): WorkspaceState => ({
 	version: 2, groups: [], collapsed: [], pinnedKeys: [], sleepingKeys: [],
@@ -73,9 +65,7 @@ export class WorkspaceStateStore {
 		}
 	}
 
-	async initDiskCache(): Promise<boolean> {
-		return hydrateWorkspaceDiskCaches(this);
-	}
+	async initDiskCache(): Promise<boolean> { return hydrateWorkspaceDiskCaches(this); }
 
 	save(immediateDisk = false, change: StoreChange = 'data'): void {
 		if (!this.readOnlyGuard) {
@@ -103,9 +93,7 @@ export class WorkspaceStateStore {
 	}
 
 	private emitChange(change: StoreChange = 'data'): void {
-		for (const fn of this.listeners) {
-			try { fn(change); } catch { /* ignore */ }
-		}
+		for (const fn of this.listeners) { try { fn(change); } catch { /* ignore */ } }
 	}
 
 	onChange(listener: (change: StoreChange) => void): () => void {
@@ -118,12 +106,14 @@ export class WorkspaceStateStore {
 		this.state = { ...createEmptyState(), ...notes };
 		this.readOnlyGuard = false;
 		this.save(true);
+		void this.diskCache.flushNow(pickWorkspaceLayoutState(this.state), undefined, true);
 	}
 
 	clearReadingProgress(): void {
 		this.state.lastViewedAt = {};
 		this.state.readingProgress = {};
-		this.saveReadingProgress(true);
+		void this.readingCache.flushNow(this.state, true);
+		this.emitChange('reading');
 	}
 
 	clearBriefNotes(): Promise<boolean> {
@@ -168,20 +158,15 @@ export class WorkspaceStateStore {
 	}
 
 	renameGroup(groupId: string, name: string): boolean {
-		const group = this.state.groups.find((g) => g.id === groupId);
-		const trimmed = name.trim();
+		const group = this.state.groups.find((g) => g.id === groupId), trimmed = name.trim();
 		if (!group || !trimmed) return false;
-		group.name = trimmed;
-		this.save();
-		return true;
+		group.name = trimmed; this.save(); return true;
 	}
 
 	setGroupColor(groupId: string, color: string): boolean {
-		const group = this.state.groups.find((g) => g.id === groupId);
-		if (!group || !color) return false;
-		group.color = color;
-		this.save();
-		return true;
+		const group = this.state.groups.find((g) => g.id === groupId), trimmed = color.trim();
+		if (!group || !/^#[0-9a-fA-F]{3,8}$/.test(trimmed)) return false;
+		group.color = trimmed; this.save(); return true;
 	}
 
 	restoreSessionLayout(session: WorkspaceSession, merge = false, openKeys: string[] = []): void {
@@ -227,12 +212,9 @@ export class WorkspaceStateStore {
 	}
 
 	renameSession(sessionId: string, name: string): boolean {
-		const trimmed = name.trim();
-		const ses = this.state.sessions.find((s) => s.id === sessionId);
+		const trimmed = name.trim(), ses = this.state.sessions.find((s) => s.id === sessionId);
 		if (!ses || !trimmed) return false;
-		ses.name = trimmed;
-		this.save();
-		return true;
+		ses.name = trimmed; this.save(); return true;
 	}
 
 	promoteRollingSession(sessionId: string): boolean {
@@ -241,8 +223,7 @@ export class WorkspaceStateStore {
 		const [item] = this.state.rollingSessions.splice(idx, 1);
 		this.state.sessions.unshift({ ...item, kind: 'manual' });
 		this.state.sessions = this.state.sessions.slice(0, MAX_MANUAL_SESSIONS);
-		this.save();
-		return true;
+		this.save(); return true;
 	}
 
 	removeGroup(groupId: string): boolean {
@@ -250,8 +231,7 @@ export class WorkspaceStateStore {
 		if (idx < 0) return false;
 		this.state.groups.splice(idx, 1);
 		this.state.collapsed = this.state.collapsed.filter((id) => id !== groupId);
-		this.save();
-		return true;
+		this.save(); return true;
 	}
 
 	assignToGroup(key: string, groupId: string | null): void {
@@ -284,7 +264,18 @@ export class WorkspaceStateStore {
 
 	isSleeping(key: string): boolean { return this.state.sleepingKeys.includes(key); }
 
+	getItemRemark(itemID: number): string { return getNormalizedItemRemark(this.state, itemID); }
+
+	setItemRemark(itemID: number, remark: string, silent = false): void {
+		if (!setNormalizedItemRemark(this.state, itemID, remark, MAX_REMARK_LENGTH)) return;
+		if (!silent) this.saveBriefNotes();
+	}
+
+	notifyNotesChanged(): void { this.saveBriefNotes(); }
+
 	setRemark(key: string, remark: string): void {
+		const match = /^item:(\d+)$/.exec(key);
+		if (match) { this.setItemRemark(Number(match[1]), remark); return; }
 		const clean = remark.trim().slice(0, MAX_REMARK_LENGTH);
 		if (clean) this.state.remarks[key] = clean;
 		else delete this.state.remarks[key];
@@ -304,7 +295,13 @@ export class WorkspaceStateStore {
 		});
 	}
 
-	saveVirtualMember(meta: VirtualMemberMeta): void { this.state.virtualMembers[meta.key] = meta; this.save(); }
+	saveVirtualMember(meta: VirtualMemberMeta): void {
+		if (saveVirtualMembersToState(this.state, [meta])) this.save();
+	}
+
+	saveVirtualMembersBatch(metas: readonly VirtualMemberMeta[]): void {
+		if (metas.length && saveVirtualMembersToState(this.state, metas)) this.save();
+	}
 
 	removeVirtualMember(key: string): void {
 		if (!(key in this.state.virtualMembers)) return;
@@ -324,13 +321,21 @@ export class WorkspaceStateStore {
 
 	importJson(jsonText: string): boolean {
 		try {
-			this.state = readBackup(jsonText);
+			const { state, hasReading, hasNotes } = mergeImportedWorkspaceState(this.state, readBackup(jsonText));
+			this.state = state;
 			this.readOnlyGuard = false;
-			this.save(true);
-			void this.readingCache.flushNow(this.state);
-			void this.notesCache.flushNow(this.state);
+			this.save(true, 'import');
+			if (hasReading) void this.readingCache.flushNow(this.state);
+			if (hasNotes) void this.notesCache.flushNow(this.state);
 			return true;
 		} catch { return false; }
+	}
+
+	importAnyJson(jsonText: string): 'workspace' | 'reading' | 'notes' | null {
+		if (this.importJson(jsonText)) return 'workspace';
+		if (this.importReadingJson(jsonText)) return 'reading';
+		if (this.importBriefNotesJson(jsonText)) return 'notes';
+		return null;
 	}
 
 	importReadingJson(jsonText: string): boolean {

@@ -8,13 +8,24 @@ export const CSL_TO_ZOTERO_TYPE: Record<string, string> = {
 	'paper-conference': 'conferencePaper',
 	book: 'book',
 	chapter: 'bookSection',
+	'entry-encyclopedia': 'encyclopediaArticle',
+	'entry-dictionary': 'dictionaryEntry',
 	thesis: 'thesis',
 	report: 'report',
 	webpage: 'webpage',
+	'post-weblog': 'blogPost',
+	speech: 'presentation',
 	patent: 'patent',
 	manuscript: 'manuscript',
 	software: 'computerProgram',
 	dataset: 'dataset',
+	legislation: 'statute',
+	bill: 'bill',
+	legal_case: 'case',
+	standard: 'standard',
+	motion_picture: 'film',
+	broadcast: 'tvBroadcast',
+	interview: 'interview',
 	article: 'preprint',
 	document: 'document',
 };
@@ -29,8 +40,14 @@ function normCompareToken(raw: unknown): string {
 
 export function mapCslCreators(
 	itemData: Record<string, unknown>,
+	itemType?: string,
 ): Array<{ firstName?: string; lastName: string; creatorType: string; fieldMode?: number }> {
 	const creators: Array<{ firstName?: string; lastName: string; creatorType: string; fieldMode?: number }> = [];
+	const primaryRole = itemType === 'patent' ? 'inventor'
+		: itemType === 'computerProgram' ? 'programmer'
+			: itemType === 'presentation' ? 'presenter'
+				: itemType === 'film' || itemType === 'tvBroadcast' ? 'director'
+					: 'author';
 	const pushRole = (list: unknown, creatorType: string) => {
 		if (!Array.isArray(list)) return;
 		for (const entry of list) {
@@ -41,8 +58,12 @@ export function mapCslCreators(
 				creators.push({ lastName: literal, creatorType, fieldMode: 1 });
 				continue;
 			}
-			const family = String(rec.family || '').trim();
-			const given = String(rec.given || '').trim();
+			const nonDrop = String(rec['non-dropping-particle'] || '').trim();
+			const drop = String(rec['dropping-particle'] || '').trim();
+			const rawFamily = String(rec.family || '').trim();
+			const rawGiven = String(rec.given || '').trim();
+			const family = [nonDrop, rawFamily].filter(Boolean).join(' ');
+			const given = [rawGiven, drop].filter(Boolean).join(' ');
 			if (family || given) {
 				creators.push({
 					lastName: family || given,
@@ -52,9 +73,10 @@ export function mapCslCreators(
 			}
 		}
 	};
-	pushRole(itemData.author, 'author');
+	pushRole(itemData.author, primaryRole);
 	pushRole(itemData.editor, 'editor');
 	pushRole(itemData.translator, 'translator');
+	pushRole(itemData.director, itemType === 'film' || itemType === 'tvBroadcast' ? 'director' : 'contributor');
 	return creators;
 }
 
@@ -166,11 +188,12 @@ export async function findExistingLibraryItems(
 			const raw = await runFieldSearch('DOI', rawDoi);
 			normalized.push(...raw);
 		}
-		return [...new Map(normalized.map(item => [item.id, item])).values()];
+		const uniqueByDoi = [...new Map(normalized.map(item => [item.id, item])).values()];
+		if (uniqueByDoi.length > 0) return uniqueByDoi;
 	}
 	const title = String(cslData?.title || '').trim();
 	if (!cslData || !buildBatchMetadataKey(libraryID, cslData)) return [];
-	return (await runFieldSearch('title', title)).filter(item => matchesExactTitleAuthorYear(item, cslData, ''));
+	return (await runFieldSearch('title', title)).filter(item => matchesExactTitleAuthorYear(item, cslData, doi));
 }
 
 function setFieldIfEmpty(item: any, field: string, value: unknown): void {
@@ -197,7 +220,7 @@ export function populateZoteroItemFromCsl(
 ): void {
 	if (typeof zoteroObj?.Utilities?.itemFromCSLJSON === 'function') {
 		try {
-			zoteroObj.Utilities.itemFromCSLJSON(item, { type: String(csl.type || 'article-journal'), ...csl });
+			zoteroObj.Utilities.itemFromCSLJSON(item, { ...csl, type: String(csl.type || 'article-journal') });
 		} catch { /* fallback to explicit field assignment below */ }
 	}
 

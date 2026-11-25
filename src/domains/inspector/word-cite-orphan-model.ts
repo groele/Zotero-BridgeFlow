@@ -262,9 +262,13 @@ export class OrphanSelectionState {
 	public expanded = false;
 	public accordionOpen = true;
 	private autoOpenedSig = '';
+	private currentSessionID = '';
+	private readonly sessionUnchecked = new Map<string, Set<string>>();
 
 	reset(): void {
 		this.uncheckedKeys.clear();
+		this.sessionUnchecked.clear();
+		this.currentSessionID = '';
 		this.expanded = false;
 		this.accordionOpen = true;
 		this.autoOpenedSig = '';
@@ -273,6 +277,7 @@ export class OrphanSelectionState {
 	toggleKey(key: string): void {
 		if (this.uncheckedKeys.has(key)) this.uncheckedKeys.delete(key);
 		else this.uncheckedKeys.add(key);
+		if (this.currentSessionID) this.sessionUnchecked.set(this.currentSessionID, new Set(this.uncheckedKeys));
 	}
 
 	getSelectedRecoverableKeys(orphans: readonly OrphanCitationInfo[] | undefined): string[] {
@@ -282,15 +287,27 @@ export class OrphanSelectionState {
 
 	/** Returns true when a fresh orphan set appears and the section should auto-expand once. */
 	syncSnapshot(activeSessionID: string | null | undefined, orphans: readonly OrphanCitationInfo[] | undefined, autoExpand = true): boolean {
+		const nextSes = String(activeSessionID || '');
+		if (nextSes !== this.currentSessionID) {
+			if (this.currentSessionID) this.sessionUnchecked.set(this.currentSessionID, new Set(this.uncheckedKeys));
+			this.currentSessionID = nextSes;
+			this.uncheckedKeys.clear();
+			for (const k of this.sessionUnchecked.get(nextSes) || []) this.uncheckedKeys.add(k);
+		}
 		if (!orphans?.length) {
-			this.reset();
+			this.uncheckedKeys.clear();
+			if (nextSes) this.sessionUnchecked.delete(nextSes);
+			this.expanded = false;
+			this.accordionOpen = true;
+			this.autoOpenedSig = '';
 			return false;
 		}
 		const validKeys = new Set(orphans.map((o) => o.key));
 		for (const k of [...this.uncheckedKeys]) {
 			if (!validKeys.has(k)) this.uncheckedKeys.delete(k);
 		}
-		const sig = `${activeSessionID || ''}:${orphans.map((o) => o.key).sort().join('|')}`;
+		if (nextSes) this.sessionUnchecked.set(nextSes, new Set(this.uncheckedKeys));
+		const sig = `${nextSes}:${orphans.map((o) => o.key).sort().join('|')}`;
 		if (sig === this.autoOpenedSig) return false;
 		this.autoOpenedSig = sig;
 		this.accordionOpen = autoExpand;

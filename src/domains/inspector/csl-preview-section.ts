@@ -13,13 +13,8 @@ interface PreviewBlockContent {
 }
 
 interface PreviewPaneState {
-	body: HTMLElement;
-	doc: Document;
-	items: any[];
-	omitted: number;
-	generation: number;
-	failed: boolean;
-	lastHTML: string;
+	body: HTMLElement; doc: Document; items: any[]; itemsSig: string; omitted: number; generation: number;
+	failed: boolean; lastHTML: string; inFlightSig: string; inFlight: Promise<void> | null;
 	payload: Partial<Record<'bibliography' | 'citation', PreviewBlockContent>> | null;
 	copyFeedback: Map<HTMLElement, ReturnType<typeof setTimeout>[]>;
 	feedbackTimers: Set<ReturnType<typeof setTimeout>>;
@@ -33,12 +28,7 @@ const ERROR_L10N: Record<string, [string, string]> = {
 };
 
 function escapeHTML(value: string): string {
-	return value
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
+	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 export class CslPreviewSectionController {
@@ -67,18 +57,10 @@ export class CslPreviewSectionController {
 				doc.defaultView?.MozXULElement?.insertFTLIfNeeded?.('zotero-bridgeflow.ftl');
 				ensureViewFlowStyles(doc);
 				body.classList.add('zotero-preview-root');
+				body.style.contain = 'content';
 				const st: PreviewPaneState = {
-					body,
-					doc,
-					items: [],
-					omitted: 0,
-					generation: 0,
-					failed: false,
-					lastHTML: '',
-					payload: null,
-					copyFeedback: new Map(),
-					feedbackTimers: new Set(),
-					setEnabled,
+					body, doc, items: [], itemsSig: '', omitted: 0, generation: 0, failed: false, lastHTML: '',
+					inFlightSig: '', inFlight: null, payload: null, copyFeedback: new Map(), feedbackTimers: new Set(), setEnabled,
 				};
 				this.states.set(body, st);
 				this.bindBodyEvents(st);
@@ -104,12 +86,8 @@ export class CslPreviewSectionController {
 				this.services.panePositions.observeAndQueue(body);
 				void this.renderState(body);
 			},
-			onAsyncRender: async ({ body }: { body: HTMLElement }) => {
-				await this.renderState(body);
-			},
-			onToggle: ({ body }: { body: HTMLElement }) => {
-				void this.renderState(body);
-			},
+			onAsyncRender: async ({ body }: { body: HTMLElement }) => { await this.renderState(body); },
+			onToggle: ({ body }: { body: HTMLElement }) => { void this.renderState(body); },
 		});
 		this.sectionID = reg.sectionID;
 		this.unregisterFn = reg.dispose;
@@ -121,9 +99,11 @@ export class CslPreviewSectionController {
 		}
 	}
 
-	async renderState(body: HTMLElement): Promise<void> {
+	async renderState(body: HTMLElement, force = false): Promise<void> {
 		const st = this.states.get(body);
 		if (!st) return;
+		const runSig = `${st.itemsSig}|${this.kernel.prefs.get('inspector.cslPreview.citationstyle')}|${this.kernel.prefs.get('inspector.cslPreview.whatToShow')}|${this.kernel.prefs.get('inspector.cslPreview.fontsize')}|${this.kernel.prefs.get('inspector.cslPreview.spacing')}`;
+		if (!force && st.inFlight && st.inFlightSig === runSig) return st.inFlight;
 		const gen = ++st.generation;
 		if (!st.items.length) {
 			st.payload = null;
@@ -133,38 +113,47 @@ export class CslPreviewSectionController {
 		if (!st.payload && !st.lastHTML) {
 			this.renderMessage(st, 'zbf-preview-loading', '正在生成预览…');
 		}
+		let task: Promise<void> | null = null;
+		task = (async () => {
+			try {
+				const mode = String(this.kernel.prefs.get('inspector.cslPreview.whatToShow') || 'zpboth');
+				const wantBib = mode !== 'zpcite' && mode !== 'zpintext';
+				const wantCite = mode !== 'zpbib';
 
-		try {
-			const mode = String(this.kernel.prefs.get('inspector.cslPreview.whatToShow') || 'zpboth');
-			const wantBib = mode !== 'zpcite' && mode !== 'zpintext';
-			const wantCite = mode !== 'zpbib';
+				const [bibRes, citeRes] = await Promise.all([
+					wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
+					wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null),
+				]);
+				if (gen !== st.generation || st.body.isConnected === false) return;
 
-			const [bibRes, citeRes] = await Promise.all([
-				wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
-				wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null),
-			]);
-			if (gen !== st.generation || st.body.isConnected === false) return;
-
-			const payload: Partial<Record<'bibliography' | 'citation', PreviewBlockContent>> = {};
-			if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
-			if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
-			st.payload = payload;
-			st.failed = false;
-			this.renderPayload(st, payload);
-		} catch (error) {
-			if (gen !== st.generation || st.body.isConnected === false) return;
-			st.payload = null;
-			st.failed = true;
-			const code = (error as { previewCode?: string })?.previewCode || '';
-			const [id, fallback] = ERROR_L10N[code] || ['zbf-preview-unavailable', '预览不可用，请检查引用样式后重试。'];
-			const detail = code ? '' : (error instanceof Error ? error.message : String(error || ''));
-			this.renderMessage(st, id, fallback, true, detail);
-		}
+				const payload: Partial<Record<'bibliography' | 'citation', PreviewBlockContent>> = {};
+				if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
+				if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
+				st.payload = payload;
+				st.failed = false;
+				this.renderPayload(st, payload);
+			} catch (error) {
+				if (gen !== st.generation || st.body.isConnected === false) return;
+				st.payload = null;
+				st.failed = true;
+				const code = (error as { previewCode?: string })?.previewCode || '';
+				const [id, fallback] = ERROR_L10N[code] || ['zbf-preview-unavailable', '预览不可用，请检查引用样式后重试。'];
+				const detail = code ? '' : (error instanceof Error ? error.message : String(error || ''));
+				this.renderMessage(st, id, fallback, true, detail);
+			} finally {
+				if (st.inFlight === task) { st.inFlight = null; st.inFlightSig = ''; }
+			}
+		})();
+		st.inFlight = task;
+		st.inFlightSig = runSig;
+		return task;
 	}
 
 	async refreshAll(): Promise<void> {
-		for (const body of this.states.keys()) {
-			await this.renderState(body);
+		for (const [body, st] of this.states.entries()) {
+			st.itemsSig = '';
+			this.updateItems(st, st.items[0]);
+			await this.renderState(body, true);
 		}
 	}
 
@@ -179,8 +168,21 @@ export class CslPreviewSectionController {
 
 	private updateItems(st: PreviewPaneState, item: any, setEnabled?: (v: boolean) => void): boolean {
 		const maxItems = this.kernel.prefs.get('inspector.cslPreview.maxPreviewItems');
-		const selected = item ? [item] : ((globalThis as any).Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || []);
+		const isReader = Boolean(st.body.closest?.('zotero-reader, [data-pane-type="reader"]'));
+		const paneSel: any[] = !isReader
+			? ((st.doc.defaultView as any)?.ZoteroPane?.getSelectedItems?.() || (globalThis as any).Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [])
+			: [];
+		const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || (s?.id && s.id === item?.id)));
+		const selected = useMulti ? paneSel : (item ? [item] : paneSel);
 		const { items } = deduplicateRegularItems(selected, maxItems);
+		const nextSig = items.map((it) => `${it?.id ?? ''}:${it?.version ?? it?.dateModified ?? ''}`).join('|');
+		if (nextSig !== st.itemsSig) {
+			st.itemsSig = nextSig;
+			st.generation++;
+			st.inFlight = null;
+			st.inFlightSig = '';
+			st.payload = null;
+		}
 		st.items = items;
 		st.omitted = Math.max(0, deduplicateRegularItems(selected, 10_000).items.length - items.length);
 		const enabled = items.length > 0;
@@ -203,12 +205,26 @@ export class CslPreviewSectionController {
 			}
 		};
 
+		const interceptAnchor = (ev: Event): boolean => {
+			const anchor = (ev.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+			if (!anchor) return false;
+			ev.preventDefault?.();
+			ev.stopPropagation?.();
+			const raw = String(anchor.getAttribute('href') || '').trim();
+			const url = /^doi:/i.test(raw) ? `https://doi.org/${encodeURIComponent(raw.replace(/^doi:\s*/i, ''))}` : raw;
+			if ((ev.type === 'click' || (ev as MouseEvent).button === 1) && /^(?:https?:|mailto:)/i.test(url)) {
+				try { (globalThis as any).Zotero?.launchURL?.(url); } catch { /* ignore */ }
+			}
+			return true;
+		};
+		st.body.addEventListener('auxclick', (ev: Event) => { interceptAnchor(ev); });
 		st.body.addEventListener('click', (ev: Event) => {
+			if (interceptAnchor(ev)) return;
 			const target = ev.target as Element | null;
 			const retryBtn = target?.closest?.('.zotero-preview-retry') as HTMLElement | null;
 			if (retryBtn) {
 				st.failed = false;
-				void this.renderState(st.body);
+				void this.renderState(st.body, true);
 				return;
 			}
 			const copyBtn = target?.closest?.('.zotero-preview-copy') as HTMLElement | null;

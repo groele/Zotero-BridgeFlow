@@ -52,6 +52,7 @@ export class WorkspaceHoverCard {
 
 	show(anchor: HTMLElement, tab: TrackedTab): void {
 		this.hide();
+		if (anchor.isConnected === false) return;
 		const host = this.doc.documentElement || this.doc.body;
 		if (!host) return;
 

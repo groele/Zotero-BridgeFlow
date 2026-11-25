@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.7.8** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.7.9** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -106,7 +106,7 @@
 
 - **五层微内核结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（4 个独立子域禁止直接横向导入）➔ `src/bridges/`。
 - **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minify: false` 保持源码可审计）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **13 项静态守卫**与 **78 项单元测试**。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **13 项静态守卫**与 **102 项单元测试**。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -118,11 +118,11 @@ npm run build:xpi
 
 ---
 
-## 安装包完整性校验 (`v0.6.7`)
+## 安装包完整性校验 (`v0.7.9`)
 
-- 文件名：`Zotero-BridgeFlow-0.6.7.xpi`（`291,930` 字节，19 个条目，确定性构建）
-- SHA-256：`55A22BA30DED7AD8CAAC098A0FE31BC2E9154AEA203B3D1A962FADE62432B238`
-- SHA-512：`A1958498BFBB471EA110C38C824CFA93D329DA90644C1D676F8D56B1ECECD52DA7FADE9EB27A6D55BBF8DABBFDF26E9BF5BC738D41AFF8F2D302DBFE085DADA5`
+- 文件名：`Zotero-BridgeFlow-0.7.9.xpi`（`318,780` 字节，19 个条目，确定性构建）
+- SHA-256：`4A8C01A01D3914D33A5063D2FA66B9058C051B91101ADDBA5665BF579145DA78`
+- SHA-512：`34D65BD882EEDFEC572A858EC1A6ACAAF086C775C4117A41363422320358CACF9968CD4B5F51168B63A7C4A768916360BE994B1DE051CF4F53CE673F663DFFF9`
 
 ---
 

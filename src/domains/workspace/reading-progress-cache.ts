@@ -43,10 +43,10 @@ export class ReadingProgressDiskCache {
 		}, 320);
 	}
 
-	flushNow(state: Pick<WorkspaceState, 'lastViewedAt' | 'readingProgress'>): Promise<boolean> {
+	flushNow(state: Pick<WorkspaceState, 'lastViewedAt' | 'readingProgress'>, replaceBackup = false): Promise<boolean> {
 		return this.file.write(() => `${JSON.stringify({
 			format: 'zotero-bridgeflow-reading-progress', version: 1, state: pickReadingProgressState(state),
-		}, null, 2)}\n`, 600_000);
+		}, null, 2)}\n`, 600_000, replaceBackup);
 	}
 
 	loadFromDisk(): Promise<ReadingProgressState | null> {

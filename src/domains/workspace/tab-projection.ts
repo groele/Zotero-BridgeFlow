@@ -67,7 +67,8 @@ export function projectWorkspaceTabs(win: Window, store: WorkspaceStateStore, pr
 			collection: meta.collection || '', groupId: groups.get(key) || '',
 			pinned: Boolean(tab && showPins && store.isPinned(key)),
 			sleeping: Boolean(tab && (tab.type.endsWith('-unloaded') || store.isSleeping(key))),
-			remark: store.state.remarks[key] || '', lastViewedAt: store.state.lastViewedAt[key] || 0,
+			remark: store.state.remarks[key] || (meta.parentItemID ? store.state.remarks[`item:${meta.parentItemID}`] : '') || '',
+			lastViewedAt: store.state.lastViewedAt[key] || 0,
 		});
 	}
 	for (const tab of native) {

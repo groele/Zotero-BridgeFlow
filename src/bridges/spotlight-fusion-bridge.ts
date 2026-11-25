@@ -1,8 +1,16 @@
 import type { WordCiteDomainModule } from '../domains/word-cite/module.ts';
 import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
+import { tLocale } from '../kernel/locale.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule, SpotlightItemResult } from '../kernel/types.ts';
+
+function matchesCmdQuery(rawTerm: string, title: string, subtitle: string, keywords: string): boolean {
+	const clean = rawTerm.replace(/^>\s*/, '').trim().toLowerCase();
+	if (!clean) return true;
+	const hay = `${title} ${subtitle} ${keywords}`.toLowerCase();
+	return clean.split(/\s+/).every((tok) => hay.includes(tok));
+}
 
 /**
  * Bridge 3: Cross-Domain Spotlight Command Hub.
@@ -31,20 +39,30 @@ export class SpotlightFusionBridge implements BridgeModule {
 				priority: 80,
 				query: (term: string, win: Window): readonly SpotlightItemResult[] => {
 					if (!this.kernel.prefs.get('fusion.spotlightCrossDomain')) return [];
+					const doc = win?.document ?? null;
 					const out: SpotlightItemResult[] = [];
 					const active = this.wordCite.tracker.getActiveSession();
 
 					for (const ses of this.wordCite.tracker.getAllSessions()) {
 						if (!ses.orphans.length) continue;
 						const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ') + (ses.orphans.length > 4 ? '…' : '');
-						const recoverTitle = `> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`;
-						if (!term || recoverTitle.toLowerCase().includes(term) || 'recover orphan word 找回 恢复 缺失 断链 重连'.includes(term)) {
+						const recoverTitle = tLocale(
+							`> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`,
+							`> ⚠ Recover & Relink Broken Citations: ${ses.displayName} (${ses.orphans.length})`,
+							doc,
+						);
+						const recoverSub = tLocale(
+							`单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
+							`Atomically restore ${ordPreview} to Zotero and relink Word via dc:replaces`,
+							doc,
+						);
+						if (matchesCmdQuery(term, recoverTitle, recoverSub, 'recover orphan word 找回 恢复 缺失 断链 重连')) {
 							out.push({
 								id: `cmd:recover-word-orphans:${ses.sessionID}`,
 								category: 'command',
 								title: recoverTitle,
-								subtitle: `单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
-								badge: '修复',
+								subtitle: recoverSub,
+								badge: tLocale('修复', 'Fix', doc),
 								action: () => {
 									this.kernel.bus.emit('word:recover-orphans-request', {
 										sessionID: ses.sessionID,
@@ -57,14 +75,22 @@ export class SpotlightFusionBridge implements BridgeModule {
 					}
 
 					if (active) {
-						// 1. One-click command to group open tabs cited in the active Word document
-						const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;
-						if (!term || groupCmdTitle.toLowerCase().includes(term) || 'word'.includes(term) || 'group'.includes(term)) {
+						const groupCmdTitle = tLocale(
+							`> 将当前 Word 引用文献归入工作区分组：${active.displayName}`,
+							`> Group Open Tabs Cited in Word: ${active.displayName}`,
+							doc,
+						);
+						const groupSub = tLocale(
+							`共 ${active.itemCitations.size} 篇已引用文献`,
+							`${active.itemCitations.size} cited items in active document`,
+							doc,
+						);
+						if (matchesCmdQuery(term, groupCmdTitle, groupSub, 'word group 分组 归组')) {
 							out.push({
 								id: `cmd:group-word:${active.sessionID}`,
 								category: 'command',
 								title: groupCmdTitle,
-								subtitle: `共 ${active.itemCitations.size} 篇已引用文献`,
+								subtitle: groupSub,
 								badge: 'WORD',
 								action: () => {
 									this.workspace.groupOpenTabsByItemIDs(
@@ -76,20 +102,28 @@ export class SpotlightFusionBridge implements BridgeModule {
 							});
 						}
 
-						// 2. Open Annotation Comparison Matrix sorted by active Word document citations
 						if (active.itemCitations.size > 0 && this.kernel.prefs.get('modules.visualNotes.enable') && this.kernel.prefs.get('workspace.enableAnnotationMatrix')) {
-							const matrixTitle = `> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`;
-							if (!term || matrixTitle.toLowerCase().includes(term) || 'word'.includes(term) || 'matrix'.includes(term) || '矩阵'.includes(term)) {
+							const matrixTitle = tLocale(
+								`> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`,
+								`> Annotation Comparison Matrix for Word Citations: ${active.displayName}`,
+								doc,
+							);
+							const matrixSub = tLocale(
+								`汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
+								`Synthesize color annotations across ${active.itemCitations.size} items cited in "${active.displayName}"`,
+								doc,
+							);
+							if (matchesCmdQuery(term, matrixTitle, matrixSub, 'word matrix 矩阵 批注 对比')) {
 								out.push({
 									id: `cmd:matrix-word:${active.sessionID}`,
 									category: 'command',
 									title: matrixTitle,
-									subtitle: `汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
-									badge: '矩阵',
+									subtitle: matrixSub,
+									badge: tLocale('矩阵', 'Matrix', doc),
 									action: () => {
 										this.kernel.bus.emit('visual-notes:open-matrix', {
 											win,
-											title: `Word 已引：${active.displayName}`,
+											title: tLocale(`Word 已引：${active.displayName}`, `Cited in Word: ${active.displayName}`, doc),
 											itemIDs: [...active.itemCitations.keys()],
 										});
 									},
@@ -98,15 +132,15 @@ export class SpotlightFusionBridge implements BridgeModule {
 						}
 					}
 
-					// 3. One-click insert current selected paper into active Word cursor
 					if (this.wordCite.isActive()) {
-						const insertLabel = '插入当前文献到 Word 光标处';
-						if (!term || insertLabel.toLowerCase().includes(term) || 'word'.includes(term) || 'cite'.includes(term)) {
+						const insertLabel = tLocale('> 插入当前文献到 Word 光标处', '> Insert Selected Citation at Word Cursor', doc);
+						const insertSub = tLocale('在当前 Word 光标处生成原生 Zotero 可编辑引文域', 'Insert a native editable Zotero citation field at the Word cursor', doc);
+						if (matchesCmdQuery(term, insertLabel, insertSub, 'word cite insert 插入 引文')) {
 							out.push({
 								id: 'cmd:cite-selected-word',
 								category: 'command',
 								title: insertLabel,
-								subtitle: '在当前 Word 光标处生成原生 Zotero 可编辑引文域',
+								subtitle: insertSub,
 								badge: 'Word',
 								action: async () => {
 									await this.wordCite.citeCurrentSelection(win);
@@ -115,27 +149,30 @@ export class SpotlightFusionBridge implements BridgeModule {
 						}
 					}
 
-					// 4. Visual Notes Gallery / Kanban & Collection Notes Hub quick commands
 					if (this.kernel.prefs.get('modules.visualNotes.enable')) {
-						if (this.kernel.prefs.get('visualNotes.gallery.enable') && (!term || 'gallery kanban board 画廊 看板 卡片'.includes(term))) {
+						const galTitle = tLocale('> 切换文献画廊 / 多维看板视图', '> Toggle Literature Gallery / Kanban Board', doc);
+						const galSub = tLocale('在主文献列表与卡片画廊、状态/星级拖拽看板间切换', 'Switch between item list, card gallery, and status/rating Kanban board', doc);
+						if (this.kernel.prefs.get('visualNotes.gallery.enable') && matchesCmdQuery(term, galTitle, galSub, 'gallery kanban board 画廊 看板 卡片')) {
 							out.push({
 								id: 'cmd:toggle-gallery-board',
 								category: 'command',
-								title: '> 切换文献画廊 / 多维看板视图',
-								subtitle: '在主文献列表与卡片画廊、状态/星级拖拽看板间切换',
-								badge: '画廊',
+								title: galTitle,
+								subtitle: galSub,
+								badge: tLocale('画廊', 'Gallery', doc),
 								action: () => {
 									this.kernel.bus.emit('visual-notes:toggle-gallery', { win });
 								},
 							});
 						}
-						if (this.kernel.prefs.get('visualNotes.collectionHub.enable') && (!term || 'notes hub annotations 笔记 标注 汇总 简记'.includes(term))) {
+						const hubTitle = tLocale('> 打开当前分类集中笔记与标注管理中心', '> Open Collection Notes & Annotations Hub', doc);
+						const hubSub = tLocale('集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记', 'Browse & filter PDF annotations, child notes, and brief notes in collection', doc);
+						if (this.kernel.prefs.get('visualNotes.collectionHub.enable') && matchesCmdQuery(term, hubTitle, hubSub, 'notes hub annotations 笔记 标注 汇总 简记')) {
 							out.push({
 								id: 'cmd:open-collection-hub',
 								category: 'command',
-								title: '> 打开当前分类集中笔记与标注管理中心',
-								subtitle: '集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记',
-								badge: '汇总',
+								title: hubTitle,
+								subtitle: hubSub,
+								badge: tLocale('汇总', 'Hub', doc),
 								action: () => {
 									this.kernel.bus.emit('visual-notes:open-hub', { win });
 								},
@@ -143,14 +180,15 @@ export class SpotlightFusionBridge implements BridgeModule {
 						}
 					}
 
-					// 5. Clear citation caches command
-					if (!term || 'clear cache 清空缓存'.includes(term)) {
+					const clearTitle = tLocale('> 清空引文记忆与反查缓存', '> Clear Citation & Lookup Caches', doc);
+					const clearSub = tLocale('重置已记录的引文复制历史与反查索引', 'Reset copied citation lookup history and formatted preview cache', doc);
+					if (matchesCmdQuery(term, clearTitle, clearSub, 'clear cache 清空缓存 反查')) {
 						out.push({
 							id: 'cmd:clear-citation-cache',
 							category: 'command',
-							title: '清空引文记忆与反查缓存',
-							subtitle: '重置已记录的引文复制历史与反查索引',
-							badge: '维护',
+							title: clearTitle,
+							subtitle: clearSub,
+							badge: tLocale('维护', 'Maint', doc),
 							action: () => {
 								this.kernel.bus.emit('inspector:clear-cache', { target: 'all' });
 							},

@@ -133,6 +133,9 @@ export const PREVIEW_CSS = `
 	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
 	box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
 }
+.ztf-pdf-page-card:has(.ztf-pdf-canvas[style*="px"]) {
+	inline-size: max-content; max-inline-size: none;
+}
 .ztf-pdf-page-card[data-unrendered="true"] {
 	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
 	background: var(--fill-senary, rgba(0, 0, 0, 0.02));

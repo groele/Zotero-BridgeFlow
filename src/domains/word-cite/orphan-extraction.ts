@@ -4,6 +4,7 @@ import {
 	cleanCitationText,
 	extractCitationItemUris,
 	formatCslAuthorYear,
+	isForeignUserItemUri,
 	lookupKnownOrdinal,
 	mergeOrphanMetadata,
 	resolveCiteprocOrdinalMap,
@@ -59,7 +60,8 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 			statusCache.set(itemID, res);
 			return res;
 		}
-		const inTrash = typeof zotItem.inTrash === 'function' ? zotItem.inTrash() === true : zotItem.inTrash === true;
+		const inTrash = (typeof zotItem.inTrash === 'function' ? zotItem.inTrash() === true : zotItem.inTrash === true)
+			|| zotItem.isTrashed?.() === true;
 		const res = { status: (zotItem.deleted === true || inTrash ? 'trashed' : 'valid') as 'trashed' | 'valid', zotItem };
 		statusCache.set(itemID, res);
 		return res;
@@ -155,21 +157,32 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 				if (!ci || typeof ci !== 'object') continue;
 				const uris = extractCitationItemUris(ci);
 				const rawData = ci?.itemData && typeof ci.itemData === 'object' ? (ci.itemData as Record<string, unknown>) : undefined;
-				let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
+				const rawNumericID = Number(ci?.id ?? ci?.itemID ?? 0);
+				let resolvedID = rawNumericID;
 				let inspected = inspectItemById(resolvedID);
 				if (uris.length && hasItemLookup) {
-					const canonical = inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === 'function'
-						? String(zoteroObj.URI.getItemURI(inspected.zotItem)).replace(/^https:/i, 'http:') : '';
-					if (!canonical || !uris.some(uri => uri.replace(/^https:/i, 'http:').replace(/\/+$/, '') === canonical)) {
+					let canonical = '';
+					if (inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === 'function') {
+						try { canonical = String(zoteroObj.URI.getItemURI(inspected.zotItem) || '').replace(/^https:/i, 'http:').replace(/\/+$/, ''); } catch { /* ignore */ }
+					}
+					if (!canonical || !uris.some(uri => uri.replace(/[?#].*$/, '').replace(/^https:/i, 'http:').replace(/\/+$/, '') === canonical)) {
 						const uriID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
-						if ((uriID || canonical) && uriID !== resolvedID) {
-							conflictingIDs.add(resolvedID);
+						const hasAuthCtx = Boolean(
+							canonical
+							|| typeof zoteroObj?.Users?.getCurrentUserID === 'function'
+							|| typeof zoteroObj?.Users?.getLocalUserKey === 'function'
+							|| typeof zoteroObj?.Groups?.getLibraryIDFromGroupID === 'function',
+						);
+						const allForeign = hasAuthCtx && uris.every((u) => isForeignUserItemUri(u, zoteroObj));
+						if ((uriID || canonical || allForeign) && uriID !== resolvedID) {
+							if (Number.isSafeInteger(resolvedID) && resolvedID > 0) conflictingIDs.add(resolvedID);
 							resolvedID = uriID;
 							inspected = inspectItemById(resolvedID);
 						}
 					}
 				}
-				const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
+				const skipRawId = Number.isSafeInteger(rawNumericID) && rawNumericID > 0 && conflictingIDs.has(rawNumericID) && resolvedID !== rawNumericID;
+				const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData, skipRawId);
 				if (inspected.status === 'valid') {
 					recordValidHit(resolvedID, cleanedShort, knownOrdinal, true);
 				} else {

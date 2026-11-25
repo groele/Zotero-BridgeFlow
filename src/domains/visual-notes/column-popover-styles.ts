@@ -177,8 +177,12 @@ export async function openItemPdfAtPage(item: any, pageNumber?: number, annotati
 	if (annotationID && annotationID > 0) {
 		const ann = zotero?.Items?.get?.(annotationID) || (await zotero?.Items?.getAsync?.(annotationID).catch(() => null));
 		if (ann?.key) location.annotationID = ann.key;
+		try {
+			const pos = typeof ann?.annotationPosition === 'string' ? JSON.parse(ann.annotationPosition) : ann?.annotationPosition;
+			if (Number.isInteger(pos?.pageIndex) && pos.pageIndex >= 0) location.pageIndex = pos.pageIndex;
+		} catch { /* ignore malformed position */ }
 	}
-	if (typeof pageNumber === 'number' && Number.isFinite(pageNumber) && pageNumber >= 1) {
+	if (location.pageIndex === undefined && typeof pageNumber === 'number' && Number.isFinite(pageNumber) && pageNumber >= 1) {
 		location.pageIndex = Math.max(0, Math.floor(pageNumber) - 1);
 	}
 	const locArg = Object.keys(location).length ? location : undefined;

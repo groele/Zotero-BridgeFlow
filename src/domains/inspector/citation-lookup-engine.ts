@@ -65,10 +65,13 @@ export class CitationLookupEngine {
 			if (signal?.aborted) return empty;
 			if (fuzzy.length) {
 				const liveHits: LookupCandidate[] = [];
+				const seenFuzzy = new Set<number>();
 				for (const rec of fuzzy) {
+					if (seenFuzzy.has(rec.itemID)) continue;
 					const liveItem = await this.resolveLiveItem(rec);
 					if (signal?.aborted) return empty;
 					if (liveItem) {
+						seenFuzzy.add(rec.itemID);
 						liveHits.push({
 							itemID: rec.itemID,
 							title: String(liveItem.getField?.('title') || rec.title),
@@ -77,6 +80,7 @@ export class CitationLookupEngine {
 							item: liveItem,
 						});
 					} else if (options.libraryItems) {
+						seenFuzzy.add(rec.itemID);
 						liveHits.push({ itemID: rec.itemID, title: rec.title, score: 85, source: 'history-fuzzy' });
 					}
 				}
@@ -153,8 +157,11 @@ export class CitationLookupEngine {
 			seen.add(id);
 			if (targetDoi) {
 				const doi = extractDoi(safeGetItemField(item, 'DOI') || String(item.DOI || ''));
-				if (doi === targetDoi) results.push({ itemID: id, title, score: 98, source: 'doi', item });
-				continue;
+				if (doi === targetDoi) {
+					results.push({ itemID: id, title, score: 98, source: 'doi', item });
+					continue;
+				}
+				if (doi) continue;
 			}
 
 			let score = 0;

@@ -20,29 +20,16 @@ import { flushWorkspaceReadingProgress, runWorkspaceMaintenance, type ReaderSnap
 import { WorkspaceWindowUI } from './workspace-ui.ts';
 
 const WATCHED_WORKSPACE_PREFS = [
-	'workspace.enableHorizontalGroups',
-	'workspace.horizontalTabCompactMode',
-	'workspace.compactTopBar',
-	'workspace.enableVerticalSidebar',
-	'workspace.verticalSidebarCollapsed',
-	'workspace.verticalSidebarWidth',
-	'workspace.enableBatchSelection',
-	'workspace.enablePinnedTabs',
-	'workspace.pinnedIconOnly',
-	'workspace.enableVirtualMembers',
-	'workspace.enableTabRemarks',
-	'workspace.remarkDisplayMode',
-	'workspace.verticalTabTitleMode',
-	'workspace.verticalTabSubtitleMode',
-	'workspace.verticalTabRowHeight',
-	'workspace.verticalTabFontSize',
-	'workspace.enableHoverPreview',
-	'workspace.enableSpotlight',
-	'workspace.enableSessions',
-	'workspace.enableTabSleep',
-	'workspace.activeReaderBudget',
-	'workspace.enableStaleSuggestions',
-	'workspace.staleSuggestDays',
+	'workspace.enableHorizontalGroups', 'workspace.horizontalTabCompactMode', 'workspace.compactTopBar',
+	'workspace.enableVerticalSidebar', 'workspace.verticalSidebarCollapsed', 'workspace.verticalSidebarWidth',
+	'workspace.enableBatchSelection', 'workspace.enablePinnedTabs', 'workspace.pinnedIconOnly',
+	'workspace.enableVirtualMembers', 'workspace.enableTabRemarks', 'workspace.remarkDisplayMode',
+	'workspace.verticalTabTitleMode', 'workspace.verticalTabSubtitleMode', 'workspace.verticalTabRowHeight',
+	'workspace.verticalTabFontSize', 'workspace.enableHoverPreview', 'workspace.enableSpotlight',
+	'workspace.enableSessions', 'workspace.enableTabSleep', 'workspace.activeReaderBudget',
+	'workspace.enableStaleSuggestions', 'workspace.staleSuggestDays', 'workspace.enableShowInFilesystem',
+	'workspace.enableTabContextMenu', 'workspace.enableCopyReference', 'workspace.enableReloadTab',
+	'workspace.enableAnnotationMatrix', 'fusion.sidebarCiteBadge',
 ] as const;
 
 export class WorkspaceDomainModule implements DomainModule {
@@ -149,7 +136,9 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.readingDirty = false;
 		void this.store.flushLayoutToDisk();
 		void this.store.readingCache.flushNow(this.store.state);
+		void this.store.notesCache.flushNow(this.store.state);
 		this.store.readingCache.dispose();
+		this.store.notesCache.dispose();
 		this.store.diskCache.dispose();
 		this.neighbors.reset();
 		this.disposables.disposeAll();
@@ -163,7 +152,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		if (!this.active || this.windows.has(win)) return;
 		const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight, () => {
 			this.lastActivityAt = Date.now();
-		});
+		}, () => this.flushReadingProgress(1, false));
 		ui.setCitationBadges(this.latestBadges);
 		this.windows.set(win, ui);
 		const snap = this.tabs.resolveActiveReaderSnapshot(win);

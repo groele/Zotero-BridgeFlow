@@ -44,7 +44,7 @@ async function attachSyncSafeRelinkRelations(
 	}
 	let selfUri = '';
 	if (targetItem.key && typeof zoteroObj?.URI?.getItemURI === 'function') {
-		try { selfUri = String(zoteroObj.URI.getItemURI(targetItem) || '').trim(); } catch { /* ignore */ }
+		try { selfUri = String(zoteroObj.URI.getItemURI(targetItem) || '').trim().replace(/^https:\/\/zotero\.org\//i, 'http://zotero.org/').replace(/\/+$/, ''); } catch { /* ignore */ }
 	}
 
 	const linkedUris: string[] = [];
@@ -141,14 +141,13 @@ async function importOrphanFromMetadata(
 		};
 	}
 
-	const creators = data ? mapCslCreators(data) : [];
+	const rawType = String(data?.type || 'article-journal').trim();
+	const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : 'journalArticle';
+	const creators = data ? mapCslCreators(data, itemType) : [];
 	if (!hasRecoverableCslMetadata(data, creators.length, doi)) {
 		return { outcome: 'failed', relinked: false, foreignSkipped: false };
 	}
-
 	const csl = data!;
-	const rawType = String(csl.type || 'article-journal').trim();
-	const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : 'journalArticle';
 	const item = new ItemCtor(itemType);
 	item.libraryID = targetLibraryID;
 
@@ -237,6 +236,17 @@ export async function recoverOrphanCitations(
 						try { existing.addToCollection(options.targetCollectionID); } catch { /* ignore */ }
 					}
 					await saveInTx(existing);
+					const childIDs: number[] = [
+						...(typeof existing.getAttachments === 'function' ? existing.getAttachments(true) || [] : []),
+						...(typeof existing.getNotes === 'function' ? existing.getNotes(true) || [] : []),
+					];
+					for (const cid of childIDs) {
+						const child = typeof hostItems?.getAsync === 'function' ? await hostItems.getAsync(cid).catch(() => null) : hostItems?.get?.(cid);
+						if (child && child.deleted === true) {
+							child.deleted = false;
+							await saveInTx(child).catch(() => {});
+						}
+					}
 					restoredIDs.add(orphan.itemID);
 					pushRecoveredID(Number(existing.id || orphan.itemID));
 					restoredCount += 1;

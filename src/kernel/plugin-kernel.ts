@@ -57,6 +57,7 @@ export class PluginKernel {
 		const watchedKeys: PrefKey[] = [
 			'debug',
 			'wordCite.perfSlowThresholdMs',
+			'wordCite.healthWindowMs',
 			'modules.workspace.enable',
 			'modules.visualNotes.enable',
 			'modules.inspector.enable',
@@ -64,7 +65,7 @@ export class PluginKernel {
 		];
 		this.disposables.add(
 			this.prefs.observeKeys(watchedKeys, (key) => {
-				if (key === 'debug' || key === 'wordCite.perfSlowThresholdMs') {
+				if (key === 'debug' || key === 'wordCite.perfSlowThresholdMs' || key === 'wordCite.healthWindowMs') {
 					this.syncLoggerConfig();
 					return;
 				}
@@ -182,6 +183,7 @@ export class PluginKernel {
 		this.logger.configure({
 			debug: this.prefs.get('debug'),
 			slowThresholdMs: this.prefs.get('wordCite.perfSlowThresholdMs'),
+			healthWindowMs: this.prefs.get('wordCite.healthWindowMs'),
 		});
 	}
 }

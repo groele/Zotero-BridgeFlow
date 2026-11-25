@@ -55,6 +55,8 @@ export class WordIntegrationPoller {
 		this.unpatchExec = null;
 		this.unpatchGetSession?.();
 		this.unpatchGetSession = null;
+		this.execDepth = 0;
+		this.pendingCmdDocHint = '';
 		this.emptyStreakBySession.clear();
 		this.docPathBySession.clear();
 	}
@@ -167,7 +169,7 @@ export class WordIntegrationPoller {
 			session?.filePath, session?.path, session?.title, session?.name,
 		];
 		for (const c of candidates) {
-			if (typeof c === 'string' && c.trim() && c.trim() !== '__doc__') {
+			if (typeof c === 'string' && c.trim() && c.trim() !== '__doc__' && !/\.app\/?$/i.test(c.trim())) {
 				return c.trim();
 			}
 		}
@@ -260,7 +262,7 @@ export class WordIntegrationPoller {
 				'Zotero.Integration',
 				(orig) => async (...args: unknown[]) => {
 					const [, , docId] = args;
-					if (typeof docId === 'string' && docId.trim() && docId.trim() !== '__doc__') {
+					if (typeof docId === 'string' && docId.trim() && docId.trim() !== '__doc__' && !/\.app\/?$/i.test(docId.trim())) {
 						this.pendingCmdDocHint = docId.trim();
 					}
 					this.execDepth++;

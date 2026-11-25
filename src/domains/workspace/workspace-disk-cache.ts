@@ -1,6 +1,6 @@
 import { DurableCacheFile } from '../../services/durable-cache-file.ts';
 import { readBackup, readWorkspace } from './workspace-schema.ts';
-import type { WorkspaceSession, WorkspaceState } from './types.ts';
+import { MAX_MANUAL_SESSIONS, MAX_ROLLING_SESSIONS, type WorkspaceSession, type WorkspaceState } from './types.ts';
 
 /**
  * Durable local disk persistence for Workspace state & saved snapshots:
@@ -36,7 +36,7 @@ export class WorkspaceDiskCache {
 		}, 320);
 	}
 
-	flushNow(state: WorkspaceState, _serialized?: string): Promise<boolean> {
+	flushNow(state: WorkspaceState, _serialized?: string, replaceBackup = false): Promise<boolean> {
 		let cleanState = state;
 		if (state && Array.isArray(state.groups)) {
 			const activeGroupKeys = new Set(state.groups.flatMap((g) => g.memberKeys || []));
@@ -51,7 +51,7 @@ export class WorkspaceDiskCache {
 		}
 		return this.file.write(() => `${JSON.stringify({
 			format: 'zotero-bridgeflow-workspace', version: 2, state: cleanState,
-		}, null, 2)}\n`);
+		}, null, 2)}\n`, 0, replaceBackup);
 	}
 
 	loadFromDisk(): Promise<WorkspaceState | null> {
@@ -93,8 +93,8 @@ export class WorkspaceDiskCache {
 			void byIdOrName;
 		};
 
-		mergeSessions(current.sessions, disk.sessions, 30);
-		mergeSessions(current.rollingSessions, disk.rollingSessions, 5);
+		mergeSessions(current.sessions, disk.sessions, MAX_MANUAL_SESSIONS);
+		mergeSessions(current.rollingSessions, disk.rollingSessions, MAX_ROLLING_SESSIONS);
 
 		const diskGroupKeys = new Set([...current.groups, ...disk.groups].flatMap((g) => g.memberKeys));
 		for (const [k, meta] of Object.entries(disk.virtualMembers)) {

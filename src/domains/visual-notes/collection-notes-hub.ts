@@ -36,7 +36,7 @@ export function openCollectionNotesHubModal(options: HubOptions): void {
 		zh ? '文献笔记与标注中心' : 'Notes & Annotations', (container, close) => renderHub(options, container, close));
 }
 
-function renderHub(options: HubOptions, container: HTMLElement, close: () => void): void {
+function renderHub(options: HubOptions, container: HTMLElement, close: () => void): (() => void) | void {
 	const doc = container.ownerDocument;
 	if (!doc) return;
 	ensureMatrixStyles(doc);
@@ -153,19 +153,20 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 
 	let searchTimer: ReturnType<typeof setTimeout> | null = null;
 	let composing = false;
-	const safeClose = () => {
+	const cleanup = () => {
 		if (searchTimer !== null) { clearTimeout(searchTimer); searchTimer = null; }
-		close();
+		doc.removeEventListener?.('keydown', onDocKey, true);
 	};
+	const safeClose = () => { cleanup(); close(); };
 	const scheduleRender = () => {
 		if (searchTimer !== null) clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => { searchTimer = null; renderAll(); }, 100);
 	};
-
+	const onDocKey = (ev: KeyboardEvent) => {
+		if (ev.key === 'Escape' && !doc.getElementById('zbf-matrix-backdrop')) { ev.preventDefault?.(); safeClose(); }
+	};
 	closeBtn.addEventListener('click', safeClose);
-	backdrop.addEventListener('keydown', (ev) => {
-		if (ev.key === 'Escape') { ev.preventDefault(); safeClose(); }
-	});
+	doc.addEventListener?.('keydown', onDocKey, true);
 
 	btnTabAnn.addEventListener('click', () => { activeTab = 'annotations'; renderAll(); });
 	btnTabNotes.addEventListener('click', () => { activeTab = 'notes'; renderAll(); });
@@ -293,7 +294,7 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 		const ids = latestScope.items.map((it) => Number(it.id)).filter((id) => id > 0);
 		openAnnotationMatrixModal({
 			win: options.win, title: latestScope.scopeTitle, itemIDs: ids,
-			prefs: options.prefs, bus: options.bus, clipboard: options.clipboard,
+			prefs: options.prefs, bus: options.bus, clipboard: options.clipboard, mountRoot: container,
 		});
 	});
 
@@ -345,4 +346,5 @@ function renderHub(options: HubOptions, container: HTMLElement, close: () => voi
 	container.appendChild(backdrop);
 	renderAll();
 	searchInput.focus?.();
+	return cleanup;
 }

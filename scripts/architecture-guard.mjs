@@ -171,6 +171,24 @@ check('Fluent FTL symmetry (en-US <-> zh-CN) & zero duplicates', () => {
 	if (onlyEn.length || onlyZh.length) {
 		throw new Error(`FTL mismatch — only in en-US: [${onlyEn.join(', ')}]; only in zh-CN: [${onlyZh.join(', ')}]`);
 	}
+
+	const missingRefs = [];
+	const xhtml = fs.readFileSync(path.join(root, 'prefs.xhtml'), 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+	for (const m of xhtml.matchAll(/\bdata-l10n-id="([^"]+)"/g)) {
+		if (!enKeys.has(m[1])) missingRefs.push(`prefs.xhtml:${m[1]}`);
+	}
+	for (const f of srcFiles) {
+		const txt = fs.readFileSync(f, 'utf8');
+		for (const m of txt.matchAll(/setStatusFeedback\([^,]+,\s*['"](zbf-[^'"]+)['"]/g)) {
+			if (!enKeys.has(m[1])) missingRefs.push(`${path.relative(root, f)}:${m[1]}`);
+		}
+		for (const m of txt.matchAll(/setAttribute\(\s*['"]data-l10n-id['"]\s*,\s*['"](zbf-[^'"]+)['"]\s*\)/g)) {
+			if (!enKeys.has(m[1])) missingRefs.push(`${path.relative(root, f)}:${m[1]}`);
+		}
+	}
+	if (missingRefs.length) {
+		throw new Error(`Unresolved Fluent data-l10n-id references: ${[...new Set(missingRefs)].join(', ')}`);
+	}
 });
 
 // 8. Preferences XHTML zero hardcoded CJK text & subsystem horizontal tabs

@@ -291,6 +291,7 @@ export class WorkspaceSpotlightPanel {
 	}
 
 	private handleKeydown(e: KeyboardEvent): void {
+		if (e.isComposing) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			this.close();

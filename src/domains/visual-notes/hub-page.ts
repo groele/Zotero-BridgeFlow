@@ -18,7 +18,7 @@ export function openHubPage(
 	owner: Window,
 	separate: boolean,
 	title: string,
-	render: (container: HTMLElement, close: () => void) => void,
+	render: (container: HTMLElement, close: () => void) => (() => void) | void,
 ): void {
 	if (!owner || (owner as any).closed) return;
 	closeHubPage(owner);
@@ -26,9 +26,11 @@ export function openHubPage(
 		const popup = owner.open?.('about:blank', '_blank', 'chrome,dialog=no,resizable,width=1080,height=740');
 		if (!popup) return;
 		let done = false;
+		let disposeView: (() => void) | void;
 		const close = () => {
 			if (done) return;
 			done = true;
+			try { disposeView?.(); } catch { /* ignore */ }
 			if (pages.get(owner) === close) pages.delete(owner);
 			try { if (!popup.closed) popup.close(); } catch { /* ignore */ }
 		};
@@ -37,9 +39,10 @@ export function openHubPage(
 			if (done || pages.get(owner) !== close || popup.closed || !popup.document?.body) return;
 			popup.document.title = title;
 			popup.document.body.style.cssText = 'margin:0;height:100vh;display:flex;color-scheme:light dark';
-			render(popup.document.body, close);
+			disposeView = render(popup.document.body, close);
 			popup.addEventListener('unload', () => {
 				done = true;
+				try { disposeView?.(); } catch { /* ignore */ }
 				if (pages.get(owner) === close) pages.delete(owner);
 			}, { once: true });
 		};
@@ -51,9 +54,11 @@ export function openHubPage(
 	if (!tabs?.add || !tabs?.close) return;
 	let done = false;
 	let pageId = '';
+	let disposeView: (() => void) | void;
 	const close = () => {
 		if (done) return;
 		done = true;
+		try { disposeView?.(); } catch { /* ignore */ }
 		if (pages.get(owner) === close) pages.delete(owner);
 		if (pageId) {
 			try { tabs.close(pageId); } catch { /* ignore */ }
@@ -66,11 +71,12 @@ export function openHubPage(
 		select: true,
 		onClose: () => {
 			done = true;
+			try { disposeView?.(); } catch { /* ignore */ }
 			if (pages.get(owner) === close) pages.delete(owner);
 		},
 	});
 	if (!page?.container) return;
 	pageId = page.id;
 	pages.set(owner, close);
-	render(page.container, close);
+	disposeView = render(page.container, close);
 }

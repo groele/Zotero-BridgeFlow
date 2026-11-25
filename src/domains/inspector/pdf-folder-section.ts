@@ -144,12 +144,14 @@ export class PdfFolderSectionController {
 				try {
 					const CustomEv = (win as any)?.CustomEvent || CustomEvent;
 					doc.dispatchEvent?.(new CustomEv('zbf:pdf-folder-attachment-selected', {
-						detail: { attachmentID: hit.id },
+						detail: { attachmentID: hit.id, owner: body.closest?.('item-details') || null },
 					}));
 				} catch { /* ignore */ }
 			}
 		}, { signal: panelController.signal });
 		doc.addEventListener('zbf:pdf-attachment-selected', ((ev: CustomEvent) => {
+			const owner = body.closest?.('item-details') || null;
+			if (ev?.detail?.owner && owner && ev.detail.owner !== owner) return;
 			const attID = Number(ev?.detail?.attachmentID || 0);
 			if (!attID || !st.entries.length) return;
 			const hit = st.entries.find((e) => e.id === attID);

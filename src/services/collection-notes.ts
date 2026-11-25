@@ -32,16 +32,16 @@ export function stripNoteHtml(rawHtml: string): { heading: string; snippet: stri
 	const raw = String(rawHtml || '');
 	if (!raw.trim()) return { heading: '', snippet: '' };
 	const withBreaks = raw
+		.replace(/<(?:style|script)\b[^>]*>[\s\S]*?<\/(?:style|script)>/gi, '')
 		.replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, '\n')
 		.replace(/<br\s*\/?>/gi, '\n')
 		.replace(/<[^>]+>/g, '')
 		.replace(/&nbsp;/gi, ' ')
-		.replace(/&amp;/gi, '&')
 		.replace(/&lt;/gi, '<')
 		.replace(/&gt;/gi, '>')
 		.replace(/&quot;/gi, '"')
 		.replace(/&#39;/gi, "'")
-		.replace(/<\/?(?:sub|sup|i|b|strong|em)>/gi, '');
+		.replace(/&amp;/gi, '&');
 	const lines = withBreaks
 		.split(/\r?\n/)
 		.map((l) => l.replace(/\s+/g, ' ').trim())
@@ -100,26 +100,17 @@ export function resolveHubScopeItems(win: Window, mode: HubScopeMode, zh = true)
 
 	if (mode === 'selected') {
 		for (const it of pane?.getSelectedItems?.() || []) push(it);
-		return {
-			scopeTitle: zh ? '当前选中文献' : 'Selected Items',
-			items,
-			libraryID: libraryID || items[0]?.libraryID,
-			collectionID,
-		};
+		return { scopeTitle: zh ? '当前选中文献' : 'Selected Items', items, libraryID: items[0]?.libraryID || libraryID };
 	}
 
 	if (mode === 'tabs') {
 		const hostItems = (globalThis as any).Zotero?.Items;
 		for (const t of (win as any)?.Zotero_Tabs?._tabs || []) {
 			const id = Number(t?.data?.itemID || 0);
-			if (id > 0) push(hostItems?.get?.(id) || { id });
+			const resolved = id > 0 ? hostItems?.get?.(id) : null;
+			if (resolved) push(resolved);
 		}
-		return {
-			scopeTitle: zh ? '已打开阅读标签' : 'Open Reader Tabs',
-			items,
-			libraryID: libraryID || items[0]?.libraryID,
-			collectionID,
-		};
+		return { scopeTitle: zh ? '已打开阅读标签' : 'Open Reader Tabs', items, libraryID: items[0]?.libraryID || libraryID };
 	}
 
 	const view = pane?.itemsView;
@@ -328,11 +319,17 @@ export async function saveCollectionHubAsZoteroNote(options: {
 		sections.push('</ul>');
 	}
 	try {
+		const userLibID = Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+		const reqLib = options.libraryID ? ZoteroObj?.Libraries?.get?.(options.libraryID) : null;
+		const targetLibID = options.libraryID && (!reqLib || reqLib.editable !== false) ? options.libraryID : userLibID;
 		const note = new ItemCtor('note');
-		note.libraryID = options.libraryID || Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+		note.libraryID = targetLibID;
 		note.setNote(sections.join(''));
 		if (options.collectionID && typeof note.addToCollection === 'function') {
-			note.addToCollection(options.collectionID);
+			const col = ZoteroObj?.Collections?.get?.(options.collectionID);
+			if (!col || Number(col.libraryID || targetLibID) === targetLibID) {
+				note.addToCollection(options.collectionID);
+			}
 		}
 		const id = await note.saveTx?.();
 		return Number(id || note.id || 0) || null;

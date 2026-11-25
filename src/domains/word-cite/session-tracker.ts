@@ -131,20 +131,25 @@ export class WordSessionTracker {
 		return union;
 	}
 
+	private formatCitationHit(hit?: { ordinal: number; shortText: string }): string {
+		if (!hit) return '';
+		const prefix = `[${hit.ordinal}]`;
+		if (!hit.shortText || hit.shortText === prefix) return prefix;
+		return hit.shortText.startsWith(`${prefix} `) ? hit.shortText : `${prefix} ${hit.shortText}`.trim();
+	}
+
 	getCitationDisplayForItem(itemID: number, preferredSessionID?: string | null): string {
 		if (preferredSessionID && this.sessions.has(preferredSessionID)) {
-			const prefSes = this.sessions.get(preferredSessionID)!;
-			const hit = prefSes.itemCitations.get(itemID);
-			return hit ? `[${hit.ordinal}] ${hit.shortText}`.trim() : '';
+			return this.formatCitationHit(this.sessions.get(preferredSessionID)!.itemCitations.get(itemID));
 		}
 		const active = this.getActiveSession();
 		if (active) {
 			const hit = active.itemCitations.get(itemID);
-			if (hit) return `[${hit.ordinal}] ${hit.shortText}`.trim();
+			if (hit) return this.formatCitationHit(hit);
 		}
 		for (const ses of this.sessions.values()) {
 			const hit = ses.itemCitations.get(itemID);
-			if (hit) return `[${hit.ordinal}] ${hit.shortText}`.trim();
+			if (hit) return this.formatCitationHit(hit);
 		}
 		return '';
 	}
@@ -203,16 +208,25 @@ export class WordSessionTracker {
 	 */
 	syncForegroundActiveSession(overrideTitle?: string): boolean {
 		if (this.sessions.size <= 1) return false;
-		const fgTitle = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim().toLowerCase();
-		if (!fgTitle) return false;
-		const matches: string[] = [];
+		const rawFg = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim();
+		if (!rawFg) return false;
+		const docExtRe = /\.(?:docx|docm|doc|dotx|dotm|rtf|odt)$/i;
+		const fgBase = extractDocumentBaseName(`window-title:${rawFg}`).toLowerCase();
+		const fgStem = fgBase.replace(docExtRe, '');
+		const fgLower = rawFg.toLowerCase();
+		const exactMatches: string[] = [];
+		const fuzzyMatches: string[] = [];
 		for (const ses of this.sessions.values()) {
 			const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
-			const stem = base.replace(/\.(docx?|rtf)$/i, '');
-			if (base && (fgTitle.includes(base) || (stem && fgTitle.includes(stem)))) {
-				matches.push(ses.sessionID);
+			const stem = base.replace(docExtRe, '');
+			if (!base) continue;
+			if (fgBase === base || fgBase === stem || (fgStem && fgStem === stem)) {
+				exactMatches.push(ses.sessionID);
+			} else if (fgLower.includes(base) || (stem && fgLower.includes(stem))) {
+				fuzzyMatches.push(ses.sessionID);
 			}
 		}
+		const matches = exactMatches.length > 0 ? exactMatches : fuzzyMatches;
 		if (matches.length !== 1) return false;
 		if (this.activeSessionID === matches[0]) return false;
 		this.activeSessionID = matches[0];

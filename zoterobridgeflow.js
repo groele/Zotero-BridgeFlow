@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.8 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.7.9 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -86,387 +86,17 @@
     }
   };
 
-  // src/bridges/copy-history-bridge.ts
-  var CopyHistoryBridge = class {
-    id = "copy-history-bridge";
-    disposables = new DisposableStack();
-    kernel;
-    services;
-    constructor(kernel, services) {
-      this.kernel = kernel;
-      this.services = services;
-    }
-    start() {
-      this.disposables.reset();
-      this.disposables.add(
-        this.kernel.bus.on("citation:copied", (ev) => {
-          if (!this.kernel.prefs.get("fusion.copyToLookupHistory")) return;
-          if (!this.kernel.prefs.get("inspector.lookup.historyEnable")) return;
-          if (!ev.text || !ev.itemIDs.length) return;
-          if (ev.itemIDs.length === 1) {
-            const itemID = ev.itemIDs[0];
-            if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
-            const item = globalThis.Zotero?.Items?.get?.(itemID);
-            if (item?.deleted || item?.isTrashed?.()) return;
-            this.services.history.record({
-              text: ev.text,
-              libraryID: Number(item?.libraryID || 1),
-              itemKey: String(item?.key || ""),
-              itemID,
-              title: String(item?.getField?.("title") || item?.title || ev.text.slice(0, 80)),
-              style: ev.styleID
-            });
-            return;
-          }
-          const lines = ev.text.split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length >= 12);
-          if (lines.length === ev.itemIDs.length) {
-            for (let i = 0; i < ev.itemIDs.length; i++) {
-              const itemID = ev.itemIDs[i];
-              if (!Number.isSafeInteger(itemID) || itemID <= 0) continue;
-              const item = globalThis.Zotero?.Items?.get?.(itemID);
-              if (item?.deleted || item?.isTrashed?.()) continue;
-              this.services.history.record({
-                text: lines[i],
-                libraryID: Number(item?.libraryID || 1),
-                itemKey: String(item?.key || ""),
-                itemID,
-                title: String(item?.getField?.("title") || item?.title || lines[i].slice(0, 80)),
-                style: ev.styleID
-              });
-            }
-          }
-        })
-      );
-    }
-    stop() {
-      this.disposables.disposeAll();
-    }
-  };
-
-  // src/bridges/lookup-workspace-bridge.ts
-  var LookupWorkspaceBridge = class {
-    id = "lookup-workspace-bridge";
-    disposables = new DisposableStack();
-    kernel;
-    workspace;
-    constructor(kernel, workspace) {
-      this.kernel = kernel;
-      this.workspace = workspace;
-    }
-    start() {
-      this.disposables.reset();
-      this.disposables.add(
-        this.kernel.bus.on("workspace:open-item-request", async (req) => {
-          if (!this.workspace.isActive()) return;
-          await this.workspace.focusOrOpenItem({
-            ...req,
-            preferExistingTab: req.preferExistingTab ?? this.kernel.prefs.get("fusion.lookupJumpExistingTab")
-          });
-        })
-      );
-    }
-    stop() {
-      this.disposables.disposeAll();
-    }
-  };
-
-  // src/bridges/spotlight-fusion-bridge.ts
-  var SpotlightFusionBridge = class {
-    id = "spotlight-fusion-bridge";
-    disposables = new DisposableStack();
-    kernel;
-    workspace;
-    wordCite;
-    constructor(kernel, workspace, wordCite) {
-      this.kernel = kernel;
-      this.workspace = workspace;
-      this.wordCite = wordCite;
-    }
-    start() {
-      this.disposables.reset();
-      this.disposables.add(
-        this.workspace.registerSpotlightProvider({
-          id: "bridgeflow-cross-domain",
-          priority: 80,
-          query: (term, win) => {
-            if (!this.kernel.prefs.get("fusion.spotlightCrossDomain")) return [];
-            const out = [];
-            const active = this.wordCite.tracker.getActiveSession();
-            for (const ses of this.wordCite.tracker.getAllSessions()) {
-              if (!ses.orphans.length) continue;
-              const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ") + (ses.orphans.length > 4 ? "…" : "");
-              const recoverTitle = `> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`;
-              if (!term || recoverTitle.toLowerCase().includes(term) || "recover orphan word 找回 恢复 缺失 断链 重连".includes(term)) {
-                out.push({
-                  id: `cmd:recover-word-orphans:${ses.sessionID}`,
-                  category: "command",
-                  title: recoverTitle,
-                  subtitle: `单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
-                  badge: "修复",
-                  action: () => {
-                    this.kernel.bus.emit("word:recover-orphans-request", {
-                      sessionID: ses.sessionID,
-                      source: "spotlight",
-                      win
-                    });
-                  }
-                });
-              }
-            }
-            if (active) {
-              const groupCmdTitle = `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`;
-              if (!term || groupCmdTitle.toLowerCase().includes(term) || "word".includes(term) || "group".includes(term)) {
-                out.push({
-                  id: `cmd:group-word:${active.sessionID}`,
-                  category: "command",
-                  title: groupCmdTitle,
-                  subtitle: `共 ${active.itemCitations.size} 篇已引用文献`,
-                  badge: "WORD",
-                  action: () => {
-                    this.workspace.groupOpenTabsByItemIDs(
-                      active.displayName,
-                      [...active.itemCitations.keys()],
-                      win
-                    );
-                  }
-                });
-              }
-              if (active.itemCitations.size > 0 && this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.enableAnnotationMatrix")) {
-                const matrixTitle = `> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`;
-                if (!term || matrixTitle.toLowerCase().includes(term) || "word".includes(term) || "matrix".includes(term) || "矩阵".includes(term)) {
-                  out.push({
-                    id: `cmd:matrix-word:${active.sessionID}`,
-                    category: "command",
-                    title: matrixTitle,
-                    subtitle: `汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
-                    badge: "矩阵",
-                    action: () => {
-                      this.kernel.bus.emit("visual-notes:open-matrix", {
-                        win,
-                        title: `Word 已引：${active.displayName}`,
-                        itemIDs: [...active.itemCitations.keys()]
-                      });
-                    }
-                  });
-                }
-              }
-            }
-            if (this.wordCite.isActive()) {
-              const insertLabel = "插入当前文献到 Word 光标处";
-              if (!term || insertLabel.toLowerCase().includes(term) || "word".includes(term) || "cite".includes(term)) {
-                out.push({
-                  id: "cmd:cite-selected-word",
-                  category: "command",
-                  title: insertLabel,
-                  subtitle: "在当前 Word 光标处生成原生 Zotero 可编辑引文域",
-                  badge: "Word",
-                  action: async () => {
-                    await this.wordCite.citeCurrentSelection(win);
-                  }
-                });
-              }
-            }
-            if (this.kernel.prefs.get("modules.visualNotes.enable")) {
-              if (this.kernel.prefs.get("visualNotes.gallery.enable") && (!term || "gallery kanban board 画廊 看板 卡片".includes(term))) {
-                out.push({
-                  id: "cmd:toggle-gallery-board",
-                  category: "command",
-                  title: "> 切换文献画廊 / 多维看板视图",
-                  subtitle: "在主文献列表与卡片画廊、状态/星级拖拽看板间切换",
-                  badge: "画廊",
-                  action: () => {
-                    this.kernel.bus.emit("visual-notes:toggle-gallery", { win });
-                  }
-                });
-              }
-              if (this.kernel.prefs.get("visualNotes.collectionHub.enable") && (!term || "notes hub annotations 笔记 标注 汇总 简记".includes(term))) {
-                out.push({
-                  id: "cmd:open-collection-hub",
-                  category: "command",
-                  title: "> 打开当前分类集中笔记与标注管理中心",
-                  subtitle: "集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记",
-                  badge: "汇总",
-                  action: () => {
-                    this.kernel.bus.emit("visual-notes:open-hub", { win });
-                  }
-                });
-              }
-            }
-            if (!term || "clear cache 清空缓存".includes(term)) {
-              out.push({
-                id: "cmd:clear-citation-cache",
-                category: "command",
-                title: "清空引文记忆与反查缓存",
-                subtitle: "重置已记录的引文复制历史与反查索引",
-                badge: "维护",
-                action: () => {
-                  this.kernel.bus.emit("inspector:clear-cache", { target: "all" });
-                }
-              });
-            }
-            return out;
-          }
-        })
-      );
-    }
-    stop() {
-      this.disposables.disposeAll();
-    }
-  };
-
-  // src/services/item-remark-sync.ts
-  var REMARK_PREFIX = "BridgeFlow-Remark:";
-  var REMARK_LINE_RE = /^BridgeFlow-Remark:\s*(.*)$/i;
-  function readRemarkFromExtra(extraText) {
-    const raw = String(extraText || "");
-    if (!raw) return "";
-    for (const line of raw.split(/\r?\n/)) {
-      const m = line.match(REMARK_LINE_RE);
-      if (m) return m[1].trim();
-    }
-    return "";
-  }
-  function upsertRemarkInExtra(extraText, remark) {
-    const clean = remark.replace(/[\r\n]+/g, " ").trim();
-    const lines = String(extraText || "").split(/\r?\n/).filter((line) => !REMARK_LINE_RE.test(line));
-    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
-    if (clean) {
-      lines.push(`${REMARK_PREFIX} ${clean}`);
-    }
-    return lines.join("\n");
-  }
-  function getItemBriefNote(item, cachedRemark = "") {
-    const direct = String(cachedRemark || "").trim();
-    if (direct) return direct;
-    if (!item || typeof item.getField !== "function") return "";
-    try {
-      return readRemarkFromExtra(String(item.getField("extra") || ""));
-    } catch {
-      return "";
-    }
-  }
-  var pendingSyncByItemID = /* @__PURE__ */ new Map();
-  async function performExtraSync(itemOrID, remark) {
-    try {
-      const hostItems = globalThis.Zotero?.Items;
-      let item = typeof itemOrID === "number" ? hostItems?.get?.(itemOrID) || (hostItems?.getAsync ? await hostItems.getAsync(itemOrID) : null) : itemOrID;
-      if (!item || item.deleted) return false;
-      if (item.isAttachment?.() && item.parentItemID) {
-        const parent = hostItems?.get?.(item.parentItemID) || (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
-        if (parent && !parent.deleted) item = parent;
-      }
-      if (!item?.isRegularItem?.() || typeof item.getField !== "function" || typeof item.setField !== "function") {
-        return false;
-      }
-      const prevExtra = String(item.getField("extra") || "");
-      const nextExtra = upsertRemarkInExtra(prevExtra, remark);
-      if (prevExtra === nextExtra) return true;
-      item.setField("extra", nextExtra);
-      if (typeof item.saveTx === "function") {
-        await item.saveTx();
-      } else if (typeof item.save === "function") {
-        await item.save();
-      }
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  function syncItemRemarkToExtra(itemOrID, remark) {
-    const rawID = typeof itemOrID === "number" ? itemOrID : Number(itemOrID?.id || 0);
-    if (rawID <= 0) return performExtraSync(itemOrID, remark);
-    const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
-    const next = prev.then(() => performExtraSync(itemOrID, remark));
-    pendingSyncByItemID.set(rawID, next);
-    void next.finally(() => {
-      if (pendingSyncByItemID.get(rawID) === next) pendingSyncByItemID.delete(rawID);
-    });
-    return next;
-  }
-
-  // src/bridges/visual-notes-bridge.ts
-  var VisualNotesBridge = class {
-    id = "visual-notes-bridge";
-    kernel;
-    workspace;
-    visualNotes;
-    prevRemarks = /* @__PURE__ */ new Map();
-    disposeStoreListener = null;
-    active = false;
-    constructor(kernel, workspace, visualNotes) {
-      this.kernel = kernel;
-      this.workspace = workspace;
-      this.visualNotes = visualNotes;
-    }
-    start() {
-      if (this.active) return;
-      this.active = true;
-      this.seedRemarks();
-      this.visualNotes.setDataSource({
-        getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
-        getRemark: (itemID) => this.workspace.store.state.remarks[`item:${itemID}`] || "",
-        persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
-        setRemark: (itemID, remark) => {
-          this.workspace.store.setRemark(`item:${itemID}`, remark);
-          this.workspace.refreshAllWindows();
-        }
-      });
-      this.disposeStoreListener = this.workspace.store.onChange((change) => {
-        if (!this.active || change === "session") return;
-        if (change === "reading") {
-          this.visualNotes.refreshLibraryViews(void 0, true);
-          return;
-        }
-        if (change === "notes-local-clear") this.seedRemarks();
-        else this.syncChangedRemarksToExtra();
-        this.visualNotes.refreshLibraryViews();
-      });
-    }
-    stop() {
-      if (!this.active) return;
-      this.active = false;
-      this.disposeStoreListener?.();
-      this.disposeStoreListener = null;
-      this.visualNotes.setDataSource(void 0);
-    }
-    seedRemarks() {
-      this.prevRemarks.clear();
-      for (const [k, v] of Object.entries(this.workspace.store.state.remarks)) {
-        this.prevRemarks.set(k, v);
-      }
-    }
-    syncChangedRemarksToExtra() {
-      const current = this.workspace.store.state.remarks;
-      const changedKeys = [];
-      for (const [k, v] of Object.entries(current)) {
-        if (this.prevRemarks.get(k) !== v) changedKeys.push({ key: k, value: v });
-      }
-      for (const k of this.prevRemarks.keys()) {
-        if (!(k in current)) changedKeys.push({ key: k, value: "" });
-      }
-      if (!changedKeys.length) return;
-      this.seedRemarks();
-      if (!this.kernel.prefs.get("workspace.syncRemarkToExtra")) return;
-      for (const entry of changedKeys) {
-        const vm = this.workspace.store.state.virtualMembers[entry.key];
-        const match = entry.key.match(/^item:(\d+)$/);
-        const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
-        if (itemID > 0) {
-          void syncItemRemarkToExtra(itemID, entry.value).catch(() => {
-          });
-        }
-      }
-    }
-  };
-
   // src/services/item-resolution.ts
   function isItemTrashedOrDeleted(item) {
-    if (!item || item.deleted) return true;
+    if (!item || item.deleted || item.inTrash === true) return true;
+    if (typeof item.inTrash === "function" && item.inTrash()) return true;
     return typeof item.isTrashed === "function" ? Boolean(item.isTrashed()) : false;
   }
   function isItemWritable(item) {
-    if (isItemTrashedOrDeleted(item)) return false;
-    return typeof item.isEditable === "function" ? Boolean(item.isEditable()) : true;
+    if (isItemTrashedOrDeleted(item) || item.editable === false) return false;
+    if (typeof item.isEditable === "function" && !item.isEditable()) return false;
+    const lib = item.libraryID ? globalThis.Zotero?.Libraries?.get?.(Number(item.libraryID)) : null;
+    return !lib || lib.editable !== false;
   }
   function isRegularValidItem(item) {
     if (isItemTrashedOrDeleted(item)) return false;
@@ -777,10 +407,524 @@
     return "";
   }
 
+  // src/bridges/copy-history-bridge.ts
+  function normalizeProbe(s) {
+    return stripItemTitleMarkup(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  }
+  function scoreLineForItem(line, item) {
+    const lowerLine = line.toLowerCase();
+    const doi = safeGetItemField(item, "DOI").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").toLowerCase();
+    if (doi.length >= 7 && lowerLine.includes(doi)) return 100;
+    const normLine = normalizeProbe(line);
+    const rawTitle = safeGetItemField(item, "title") || String(item?.title || "");
+    const normTitle = normalizeProbe(rawTitle);
+    if (normTitle.length >= 10 && normLine.includes(normTitle.slice(0, Math.min(normTitle.length, 42)))) {
+      return 65;
+    }
+    const creator = String(item?.firstCreator || item?.getCreators?.()?.[0]?.lastName || "").trim().toLowerCase();
+    const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(19|20)\d{2}\b/)?.[0] || "";
+    const surname = creator.split(/\s+|,/)[0] || "";
+    if (surname.length >= 2 && year && lowerLine.includes(surname) && lowerLine.includes(year)) {
+      return 40;
+    }
+    return 0;
+  }
+  var CopyHistoryBridge = class {
+    id = "copy-history-bridge";
+    disposables = new DisposableStack();
+    kernel;
+    services;
+    constructor(kernel, services) {
+      this.kernel = kernel;
+      this.services = services;
+    }
+    start() {
+      this.disposables.reset();
+      this.disposables.add(
+        this.kernel.bus.on("citation:copied", (ev) => {
+          if (!this.kernel.prefs.get("fusion.copyToLookupHistory")) return;
+          if (!this.kernel.prefs.get("inspector.lookup.historyEnable")) return;
+          if (!ev.text || !ev.itemIDs.length) return;
+          const recordItemLine = (text2, itemID, item) => {
+            this.services.history.record({
+              text: text2,
+              libraryID: Number(item?.libraryID || 1),
+              itemKey: String(item?.key || ""),
+              itemID,
+              title: String(safeGetItemField(item, "title") || item?.title || text2.slice(0, 80)),
+              style: ev.styleID
+            });
+          };
+          if (ev.itemIDs.length === 1) {
+            const itemID = ev.itemIDs[0];
+            if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
+            const item = globalThis.Zotero?.Items?.get?.(itemID);
+            if (item && isItemTrashedOrDeleted(item)) return;
+            recordItemLine(ev.text, itemID, item);
+            return;
+          }
+          const lines = ev.text.split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length >= 12);
+          const candidates = [];
+          const seenIDs = /* @__PURE__ */ new Set();
+          for (const itemID of ev.itemIDs) {
+            if (!Number.isSafeInteger(itemID) || itemID <= 0 || seenIDs.has(itemID)) continue;
+            const item = globalThis.Zotero?.Items?.get?.(itemID);
+            if (item && isItemTrashedOrDeleted(item)) continue;
+            seenIDs.add(itemID);
+            candidates.push({ itemID, item });
+          }
+          if (!lines.length || !candidates.length) return;
+          const usedLines = /* @__PURE__ */ new Set();
+          const usedCands = /* @__PURE__ */ new Set();
+          const scoredPairs = [];
+          for (let li = 0; li < lines.length; li++) {
+            let bestCi = -1;
+            let bestScore = 0;
+            let tied = false;
+            for (let ci = 0; ci < candidates.length; ci++) {
+              const sc = scoreLineForItem(lines[li], candidates[ci].item);
+              if (sc > bestScore) {
+                bestScore = sc;
+                bestCi = ci;
+                tied = false;
+              } else if (sc > 0 && sc === bestScore) tied = true;
+            }
+            if (bestCi >= 0 && bestScore >= 40 && !tied) {
+              scoredPairs.push({ li, ci: bestCi, score: bestScore });
+            }
+          }
+          scoredPairs.sort((a, b) => b.score - a.score);
+          for (const p of scoredPairs) {
+            if (usedLines.has(p.li) || usedCands.has(p.ci)) continue;
+            usedLines.add(p.li);
+            usedCands.add(p.ci);
+            recordItemLine(lines[p.li], candidates[p.ci].itemID, candidates[p.ci].item);
+          }
+          const remLines = lines.map((_, i) => i).filter((i) => !usedLines.has(i));
+          const remCands = candidates.map((_, i) => i).filter((i) => !usedCands.has(i));
+          if (remLines.length === remCands.length && (usedLines.size === 0 || remLines.length === 1)) {
+            for (let i = 0; i < remLines.length; i++) {
+              const cand = candidates[remCands[i]];
+              recordItemLine(lines[remLines[i]], cand.itemID, cand.item);
+            }
+          }
+        })
+      );
+    }
+    stop() {
+      this.disposables.disposeAll();
+    }
+  };
+
+  // src/bridges/lookup-workspace-bridge.ts
+  var LookupWorkspaceBridge = class {
+    id = "lookup-workspace-bridge";
+    disposables = new DisposableStack();
+    kernel;
+    workspace;
+    constructor(kernel, workspace) {
+      this.kernel = kernel;
+      this.workspace = workspace;
+    }
+    start() {
+      this.disposables.reset();
+      this.disposables.add(
+        this.kernel.bus.on("workspace:open-item-request", async (req) => {
+          if (!this.workspace.isActive()) return;
+          await this.workspace.focusOrOpenItem({
+            ...req,
+            preferExistingTab: req.preferExistingTab ?? this.kernel.prefs.get("fusion.lookupJumpExistingTab")
+          });
+        })
+      );
+    }
+    stop() {
+      this.disposables.disposeAll();
+    }
+  };
+
+  // src/kernel/locale.ts
+  function isChineseLocale(doc) {
+    const host2 = globalThis.Zotero;
+    const rawLocale = String(
+      host2?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
+    ).trim();
+    if (!rawLocale) return true;
+    return rawLocale.toLowerCase().startsWith("zh");
+  }
+  function tLocale(zh, en, doc) {
+    return isChineseLocale(doc) ? zh : en;
+  }
+
+  // src/bridges/spotlight-fusion-bridge.ts
+  function matchesCmdQuery(rawTerm, title, subtitle, keywords) {
+    const clean = rawTerm.replace(/^>\s*/, "").trim().toLowerCase();
+    if (!clean) return true;
+    const hay = `${title} ${subtitle} ${keywords}`.toLowerCase();
+    return clean.split(/\s+/).every((tok) => hay.includes(tok));
+  }
+  var SpotlightFusionBridge = class {
+    id = "spotlight-fusion-bridge";
+    disposables = new DisposableStack();
+    kernel;
+    workspace;
+    wordCite;
+    constructor(kernel, workspace, wordCite) {
+      this.kernel = kernel;
+      this.workspace = workspace;
+      this.wordCite = wordCite;
+    }
+    start() {
+      this.disposables.reset();
+      this.disposables.add(
+        this.workspace.registerSpotlightProvider({
+          id: "bridgeflow-cross-domain",
+          priority: 80,
+          query: (term, win) => {
+            if (!this.kernel.prefs.get("fusion.spotlightCrossDomain")) return [];
+            const doc = win?.document ?? null;
+            const out = [];
+            const active = this.wordCite.tracker.getActiveSession();
+            for (const ses of this.wordCite.tracker.getAllSessions()) {
+              if (!ses.orphans.length) continue;
+              const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ") + (ses.orphans.length > 4 ? "…" : "");
+              const recoverTitle = tLocale(
+                `> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`,
+                `> ⚠ Recover & Relink Broken Citations: ${ses.displayName} (${ses.orphans.length})`,
+                doc
+              );
+              const recoverSub = tLocale(
+                `单事务找回 ${ordPreview} 至 Zotero 并通过官方 dc:replaces 自动重连 Word`,
+                `Atomically restore ${ordPreview} to Zotero and relink Word via dc:replaces`,
+                doc
+              );
+              if (matchesCmdQuery(term, recoverTitle, recoverSub, "recover orphan word 找回 恢复 缺失 断链 重连")) {
+                out.push({
+                  id: `cmd:recover-word-orphans:${ses.sessionID}`,
+                  category: "command",
+                  title: recoverTitle,
+                  subtitle: recoverSub,
+                  badge: tLocale("修复", "Fix", doc),
+                  action: () => {
+                    this.kernel.bus.emit("word:recover-orphans-request", {
+                      sessionID: ses.sessionID,
+                      source: "spotlight",
+                      win
+                    });
+                  }
+                });
+              }
+            }
+            if (active) {
+              const groupCmdTitle = tLocale(
+                `> 将当前 Word 引用文献归入工作区分组：${active.displayName}`,
+                `> Group Open Tabs Cited in Word: ${active.displayName}`,
+                doc
+              );
+              const groupSub = tLocale(
+                `共 ${active.itemCitations.size} 篇已引用文献`,
+                `${active.itemCitations.size} cited items in active document`,
+                doc
+              );
+              if (matchesCmdQuery(term, groupCmdTitle, groupSub, "word group 分组 归组")) {
+                out.push({
+                  id: `cmd:group-word:${active.sessionID}`,
+                  category: "command",
+                  title: groupCmdTitle,
+                  subtitle: groupSub,
+                  badge: "WORD",
+                  action: () => {
+                    this.workspace.groupOpenTabsByItemIDs(
+                      active.displayName,
+                      [...active.itemCitations.keys()],
+                      win
+                    );
+                  }
+                });
+              }
+              if (active.itemCitations.size > 0 && this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.enableAnnotationMatrix")) {
+                const matrixTitle = tLocale(
+                  `> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`,
+                  `> Annotation Comparison Matrix for Word Citations: ${active.displayName}`,
+                  doc
+                );
+                const matrixSub = tLocale(
+                  `汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
+                  `Synthesize color annotations across ${active.itemCitations.size} items cited in "${active.displayName}"`,
+                  doc
+                );
+                if (matchesCmdQuery(term, matrixTitle, matrixSub, "word matrix 矩阵 批注 对比")) {
+                  out.push({
+                    id: `cmd:matrix-word:${active.sessionID}`,
+                    category: "command",
+                    title: matrixTitle,
+                    subtitle: matrixSub,
+                    badge: tLocale("矩阵", "Matrix", doc),
+                    action: () => {
+                      this.kernel.bus.emit("visual-notes:open-matrix", {
+                        win,
+                        title: tLocale(`Word 已引：${active.displayName}`, `Cited in Word: ${active.displayName}`, doc),
+                        itemIDs: [...active.itemCitations.keys()]
+                      });
+                    }
+                  });
+                }
+              }
+            }
+            if (this.wordCite.isActive()) {
+              const insertLabel = tLocale("> 插入当前文献到 Word 光标处", "> Insert Selected Citation at Word Cursor", doc);
+              const insertSub = tLocale("在当前 Word 光标处生成原生 Zotero 可编辑引文域", "Insert a native editable Zotero citation field at the Word cursor", doc);
+              if (matchesCmdQuery(term, insertLabel, insertSub, "word cite insert 插入 引文")) {
+                out.push({
+                  id: "cmd:cite-selected-word",
+                  category: "command",
+                  title: insertLabel,
+                  subtitle: insertSub,
+                  badge: "Word",
+                  action: async () => {
+                    await this.wordCite.citeCurrentSelection(win);
+                  }
+                });
+              }
+            }
+            if (this.kernel.prefs.get("modules.visualNotes.enable")) {
+              const galTitle = tLocale("> 切换文献画廊 / 多维看板视图", "> Toggle Literature Gallery / Kanban Board", doc);
+              const galSub = tLocale("在主文献列表与卡片画廊、状态/星级拖拽看板间切换", "Switch between item list, card gallery, and status/rating Kanban board", doc);
+              if (this.kernel.prefs.get("visualNotes.gallery.enable") && matchesCmdQuery(term, galTitle, galSub, "gallery kanban board 画廊 看板 卡片")) {
+                out.push({
+                  id: "cmd:toggle-gallery-board",
+                  category: "command",
+                  title: galTitle,
+                  subtitle: galSub,
+                  badge: tLocale("画廊", "Gallery", doc),
+                  action: () => {
+                    this.kernel.bus.emit("visual-notes:toggle-gallery", { win });
+                  }
+                });
+              }
+              const hubTitle = tLocale("> 打开当前分类集中笔记与标注管理中心", "> Open Collection Notes & Annotations Hub", doc);
+              const hubSub = tLocale("集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记", "Browse & filter PDF annotations, child notes, and brief notes in collection", doc);
+              if (this.kernel.prefs.get("visualNotes.collectionHub.enable") && matchesCmdQuery(term, hubTitle, hubSub, "notes hub annotations 笔记 标注 汇总 简记")) {
+                out.push({
+                  id: "cmd:open-collection-hub",
+                  category: "command",
+                  title: hubTitle,
+                  subtitle: hubSub,
+                  badge: tLocale("汇总", "Hub", doc),
+                  action: () => {
+                    this.kernel.bus.emit("visual-notes:open-hub", { win });
+                  }
+                });
+              }
+            }
+            const clearTitle = tLocale("> 清空引文记忆与反查缓存", "> Clear Citation & Lookup Caches", doc);
+            const clearSub = tLocale("重置已记录的引文复制历史与反查索引", "Reset copied citation lookup history and formatted preview cache", doc);
+            if (matchesCmdQuery(term, clearTitle, clearSub, "clear cache 清空缓存 反查")) {
+              out.push({
+                id: "cmd:clear-citation-cache",
+                category: "command",
+                title: clearTitle,
+                subtitle: clearSub,
+                badge: tLocale("维护", "Maint", doc),
+                action: () => {
+                  this.kernel.bus.emit("inspector:clear-cache", { target: "all" });
+                }
+              });
+            }
+            return out;
+          }
+        })
+      );
+    }
+    stop() {
+      this.disposables.disposeAll();
+    }
+  };
+
+  // src/services/item-remark-sync.ts
+  var REMARK_PREFIX = "BridgeFlow-Remark:";
+  var REMARK_LINE_RE = /^BridgeFlow-Remark:\s*(.*)$/i;
+  var inFlightRemarkOverrides = /* @__PURE__ */ new Map();
+  var suppressedExtraItemIDs = /* @__PURE__ */ new Set();
+  function markItemRemarkClearedLocally(itemID) {
+    if (itemID > 0) suppressedExtraItemIDs.add(itemID);
+  }
+  function clearItemRemarkLocalSuppression(itemID) {
+    if (itemID === void 0) suppressedExtraItemIDs.clear();
+    else if (itemID > 0) suppressedExtraItemIDs.delete(itemID);
+  }
+  function readRemarkFromExtra(extraText) {
+    const raw = String(extraText || "");
+    if (!raw) return "";
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(REMARK_LINE_RE);
+      if (m) return m[1].trim();
+    }
+    return "";
+  }
+  function upsertRemarkInExtra(extraText, remark) {
+    const clean = remark.replace(/[\r\n]+/g, " ").trim();
+    const lines = String(extraText || "").split(/\r?\n/).filter((line) => !REMARK_LINE_RE.test(line));
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (clean) {
+      lines.push(`${REMARK_PREFIX} ${clean}`);
+    }
+    return lines.join("\n");
+  }
+  function getItemBriefNote(item, cachedRemark = "") {
+    const direct = String(cachedRemark || "").trim();
+    if (direct) return direct;
+    const itemID = Number(item?.id || 0);
+    if (itemID > 0) {
+      if (inFlightRemarkOverrides.has(itemID)) return inFlightRemarkOverrides.get(itemID) || "";
+      if (suppressedExtraItemIDs.has(itemID)) return "";
+    }
+    if (!item || typeof item.getField !== "function") return "";
+    try {
+      return readRemarkFromExtra(String(item.getField("extra") || ""));
+    } catch {
+      return "";
+    }
+  }
+  var pendingSyncByItemID = /* @__PURE__ */ new Map();
+  async function performExtraSync(itemOrID, remark) {
+    try {
+      const hostItems = globalThis.Zotero?.Items;
+      let item = typeof itemOrID === "number" ? hostItems?.get?.(itemOrID) || (hostItems?.getAsync ? await hostItems.getAsync(itemOrID) : null) : itemOrID;
+      if (!item || item.deleted) return false;
+      if (item.isAttachment?.() && item.parentItemID) {
+        const parent = hostItems?.get?.(item.parentItemID) || (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
+        if (parent && !parent.deleted) item = parent;
+      }
+      if (!isItemWritable(item) || !item?.isRegularItem?.() || typeof item.getField !== "function" || typeof item.setField !== "function") {
+        return false;
+      }
+      const targetID = Number(item.id || 0);
+      if (targetID > 0) inFlightRemarkOverrides.set(targetID, remark.replace(/[\r\n]+/g, " ").trim());
+      try {
+        const prevExtra = String(item.getField("extra") || "");
+        const nextExtra = upsertRemarkInExtra(prevExtra, remark);
+        if (prevExtra === nextExtra) return true;
+        item.setField("extra", nextExtra);
+        if (typeof item.saveTx === "function") {
+          await item.saveTx();
+        } else if (typeof item.save === "function") {
+          await item.save();
+        }
+        return true;
+      } finally {
+        if (targetID > 0 && !pendingSyncByItemID.has(targetID)) {
+          inFlightRemarkOverrides.delete(targetID);
+        }
+      }
+    } catch {
+      return false;
+    }
+  }
+  function syncItemRemarkToExtra(itemOrID, remark) {
+    const rawID = typeof itemOrID === "number" ? itemOrID : Number(itemOrID?.id || 0);
+    const clean = remark.replace(/[\r\n]+/g, " ").trim();
+    if (rawID <= 0) return performExtraSync(itemOrID, clean);
+    inFlightRemarkOverrides.set(rawID, clean);
+    const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
+    const next = prev.then(() => performExtraSync(itemOrID, clean));
+    pendingSyncByItemID.set(rawID, next);
+    void next.finally(() => {
+      if (pendingSyncByItemID.get(rawID) === next) {
+        pendingSyncByItemID.delete(rawID);
+        inFlightRemarkOverrides.delete(rawID);
+      }
+    });
+    return next;
+  }
+
+  // src/bridges/visual-notes-bridge.ts
+  var VisualNotesBridge = class {
+    id = "visual-notes-bridge";
+    kernel;
+    workspace;
+    visualNotes;
+    prevRemarks = /* @__PURE__ */ new Map();
+    disposeStoreListener = null;
+    active = false;
+    constructor(kernel, workspace, visualNotes) {
+      this.kernel = kernel;
+      this.workspace = workspace;
+      this.visualNotes = visualNotes;
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.seedRemarks();
+      this.visualNotes.setDataSource({
+        getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
+        getRemark: (itemID) => this.workspace.store.getItemRemark(itemID),
+        persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
+        setRemark: (itemID, remark, skipExtraObserver) => {
+          if (skipExtraObserver) {
+            this.workspace.store.setItemRemark(itemID, remark, true);
+            this.seedRemarks();
+            this.workspace.store.notifyNotesChanged();
+          } else {
+            this.workspace.store.setItemRemark(itemID, remark);
+          }
+          this.workspace.refreshAllWindows();
+        }
+      });
+      this.disposeStoreListener = this.workspace.store.onChange((change) => {
+        if (!this.active || change === "session") return;
+        if (change === "reading") {
+          this.visualNotes.refreshLibraryViews(void 0, true);
+          return;
+        }
+        if (change === "notes-local-clear" || change === "import") this.seedRemarks();
+        else this.syncChangedRemarksToExtra();
+        this.visualNotes.refreshLibraryViews();
+      });
+    }
+    stop() {
+      if (!this.active) return;
+      this.active = false;
+      this.disposeStoreListener?.();
+      this.disposeStoreListener = null;
+      this.visualNotes.setDataSource(void 0);
+    }
+    seedRemarks() {
+      this.prevRemarks.clear();
+      for (const [k, v] of Object.entries(this.workspace.store.state.remarks)) {
+        this.prevRemarks.set(k, v);
+      }
+    }
+    syncChangedRemarksToExtra() {
+      const current = this.workspace.store.state.remarks;
+      const changedKeys = [];
+      for (const [k, v] of Object.entries(current)) {
+        if (this.prevRemarks.get(k) !== v) changedKeys.push({ key: k, value: v });
+      }
+      for (const k of this.prevRemarks.keys()) {
+        if (!(k in current)) changedKeys.push({ key: k, value: "" });
+      }
+      if (!changedKeys.length) return;
+      this.seedRemarks();
+      if (!this.kernel.prefs.get("workspace.syncRemarkToExtra")) return;
+      for (const entry of changedKeys) {
+        const vm = this.workspace.store.state.virtualMembers[entry.key];
+        const match = entry.key.match(/^item:(\d+)$/);
+        const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
+        if (itemID > 0) {
+          void syncItemRemarkToExtra(itemID, entry.value).catch(() => {
+          });
+        }
+      }
+    }
+  };
+
   // src/domains/inspector/citation-lookup-parser.ts
+  var MAX_CITATION_INPUT_LEN = 2400;
   function extractIdentifier(input) {
-    const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
-    const arxivMatch = input.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || input.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
+    const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
+    const doiMatch = bounded.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
+    const arxivMatch = bounded.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || bounded.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
     return {
       doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, "").replace(/\)+$/, (trailing) => {
         const opens = (doiMatch[1].match(/\(/g) || []).length;
@@ -791,30 +935,72 @@
     };
   }
   function stripAuthorPrefix(text2) {
-    const quoteMatch = text2.match(/^(.+?)[,.\s]+["\u201c].+?["\u201d][,.\s]+(.+)$/);
-    if (quoteMatch) {
-      return { authors: quoteMatch[1].trim(), rest: quoteMatch[2].replace(/^in\s+/i, "").trim() };
+    const bounded = text2.length > MAX_CITATION_INPUT_LEN ? text2.slice(0, MAX_CITATION_INPUT_LEN) : text2;
+    let openQuote = -1;
+    let closeChar = "";
+    for (let i = 0; i < bounded.length; i++) {
+      const ch = bounded[i];
+      if (ch === '"' || ch === "“") {
+        openQuote = i;
+        closeChar = ch === "“" ? "”" : '"';
+        break;
+      }
     }
-    const gbtMatch = text2.match(/^([^.]+?)\.\s*.+?\[J\][.,\s]+(.+)$/i);
-    if (gbtMatch) {
-      return { authors: gbtMatch[1].trim(), rest: gbtMatch[2].trim() };
+    if (openQuote > 0 && /[,.\s]$/.test(bounded.slice(0, openQuote))) {
+      let closeQuote = bounded.indexOf(closeChar, openQuote + 1);
+      if (closeQuote < 0 && closeChar === "”") closeQuote = bounded.indexOf('"', openQuote + 1);
+      if (closeQuote > openQuote + 1) {
+        const afterQuote = bounded.slice(closeQuote + 1);
+        if (/^[,.\s]+\S/.test(afterQuote)) {
+          const authors = bounded.slice(0, openQuote).replace(/[,.\s]+$/, "").trim();
+          const rest = afterQuote.replace(/^[,.\s]+/, "").replace(/^in\s+/i, "").trim();
+          if (authors && rest) return { authors, rest };
+        }
+      }
     }
-    const etAlMatch = text2.match(/^(.+?\bet\s+al\.?),?\s+(.+)$/i);
-    if (etAlMatch) {
-      return { authors: etAlMatch[1].trim(), rest: etAlMatch[2].trim() };
+    const jTagIdx = bounded.toLowerCase().indexOf("[j]");
+    if (jTagIdx > 1) {
+      const dotIdx = bounded.indexOf(".");
+      const afterJ = bounded.slice(jTagIdx + 3);
+      if (dotIdx > 0 && dotIdx < jTagIdx && /^[.,\s]+\S/.test(afterJ)) {
+        const authors = bounded.slice(0, dotIdx).trim();
+        const rest = afterJ.replace(/^[.,\s]+/, "").trim();
+        if (authors && rest) return { authors, rest };
+      }
     }
-    const semiMatch = text2.match(/^([^;]+(?:;\s*[^;]+)+)[,;]\s+([A-Z].+)$/);
-    if (semiMatch) {
-      return { authors: semiMatch[1].trim(), rest: semiMatch[2].trim() };
+    const etAlHit = /\bet\s+al\.?(?:,\s*|\s+)/i.exec(bounded);
+    if (etAlHit && etAlHit.index > 0) {
+      const endIdx = etAlHit.index + etAlHit[0].length;
+      const rest = bounded.slice(endIdx).trim();
+      const authors = bounded.slice(0, endIdx).replace(/(?:,\s*|\s+)$/, "").trim();
+      if (authors && rest) return { authors, rest };
     }
-    return { rest: text2 };
+    if (bounded.includes(";")) {
+      const parts = bounded.split(";");
+      if (parts.length >= 2 && parts.slice(0, -1).every((p) => p.trim().length > 0)) {
+        const lastPart = parts[parts.length - 1];
+        const commaSplit = lastPart.match(/^(.+),\s+([A-Z].+)$/);
+        if (commaSplit) {
+          const authors = [...parts.slice(0, -1), commaSplit[1]].join(";").trim();
+          const rest = commaSplit[2].trim();
+          if (authors && rest) return { authors, rest };
+        }
+        if (parts.length >= 3 && /^\s+[A-Z]/.test(lastPart)) {
+          const authors = parts.slice(0, -1).join(";").trim();
+          const rest = lastPart.trim();
+          if (authors && rest) return { authors, rest };
+        }
+      }
+    }
+    return { rest: bounded };
   }
   function normalizeJournal(name) {
     return name.toLowerCase().replace(/&/g, "and").replace(/[.,]/g, "").replace(/\s+/g, " ").trim();
   }
   function parseCompactCitation(input) {
     if (!input || typeof input !== "string") return null;
-    const clean = input.replace(/\s+/g, " ").trim().replace(/^(?:\[\d+\]\s*|\(\d+\)\s*|\d{1,3}[.)]\s+|•\s*)/, "").replace(/\.+$/, "").replace(/[\u2010-\u2015\u2212]/g, "-");
+    const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
+    const clean = bounded.replace(/\s+/g, " ").trim().replace(/^(?:\[\d+\]\s*|\(\d+\)\s*|\d{1,3}[.)]\s+|•\s*)/, "").replace(/\.+$/, "").replace(/[\u2010-\u2015\u2212]/g, "-");
     const ids = extractIdentifier(clean);
     let stripped = clean;
     if (ids.doi) {
@@ -1016,10 +1202,13 @@
         if (signal?.aborted) return empty;
         if (fuzzy.length) {
           const liveHits = [];
+          const seenFuzzy = /* @__PURE__ */ new Set();
           for (const rec of fuzzy) {
+            if (seenFuzzy.has(rec.itemID)) continue;
             const liveItem = await this.resolveLiveItem(rec);
             if (signal?.aborted) return empty;
             if (liveItem) {
+              seenFuzzy.add(rec.itemID);
               liveHits.push({
                 itemID: rec.itemID,
                 title: String(liveItem.getField?.("title") || rec.title),
@@ -1028,6 +1217,7 @@
                 item: liveItem
               });
             } else if (options.libraryItems) {
+              seenFuzzy.add(rec.itemID);
               liveHits.push({ itemID: rec.itemID, title: rec.title, score: 85, source: "history-fuzzy" });
             }
           }
@@ -1095,8 +1285,11 @@
         seen.add(id);
         if (targetDoi) {
           const doi = extractDoi(safeGetItemField(item, "DOI") || String(item.DOI || ""));
-          if (doi === targetDoi) results.push({ itemID: id, title, score: 98, source: "doi", item });
-          continue;
+          if (doi === targetDoi) {
+            results.push({ itemID: id, title, score: 98, source: "doi", item });
+            continue;
+          }
+          if (doi) continue;
         }
         let score = 0;
         const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
@@ -1153,14 +1346,34 @@
       if (!spec) this.targets.delete(key);
       else this.targets.set(key, { key, ...spec });
     }
+    pruneDisconnected() {
+      for (const [owner, obs] of this.observers.entries()) {
+        if (owner.isConnected === false) {
+          obs.disconnect();
+          this.observers.delete(owner);
+          const t = this.timers.get(owner);
+          if (t !== void 0) {
+            clearTimeout(t);
+            this.timers.delete(owner);
+          }
+          this.running.delete(owner);
+          this.dirty.delete(owner);
+        }
+      }
+    }
     observeAndQueue(body) {
+      this.pruneDisconnected();
       const owner = body?.closest?.("item-details");
-      if (!owner?.getPanes) return;
+      if (!owner?.getPanes || owner.isConnected === false) return;
       if (!this.observers.has(owner)) {
         const parent = owner.getPanes().find((p) => p.contains?.(body))?.parentNode;
         const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
         if (parent && Observer) {
           const obs = new Observer(() => {
+            if (owner.isConnected === false) {
+              this.pruneDisconnected();
+              return;
+            }
             if (!this.running.has(owner)) this.queue(owner);
           });
           obs.observe(parent, { childList: true });
@@ -1170,6 +1383,7 @@
       this.queue(owner);
     }
     queueAll() {
+      this.pruneDisconnected();
       for (const owner of this.observers.keys()) {
         this.queue(owner);
       }
@@ -1223,8 +1437,9 @@
         const group2 = groups.get(position);
         if (!group2.length) continue;
         const anchor = PANE_POSITION_ANCHORS[position];
+        const anchorMissing = anchor !== null && !native.includes(anchor);
         const nativeIndex = anchor ? native.indexOf(anchor) : -1;
-        const nextNative = native[nativeIndex + 1];
+        const nextNative = anchorMissing ? void 0 : native[nativeIndex + 1];
         const index = position === "zotero-editpane-related" || nextNative === void 0 ? desired.length : desired.indexOf(nextNative);
         desired.splice(index, 0, ...group2);
       }
@@ -1693,6 +1908,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   }
 
   // src/domains/inspector/citation-lookup-section.ts
+  function resolveActiveLibraryID(pane) {
+    const multi = pane?.getSelectedLibraryIDs?.()?.[0];
+    if (typeof multi === "number" && multi > 0) return multi;
+    try {
+      const single = pane?.getSelectedLibraryID?.();
+      if (typeof single === "number" && single > 0) return single;
+    } catch {
+    }
+    const rowLib = pane?.getCollectionTreeRow?.()?.ref?.libraryID;
+    if (typeof rowLib === "number" && rowLib > 0) return rowLib;
+    return globalThis.Zotero?.Libraries?.userLibraryID;
+  }
   var CitationLookupSectionController = class {
     unregisterFn = null;
     sectionID = false;
@@ -1856,7 +2083,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         setLookupL10n(statusDiv, "zbf-lookup-status-searching", "正在反查本地文献库...");
         try {
           const pane = doc.defaultView?.ZoteroPane;
-          const libraryID = pane?.getSelectedLibraryIDs?.()?.[0] ?? globalThis.Zotero?.Libraries?.userLibraryID;
+          const libraryID = resolveActiveLibraryID(pane);
           const outcome = await this.engine.resolveRich(textToSearch, {
             libraryID,
             signal: controller.signal,
@@ -2010,8 +2237,52 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     "li"
   ]);
   var VOID_TAGS = /* @__PURE__ */ new Set(["br"]);
-  var SAFE_STYLE_RE = /^[\w\s:;.,%#()'"-]*$/;
   var SAFE_HREF_RE = /^(?:https?:|doi:|mailto:)/i;
+  var ALLOWED_STYLE_PROPS = /* @__PURE__ */ new Set([
+    "font-style",
+    "font-weight",
+    "font-variant",
+    "text-decoration",
+    "vertical-align",
+    "text-indent",
+    "margin-left",
+    "margin-right",
+    "margin-top",
+    "margin-bottom",
+    "padding-left",
+    "padding-right",
+    "line-height",
+    "display",
+    "float",
+    "clear",
+    "width"
+  ]);
+  var SAFE_STYLE_VAL_RE = /^[a-z0-9\s.,%+-]+$/i;
+  var FORBIDDEN_STYLE_TOKEN_RE = /url\s*\(|expression\s*\(|var\s*\(|calc\s*\(|-moz-|-webkit-|javascript:|\\/i;
+  function sanitizeInlineStyle(raw) {
+    if (!raw) return "";
+    const kept = [];
+    for (const decl of raw.split(";")) {
+      if (FORBIDDEN_STYLE_TOKEN_RE.test(decl)) continue;
+      const colonIdx = decl.indexOf(":");
+      if (colonIdx <= 0) continue;
+      const prop = decl.slice(0, colonIdx).trim().toLowerCase();
+      const val = decl.slice(colonIdx + 1).replace(/!important/gi, "").trim();
+      if (!ALLOWED_STYLE_PROPS.has(prop) || !val || !SAFE_STYLE_VAL_RE.test(val)) continue;
+      const lowerVal = val.toLowerCase();
+      if (prop === "display" && lowerVal !== "inline" && lowerVal !== "inline-block" && lowerVal !== "block") continue;
+      if (prop === "float" && lowerVal !== "left" && lowerVal !== "right" && lowerVal !== "none") continue;
+      if (prop === "clear" && lowerVal !== "both" && lowerVal !== "left" && lowerVal !== "right" && lowerVal !== "none") continue;
+      if (prop === "width") {
+        const m = lowerVal.match(/^(\d+(?:\.\d+)?)(em|rem|ch|px)$/);
+        if (!m) continue;
+        const num = Number(m[1]);
+        if (m[2] === "px" && num > 160 || m[2] !== "px" && num > 24) continue;
+      }
+      kept.push(`${prop}: ${val}`);
+    }
+    return kept.join("; ");
+  }
   function escapeHtmlText(value) {
     return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
@@ -2034,8 +2305,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     let attrs = "";
     const className = el.getAttribute("class");
     if (className && /^[\w\s-]+$/.test(className)) attrs += ` class="${escapeAttribute(className)}"`;
-    const style = el.getAttribute("style");
-    if (style && SAFE_STYLE_RE.test(style) && !/url\s*\(|expression\s*\(/i.test(style)) {
+    const style = sanitizeInlineStyle(el.getAttribute("style") || "");
+    if (style) {
       attrs += ` style="${escapeAttribute(style)}"`;
     }
     if (tag === "a") {
@@ -2098,14 +2369,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           doc.defaultView?.MozXULElement?.insertFTLIfNeeded?.("zotero-bridgeflow.ftl");
           ensureViewFlowStyles(doc);
           body.classList.add("zotero-preview-root");
+          body.style.contain = "content";
           const st = {
             body,
             doc,
             items: [],
+            itemsSig: "",
             omitted: 0,
             generation: 0,
             failed: false,
             lastHTML: "",
+            inFlightSig: "",
+            inFlight: null,
             payload: null,
             copyFeedback: /* @__PURE__ */ new Map(),
             feedbackTimers: /* @__PURE__ */ new Set(),
@@ -2151,9 +2426,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         });
       }
     }
-    async renderState(body) {
+    async renderState(body, force = false) {
       const st = this.states.get(body);
       if (!st) return;
+      const runSig = `${st.itemsSig}|${this.kernel.prefs.get("inspector.cslPreview.citationstyle")}|${this.kernel.prefs.get("inspector.cslPreview.whatToShow")}|${this.kernel.prefs.get("inspector.cslPreview.fontsize")}|${this.kernel.prefs.get("inspector.cslPreview.spacing")}`;
+      if (!force && st.inFlight && st.inFlightSig === runSig) return st.inFlight;
       const gen = ++st.generation;
       if (!st.items.length) {
         st.payload = null;
@@ -2163,34 +2440,47 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       if (!st.payload && !st.lastHTML) {
         this.renderMessage(st, "zbf-preview-loading", "正在生成预览…");
       }
-      try {
-        const mode = String(this.kernel.prefs.get("inspector.cslPreview.whatToShow") || "zpboth");
-        const wantBib = mode !== "zpcite" && mode !== "zpintext";
-        const wantCite = mode !== "zpbib";
-        const [bibRes, citeRes] = await Promise.all([
-          wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
-          wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null)
-        ]);
-        if (gen !== st.generation || st.body.isConnected === false) return;
-        const payload = {};
-        if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
-        if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
-        st.payload = payload;
-        st.failed = false;
-        this.renderPayload(st, payload);
-      } catch (error) {
-        if (gen !== st.generation || st.body.isConnected === false) return;
-        st.payload = null;
-        st.failed = true;
-        const code = error?.previewCode || "";
-        const [id, fallback] = ERROR_L10N[code] || ["zbf-preview-unavailable", "预览不可用，请检查引用样式后重试。"];
-        const detail = code ? "" : error instanceof Error ? error.message : String(error || "");
-        this.renderMessage(st, id, fallback, true, detail);
-      }
+      let task = null;
+      task = (async () => {
+        try {
+          const mode = String(this.kernel.prefs.get("inspector.cslPreview.whatToShow") || "zpboth");
+          const wantBib = mode !== "zpcite" && mode !== "zpintext";
+          const wantCite = mode !== "zpbib";
+          const [bibRes, citeRes] = await Promise.all([
+            wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
+            wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null)
+          ]);
+          if (gen !== st.generation || st.body.isConnected === false) return;
+          const payload = {};
+          if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
+          if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
+          st.payload = payload;
+          st.failed = false;
+          this.renderPayload(st, payload);
+        } catch (error) {
+          if (gen !== st.generation || st.body.isConnected === false) return;
+          st.payload = null;
+          st.failed = true;
+          const code = error?.previewCode || "";
+          const [id, fallback] = ERROR_L10N[code] || ["zbf-preview-unavailable", "预览不可用，请检查引用样式后重试。"];
+          const detail = code ? "" : error instanceof Error ? error.message : String(error || "");
+          this.renderMessage(st, id, fallback, true, detail);
+        } finally {
+          if (st.inFlight === task) {
+            st.inFlight = null;
+            st.inFlightSig = "";
+          }
+        }
+      })();
+      st.inFlight = task;
+      st.inFlightSig = runSig;
+      return task;
     }
     async refreshAll() {
-      for (const body of this.states.keys()) {
-        await this.renderState(body);
+      for (const [body, st] of this.states.entries()) {
+        st.itemsSig = "";
+        this.updateItems(st, st.items[0]);
+        await this.renderState(body, true);
       }
     }
     unregister() {
@@ -2203,8 +2493,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     updateItems(st, item, setEnabled) {
       const maxItems = this.kernel.prefs.get("inspector.cslPreview.maxPreviewItems");
-      const selected = item ? [item] : globalThis.Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [];
+      const isReader = Boolean(st.body.closest?.('zotero-reader, [data-pane-type="reader"]'));
+      const paneSel = !isReader ? st.doc.defaultView?.ZoteroPane?.getSelectedItems?.() || globalThis.Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [] : [];
+      const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || s?.id && s.id === item?.id));
+      const selected = useMulti ? paneSel : item ? [item] : paneSel;
       const { items } = deduplicateRegularItems(selected, maxItems);
+      const nextSig = items.map((it) => `${it?.id ?? ""}:${it?.version ?? it?.dateModified ?? ""}`).join("|");
+      if (nextSig !== st.itemsSig) {
+        st.itemsSig = nextSig;
+        st.generation++;
+        st.inFlight = null;
+        st.inFlightSig = "";
+        st.payload = null;
+      }
       st.items = items;
       st.omitted = Math.max(0, deduplicateRegularItems(selected, 1e4).items.length - items.length);
       const enabled = items.length > 0;
@@ -2225,12 +2526,31 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           this.renderCopyError(st);
         }
       };
+      const interceptAnchor = (ev) => {
+        const anchor = ev.target?.closest?.("a[href]");
+        if (!anchor) return false;
+        ev.preventDefault?.();
+        ev.stopPropagation?.();
+        const raw = String(anchor.getAttribute("href") || "").trim();
+        const url = /^doi:/i.test(raw) ? `https://doi.org/${encodeURIComponent(raw.replace(/^doi:\s*/i, ""))}` : raw;
+        if ((ev.type === "click" || ev.button === 1) && /^(?:https?:|mailto:)/i.test(url)) {
+          try {
+            globalThis.Zotero?.launchURL?.(url);
+          } catch {
+          }
+        }
+        return true;
+      };
+      st.body.addEventListener("auxclick", (ev) => {
+        interceptAnchor(ev);
+      });
       st.body.addEventListener("click", (ev) => {
+        if (interceptAnchor(ev)) return;
         const target = ev.target;
         const retryBtn = target?.closest?.(".zotero-preview-retry");
         if (retryBtn) {
           st.failed = false;
-          void this.renderState(st.body);
+          void this.renderState(st.body, true);
           return;
         }
         const copyBtn = target?.closest?.(".zotero-preview-copy");
@@ -2555,8 +2875,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas 2D context unavailable");
-    const transform = pixelRatio === 1 ? void 0 : [pixelRatio, 0, 0, pixelRatio, 0, 0];
-    const task = page.render({ canvasContext: ctx, viewport: cssViewport, transform });
+    const transform2 = pixelRatio === 1 ? void 0 : [pixelRatio, 0, 0, pixelRatio, 0, 0];
+    const task = page.render({ canvasContext: ctx, viewport: cssViewport, transform: transform2 });
     onTask?.(() => {
       try {
         task.cancel?.();
@@ -2713,13 +3033,15 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           try {
             const CustomEv = win?.CustomEvent || CustomEvent;
             doc.dispatchEvent?.(new CustomEv("zbf:pdf-folder-attachment-selected", {
-              detail: { attachmentID: hit.id }
+              detail: { attachmentID: hit.id, owner: body.closest?.("item-details") || null }
             }));
           } catch {
           }
         }
       }, { signal: panelController.signal });
       doc.addEventListener("zbf:pdf-attachment-selected", ((ev) => {
+        const owner = body.closest?.("item-details") || null;
+        if (ev?.detail?.owner && owner && ev.detail.owner !== owner) return;
         const attID = Number(ev?.detail?.attachmentID || 0);
         if (!attID || !st.entries.length) return;
         const hit = st.entries.find((e) => e.id === attID);
@@ -3441,7 +3763,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   async function activateNeighborComparison(state, controls, side, neighbors, onError) {
     const ref = side === "left" ? neighbors?.left : neighbors?.right;
     if (!ref) return false;
+    const gen = ++state.generation;
     const entries = await resolveNeighborPdfEntries(ref);
+    if (gen !== state.generation || state.body.isConnected === false) return false;
     const chosen = entries[0];
     if (!chosen?.attachment) return false;
     controls.activeSide = side;
@@ -3499,7 +3823,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
     };
     state.attSelect.addEventListener("change", () => selectAttachmentById(Number(state.attSelect.value || 0)), opts);
-    state.doc.addEventListener("zbf:pdf-folder-attachment-selected", ((ev) => selectAttachmentById(Number(ev?.detail?.attachmentID || 0))), opts);
+    state.doc.addEventListener("zbf:pdf-folder-attachment-selected", ((ev) => {
+      const owner = state.body.closest?.("item-details") || null;
+      if (ev?.detail?.owner && owner && ev.detail.owner !== owner) return;
+      selectAttachmentById(Number(ev?.detail?.attachmentID || 0));
+    }), opts);
     state.pageLabel.addEventListener("click", () => openPageJumpInput(state.doc, state.pageLabel, state.currentPage, state.numPages, (p) => jumpToPreviewPage(state, p, actions.onRenderError)), opts);
     state.viewportEl.addEventListener("scroll", () => updatePreviewPageFromScroll(state), opts);
     state.viewportEl.addEventListener("dblclick", (event) => {
@@ -3683,6 +4011,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .ztf-pdf-page-card:hover {
 	border-color: var(--accent-blue50, rgba(64, 114, 229, 0.45));
 	box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+}
+.ztf-pdf-page-card:has(.ztf-pdf-canvas[style*="px"]) {
+	inline-size: max-content; max-inline-size: none;
 }
 .ztf-pdf-page-card[data-unrendered="true"] {
 	aspect-ratio: 1 / 1.4142; min-block-size: 220px;
@@ -4061,19 +4392,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   };
 
-  // src/kernel/locale.ts
-  function isChineseLocale(doc) {
-    const host2 = globalThis.Zotero;
-    const rawLocale = String(
-      host2?.locale || doc?.defaultView?.Zotero?.locale || doc?.documentElement?.getAttribute?.("lang") || ""
-    ).trim();
-    if (!rawLocale) return true;
-    return rawLocale.toLowerCase().startsWith("zh");
-  }
-  function tLocale(zh, en, doc) {
-    return isChineseLocale(doc) ? zh : en;
-  }
-
   // src/domains/inspector/word-cite-orphan-model.ts
   function isOrphanRecoverable(orphan) {
     if (orphan.kind === "trashed" && Boolean(orphan.itemID)) return true;
@@ -4269,8 +4587,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     expanded = false;
     accordionOpen = true;
     autoOpenedSig = "";
+    currentSessionID = "";
+    sessionUnchecked = /* @__PURE__ */ new Map();
     reset() {
       this.uncheckedKeys.clear();
+      this.sessionUnchecked.clear();
+      this.currentSessionID = "";
       this.expanded = false;
       this.accordionOpen = true;
       this.autoOpenedSig = "";
@@ -4278,6 +4600,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     toggleKey(key) {
       if (this.uncheckedKeys.has(key)) this.uncheckedKeys.delete(key);
       else this.uncheckedKeys.add(key);
+      if (this.currentSessionID) this.sessionUnchecked.set(this.currentSessionID, new Set(this.uncheckedKeys));
     }
     getSelectedRecoverableKeys(orphans) {
       if (!orphans?.length) return [];
@@ -4285,15 +4608,27 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     /** Returns true when a fresh orphan set appears and the section should auto-expand once. */
     syncSnapshot(activeSessionID, orphans, autoExpand = true) {
+      const nextSes = String(activeSessionID || "");
+      if (nextSes !== this.currentSessionID) {
+        if (this.currentSessionID) this.sessionUnchecked.set(this.currentSessionID, new Set(this.uncheckedKeys));
+        this.currentSessionID = nextSes;
+        this.uncheckedKeys.clear();
+        for (const k of this.sessionUnchecked.get(nextSes) || []) this.uncheckedKeys.add(k);
+      }
       if (!orphans?.length) {
-        this.reset();
+        this.uncheckedKeys.clear();
+        if (nextSes) this.sessionUnchecked.delete(nextSes);
+        this.expanded = false;
+        this.accordionOpen = true;
+        this.autoOpenedSig = "";
         return false;
       }
       const validKeys = new Set(orphans.map((o) => o.key));
       for (const k of [...this.uncheckedKeys]) {
         if (!validKeys.has(k)) this.uncheckedKeys.delete(k);
       }
-      const sig = `${activeSessionID || ""}:${orphans.map((o) => o.key).sort().join("|")}`;
+      if (nextSes) this.sessionUnchecked.set(nextSes, new Set(this.uncheckedKeys));
+      const sig = `${nextSes}:${orphans.map((o) => o.key).sort().join("|")}`;
       if (sig === this.autoOpenedSig) return false;
       this.autoOpenedSig = sig;
       this.accordionOpen = autoExpand;
@@ -4790,6 +5125,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       allRecords.push({
         itemID,
         cacheKey,
+        item: cand.item,
         itemType: rawType,
         itemTypeLabel: formatReminderItemType(rawType, zh),
         title,
@@ -6068,7 +6404,7 @@ ${REMINDERS_CARD_CSS}`;
           }
           this.updateState(body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
-          return this.isSectionEnabled() && Boolean(item);
+          return this.isSectionEnabled() && (Boolean(item) || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
         },
         onRender: ({ body, item, setEnabled, setSectionSummary }) => {
           this.updateState(body, item, setEnabled, setSectionSummary);
@@ -6252,7 +6588,7 @@ ${REMINDERS_CARD_CSS}`;
       this.renderAllBodies();
     }
     handleIgnoreReminder(rec, st, zh) {
-      const key = this.services.reminders.setIgnored(rec.cacheKey, true);
+      const key = this.services.reminders.setIgnored(rec.item || rec.cacheKey, true);
       this.reminderState.lastUndoKey = key;
       this.receiptOwner = st;
       this.receipt = formatIgnoreReminderReceipt(key, zh);
@@ -6310,9 +6646,9 @@ ${REMINDERS_CARD_CSS}`;
       if (setSectionSummary) st.setSectionSummary = setSectionSummary;
       st.activeItem = item ?? null;
       const items = resolveWordCiteTargetItems(body.ownerDocument?.defaultView || null, item);
-      const enabled = this.isSectionEnabled() && items.length > 0;
+      const enabled = this.isSectionEnabled() && (items.length > 0 || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
       setEnabled?.(enabled);
-      st.lastItemIDs = enabled ? items.map((it) => Number(it.id)) : [];
+      st.lastItemIDs = this.isSectionEnabled() ? items.map((it) => Number(it.id)) : [];
       this.renderBodyState(st, items);
     }
     renderBodyState(st, resolvedItems) {
@@ -6357,7 +6693,7 @@ ${REMINDERS_CARD_CSS}`;
         onLocateItem: (itemID) => this.handleLocateReminder(itemID, st, zh),
         onIgnoreItem: (rec) => this.handleIgnoreReminder(rec, st, zh),
         onRestoreItem: (rec) => {
-          this.services.reminders.setIgnored(rec.cacheKey, false);
+          this.services.reminders.setIgnored(rec.item || rec.cacheKey, false);
           this.renderAllBodies();
         }
       });
@@ -6457,6 +6793,11 @@ ${REMINDERS_CARD_CSS}`;
           }
         )
       );
+      this.disposables.add(
+        this.kernel.notifier.subscribe(["item"], ({ event }) => {
+          if (this.active && event === "modify") void this.cslPreview.refreshAll();
+        })
+      );
     }
     async lookupQuery(query, libraryItems) {
       return this.lookupEngine.lookup(query, libraryItems);
@@ -6515,9 +6856,14 @@ ${REMINDERS_CARD_CSS}`;
       const popup = owner.open?.("about:blank", "_blank", "chrome,dialog=no,resizable,width=1080,height=740");
       if (!popup) return;
       let done2 = false;
+      let disposeView2;
       const close2 = () => {
         if (done2) return;
         done2 = true;
+        try {
+          disposeView2?.();
+        } catch {
+        }
         if (pages.get(owner) === close2) pages.delete(owner);
         try {
           if (!popup.closed) popup.close();
@@ -6529,9 +6875,13 @@ ${REMINDERS_CARD_CSS}`;
         if (done2 || pages.get(owner) !== close2 || popup.closed || !popup.document?.body) return;
         popup.document.title = title;
         popup.document.body.style.cssText = "margin:0;height:100vh;display:flex;color-scheme:light dark";
-        render(popup.document.body, close2);
+        disposeView2 = render(popup.document.body, close2);
         popup.addEventListener("unload", () => {
           done2 = true;
+          try {
+            disposeView2?.();
+          } catch {
+          }
           if (pages.get(owner) === close2) pages.delete(owner);
         }, { once: true });
       };
@@ -6543,9 +6893,14 @@ ${REMINDERS_CARD_CSS}`;
     if (!tabs?.add || !tabs?.close) return;
     let done = false;
     let pageId = "";
+    let disposeView;
     const close = () => {
       if (done) return;
       done = true;
+      try {
+        disposeView?.();
+      } catch {
+      }
       if (pages.get(owner) === close) pages.delete(owner);
       if (pageId) {
         try {
@@ -6561,13 +6916,17 @@ ${REMINDERS_CARD_CSS}`;
       select: true,
       onClose: () => {
         done = true;
+        try {
+          disposeView?.();
+        } catch {
+        }
         if (pages.get(owner) === close) pages.delete(owner);
       }
     });
     if (!page?.container) return;
     pageId = page.id;
     pages.set(owner, close);
-    render(page.container, close);
+    disposeView = render(page.container, close);
   }
 
   // src/services/reading-stats.ts
@@ -6782,8 +7141,13 @@ ${REMINDERS_CARD_CSS}`;
     if (annotationID && annotationID > 0) {
       const ann = zotero?.Items?.get?.(annotationID) || await zotero?.Items?.getAsync?.(annotationID).catch(() => null);
       if (ann?.key) location.annotationID = ann.key;
+      try {
+        const pos = typeof ann?.annotationPosition === "string" ? JSON.parse(ann.annotationPosition) : ann?.annotationPosition;
+        if (Number.isInteger(pos?.pageIndex) && pos.pageIndex >= 0) location.pageIndex = pos.pageIndex;
+      } catch {
+      }
     }
-    if (typeof pageNumber === "number" && Number.isFinite(pageNumber) && pageNumber >= 1) {
+    if (location.pageIndex === void 0 && typeof pageNumber === "number" && Number.isFinite(pageNumber) && pageNumber >= 1) {
       location.pageIndex = Math.max(0, Math.floor(pageNumber) - 1);
     }
     const locArg = Object.keys(location).length ? location : void 0;
@@ -7232,11 +7596,11 @@ ${REMINDERS_CARD_CSS}`;
     return FALLBACK_PALETTE[Math.abs(h) % FALLBACK_PALETTE.length];
   }
   function resolveStatusColor(libraryID, tag) {
+    const savedCustom = getCustomStatusColor(tag);
+    if (savedCustom) return savedCustom;
     for (const p of [...DEFAULT_STATUS_PRESETS_ZH, ...DEFAULT_STATUS_PRESETS_EN]) {
       if (p.tag.toLowerCase() === tag.toLowerCase()) return p.color;
     }
-    const savedCustom = getCustomStatusColor(tag);
-    if (savedCustom) return savedCustom;
     try {
       const zTags = globalThis.Zotero?.Tags;
       const colorEntry = libraryID ? zTags?.getColor?.(libraryID, tag) : null;
@@ -7247,11 +7611,12 @@ ${REMINDERS_CARD_CSS}`;
     return hashTagColor(tag);
   }
   function resolveTargetRegularItem(item) {
-    if (!item) return null;
-    if (typeof item.isRegularItem === "function" && !item.isRegularItem() && item.parentItemID) {
-      return globalThis.Zotero?.Items?.get?.(item.parentItemID) || item;
+    if (!item || isItemTrashedOrDeleted(item)) return null;
+    let candidate = item;
+    if (!isRegularValidItem(candidate) && (candidate.parentItem || candidate.parentItemID)) {
+      candidate = candidate.parentItem || globalThis.Zotero?.Items?.get?.(candidate.parentItemID) || candidate;
     }
-    return item;
+    return isRegularValidItem(candidate) ? candidate : null;
   }
   function getItemStatus(rawItem, excludedTag = "/Citations") {
     const item = resolveTargetRegularItem(rawItem);
@@ -7259,19 +7624,12 @@ ${REMINDERS_CARD_CSS}`;
     const id = Number(item.id || 0);
     const stamp = String(item.version ?? item.dateModified ?? "");
     const cacheKey = id > 0 && stamp ? `${id}:${stamp}:${excludedTag}` : "";
-    if (cacheKey && statusCache.has(cacheKey)) {
-      return getLru(statusCache, cacheKey) ?? null;
-    }
-    const tags = item.getTags() || [];
+    if (cacheKey && statusCache.has(cacheKey)) return getLru(statusCache, cacheKey) ?? null;
     let found = null;
-    for (const entry of tags) {
+    for (const entry of item.getTags() || []) {
       const t = String(entry?.tag || "").trim();
       if (isStatusTagName(t, excludedTag)) {
-        found = {
-          tag: t,
-          label: t.replace(/^\/+/, ""),
-          color: resolveStatusColor(item.libraryID, t)
-        };
+        found = { tag: t, label: t.replace(/^\/+/, ""), color: resolveStatusColor(item.libraryID, t) };
         break;
       }
     }
@@ -7281,18 +7639,14 @@ ${REMINDERS_CARD_CSS}`;
   function listAvailableStatuses(items, zh = true, excludedTag = "/Citations") {
     const presets = zh ? DEFAULT_STATUS_PRESETS_ZH : DEFAULT_STATUS_PRESETS_EN;
     const byLower = /* @__PURE__ */ new Map();
-    for (const p of presets) byLower.set(p.tag.toLowerCase(), p);
+    for (const p of presets) byLower.set(p.tag.toLowerCase(), { ...p, color: resolveStatusColor(void 0, p.tag) });
     for (const raw of items) {
       const item = resolveTargetRegularItem(raw);
       if (!item || typeof item.getTags !== "function") continue;
       for (const entry of item.getTags() || []) {
         const t = String(entry?.tag || "").trim();
         if (isStatusTagName(t, excludedTag) && !byLower.has(t.toLowerCase())) {
-          byLower.set(t.toLowerCase(), {
-            tag: t,
-            label: t.replace(/^\/+/, ""),
-            color: resolveStatusColor(item.libraryID, t)
-          });
+          byLower.set(t.toLowerCase(), { tag: t, label: t.replace(/^\/+/, ""), color: resolveStatusColor(item.libraryID, t) });
         }
       }
     }
@@ -7300,7 +7654,7 @@ ${REMINDERS_CARD_CSS}`;
   }
   async function setItemStatus(rawItem, statusTag, options) {
     const item = resolveTargetRegularItem(rawItem);
-    if (!item || typeof item.getTags !== "function") return false;
+    if (!item || !isItemWritable(item) || typeof item.getTags !== "function") return false;
     const excluded = options?.excludedTag ?? "/Citations";
     if (statusTag !== null && !isStatusTagName(statusTag, excluded)) return false;
     let changed = false;
@@ -7406,6 +7760,7 @@ ${REMINDERS_CARD_CSS}`;
       ratingCache.clear();
       return changed2;
     }
+    if (!isItemWritable(item)) return false;
     let changed = false;
     if (getActiveRatingsCache().setRating(item, 0)) changed = true;
     if (typeof item.getTags === "function") {
@@ -7482,7 +7837,7 @@ ${REMINDERS_CARD_CSS}`;
     if (/^#[0-9a-f]{3}$/.test(clean)) {
       return `#${clean[1]}${clean[1]}${clean[2]}${clean[2]}${clean[3]}${clean[3]}`;
     }
-    return clean;
+    return "";
   }
   function parseColorSemantics(rawJson) {
     const merged = { ...DEFAULT_ANNOTATION_COLORS };
@@ -7614,6 +7969,7 @@ ${REMINDERS_CARD_CSS}`;
     if (sameParent.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
     const sorted = [...sameParent].sort(compareAnnotationsByOrder);
     const primary = sorted[0];
+    if (!isItemWritable(primary)) return { ok: false, keptID: 0, removedCount: 0 };
     const rest = sorted.slice(1);
     const { mergedText, mergedComment, mergedPosition } = mergeAnnotationPayloads(sorted);
     primary.annotationText = mergedText;
@@ -7667,7 +8023,7 @@ ${REMINDERS_CARD_CSS}`;
           const annID = Number(ann?.id || 0);
           if (!ann || ann.deleted || annID > 0 && seenAnn.has(annID)) continue;
           if (annID > 0) seenAnn.add(annID);
-          const color = normalizeHexColor2(ann.annotationColor || ann.color);
+          const color = normalizeHexColor2(ann.annotationColor || ann.color) || "#ffd400";
           const text2 = String(ann.annotationText || "").trim();
           const comment = String(ann.annotationComment || "").trim();
           if (!text2 && !comment) continue;
@@ -7929,7 +8285,7 @@ ${REMINDERS_CARD_CSS}`;
         bar.type = "button";
         bar.className = "zbf-vc-hbar";
         bar.style.height = `${Math.max(14, Math.round(ratio * 100))}%`;
-        bar.style.background = ratio > 0 ? heatColor : "rgba(148,163,184,0.22)";
+        bar.style.backgroundColor = ratio > 0 ? heatColor : "rgba(148,163,184,0.22)";
         bar.style.opacity = ratio > 0 ? String((0.32 + ratio * 0.68).toFixed(2)) : "0.45";
         const secTip = bestSecInBin > 0 ? ` · ${formatSubMinuteDuration(bestSecInBin)}` : "";
         bar.title = zh ? `p.${targetPage}${secTip}（点击直跳 PDF 第 ${targetPage} 页）` : `p.${targetPage}${secTip} (click to jump)`;
@@ -8018,7 +8374,7 @@ ${REMINDERS_CARD_CSS}`;
       lbl.className = "zbf-vc-dist-lbl";
       const dot = vcEl(doc, "span");
       dot.className = "zbf-ann-dot";
-      dot.style.background = d.hex;
+      dot.style.backgroundColor = d.hex;
       const txt = vcEl(doc, "span");
       txt.textContent = d.label;
       lbl.append(dot, txt);
@@ -8027,7 +8383,7 @@ ${REMINDERS_CARD_CSS}`;
       const fill = vcEl(doc, "div");
       fill.className = "zbf-vc-dist-fill";
       fill.style.width = `${Math.max(8, Math.round(d.count / collected.length * 100))}%`;
-      fill.style.background = d.hex;
+      fill.style.backgroundColor = d.hex;
       track.appendChild(fill);
       const cnt = vcEl(doc, "span");
       cnt.className = "zbf-vc-dist-cnt";
@@ -8046,7 +8402,7 @@ ${REMINDERS_CARD_CSS}`;
       btn.className = "zbf-vc-snippet";
       const dot = vcEl(doc, "span");
       dot.className = "zbf-ann-dot";
-      dot.style.background = a.color || "#64748b";
+      dot.style.backgroundColor = a.color || "#64748b";
       dot.style.marginTop = "5px";
       const txt = vcEl(doc, "span");
       txt.className = "zbf-vc-snippet-txt";
@@ -8404,2652 +8760,6 @@ ${REMINDERS_CARD_CSS}`;
     doc.addEventListener("mousedown", onOutside, true);
     doc.addEventListener("keydown", onKey, true);
     win.addEventListener("resize", close);
-  }
-
-  // src/services/annotation-matrix.ts
-  function matchesAnnotationQuery(ann, rawQuery) {
-    const query = String(rawQuery || "").trim().toLowerCase();
-    if (!query) return true;
-    const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(" ")}`.toLowerCase();
-    const orClauses = query.split("||").map((s) => s.trim()).filter(Boolean);
-    if (!orClauses.length) return true;
-    return orClauses.some((clause) => {
-      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
-      return andTerms.length > 0 && andTerms.every((term) => hay.includes(term));
-    });
-  }
-  function filterCollectedAnnotations(list, opts = {}) {
-    const wantedColor = String(opts.colorLabel || "").trim().toLowerCase();
-    const wantedTag = String(opts.tag || "").trim().toLowerCase();
-    return list.filter((ann) => {
-      if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && normalizeHexColor2(ann.color) !== wantedColor) {
-        return false;
-      }
-      if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
-        return false;
-      }
-      return matchesAnnotationQuery(ann, opts.query || "");
-    });
-  }
-  function buildAnnotationMatrix(items, colorLabelsJson, opts = {}) {
-    const semantics = parseColorSemantics(colorLabelsJson);
-    const all = collectItemAnnotations(items, semantics);
-    const filtered = filterCollectedAnnotations(all, opts);
-    const colOrder = [];
-    const colSeen = /* @__PURE__ */ new Set();
-    for (const label of Object.values(semantics)) {
-      if (filtered.some((a) => a.colorLabel === label) && !colSeen.has(label)) {
-        colSeen.add(label);
-        colOrder.push(label);
-      }
-    }
-    for (const a of filtered) {
-      if (!colSeen.has(a.colorLabel)) {
-        colSeen.add(a.colorLabel);
-        colOrder.push(a.colorLabel);
-      }
-    }
-    const byItem = /* @__PURE__ */ new Map();
-    for (const raw of items) {
-      const id = Number(raw?.id || 0);
-      if (!id || raw?.deleted) continue;
-      const title = String(raw.getField?.("title") || raw.title || `文献 #${id}`);
-      const creator = String(raw.firstCreator || "").trim();
-      const year = String(raw.getField?.("year") || raw.getField?.("date") || "").slice(0, 4);
-      byItem.set(id, { title, creatorYear: [creator, year].filter(Boolean).join(" "), list: [] });
-    }
-    for (const a of filtered) {
-      let bucket = byItem.get(a.itemID);
-      if (!bucket) {
-        bucket = { title: a.itemTitle, creatorYear: a.creatorYear, list: [] };
-        byItem.set(a.itemID, bucket);
-      }
-      bucket.list.push(a);
-    }
-    const rows = [];
-    for (const [itemID, entry] of byItem.entries()) {
-      if (filtered.length > 0 && entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
-      const cells = {};
-      for (const col of colOrder) cells[col] = [];
-      for (const a of entry.list) {
-        if (!cells[a.colorLabel]) cells[a.colorLabel] = [];
-        cells[a.colorLabel].push(a);
-      }
-      rows.push({ itemID, title: entry.title, creatorYear: entry.creatorYear, cells });
-    }
-    return { columns: colOrder, rows, totalAnnotations: filtered.length };
-  }
-  function formatAnnotationCellText(list) {
-    return list.map((a) => {
-      const page = a.pageLabel ? `[p.${a.pageLabel}] ` : "";
-      const body = a.comment && a.text ? `${a.text}（评注：${a.comment}）` : a.comment || a.text;
-      return `${page}${body}`;
-    }).join("；");
-  }
-  function renderMatrixMarkdown(matrix, heading = "文献对比矩阵") {
-    const cols = ["文献", ...matrix.columns];
-    const header = `| ${cols.join(" | ")} |`;
-    const sep = `| ${cols.map(() => "---").join(" | ")} |`;
-    const lines = [`## ${heading}`, "", header, sep];
-    for (const row of matrix.rows) {
-      const meta = row.creatorYear ? `${row.title} (${row.creatorYear})` : row.title;
-      const cells = [
-        meta.replace(/\|/g, "\\|"),
-        ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []).replace(/\|/g, "\\|").replace(/\r?\n/g, " "))
-      ];
-      lines.push(`| ${cells.join(" | ")} |`);
-    }
-    return lines.join("\n");
-  }
-  function csvCell(val) {
-    const s = String(val || "");
-    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }
-  function renderMatrixCsv(matrix) {
-    const header = ["文献", "作者年份", ...matrix.columns].map(csvCell).join(",");
-    const rows = matrix.rows.map((row) => [
-      row.title,
-      row.creatorYear,
-      ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []))
-    ].map(csvCell).join(","));
-    return [header, ...rows].join("\n");
-  }
-  function escHtml(s) {
-    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-  function renderMatrixHtmlNote(matrix, heading = "BridgeFlow 文献对比矩阵") {
-    const ths = ["文献", ...matrix.columns].map((c) => `<th>${escHtml(c)}</th>`).join("");
-    const trs = matrix.rows.map((row) => {
-      const meta = row.creatorYear ? `${escHtml(row.title)}<br/><small>${escHtml(row.creatorYear)}</small>` : escHtml(row.title);
-      const tds = matrix.columns.map((c) => `<td>${escHtml(formatAnnotationCellText(row.cells[c] || []))}</td>`).join("");
-      return `<tr><td>${meta}</td>${tds}</tr>`;
-    }).join("");
-    return `<h2>${escHtml(heading)}</h2><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
-  }
-  async function saveMatrixAsZoteroNote(matrix, heading, libraryID) {
-    const ZoteroObj = globalThis.Zotero;
-    const ItemCtor = ZoteroObj?.Item;
-    if (typeof ItemCtor !== "function") return null;
-    try {
-      const note = new ItemCtor("note");
-      note.libraryID = libraryID || Number(ZoteroObj?.Libraries?.userLibraryID || 1);
-      note.setNote(renderMatrixHtmlNote(matrix, heading));
-      const id = await note.saveTx?.();
-      return Number(id || note.id || 0) || null;
-    } catch {
-      return null;
-    }
-  }
-
-  // src/domains/visual-notes/annotation-matrix-ui.ts
-  var MATRIX_STYLE_ID = "zbf-matrix-modal-style";
-  var MATRIX_CSS = `
-.zbf-matrix-backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; box-sizing: border-box; z-index: 2147483646; background: rgba(15,23,42,0.52); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; }
-.zbf-matrix-dialog { width: min(1040px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; background: light-dark(#ffffff, #1e293b); color: light-dark(#111827, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.24)); box-shadow: 0 20px 50px rgba(0,0,0,0.32); font: 12.5px/1.45 system-ui, "Microsoft YaHei UI", sans-serif; }
-.zbf-matrix-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.zbf-matrix-title { font-size: 15px; font-weight: 600; }
-.zbf-matrix-close { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
-.zbf-matrix-close:hover { background: light-dark(rgba(15,23,42,0.08), rgba(255,255,255,0.1)); }
-.zbf-matrix-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.zbf-matrix-search-wrap { position: relative; flex: 1 1 230px; min-width: 180px; display: flex; align-items: center; }
-.zbf-matrix-input { width: 100%; height: 29px; padding: 0 26px 0 9px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.32)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; box-sizing: border-box; }
-.zbf-matrix-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.16); }
-.zbf-matrix-clear { position: absolute; right: 4px; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; display: none; align-items: center; justify-content: center; }
-.zbf-matrix-clear:hover { opacity: 1; background: rgba(128,128,128,0.16); }
-.zbf-matrix-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; border: 1px solid light-dark(rgba(15,23,42,0.16), rgba(148,163,184,0.28)); background: transparent; color: inherit; cursor: pointer; font-size: 11.5px; transition: background-color 0.12s, border-color 0.12s; }
-.zbf-matrix-chip:hover { background: light-dark(rgba(15,23,42,0.05), rgba(255,255,255,0.06)); }
-.zbf-matrix-chip[data-active="true"] { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
-.zbf-matrix-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; border: 1px solid rgba(0,0,0,0.18); }
-.zbf-matrix-empty { padding: 32px 16px; text-align: center; font-size: 13px; opacity: 0.72; }
-.zbf-matrix-scroll { flex: 1 1 auto; overflow: auto; border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.22)); border-radius: 8px; }
-.zbf-matrix-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
-.zbf-matrix-table th, .zbf-matrix-table td { border-bottom: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.16)); border-right: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.14)); padding: 7px 9px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
-.zbf-matrix-table th { position: sticky; top: 0; background: light-dark(#f8fafc, #0f172a); font-weight: 600; z-index: 1; }
-.zbf-matrix-table tbody tr:hover td { background: light-dark(rgba(15,23,42,0.015), rgba(255,255,255,0.02)); }
-.zbf-matrix-item-link { border: 0; padding: 0; background: transparent; color: light-dark(#2563eb, #60a5fa); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
-.zbf-matrix-item-link sub, .zbf-matrix-item-link sup { font-size: 0.74em; line-height: 0; }
-.zbf-matrix-item-link:hover { text-decoration: underline; }
-.zbf-matrix-ann { margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; border-left: 3px solid transparent; background: light-dark(rgba(15,23,42,0.03), rgba(255,255,255,0.04)); cursor: pointer; transition: background-color 0.12s ease; }
-.zbf-matrix-ann:hover { background: light-dark(rgba(37,99,235,0.09), rgba(96,165,250,0.15)); }
-.zbf-matrix-ann:last-child { margin-bottom: 0; }
-.zbf-matrix-mark { padding: 0 2px; border-radius: 2px; background: light-dark(#fef08a, rgba(250, 204, 21, 0.34)); color: inherit; font-weight: 600; }
-.zbf-matrix-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-.zbf-matrix-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 500 12px/1.2 inherit; cursor: pointer; }
-.zbf-matrix-btn:hover { background: light-dark(#e2e8f0, #334155); }
-.zbf-matrix-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
-.zbf-matrix-btn.primary:hover { background: #1d4ed8; }
-.zbf-matrix-status { font-size: 12px; opacity: 0.85; }
-`;
-  function matrixEl(doc, tag) {
-    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-  }
-  function ensureMatrixStyles(doc) {
-    if (!doc) return;
-    const existing = doc.getElementById(MATRIX_STYLE_ID);
-    if (existing) {
-      if (existing.textContent !== MATRIX_CSS) existing.textContent = MATRIX_CSS;
-      return;
-    }
-    const style = matrixEl(doc, "style");
-    style.id = MATRIX_STYLE_ID;
-    style.textContent = MATRIX_CSS;
-    (doc.head || doc.documentElement)?.appendChild(style);
-  }
-  function writeMatrixClipboard(text2, clipboard) {
-    if (clipboard?.writePayload("", text2, true)) return true;
-    try {
-      const cb = globalThis.Zotero?.Utilities?.Internal?.copyTextToClipboard;
-      if (typeof cb === "function") {
-        cb(text2);
-        return true;
-      }
-    } catch {
-    }
-    return false;
-  }
-  function extractQueryTerms(rawQuery) {
-    return String(rawQuery || "").split(/(?:\|\||&&)/).map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2);
-  }
-  function renderHighlightedSnippet(doc, container, text2, terms) {
-    if (!terms.length || !doc.createTextNode) {
-      container.textContent = text2;
-      return;
-    }
-    const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const re = new RegExp(`(${escaped.join("|")})`, "gi");
-    let last = 0;
-    for (const match of text2.matchAll(re)) {
-      const idx = match.index ?? 0;
-      if (idx > last) container.appendChild(doc.createTextNode(text2.slice(last, idx)));
-      const mark = matrixEl(doc, "mark");
-      mark.className = "zbf-matrix-mark";
-      mark.textContent = match[0];
-      container.appendChild(mark);
-      last = idx + match[0].length;
-    }
-    if (last < text2.length) container.appendChild(doc.createTextNode(text2.slice(last)));
-  }
-
-  // src/domains/visual-notes/annotation-matrix-modal.ts
-  function openAnnotationMatrixModal(options) {
-    const doc = options.mountRoot?.ownerDocument || options.win.document;
-    if (!doc) return;
-    ensureMatrixStyles(doc);
-    doc.getElementById("zbf-matrix-backdrop")?.remove();
-    const hostItems = globalThis.Zotero?.Items;
-    const items = [...new Set(options.itemIDs)].map((id) => hostItems?.get?.(id)).filter((it) => it && !it.deleted);
-    const colorJson = options.prefs.get("inspector.annotations.colorLabels");
-    const semantics = parseColorSemantics(colorJson);
-    const colorByLabel = /* @__PURE__ */ new Map();
-    for (const [hex, lbl] of Object.entries(semantics)) {
-      if (!colorByLabel.has(lbl)) colorByLabel.set(lbl, hex);
-    }
-    const fullMatrix = buildAnnotationMatrix(items, colorJson);
-    const countsByCol = /* @__PURE__ */ new Map();
-    for (const col of fullMatrix.columns) {
-      let total = 0;
-      for (const r of fullMatrix.rows) total += (r.cells[col] || []).length;
-      countsByCol.set(col, total);
-    }
-    const backdrop = matrixEl(doc, "div");
-    backdrop.id = "zbf-matrix-backdrop";
-    backdrop.className = "zbf-matrix-backdrop";
-    const dialog = matrixEl(doc, "div");
-    dialog.className = "zbf-matrix-dialog";
-    const head = matrixEl(doc, "div");
-    head.className = "zbf-matrix-head";
-    const heading = matrixEl(doc, "div");
-    heading.className = "zbf-matrix-title";
-    heading.textContent = `文献对比矩阵 · ${options.title} (${items.length} 篇 / ${fullMatrix.totalAnnotations} 条标注)`;
-    const closeBtn = matrixEl(doc, "button");
-    closeBtn.type = "button";
-    closeBtn.className = "zbf-matrix-close";
-    closeBtn.textContent = "✕";
-    head.append(heading, closeBtn);
-    const controls = matrixEl(doc, "div");
-    controls.className = "zbf-matrix-controls";
-    const searchWrap = matrixEl(doc, "div");
-    searchWrap.className = "zbf-matrix-search-wrap";
-    const queryInput = matrixEl(doc, "input");
-    queryInput.type = "text";
-    queryInput.className = "zbf-matrix-input";
-    queryInput.placeholder = "筛选标注（支持 方法 && 对照 或 局限 || 不足）...";
-    const clearBtn = matrixEl(doc, "button");
-    clearBtn.type = "button";
-    clearBtn.className = "zbf-matrix-clear";
-    clearBtn.textContent = "✕";
-    clearBtn.title = "清空筛选条件";
-    searchWrap.append(queryInput, clearBtn);
-    controls.appendChild(searchWrap);
-    let activeColor = "";
-    const chipButtons = [];
-    const addChip = (label, value, count2) => {
-      const btn = matrixEl(doc, "button");
-      btn.type = "button";
-      btn.className = "zbf-matrix-chip";
-      const dotHex = value ? colorByLabel.get(value) : "";
-      if (dotHex) {
-        const dot = matrixEl(doc, "span");
-        dot.className = "zbf-matrix-dot";
-        dot.style.background = dotHex;
-        btn.appendChild(dot);
-      }
-      const txt = matrixEl(doc, "span");
-      txt.textContent = count2 > 0 ? `${label} (${count2})` : label;
-      btn.appendChild(txt);
-      if (!value) btn.setAttribute("data-active", "true");
-      btn.addEventListener("click", () => {
-        activeColor = value;
-        for (const b of chipButtons) b.removeAttribute("data-active");
-        btn.setAttribute("data-active", "true");
-        renderTable();
-      });
-      chipButtons.push(btn);
-      controls.appendChild(btn);
-    };
-    addChip("全部维度", "", fullMatrix.totalAnnotations);
-    for (const col of fullMatrix.columns) addChip(col, col, countsByCol.get(col) || 0);
-    const scroll = matrixEl(doc, "div");
-    scroll.className = "zbf-matrix-scroll";
-    const statusEl = matrixEl(doc, "span");
-    statusEl.className = "zbf-matrix-status";
-    const selectedIDs = new Set(items.map((it) => Number(it.id)));
-    let currentMatrix = fullMatrix;
-    const updateStatus = () => {
-      const visibleSelected = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
-      statusEl.textContent = `当前显示 ${currentMatrix.rows.length} 篇 / ${currentMatrix.totalAnnotations} 条标注 · 已勾选 ${visibleSelected} 篇`;
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault?.();
-        close();
-      }
-    };
-    const close = () => {
-      doc.removeEventListener?.("keydown", onKey, true);
-      backdrop.remove();
-    };
-    const renderTable = () => {
-      clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
-      currentMatrix = buildAnnotationMatrix(items, colorJson, { query: queryInput.value, colorLabel: activeColor });
-      scroll.textContent = "";
-      updateStatus();
-      if (!currentMatrix.rows.length || !currentMatrix.columns.length) {
-        const empty = matrixEl(doc, "div");
-        empty.className = "zbf-matrix-empty";
-        empty.textContent = items.length ? "当前筛选条件下没有匹配的标注，请尝试调整关键词或颜色维度。" : "未检测到可对比的文献。请先在阅读器中打开文献，或在主文库选中多篇带标注的文献后重试。";
-        scroll.appendChild(empty);
-        return;
-      }
-      const terms = extractQueryTerms(queryInput.value);
-      const table = matrixEl(doc, "table");
-      table.className = "zbf-matrix-table";
-      const thead = matrixEl(doc, "thead");
-      const trHead = matrixEl(doc, "tr");
-      const firstTh = matrixEl(doc, "th");
-      firstTh.style.width = "220px";
-      const allCb = matrixEl(doc, "input");
-      allCb.type = "checkbox";
-      const syncAllCheckbox = () => {
-        const total = currentMatrix.rows.length;
-        const checkedCount = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
-        allCb.checked = total > 0 && checkedCount === total;
-        allCb.indeterminate = checkedCount > 0 && checkedCount < total;
-      };
-      syncAllCheckbox();
-      allCb.style.marginRight = "6px";
-      allCb.title = "全选 / 取消当前列表文献";
-      const rowCbs = [];
-      allCb.addEventListener("change", () => {
-        allCb.indeterminate = false;
-        for (const r of currentMatrix.rows) {
-          if (allCb.checked) selectedIDs.add(r.itemID);
-          else selectedIDs.delete(r.itemID);
-        }
-        for (const cb of rowCbs) cb.checked = allCb.checked;
-        updateStatus();
-      });
-      const headTitle = matrixEl(doc, "span");
-      headTitle.textContent = `文献 (${currentMatrix.rows.length})`;
-      firstTh.append(allCb, headTitle);
-      trHead.appendChild(firstTh);
-      for (const col of currentMatrix.columns) {
-        const th = matrixEl(doc, "th");
-        const dotHex = colorByLabel.get(col);
-        if (dotHex) {
-          const dot = matrixEl(doc, "span");
-          dot.className = "zbf-matrix-dot";
-          dot.style.background = dotHex;
-          dot.style.marginRight = "5px";
-          th.appendChild(dot);
-        }
-        const lbl = matrixEl(doc, "span");
-        lbl.textContent = col;
-        th.appendChild(lbl);
-        trHead.appendChild(th);
-      }
-      thead.appendChild(trHead);
-      table.appendChild(thead);
-      const tbody = matrixEl(doc, "tbody");
-      for (const row of currentMatrix.rows) {
-        const tr = matrixEl(doc, "tr");
-        const tdTitle = matrixEl(doc, "td");
-        const cb = matrixEl(doc, "input");
-        cb.type = "checkbox";
-        cb.checked = selectedIDs.has(row.itemID);
-        cb.style.marginRight = "6px";
-        rowCbs.push(cb);
-        cb.addEventListener("change", () => {
-          if (cb.checked) selectedIDs.add(row.itemID);
-          else selectedIDs.delete(row.itemID);
-          syncAllCheckbox();
-          updateStatus();
-        });
-        const link = matrixEl(doc, "button");
-        link.type = "button";
-        link.className = "zbf-matrix-item-link";
-        renderRichTitleNodes(doc, link, row.title);
-        link.title = "打开并聚焦此文献阅读器";
-        link.addEventListener("click", () => {
-          close();
-          options.bus?.emit("workspace:open-item-request", { itemID: row.itemID, preferExistingTab: true });
-        });
-        tdTitle.append(cb, link);
-        if (row.creatorYear) {
-          const sub = matrixEl(doc, "div");
-          sub.style.opacity = "0.72";
-          sub.style.fontSize = "11px";
-          sub.textContent = row.creatorYear;
-          tdTitle.appendChild(sub);
-        }
-        tr.appendChild(tdTitle);
-        for (const col of currentMatrix.columns) {
-          const td = matrixEl(doc, "td");
-          const colColor = colorByLabel.get(col) || "";
-          for (const ann of row.cells[col] || []) {
-            const block = matrixEl(doc, "div");
-            block.className = "zbf-matrix-ann";
-            if (colColor) block.style.borderLeftColor = colColor;
-            const page = ann.pageLabel ? `[p.${ann.pageLabel}] ` : "";
-            const snippet = ann.comment && ann.text ? `${page}${ann.text}（评注：${ann.comment}）` : `${page}${ann.comment || ann.text}`;
-            renderHighlightedSnippet(doc, block, snippet, terms);
-            block.title = "点击复制此条标注内容";
-            block.addEventListener("click", () => {
-              statusEl.textContent = writeMatrixClipboard(snippet, options.clipboard) ? "✓ 已复制单条标注内容" : "✕ 复制失败";
-            });
-            td.appendChild(block);
-          }
-          tr.appendChild(td);
-        }
-        tbody.appendChild(tr);
-      }
-      table.appendChild(tbody);
-      scroll.appendChild(table);
-    };
-    clearBtn.addEventListener("click", () => {
-      queryInput.value = "";
-      renderTable();
-      queryInput.focus?.();
-    });
-    queryInput.addEventListener("input", renderTable);
-    renderTable();
-    const foot = matrixEl(doc, "div");
-    foot.className = "zbf-matrix-foot";
-    const actions = matrixEl(doc, "div");
-    actions.className = "zbf-matrix-actions";
-    const mkBtn = (label, primary, onClick) => {
-      const b = matrixEl(doc, "button");
-      b.type = "button";
-      b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
-      b.textContent = label;
-      b.addEventListener("click", onClick);
-      actions.appendChild(b);
-    };
-    mkBtn("存为 Zotero 笔记", true, () => {
-      void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then(async (id) => {
-        statusEl.textContent = id ? `✓ 已生成并打开笔记 (#${id})` : "✕ 生成笔记失败";
-        if (id) {
-          try {
-            await globalThis.Zotero?.Notes?.open?.(id, void 0, { openInWindow: false });
-          } catch {
-          }
-        }
-      });
-    });
-    mkBtn("复制 Markdown", false, () => {
-      statusEl.textContent = writeMatrixClipboard(renderMatrixMarkdown(currentMatrix, options.title), options.clipboard) ? "✓ 已复制 Markdown 表格" : "✕ 复制失败";
-    });
-    mkBtn("复制 CSV", false, () => {
-      statusEl.textContent = writeMatrixClipboard(renderMatrixCsv(currentMatrix), options.clipboard) ? "✓ 已复制 CSV" : "✕ 复制失败";
-    });
-    if (options.clipboard) {
-      mkBtn("复制勾选 CSL 引文", false, () => {
-        const targets = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => hostItems?.get?.(r.itemID)).filter(Boolean);
-        if (!targets.length) {
-          statusEl.textContent = "请先勾选至少一篇文献";
-          return;
-        }
-        void options.clipboard?.copyItems(targets, { source: "tab-menu" }).then((ok) => {
-          statusEl.textContent = ok ? `✓ 已复制 ${targets.length} 篇 CSL 引文并记入反查历史` : "✕ 复制引文失败";
-        });
-      });
-    }
-    if (options.bus && options.prefs.get("modules.wordCite.enable")) {
-      mkBtn("合并插入 Word", false, () => {
-        const ids = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => r.itemID);
-        if (!ids.length) {
-          statusEl.textContent = "请先勾选至少一篇文献";
-          return;
-        }
-        options.bus?.emit("word:insert-items-request", { itemIDs: ids, win: options.win });
-        statusEl.textContent = `✓ 已发送 ${ids.length} 篇文献到 Word`;
-      });
-    }
-    foot.append(statusEl, actions);
-    dialog.append(head, controls, scroll, foot);
-    backdrop.appendChild(dialog);
-    doc.addEventListener?.("keydown", onKey, true);
-    closeBtn.addEventListener("click", close);
-    backdrop.addEventListener("click", (e) => {
-      if (e.target === backdrop) close();
-    });
-    (options.mountRoot || doc.body || doc.documentElement)?.appendChild(backdrop);
-    queryInput.focus?.();
-  }
-
-  // src/domains/visual-notes/annotation-popup-labels.ts
-  var STYLE_ID3 = "zbf-reader-color-labels-style";
-  var LABEL_CLASS = "zbf-popup-color-name";
-  var COLOR_KEYS = Object.keys(DEFAULT_ANNOTATION_COLORS);
-  var POPUP_CSS = `
-.selection-popup, .annotation-popup { max-width: 480px !important; }
-.selection-popup .colors, .annotation-popup .colors { flex-wrap: wrap !important; justify-content: flex-start !important; gap: 4px 6px !important; }
-.selection-popup .colors .color-button, .annotation-popup .colors .color-button {
-  width: auto !important; min-width: 20px; height: 24px !important;
-  padding: 2px 7px !important; display: inline-flex !important;
-  align-items: center !important; gap: 5px !important; border-radius: 6px !important;
-  transition: background-color 0.14s ease, transform 0.12s cubic-bezier(0.22,1,0.36,1) !important;
-}
-.selection-popup .colors .color-button:hover, .annotation-popup .colors .color-button:hover {
-  background-color: rgba(79, 70, 229, 0.08) !important;
-}
-.selection-popup .colors .color-button:active, .annotation-popup .colors .color-button:active {
-  transform: scale(0.95) !important;
-}
-.selection-popup .colors .color-button[data-zbf-dedup-hidden="true"],
-.annotation-popup .colors .color-button[data-zbf-dedup-hidden="true"] {
-  display: none !important;
-}
-.selection-popup .colors .color-button svg, .annotation-popup .colors .color-button svg { flex: none; }
-.${LABEL_CLASS} {
-  font-size: 12px; font-weight: 500; line-height: 1.2; color: var(--fill-primary, currentColor);
-  white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
-}
-`;
-  function rgbToHex(raw) {
-    const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (!m) return "";
-    const toHex = (n) => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, "0");
-    return `#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`;
-  }
-  function resolvePopupButtonColor(btn, index) {
-    const fillNode = btn.querySelector?.('path[fill]:not([fill="none"]), rect[fill]:not([fill="none"]), circle[fill]:not([fill="none"])');
-    const fillAttr = String(fillNode?.getAttribute?.("fill") || "").trim();
-    if (fillAttr) {
-      return fillAttr.startsWith("rgb") ? rgbToHex(fillAttr) : normalizeHexColor2(fillAttr);
-    }
-    const bg = String(btn.style?.backgroundColor || "").trim();
-    if (bg.startsWith("#")) return normalizeHexColor2(bg);
-    if (bg.startsWith("rgb")) return rgbToHex(bg);
-    return COLOR_KEYS[index] || "";
-  }
-  function isSelectedColorButton(btn) {
-    try {
-      if (btn.classList?.contains?.("active") || btn.classList?.contains?.("selected")) return true;
-      if (btn.getAttribute?.("aria-pressed") === "true" || btn.getAttribute?.("aria-checked") === "true") return true;
-      if (btn.getAttribute?.("data-selected") === "true" || btn.hasAttribute?.("checked")) return true;
-    } catch {
-    }
-    return false;
-  }
-  function decorateSelectionPopupDoc(readerDoc, semantics, enabledColors) {
-    const buttons = readerDoc.querySelectorAll?.(".selection-popup .colors .color-button, .annotation-popup .colors .color-button");
-    if (!buttons || !buttons.length) return 0;
-    const activeSet = enabledColors && enabledColors.size > 0 ? enabledColors : parseEnabledAnnotationColors("");
-    const groups = /* @__PURE__ */ new Map();
-    let updated = 0;
-    buttons.forEach((btn, index) => {
-      const hex = resolvePopupButtonColor(btn, index);
-      const label = hex && semantics[hex] || "";
-      let span = btn.querySelector?.(`.${LABEL_CLASS}`);
-      const group2 = btn.parentElement ?? null;
-      const seen = groups.get(group2) || /* @__PURE__ */ new Set();
-      groups.set(group2, seen);
-      const disabledByPalette = Boolean(hex) && !activeSet.has(hex);
-      const isDup = !label || seen.has(label);
-      if ((disabledByPalette || isDup) && !isSelectedColorButton(btn)) {
-        span?.remove?.();
-        btn.setAttribute?.("data-zbf-dedup-hidden", "true");
-        return;
-      }
-      btn.removeAttribute?.("data-zbf-dedup-hidden");
-      if (!label) {
-        span?.remove?.();
-        return;
-      }
-      seen.add(label);
-      if (!span) {
-        const htmlNs = "http://www.w3.org/1999/xhtml";
-        span = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "span") : readerDoc.createElement("span");
-        span.className = LABEL_CLASS;
-        btn.appendChild(span);
-      }
-      if (span.textContent !== label) span.textContent = label;
-      updated += 1;
-    });
-    return updated;
-  }
-  function clearSelectionPopupDoc(readerDoc) {
-    readerDoc.getElementById?.(STYLE_ID3)?.remove?.();
-    readerDoc.querySelectorAll?.(`.${LABEL_CLASS}`).forEach((el) => el.remove?.());
-    readerDoc.querySelectorAll?.("[data-zbf-dedup-hidden]").forEach((el) => el.removeAttribute?.("data-zbf-dedup-hidden"));
-  }
-  var ReaderPopupLabelsController = class {
-    kernel;
-    attachedDocs = /* @__PURE__ */ new Map();
-    pendingReaders = /* @__PURE__ */ new Set();
-    notifierSub = null;
-    active = false;
-    constructor(kernel) {
-      this.kernel = kernel;
-    }
-    isEnabled() {
-      return Boolean(this.kernel.prefs.get("inspector.annotations.popupLabelsEnable"));
-    }
-    getSemantics() {
-      return parseColorSemantics(String(this.kernel.prefs.get("inspector.annotations.colorLabels") || ""));
-    }
-    getEnabledColors() {
-      return parseEnabledAnnotationColors(String(this.kernel.prefs.get("inspector.annotations.enabledColors") || ""));
-    }
-    start() {
-      if (this.active) return;
-      this.active = true;
-      this.sync();
-      this.notifierSub = this.kernel.notifier?.subscribe?.(["tab"], ({ event }) => {
-        if (!this.active || !this.isEnabled()) return;
-        if (event === "add" || event === "select" || event === "open") {
-          this.scanOpenReaders();
-        } else if (event === "close") {
-          this.pruneClosedDocs();
-        }
-      }) ?? null;
-    }
-    stop() {
-      this.active = false;
-      this.notifierSub?.();
-      this.notifierSub = null;
-      this.pendingReaders.clear();
-      for (const dispose of [...this.attachedDocs.values()]) dispose();
-      this.attachedDocs.clear();
-    }
-    sync() {
-      if (!this.active) return;
-      if (!this.isEnabled()) {
-        for (const dispose of [...this.attachedDocs.values()]) dispose();
-        this.attachedDocs.clear();
-        this.pendingReaders.clear();
-        return;
-      }
-      this.scanOpenReaders();
-      const sem = this.getSemantics();
-      const enabled = this.getEnabledColors();
-      for (const doc of this.attachedDocs.keys()) {
-        decorateSelectionPopupDoc(doc, sem, enabled);
-      }
-    }
-    attachReaderDoc(readerDoc) {
-      if (!this.active || !this.isEnabled() || !readerDoc || this.attachedDocs.has(readerDoc)) return;
-      const headOrRoot = readerDoc.head || readerDoc.documentElement;
-      if (headOrRoot && !readerDoc.getElementById?.(STYLE_ID3)) {
-        const htmlNs = "http://www.w3.org/1999/xhtml";
-        const styleEl = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "style") : readerDoc.createElement("style");
-        styleEl.id = STYLE_ID3;
-        styleEl.textContent = POPUP_CSS;
-        headOrRoot.appendChild(styleEl);
-      }
-      const sheet = readerDoc.getElementById?.(STYLE_ID3);
-      if (sheet && sheet.textContent !== POPUP_CSS) sheet.textContent = POPUP_CSS;
-      const apply = () => decorateSelectionPopupDoc(readerDoc, this.getSemantics(), this.getEnabledColors());
-      apply();
-      const Obs = readerDoc.defaultView?.MutationObserver || globalThis.MutationObserver;
-      const target = readerDoc.body || readerDoc.documentElement;
-      let observer = null;
-      let applyQueued = false;
-      if (Obs && target) {
-        const isPopupMutation = (records) => {
-          try {
-            for (let r = 0; r < records.length; r++) {
-              const rec = records[r];
-              const t = rec?.target;
-              if (t && t.nodeType === 1 && t.closest?.(".selection-popup, .annotation-popup")) return true;
-              const added = rec?.addedNodes;
-              if (added) {
-                for (let i = 0; i < added.length; i++) {
-                  const el = added[i];
-                  if (el && el.nodeType === 1 && (el.matches?.(".selection-popup, .annotation-popup") || el.querySelector?.(".selection-popup, .annotation-popup"))) {
-                    return true;
-                  }
-                }
-              }
-            }
-            return false;
-          } catch {
-            return true;
-          }
-        };
-        const obs = new Obs((records) => {
-          if (!isPopupMutation(records) || applyQueued) return;
-          applyQueued = true;
-          void Promise.resolve().then(() => {
-            applyQueued = false;
-            if (this.active && this.isEnabled() && this.attachedDocs.has(readerDoc)) apply();
-          });
-        });
-        obs.observe(target, { childList: true, subtree: true });
-        observer = obs;
-      }
-      this.attachedDocs.set(readerDoc, () => {
-        observer?.disconnect();
-        clearSelectionPopupDoc(readerDoc);
-      });
-    }
-    scanOpenReaders() {
-      const readers = globalThis.Zotero?.Reader?._readers || [];
-      for (const reader of readers) {
-        if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
-        const doc = reader._iframeWindow?.document;
-        if (doc?.body) {
-          this.attachReaderDoc(doc);
-        } else if (!this.pendingReaders.has(reader)) {
-          this.pendingReaders.add(reader);
-          const waitReady = reader._waitForReader?.() ?? reader._initPromise ?? Promise.resolve();
-          void Promise.resolve(waitReady).then(() => {
-            this.pendingReaders.delete(reader);
-            if (this.active && this.isEnabled() && !reader._isTabClosed) {
-              const readyDoc = reader._iframeWindow?.document;
-              if (readyDoc?.body) this.attachReaderDoc(readyDoc);
-            }
-          }).catch(() => {
-            this.pendingReaders.delete(reader);
-          });
-        }
-      }
-    }
-    pruneClosedDocs() {
-      for (const [doc, dispose] of [...this.attachedDocs.entries()]) {
-        if (!doc.defaultView || doc.defaultView.closed) {
-          this.attachedDocs.delete(doc);
-          dispose();
-        }
-      }
-    }
-  };
-
-  // src/domains/visual-notes/annotation-tools.ts
-  var ReaderAnnotationTools = class {
-    unregisterListener = null;
-    kernel;
-    popupLabels;
-    constructor(kernel) {
-      this.kernel = kernel;
-      this.popupLabels = new ReaderPopupLabelsController(kernel);
-    }
-    register() {
-      this.popupLabels.start();
-      if (this.unregisterListener) return;
-      const readerApi = globalThis.Zotero?.Reader;
-      if (typeof readerApi?.registerEventListener !== "function") return;
-      const listener = (event) => {
-        if (!this.kernel.prefs.get("inspector.annotations.mergeEnable")) return;
-        const ids = Array.isArray(event?.params?.ids) ? event.params.ids.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0) : [];
-        if (ids.length < 2 || typeof event?.append !== "function") return;
-        const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
-        event.append({
-          label: zh ? `合并选中的 ${ids.length} 条标注` : `Merge ${ids.length} Selected Annotations`,
-          onCommand: () => {
-            void mergeAnnotationsByIDs(ids).then((res) => {
-              try {
-                const PW = globalThis.Zotero?.ProgressWindow;
-                if (typeof PW !== "function") return;
-                const win = new PW({ closeOnClick: true });
-                win.changeHeadline(zh ? "BridgeFlow 批注合并" : "BridgeFlow Annotation Merge");
-                win.addDescription(res.ok ? zh ? `已合并 ${ids.length} 条标注为 1 条` : `Merged ${ids.length} annotations` : zh ? "无法合并所选批注（请确认属于同一有效附件）" : "Unable to merge selected annotations");
-                win.show();
-                win.startCloseTimer(2600);
-              } catch {
-              }
-            });
-          }
-        });
-      };
-      try {
-        readerApi.registerEventListener("createAnnotationContextMenu", listener, this.kernel.info.id);
-        this.unregisterListener = () => {
-          try {
-            readerApi.unregisterEventListener?.("createAnnotationContextMenu", listener);
-          } catch {
-          }
-        };
-      } catch {
-        this.unregisterListener = null;
-      }
-    }
-    unregister() {
-      this.popupLabels.stop();
-      this.unregisterListener?.();
-      this.unregisterListener = null;
-    }
-    mergeByIDs(ids) {
-      return mergeAnnotationsByIDs(ids);
-    }
-  };
-
-  // src/services/collection-notes.ts
-  var FIG_TABLE_RE = /^(?:fig(?:ure)?|tab(?:le|el)?|图|表)\b/i;
-  function isFigureOrTableAnnotation(ann) {
-    for (const t of ann.tags) {
-      if (FIG_TABLE_RE.test(String(t || "").trim())) return true;
-    }
-    return FIG_TABLE_RE.test(String(ann.comment || "").trim());
-  }
-  function stripNoteHtml(rawHtml) {
-    const raw = String(rawHtml || "");
-    if (!raw.trim()) return { heading: "", snippet: "" };
-    const withBreaks = raw.replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/<\/?(?:sub|sup|i|b|strong|em)>/gi, "");
-    const lines = withBreaks.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
-    const heading = (lines[0] || "").slice(0, 80);
-    const body = lines.join(" · ").slice(0, 360);
-    return { heading, snippet: body };
-  }
-  function resolveRegularParent(raw) {
-    if (!raw || raw.deleted) return null;
-    const hostItems = globalThis.Zotero?.Items;
-    if (typeof raw.isRegularItem === "function") {
-      if (raw.isRegularItem()) return raw;
-      if (raw.parentItemID) {
-        const parent = hostItems?.get?.(raw.parentItemID);
-        if (parent && !parent.deleted && parent.isRegularItem?.()) return parent;
-      }
-      return null;
-    }
-    if (raw.parentItemID && hostItems?.get) {
-      return hostItems.get(raw.parentItemID) || raw;
-    }
-    return raw;
-  }
-  function resolveHubScopeItems(win, mode, zh = true) {
-    const pane = win?.ZoteroPane;
-    const seen = /* @__PURE__ */ new Set();
-    const items = [];
-    const push = (raw) => {
-      const reg = resolveRegularParent(raw);
-      const id = Number(reg?.id || 0);
-      if (id > 0 && !seen.has(id)) {
-        seen.add(id);
-        items.push(reg);
-      }
-    };
-    let collectionID;
-    let libraryID;
-    try {
-      const treeRow = pane?.getCollectionTreeRow?.();
-      if (treeRow?.isCollection?.() && treeRow.ref?.id) {
-        collectionID = Number(treeRow.ref.id);
-        libraryID = Number(treeRow.ref.libraryID || 1);
-      } else if (treeRow?.ref?.libraryID) {
-        libraryID = Number(treeRow.ref.libraryID);
-      }
-    } catch {
-    }
-    if (mode === "selected") {
-      for (const it of pane?.getSelectedItems?.() || []) push(it);
-      return {
-        scopeTitle: zh ? "当前选中文献" : "Selected Items",
-        items,
-        libraryID: libraryID || items[0]?.libraryID,
-        collectionID
-      };
-    }
-    if (mode === "tabs") {
-      const hostItems = globalThis.Zotero?.Items;
-      for (const t of win?.Zotero_Tabs?._tabs || []) {
-        const id = Number(t?.data?.itemID || 0);
-        if (id > 0) push(hostItems?.get?.(id) || { id });
-      }
-      return {
-        scopeTitle: zh ? "已打开阅读标签" : "Open Reader Tabs",
-        items,
-        libraryID: libraryID || items[0]?.libraryID,
-        collectionID
-      };
-    }
-    const view = pane?.itemsView;
-    const rowCount = Math.min(Number(view?.rowCount || 0), 2500);
-    for (let i = 0; i < rowCount; i++) {
-      push(view?.getRow?.(i)?.ref);
-    }
-    const colName = String(pane?.getSelectedCollections?.()?.[0]?.name || pane?.getCollectionTreeRow?.()?.ref?.name || "").trim();
-    const scopeTitle = colName || (zh ? "当前视图全部文献" : "Current Library View");
-    return {
-      scopeTitle,
-      items,
-      libraryID: libraryID || items[0]?.libraryID,
-      collectionID
-    };
-  }
-  function collectHubAnnotations(items, colorLabelsJson, opts = {}) {
-    const semantics = parseColorSemantics(colorLabelsJson);
-    const colorHexByLabel = /* @__PURE__ */ new Map();
-    for (const [hex, lbl] of Object.entries(semantics)) {
-      if (!colorHexByLabel.has(lbl)) colorHexByLabel.set(lbl, hex);
-    }
-    let base = collectItemAnnotations(items, semantics);
-    if (opts.ignoreFigureTable) {
-      base = base.filter((a) => !isFigureOrTableAnnotation(a));
-    }
-    const colorCounts = /* @__PURE__ */ new Map();
-    for (const a of base) {
-      colorCounts.set(a.colorLabel, (colorCounts.get(a.colorLabel) || 0) + 1);
-    }
-    const annotations = filterCollectedAnnotations(base, {
-      query: opts.query,
-      colorLabel: opts.colorLabel
-    });
-    return {
-      totalBeforeFilter: base.length,
-      annotations,
-      colorCounts,
-      colorHexByLabel
-    };
-  }
-  function matchesBooleanText(haystack, rawQuery) {
-    const q = String(rawQuery || "").trim().toLowerCase();
-    if (!q) return true;
-    const hay = haystack.toLowerCase();
-    const orParts = q.split("||").map((s) => s.trim()).filter(Boolean);
-    if (!orParts.length) return true;
-    return orParts.some((clause) => {
-      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
-      return andTerms.length > 0 && andTerms.every((t) => hay.includes(t));
-    });
-  }
-  function collectHubNotes(items, getBriefNote, query = "") {
-    const hostItems = globalThis.Zotero?.Items;
-    const entries = [];
-    let totalChildNotes = 0;
-    let totalBriefNotes = 0;
-    for (const item of items) {
-      const itemID = Number(item?.id || 0);
-      if (!itemID || item?.deleted) continue;
-      const title = String(item.getField?.("title") || item.title || `#${itemID}`);
-      const creator = String(item.firstCreator || "").trim();
-      const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
-      const creatorYear = [creator, year].filter(Boolean).join(" ");
-      const briefNote = String(getBriefNote(item) || "").trim();
-      const childNotes = [];
-      const noteIDs = typeof item.getNotes === "function" ? item.getNotes() || [] : [];
-      for (const nid of noteIDs) {
-        const noteItem = hostItems?.get?.(nid);
-        if (!noteItem || noteItem.deleted) continue;
-        const rawHtml = String(noteItem.getNote?.() || noteItem.note || "");
-        const parsed = stripNoteHtml(rawHtml);
-        if (!parsed.snippet) continue;
-        childNotes.push({
-          noteID: Number(nid),
-          heading: parsed.heading || "笔记",
-          snippet: parsed.snippet,
-          dateModified: String(noteItem.dateModified || "").slice(0, 10)
-        });
-      }
-      const hay = [title, creatorYear, briefNote, ...childNotes.map((n) => `${n.heading} ${n.snippet}`)].join(" ");
-      if (!matchesBooleanText(hay, query)) continue;
-      if (query.trim() && !briefNote && !childNotes.length && !matchesBooleanText(`${title} ${creatorYear}`, query)) {
-        continue;
-      }
-      if (briefNote) totalBriefNotes++;
-      totalChildNotes += childNotes.length;
-      entries.push({ item, itemID, title, creatorYear, briefNote, childNotes });
-    }
-    return { entries, totalChildNotes, totalBriefNotes };
-  }
-  function formatHubAnnotationBody(ann, preferCommentOverQuote) {
-    const page = ann.pageLabel ? `[p.${ann.pageLabel}] ` : "";
-    if (preferCommentOverQuote && ann.comment) {
-      return `${page}${ann.comment}`;
-    }
-    if (ann.comment && ann.text) {
-      return `${page}${ann.text}（评注：${ann.comment}）`;
-    }
-    return `${page}${ann.comment || ann.text}`;
-  }
-  function mergeHubSynthesisEntries(notes, annotations) {
-    const byItemAnn = /* @__PURE__ */ new Map();
-    for (const a of annotations) {
-      const arr = byItemAnn.get(a.itemID) || [];
-      arr.push(a);
-      byItemAnn.set(a.itemID, arr);
-    }
-    const seen = /* @__PURE__ */ new Set();
-    const merged = [];
-    for (const n of notes) {
-      seen.add(n.itemID);
-      merged.push(n);
-    }
-    for (const [itemID, anns] of byItemAnn.entries()) {
-      if (seen.has(itemID) || !anns.length) continue;
-      seen.add(itemID);
-      merged.push({
-        item: null,
-        itemID,
-        title: anns[0].itemTitle || `#${itemID}`,
-        creatorYear: anns[0].creatorYear || "",
-        briefNote: "",
-        childNotes: []
-      });
-    }
-    return { merged, byItemAnn };
-  }
-  function renderCollectionHubMarkdown(heading, notes, annotations, preferCommentOverQuote = false) {
-    const { merged, byItemAnn } = mergeHubSynthesisEntries(notes, annotations);
-    const lines = [`# ${heading}`, ""];
-    for (const entry of merged) {
-      const anns = byItemAnn.get(entry.itemID) || [];
-      if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
-      lines.push(`## ${entry.title}${entry.creatorYear ? ` (${entry.creatorYear})` : ""}`);
-      if (entry.briefNote) lines.push(`- **简记**：${entry.briefNote}`);
-      for (const cn of entry.childNotes) {
-        lines.push(`- **子笔记**${cn.dateModified ? ` [${cn.dateModified}]` : ""}：${cn.snippet}`);
-      }
-      for (const ann of anns) {
-        lines.push(`- **[${ann.colorLabel}]** ${formatHubAnnotationBody(ann, preferCommentOverQuote)}`);
-      }
-      lines.push("");
-    }
-    return lines.join("\n").trim();
-  }
-  function escHtml2(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  }
-  async function saveCollectionHubAsZoteroNote(options) {
-    const ZoteroObj = globalThis.Zotero;
-    const ItemCtor = ZoteroObj?.Item;
-    if (typeof ItemCtor !== "function") return null;
-    const { merged, byItemAnn } = mergeHubSynthesisEntries(options.notes, options.annotations);
-    const sections = [`<h2>${escHtml2(options.heading)}</h2>`];
-    for (const entry of merged) {
-      const anns = byItemAnn.get(entry.itemID) || [];
-      if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
-      sections.push(`<h3>${escHtml2(entry.title)}${entry.creatorYear ? ` <small>(${escHtml2(entry.creatorYear)})</small>` : ""}</h3><ul>`);
-      if (entry.briefNote) sections.push(`<li><strong>简记：</strong>${escHtml2(entry.briefNote)}</li>`);
-      for (const cn of entry.childNotes) {
-        sections.push(`<li><strong>子笔记：</strong>${escHtml2(cn.snippet)}</li>`);
-      }
-      for (const ann of anns) {
-        sections.push(`<li><strong>[${escHtml2(ann.colorLabel)}]</strong> ${escHtml2(formatHubAnnotationBody(ann, Boolean(options.preferCommentOverQuote)))}</li>`);
-      }
-      sections.push("</ul>");
-    }
-    try {
-      const note = new ItemCtor("note");
-      note.libraryID = options.libraryID || Number(ZoteroObj?.Libraries?.userLibraryID || 1);
-      note.setNote(sections.join(""));
-      if (options.collectionID && typeof note.addToCollection === "function") {
-        note.addToCollection(options.collectionID);
-      }
-      const id = await note.saveTx?.();
-      return Number(id || note.id || 0) || null;
-    } catch {
-      return null;
-    }
-  }
-
-  // src/domains/visual-notes/hub-cache.ts
-  function matchesNotesQuery(haystack, rawQuery) {
-    const q = String(rawQuery || "").trim().toLowerCase();
-    if (!q) return true;
-    const hay = haystack.toLowerCase();
-    const orParts = q.split("||").map((s) => s.trim()).filter(Boolean);
-    return !orParts.length || orParts.some((clause) => {
-      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
-      return andTerms.length > 0 && andTerms.every((t) => hay.includes(t));
-    });
-  }
-  function createHubScopeMemo(opts) {
-    let cachedMode = null;
-    let cachedColorRaw = "";
-    let scopeRes = resolveHubScopeItems(opts.win, "collection", opts.zh);
-    let rawAnnotations = [];
-    let colorHexByLabel = /* @__PURE__ */ new Map();
-    let rawNoteRecords = [];
-    const invalidate = () => {
-      cachedMode = null;
-    };
-    const ensureScope = (mode) => {
-      const colorRaw = String(opts.getColorJson() || "");
-      if (cachedMode === mode && cachedColorRaw === colorRaw) return;
-      cachedMode = mode;
-      cachedColorRaw = colorRaw;
-      scopeRes = resolveHubScopeItems(opts.win, mode, opts.zh);
-      const semantics = parseColorSemantics(colorRaw);
-      colorHexByLabel = /* @__PURE__ */ new Map();
-      for (const [hex, lbl] of Object.entries(semantics)) {
-        if (!colorHexByLabel.has(lbl)) colorHexByLabel.set(lbl, hex);
-      }
-      rawAnnotations = collectItemAnnotations(scopeRes.items, semantics);
-      const allNotes = collectHubNotes(scopeRes.items, opts.getBriefNote, "");
-      rawNoteRecords = allNotes.entries.map((entry) => ({
-        entry,
-        hay: [entry.title, entry.creatorYear, entry.briefNote, ...entry.childNotes.map((n) => `${n.heading} ${n.snippet}`)].join(" "),
-        metaHay: `${entry.title} ${entry.creatorYear}`
-      }));
-    };
-    const compute = (mode, query, colorLabel, ignoreFigureTable) => {
-      ensureScope(mode);
-      const base = ignoreFigureTable ? rawAnnotations.filter((a) => !isFigureOrTableAnnotation(a)) : rawAnnotations;
-      const colorCounts = /* @__PURE__ */ new Map();
-      for (const a of base) colorCounts.set(a.colorLabel, (colorCounts.get(a.colorLabel) || 0) + 1);
-      const annotations = filterCollectedAnnotations(base, { query, colorLabel });
-      const qTrim = query.trim();
-      const entries = [];
-      let totalBriefNotes = 0;
-      let totalChildNotes = 0;
-      for (const rec of rawNoteRecords) {
-        if (qTrim) {
-          if (!matchesNotesQuery(rec.hay, qTrim)) continue;
-          if (!rec.entry.briefNote && !rec.entry.childNotes.length && !matchesNotesQuery(rec.metaHay, qTrim)) continue;
-        }
-        if (rec.entry.briefNote) totalBriefNotes++;
-        totalChildNotes += rec.entry.childNotes.length;
-        entries.push(rec.entry);
-      }
-      return {
-        scope: scopeRes,
-        annData: { totalBeforeFilter: base.length, annotations, colorCounts, colorHexByLabel },
-        notesData: { entries, totalChildNotes, totalBriefNotes }
-      };
-    };
-    return { compute, invalidate, matchesAnnotationQuery };
-  }
-  function resolveAffectedVisualItemIDs(rawIDs) {
-    const out = /* @__PURE__ */ new Set();
-    const hostItems = globalThis.Zotero?.Items;
-    for (const raw of rawIDs) {
-      let curID = Number(raw || 0);
-      for (let hop = 0; hop < 3 && Number.isInteger(curID) && curID > 0; hop++) {
-        out.add(curID);
-        const obj = hostItems?.get?.(curID);
-        const nextParent = Number(obj?.parentItemID || obj?.parentID || 0);
-        if (!nextParent || nextParent === curID) break;
-        curID = nextParent;
-      }
-    }
-    return out;
-  }
-
-  // src/domains/visual-notes/gallery-styles.ts
-  var GALLERY_STYLE_ID = "zbf-gallery-board-style";
-  var GALLERY_BOARD_CSS = `
-@keyframes zbfGalFadeIn { from { opacity: 0.9; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes zbfCoverReveal { from { opacity: 0.25; transform: scale(1.015); } to { opacity: 1; transform: scale(1); } }
-
-.zbf-items-tb-group { display: inline-flex; align-items: center; gap: 3px; margin-inline: 3px; }
-.zbf-items-tb-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: light-dark(#475569, #cbd5e1); cursor: pointer; transition: background-color 0.16s cubic-bezier(0.22,1,0.36,1), color 0.16s ease, transform 0.14s cubic-bezier(0.22,1,0.36,1); }
-.zbf-items-tb-icon:hover { background: light-dark(rgba(79,70,229,0.08), rgba(129,140,248,0.14)); color: light-dark(#0f172a, #f8fafc); }
-.zbf-items-tb-icon:active { transform: scale(0.93); }
-.zbf-items-tb-icon[aria-pressed="true"] { background: light-dark(linear-gradient(135deg, rgba(99,91,217,0.16), rgba(22,154,153,0.12)), rgba(129,140,248,0.22)); color: light-dark(#4f46e5, #a5b4fc); box-shadow: inset 0 0 0 1px light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.32)); }
-
-#zotero-items-pane[data-zbf-gallery] { position:relative }
-#zotero-items-pane[data-zbf-gallery] > :not(#zbf-gallery-panel) { visibility:hidden !important; pointer-events:none !important; }
-#zotero-items-pane[data-zbf-gallery] > #zbf-gallery-panel { position:absolute; inset:0; z-index:20; width:auto; height:auto; animation: zbfGalFadeIn 0.18s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gallery-panel * { box-sizing:border-box }
-.zbf-gallery-panel { container-type:inline-size; flex: 1 1 auto; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: light-dark(linear-gradient(180deg, #f8fafc 0%, #f3f6fb 100%), linear-gradient(180deg, #0d1320 0%, #0b101b 100%)); color: light-dark(#111827, #e2e8f0); font: 12.5px/1.45 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif; overflow: hidden; }
-
-/* Minimal Single-Row Editorial Top Bar */
-.zbf-gal-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 5px 12px; border-bottom: 1px solid light-dark(rgba(15,23,42,0.075), rgba(148,163,184,0.14)); background: light-dark(rgba(255,255,255,0.92), rgba(17,24,39,0.92)); backdrop-filter: blur(8px); flex-wrap: wrap; flex: none; }
-.zbf-gal-bar-left, .zbf-gal-bar-right { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.zbf-gal-tabs { display: inline-flex; align-items: center; gap: 16px; margin-right: 4px; }
-.zbf-gal-tab { position: relative; border: 0; padding: 6px 2px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 13px/1.2 system-ui; cursor: pointer; transition: color 0.16s ease; }
-.zbf-gal-tab:hover { color: light-dark(#0f172a, #f1f5f9); }
-.zbf-gal-tab::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, #635bd9, #169a99); transform: scaleX(0); opacity: 0; transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), opacity 0.16s ease; }
-.zbf-gal-tab[data-active="true"] { color: light-dark(#0f172a, #ffffff); font-weight: 650; }
-.zbf-gal-tab[data-active="true"]::after { transform: scaleX(1); opacity: 1; }
-.zbf-gal-count { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; background: light-dark(rgba(15,23,42,0.05), rgba(255,255,255,0.08)); color: light-dark(#64748b, #94a3b8); font-variant-numeric: tabular-nums; }
-
-.zbf-gal-search-box { position: relative; display: inline-flex; align-items: center; }
-.zbf-gal-search-icon { position: absolute; left: 8px; color: light-dark(#94a3b8, #64748b); pointer-events: none; display: inline-flex; transition: color 0.15s ease; }
-.zbf-gal-search-box:focus-within .zbf-gal-search-icon { color: light-dark(#4f46e5, #818cf8); }
-.zbf-gal-search { width: clamp(96px,17cqi,164px); height: 28px; padding: 0 10px 0 27px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.16)); background: light-dark(#f1f5f9, #1e293b); color: inherit; font: 12px/1.2 system-ui; transition: width 0.2s cubic-bezier(0.22,1,0.36,1), background-color 0.16s, border-color 0.16s, box-shadow 0.16s; }
-.zbf-gal-search:focus { outline: none; width: clamp(128px,21cqi,208px); background: light-dark(#ffffff, #0f172a); border-color: light-dark(rgba(79,70,229,0.5), rgba(129,140,248,0.55)); box-shadow: 0 0 0 3px light-dark(rgba(79,70,229,0.12), rgba(129,140,248,0.16)); }
-
-.zbf-gal-select { height: 28px; padding: 0 8px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: light-dark(#475569, #cbd5e1); font: 500 12px/1.2 system-ui; cursor: pointer; transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
-.zbf-gal-select:hover { background: light-dark(#f1f5f9, #1e293b); color: light-dark(#0f172a, #ffffff); }
-.zbf-gal-select:focus { outline: none; border-color: light-dark(rgba(79,70,229,0.35), rgba(129,140,248,0.45)); }
-
-.zbf-gal-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#edf1f7, #1e293b); gap: 2px; }
-.zbf-gal-seg-btn { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 6.5px; padding: 4px 10px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.2 system-ui; cursor: pointer; transition: background-color 0.18s cubic-bezier(0.22,1,0.36,1), color 0.16s, box-shadow 0.18s, transform 0.12s; }
-.zbf-gal-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
-.zbf-gal-seg-btn:active { transform: scale(0.96); }
-.zbf-gal-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 4px rgba(15,23,42,0.1); }
-
-/* Viewport, Virtualized Masonry Grid & Soft Pastel Kanban Swimlanes */
-.zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; overflow-anchor: none; }
-.zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-items: start; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gal-masonry-col { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
-.zbf-gallery-panel[data-density="compact"] .zbf-gal-grid, .zbf-gallery-panel[data-density="compact"] .zbf-gal-masonry-col { gap: 8px; }
-.zbf-gal-virtual-spacer { flex: none; pointer-events: none; width: 100%; }
-
-.zbf-gal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 240px; padding: 36px 20px; text-align: center; color: light-dark(#64748b, #94a3b8); animation: zbfGalFadeIn 0.2s ease; }
-.zbf-gal-empty p { margin: 0; font-size: 13.5px; font-weight: 500; }
-
-.zbf-gal-board { display: flex; align-items: flex-start; gap: 13px; min-height: 100%; overflow-x: auto; padding-bottom: 10px; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gal-col { flex: 0 0 clamp(248px, calc(var(--zbf-card-width, 220px) + 56px), 440px); max-height: calc(100vh - 150px); display: flex; flex-direction: column; border-radius: 14px; background: var(--zbf-col-surface, rgba(100,116,139,0.045)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); overflow: hidden; transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1), background-color 0.18s ease; }
-.zbf-gallery-panel[data-density="compact"] .zbf-gal-col { flex: 0 0 clamp(220px, calc(var(--zbf-card-width, 220px) + 28px), 400px); }
-.zbf-gal-col[data-drop-over="true"], .zbf-gal-col[data-col-drag-over="true"] { border-color: #4f46e5; box-shadow: 0 0 0 2.5px rgba(79,70,229,0.2), 0 8px 20px rgba(79,70,229,0.08); transform: scale(1.006); }
-.zbf-gal-col-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; flex: none; cursor: grab; user-select: none; }
-.zbf-gal-col-head:active { cursor: grabbing; }
-.zbf-gal-col-pill { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-gal-col-count { font-size: 11.5px; font-weight: 600; color: light-dark(#64748b, #94a3b8); font-variant-numeric: tabular-nums; }
-.zbf-gal-col-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
-
-/* Editorial Literature Card */
-.zbf-gal-card { position: relative; display: flex; flex-direction: column; min-width: 0; gap: 6px; padding: 8px; border-radius: 9px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.035); cursor: pointer; transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s cubic-bezier(0.22,1,0.36,1), border-color 0.18s ease; }
-.zbf-gallery-panel[data-density="compact"] .zbf-gal-card { padding: 6px; gap: 4px; border-radius: 7px; }
-.zbf-gal-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(15,23,42,0.08), 0 2px 6px rgba(15,23,42,0.04); border-color: light-dark(rgba(79,70,229,0.28), rgba(129,140,248,0.36)); }
-.zbf-gal-card:active { transform: translateY(0) scale(0.992); }
-.zbf-gal-card[data-selected="true"] { border-color: light-dark(#4f46e5, #818cf8); box-shadow: 0 0 0 2px light-dark(rgba(79,70,229,0.18), rgba(129,140,248,0.28)), 0 4px 12px rgba(79,70,229,0.08); }
-.zbf-gal-card:focus-visible { outline: 2px solid light-dark(#4f46e5, #818cf8); outline-offset: 2px; }
-
-/* Card Top Cover (PDF First Page / Abstract Excerpt / Clean Fallback) */
-.zbf-gal-cover { position: relative; width: 100%; box-sizing: border-box; aspect-ratio: var(--zbf-cover-aspect, 1.95); height: var(--zbf-cover-height, auto); border-radius: 6px; overflow: hidden; background: light-dark(linear-gradient(135deg, #f4f6fa 0%, #eef2f8 100%), linear-gradient(135deg, #0f172a 0%, #152035 100%)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); flex: none; display: flex; align-items: center; justify-content: center; }
-.zbf-gal-cover-img { width: 100%; height: 100%; object-fit: cover; object-position: top center; background: #ffffff; display: block; animation: zbfCoverReveal 0.24s cubic-bezier(0.22,1,0.36,1); transition: transform 0.3s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gal-card:hover .zbf-gal-cover-img { transform: scale(1.018); }
-.zbf-gal-cover-abstract { width: 100%; height: 100%; padding: 9px 11px 14px; box-sizing: border-box; font-size: 11px; line-height: 1.56; color: light-dark(#4b5563, #94a3b8); overflow: hidden; align-self: flex-start; mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); transition: padding-top 0.16s ease; }
-.zbf-gal-cover:has(.zbf-gal-rate-float[data-has-rating="true"]) .zbf-gal-cover-abstract { padding-top: 28px; }
-.zbf-gal-cover-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: light-dark(#94a3b8, #64748b); font-size: 11.5px; }
-
-/* Hover-Reveal Floating Star Rater */
-.zbf-gal-rate-float { position: absolute; top: 6px; right: 6px; z-index: 2; display: inline-flex; align-items: center; gap: 1px; padding: 2px 6px; border-radius: 999px; background: light-dark(rgba(255,255,255,0.92), rgba(15,23,42,0.88)); backdrop-filter: blur(6px); border: 1px solid rgba(15,23,42,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.09); opacity: 0; transform: translateY(-2px); transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1); }
-.zbf-gal-rate-float[data-has-rating="true"], .zbf-gal-card:hover .zbf-gal-rate-float { opacity: 1; transform: translateY(0); }
-.zbf-gal-star { display: inline-block; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif; font-size: 11px; line-height: 1; filter: grayscale(1) opacity(0.28); padding: 0.5px; cursor: pointer; transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), filter 0.12s, opacity 0.12s; }
-.zbf-gal-star[data-lit="true"] { filter: none; opacity: 1; }
-.zbf-gal-rate-float[data-hover] .zbf-gal-star { filter: grayscale(1) opacity(0.22); }
-.zbf-gal-rate-float[data-hover="1"] .zbf-gal-star:nth-child(-n+1),
-.zbf-gal-rate-float[data-hover="2"] .zbf-gal-star:nth-child(-n+2),
-.zbf-gal-rate-float[data-hover="3"] .zbf-gal-star:nth-child(-n+3),
-.zbf-gal-rate-float[data-hover="4"] .zbf-gal-star:nth-child(-n+4),
-.zbf-gal-rate-float[data-hover="5"] .zbf-gal-star:nth-child(-n+5) { filter: drop-shadow(0 1px 2px rgba(245,158,11,0.38)); opacity: 1; }
-.zbf-gal-rate-float[data-clear-hint="true"] .zbf-gal-star[data-lit="true"] { opacity: 0.72; }
-.zbf-gal-star:hover { transform: scale(1.22); }
-
-/* Card Body Typography & Icon Metadata Rows */
-.zbf-gal-title-row { display: flex; align-items: flex-start; gap: 6px; color: light-dark(#111827, #f1f5f9); }
-.zbf-gal-title-icon { margin-top: 2px; color: light-dark(#94a3b8, #64748b); display: inline-flex; flex: none; transition: color 0.16s ease; }
-.zbf-gal-card:hover .zbf-gal-title-icon { color: light-dark(#635bd9, #818cf8); }
-.zbf-gal-title { font-weight: 600; font-size: 13px; line-height: 1.42; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.zbf-gal-title sub, .zbf-gal-title sup { font-size: 0.74em; line-height: 0; }
-
-.zbf-gal-meta-stack { display: flex; flex-direction: column; gap: 4px; }
-.zbf-gal-meta-row { display: flex; align-items: center; gap: 6px; font-size: 11.8px; line-height: 1.35; color: light-dark(#64748b, #94a3b8); min-width: 0; }
-.zbf-gal-meta-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.zbf-gal-brief { font-size: 11.4px; line-height: 1.45; padding: 5px 8px; border-radius: 6px; background: light-dark(linear-gradient(90deg, #f0fdfa, #ecfdf5), rgba(20,184,166,0.12)); color: light-dark(#0f766e, #5eead4); border-left: 2.5px solid #14b8a6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-
-.zbf-gal-tags-row { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow: hidden; margin-top: auto; padding-top: 1px; }
-.zbf-gal-tag-pill { display: inline-flex; align-items: center; max-width: 116px; padding: 1.5px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; transition: filter 0.14s ease; }
-.zbf-gal-tag-pill:hover { filter: brightness(0.96); }
-.zbf-gal-tag-more { display: inline-flex; align-items: center; padding: 1.5px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; background: light-dark(#e0f2fe, rgba(56,189,248,0.18)); color: light-dark(#0369a1, #7dd3fc); flex: none; }
-
-/* Inline Notes & Annotations Feed Cards inside Gallery */
-.zbf-gal-feed-grid { display:block; height:100%; }
-.zbf-gal-more { margin: 14px auto 4px; padding: 6px 18px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.24)); background: light-dark(#ffffff, #1e293b); color: inherit; font: 500 12px/1.2 system-ui; cursor: pointer; display: block; transition: background-color 0.16s, border-color 0.16s, transform 0.12s, box-shadow 0.16s; }
-.zbf-gal-more:hover { background: light-dark(#f8fafc, #334155); border-color: light-dark(rgba(79,70,229,0.35), rgba(129,140,248,0.4)); box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
-.zbf-gal-more:active { transform: scale(0.97); }
-
-@media (prefers-reduced-motion: reduce) {
-  #zotero-items-pane[data-zbf-gallery] > #zbf-gallery-panel, .zbf-gal-grid, .zbf-gal-board, .zbf-gal-cover-img, .zbf-gal-empty { animation: none !important; }
-  .zbf-gal-card, .zbf-gal-cover-img, .zbf-gal-col, .zbf-gal-tab::after, .zbf-gal-rate-float, .zbf-gal-star { transition: none !important; }
-}
-`;
-  function galEl(doc, tag) {
-    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-  }
-  function ensureGalleryStyles(doc) {
-    if (!doc) return;
-    const existing = doc.getElementById(GALLERY_STYLE_ID);
-    if (existing) {
-      if (existing.textContent !== GALLERY_BOARD_CSS) existing.textContent = GALLERY_BOARD_CSS;
-      return;
-    }
-    const style = galEl(doc, "style");
-    style.id = GALLERY_STYLE_ID;
-    style.textContent = GALLERY_BOARD_CSS;
-    (doc.head || doc.documentElement)?.appendChild(style);
-  }
-
-  // src/domains/visual-notes/reading-index.ts
-  function resolveMasonryCols(width) {
-    if (width >= 1680) return 4;
-    if (width >= 1120) return 3;
-    if (width >= 740) return 2;
-    return 1;
-  }
-  var activeRootDisposers = /* @__PURE__ */ new WeakMap();
-  function mountReadingIndex(root, entries, zh, selection, render) {
-    activeRootDisposers.get(root)?.();
-    activeRootDisposers.delete(root);
-    if (!entries.length) return;
-    const doc = root.ownerDocument;
-    const layout = galEl(doc, "section");
-    layout.className = "zbf-reading-layout";
-    const nav = galEl(doc, "nav");
-    nav.className = "zbf-reading-index";
-    const label = zh ? "文献目录" : "Documents";
-    nav.setAttribute("aria-label", label);
-    const heading = galEl(doc, "header");
-    heading.textContent = `${label} · ${entries.length}`;
-    nav.appendChild(heading);
-    const select = galEl(doc, "select");
-    select.className = "zbf-reading-select";
-    select.setAttribute("aria-label", label);
-    const page = galEl(doc, "article");
-    page.className = "zbf-reading-page";
-    const buttons = /* @__PURE__ */ new Map();
-    const showAllOption = entries.length > 1;
-    const totalCount = entries.reduce((sum, e) => sum + e.count, 0);
-    let active;
-    let resizeObs = null;
-    let masonryRaf = 0;
-    const disposeObserver = () => {
-      if (masonryRaf && typeof doc.defaultView?.cancelAnimationFrame === "function") {
-        doc.defaultView.cancelAnimationFrame(masonryRaf);
-      }
-      masonryRaf = 0;
-      try {
-        resizeObs?.disconnect();
-      } catch {
-      }
-      resizeObs = null;
-    };
-    activeRootDisposers.set(root, disposeObserver);
-    const renderMasonryAll = () => {
-      disposeObserver();
-      page.setAttribute("data-view-mode", "all");
-      const grid = galEl(doc, "div");
-      grid.className = "zbf-reading-grid";
-      const renderedItems = [];
-      let cols = [];
-      let heights = [];
-      let currentCols = 0;
-      const placeItem = (item) => {
-        if (!cols.length) return;
-        let best = 0;
-        for (let i = 1; i < cols.length; i++) {
-          if (heights[i] < heights[best]) best = i;
-        }
-        cols[best].appendChild(item.node);
-        heights[best] += item.weight;
-      };
-      const distribute = (colCount) => {
-        const nextCols = Math.max(1, Math.min(colCount, entries.length));
-        if (nextCols === currentCols) return;
-        currentCols = nextCols;
-        grid.replaceChildren();
-        cols = [];
-        heights = [];
-        for (let i = 0; i < nextCols; i++) {
-          const col = galEl(doc, "div");
-          col.className = "zbf-masonry-col";
-          cols.push(col);
-          heights.push(0);
-          grid.appendChild(col);
-        }
-        for (const item of renderedItems) placeItem(item);
-      };
-      page.appendChild(grid);
-      const initWidth = page.clientWidth || (doc.defaultView?.innerWidth ? doc.defaultView.innerWidth - 280 : 1200);
-      distribute(resolveMasonryCols(initWidth));
-      const raf = doc.defaultView?.requestAnimationFrame?.bind(doc.defaultView);
-      const initialBatch = raf ? Math.min(entries.length, 24) : entries.length;
-      let cursor = 0;
-      const appendBatch = (limit) => {
-        const stop = Math.min(entries.length, cursor + limit);
-        for (; cursor < stop; cursor++) {
-          const entry = entries[cursor];
-          const holder = galEl(doc, "div");
-          render(entry, holder);
-          const cardNode = holder.firstElementChild || holder;
-          const weight = entry.weight ?? 1.6 + Math.max(1, entry.count) * 2.4;
-          const item = { node: cardNode, weight };
-          renderedItems.push(item);
-          placeItem(item);
-        }
-      };
-      appendBatch(initialBatch);
-      const pumpRemaining = () => {
-        masonryRaf = 0;
-        if (!grid.isConnected || cursor >= entries.length) return;
-        appendBatch(28);
-        if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
-      };
-      if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
-      const RO = doc.defaultView?.ResizeObserver || globalThis.ResizeObserver;
-      if (typeof RO === "function") {
-        const obs = new RO((recs) => {
-          if (!page.isConnected) {
-            disposeObserver();
-            return;
-          }
-          const w = recs[0]?.contentRect?.width || page.clientWidth || 0;
-          if (w > 0) distribute(resolveMasonryCols(w));
-        });
-        obs.observe(page);
-        resizeObs = obs;
-      }
-    };
-    const chooseId = (targetId) => {
-      active?.removeAttribute("aria-current");
-      active = buttons.get(targetId);
-      active?.setAttribute("aria-current", "true");
-      select.value = String(targetId);
-      if (selection) selection.itemID = targetId;
-      disposeObserver();
-      page.replaceChildren();
-      if (targetId === 0 && showAllOption) {
-        renderMasonryAll();
-      } else {
-        const picked = entries.find((e) => e.id === targetId) || entries[0];
-        page.setAttribute("data-view-mode", "single");
-        const wrap = galEl(doc, "div");
-        wrap.className = "zbf-reading-single";
-        render(picked, wrap);
-        page.appendChild(wrap);
-      }
-      page.scrollTop = 0;
-    };
-    if (showAllOption) {
-      const allBtn = galEl(doc, "button");
-      allBtn.type = "button";
-      allBtn.className = "zbf-reading-all-btn";
-      const rowTop = galEl(doc, "div");
-      rowTop.className = "zbf-idx-row";
-      const title = galEl(doc, "span");
-      title.textContent = zh ? "全部文献汇总" : "All Documents";
-      const badge = galEl(doc, "em");
-      badge.className = "zbf-idx-badge";
-      badge.textContent = String(totalCount);
-      rowTop.append(title, badge);
-      const meta = galEl(doc, "small");
-      meta.textContent = zh ? `共 ${entries.length} 篇 · 瀑布流全览` : `${entries.length} items · Masonry`;
-      allBtn.append(rowTop, meta);
-      allBtn.addEventListener("click", () => chooseId(0));
-      nav.appendChild(allBtn);
-      buttons.set(0, allBtn);
-      const allOpt = galEl(doc, "option");
-      allOpt.value = "0";
-      allOpt.textContent = zh ? `全部文献汇总 (${entries.length} 篇 / ${totalCount} 条)` : `All Documents (${entries.length} / ${totalCount})`;
-      select.appendChild(allOpt);
-    }
-    for (const entry of entries) {
-      const btn = galEl(doc, "button");
-      btn.type = "button";
-      const rowTop = galEl(doc, "div");
-      rowTop.className = "zbf-idx-row";
-      const title = galEl(doc, "span");
-      renderRichTitleNodes(doc, title, entry.title);
-      const badge = galEl(doc, "em");
-      badge.className = "zbf-idx-badge";
-      badge.textContent = String(entry.count);
-      rowTop.append(title, badge);
-      btn.title = title.textContent || "";
-      const meta = galEl(doc, "small");
-      meta.textContent = entry.meta || (zh ? `${entry.count} 条` : `${entry.count}`);
-      btn.append(rowTop, meta);
-      btn.addEventListener("click", () => chooseId(entry.id));
-      nav.appendChild(btn);
-      buttons.set(entry.id, btn);
-      const opt = galEl(doc, "option");
-      opt.value = String(entry.id);
-      opt.textContent = `${btn.title} (${entry.count})`;
-      select.appendChild(opt);
-    }
-    select.addEventListener("change", () => chooseId(Number(select.value) || 0));
-    layout.append(nav, select, page);
-    root.appendChild(layout);
-    const initialId = selection?.itemID && entries.some((e) => e.id === selection.itemID) ? selection.itemID : showAllOption ? 0 : entries[0].id;
-    chooseId(initialId);
-  }
-
-  // src/domains/visual-notes/reading-layout.ts
-  var READING_LAYOUT_CSS = `
-@keyframes zbfCardEnter { from { opacity: 0.88; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-
-.zbf-notebook-backdrop, .zbf-notebook-dialog, .zbf-reading-layout, .zbf-reading-layout * { box-sizing: border-box; }
-.zbf-notebook-dialog { padding: 0; gap: 0; min-width: 0; background: light-dark(#f2f4f8, #0c121d); font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif; }
-.zbf-notebook-top { padding: 8px 16px; min-height: 44px; background: light-dark(linear-gradient(180deg, #ffffff 0%, #fcfdff 100%), linear-gradient(180deg, #141e32 0%, #111a2c 100%)); border-bottom: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); }
-.zbf-notebook-title { position: relative; padding-inline-start: 10px; font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; color: light-dark(#0f172a, #f8fafc); }
-.zbf-notebook-title::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3.5px; border-radius: 3px; background: linear-gradient(180deg, #635bd9 0%, #169a99 100%); }
-.zbf-notebook-toolbar { padding: 7px 16px; min-height: 40px; justify-content: flex-start; gap: 8px 12px; background: light-dark(#fafbfd, #101828); border-bottom: 1px solid light-dark(rgba(15,23,42,0.075), rgba(148,163,184,0.14)); }
-
-.zbf-nb-search-wrap { position: relative; flex: 0 1 286px; min-width: 156px; display: inline-flex; align-items: center; }
-.zbf-nb-search-icon { position: absolute; left: 9px; color: light-dark(#94a3b8, #64748b); pointer-events: none; display: inline-flex; transition: color 0.16s ease; }
-.zbf-nb-search-wrap:focus-within .zbf-nb-search-icon { color: light-dark(#4f46e5, #818cf8); }
-.zbf-notebook-search { width: 100%; height: 29px; padding: 0 26px 0 28px; border-radius: 8px; font-size: 12.5px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#ffffff, #0f172a); transition: border-color 0.16s, box-shadow 0.16s, background-color 0.16s; }
-.zbf-notebook-search:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px light-dark(rgba(79,70,229,0.12), rgba(129,140,248,0.18)); }
-.zbf-nb-search-clear { position: absolute; right: 5px; width: 18px; height: 18px; border: 0; border-radius: 50%; background: light-dark(rgba(15,23,42,0.08), rgba(255,255,255,0.12)); color: light-dark(#475569, #cbd5e1); font: 600 12px/1 system-ui; cursor: pointer; display: none; align-items: center; justify-content: center; transition: background-color 0.14s, transform 0.12s; }
-.zbf-nb-search-clear:hover { background: light-dark(rgba(15,23,42,0.16), rgba(255,255,255,0.22)); }
-.zbf-nb-search-clear:active { transform: scale(0.9); }
-
-.zbf-notebook-chips { width: auto; flex: 0 1 auto; align-items: center; gap: 5px; }
-.zbf-notebook-chips .zbf-matrix-chip { transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.12s ease, box-shadow 0.16s ease; }
-.zbf-notebook-chips .zbf-matrix-chip:active { transform: scale(0.95); }
-.zbf-notebook-chips .zbf-matrix-chip[data-active="true"] { background: linear-gradient(135deg, #4f46e5, #2563eb); border-color: transparent; box-shadow: 0 2px 6px rgba(79,70,229,0.28); }
-.zbf-notebook-toggles { margin-inline-start: auto; gap: 14px; font-size: 12px; }
-.zbf-notebook-foot { padding: 8px 16px; background: light-dark(#ffffff, #131c2e); border-top: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); }
-.zbf-notebook-foot .zbf-matrix-actions { flex-wrap: wrap; gap: 8px; }
-.zbf-notebook-foot .zbf-matrix-btn { border-radius: 7px; padding: 6px 12px; transition: background-color 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.12s; }
-.zbf-notebook-foot .zbf-matrix-btn:active { transform: scale(0.97); }
-.zbf-notebook-foot .zbf-matrix-btn.primary { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%); border-color: transparent; box-shadow: 0 2px 8px rgba(79,70,229,0.26); }
-.zbf-notebook-foot .zbf-matrix-btn.primary:hover { filter: brightness(1.06); box-shadow: 0 4px 12px rgba(79,70,229,0.34); }
-
-.zbf-notebook-scroll, .zbf-gal-feed-grid { container-type: inline-size; display: block; flex: 1 1 auto; min-height: 0; padding: 0; background: transparent; border: 0; border-radius: 0; overflow: hidden; }
-.zbf-gal-feed-grid { height: 100%; }
-
-.zbf-reading-layout { height: 100%; display: grid; grid-template-columns: clamp(220px, 21%, 292px) minmax(0, 1fr); overflow: hidden; color: light-dark(#1e293b, #e2e8f0); }
-.zbf-reading-index { overflow-y: auto; padding: 10px 8px 14px; border-inline-end: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.15)); background: light-dark(#ffffff, #121a2a); }
-.zbf-reading-index header { padding: 4px 10px 10px; color: light-dark(#64748b, #94a3b8); font-size: 11.5px; font-weight: 650; letter-spacing: 0.02em; line-height: 1.4; }
-.zbf-reading-index button { appearance: none; display: block; width: 100%; height: auto; max-height: none; margin: 0 0 4px; padding: 8px 10px; text-align: start; white-space: normal; border: 1px solid transparent; border-inline-start: 3px solid transparent; border-radius: 8px; color: inherit; background: transparent; font: inherit; cursor: pointer; transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s cubic-bezier(0.22,1,0.36,1); }
-.zbf-reading-index button:hover { background: light-dark(#f1f5f9, #1e293b); transform: translateX(2px); }
-.zbf-reading-index button[aria-current="true"] { background: light-dark(linear-gradient(90deg, rgba(79,70,229,0.1), rgba(37,99,235,0.05)), rgba(79,70,229,0.2)); border-color: light-dark(rgba(79,70,229,0.18), rgba(129,140,248,0.28)); border-inline-start-color: light-dark(#4f46e5, #818cf8); transform: none; }
-.zbf-reading-all-btn { margin-bottom: 10px !important; padding-bottom: 9px !important; position: relative; }
-.zbf-reading-all-btn::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -6px; height: 1px; background: light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); }
-.zbf-idx-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-.zbf-reading-index button span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: 550 12.6px/1.42 system-ui; color: light-dark(#0f172a, #f1f5f9); flex: 1 1 auto; }
-.zbf-idx-badge { flex: none; font-style: normal; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font: 600 11px/1 system-ui; font-variant-numeric: tabular-nums; background: light-dark(#f1f5f9, #1e293b); color: light-dark(#475569, #cbd5e1); transition: background-color 0.16s, color 0.16s; }
-.zbf-reading-index button[aria-current="true"] .zbf-idx-badge { background: linear-gradient(135deg, #4f46e5, #2563eb); color: #ffffff; }
-.zbf-reading-index button small { display: block; margin-top: 3px; font: 11.5px/1.35 system-ui; color: light-dark(#64748b, #94a3b8); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.zbf-reading-page { overflow-y: auto; min-width: 0; padding: 12px 14px 20px; background: light-dark(linear-gradient(180deg, #f3f5fa 0%, #eef2f8 100%), linear-gradient(180deg, #0c121d 0%, #090e17 100%)); }
-.zbf-reading-grid { display: flex; align-items: flex-start; gap: 11px; width: 100%; }
-.zbf-masonry-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 11px; }
-.zbf-reading-single { width: 100%; max-width: 1240px; margin-inline: auto; }
-
-.zbf-reading-page .zbf-notebook-card { width: 100%; max-width: none; padding: 12px 14px 13px; border-radius: 12px; background: light-dark(#ffffff, #151f31); border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); box-shadow: 0 1px 3px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 9px; animation: zbfCardEnter 0.2s cubic-bezier(0.22,1,0.36,1); transition: box-shadow 0.2s cubic-bezier(0.22,1,0.36,1), border-color 0.18s ease, transform 0.2s cubic-bezier(0.22,1,0.36,1); }
-.zbf-reading-page .zbf-notebook-card:hover { box-shadow: 0 8px 22px rgba(15,23,42,0.07), 0 2px 6px rgba(15,23,42,0.03); border-color: light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.3)); }
-.zbf-reading-page .zbf-notebook-card-head { display: flex; flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); }
-.zbf-reading-page .zbf-notebook-item-head-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
-.zbf-reading-page .zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 7px; height: auto; max-height: none; white-space: normal; font: 650 14.5px/1.4 system-ui; color: light-dark(#0f172a, #f8fafc); overflow-wrap: anywhere; text-align: left; transition: color 0.14s ease; }
-.zbf-reading-page[data-view-mode="single"] .zbf-notebook-item-btn { font-size: 17px; }
-.zbf-reading-page .zbf-notebook-item-btn svg { flex: none; margin-top: 3px; color: light-dark(#635bd9, #818cf8); }
-.zbf-reading-page .zbf-notebook-meta { font-size: 11.8px; color: light-dark(#64748b, #94a3b8); }
-.zbf-reading-open-pill { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#f8fafc, #1e293b); color: light-dark(#334155, #cbd5e1); font: 500 11.5px/1.2 system-ui; cursor: pointer; transition: background-color 0.16s, color 0.16s, border-color 0.16s, transform 0.12s; }
-.zbf-reading-open-pill:hover { background: light-dark(#eef2ff, rgba(99,91,217,0.22)); color: light-dark(#4338ca, #a5b4fc); border-color: light-dark(rgba(79,70,229,0.32), rgba(129,140,248,0.42)); }
-.zbf-reading-open-pill:active { transform: scale(0.95); }
-
-.zbf-notebook-ann-grid { display: flex; flex-direction: column; gap: 9px; }
-.zbf-reading-page[data-view-mode="single"] .zbf-notebook-ann-grid[data-multi="true"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; align-items: start; }
-
-.zbf-reading-page .zbf-notebook-ann-row { cursor: auto; padding: 10px 12px; border-radius: 9px; border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); border-inline-start: 3.5px solid #3b82f6; background: light-dark(#f9fafd, rgba(255,255,255,0.03)); display: flex; flex-direction: column; gap: 7px; transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease; }
-.zbf-reading-page .zbf-notebook-ann-row:hover { background: light-dark(#f5f7ff, rgba(99,102,241,0.08)); border-color: light-dark(rgba(79,70,229,0.2), rgba(129,140,248,0.28)); box-shadow: 0 2px 8px rgba(15,23,42,0.04); }
-
-.zbf-reading-ref { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-.zbf-reading-ref-left { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.zbf-ann-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font: 600 11.5px/1.25 system-ui; background: light-dark(rgba(15,23,42,0.055), rgba(255,255,255,0.08)); color: light-dark(#1e293b, #f1f5f9); }
-.zbf-ann-badge-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.zbf-ann-page { font: 500 11.5px/1.2 ui-monospace, Consolas, monospace; color: light-dark(#64748b, #94a3b8); }
-.zbf-reading-ref-actions { display: inline-flex; align-items: center; gap: 3px; opacity: 0.78; transition: opacity 0.16s ease; }
-.zbf-notebook-ann-row:hover .zbf-reading-ref-actions { opacity: 1; }
-.zbf-reading-ref button, .zbf-notebook-note-box button { padding: 3px 8px; border-radius: 6px; font: 500 11.5px/1.25 system-ui; color: light-dark(#4338ca, #a5b4fc); border: 1px solid transparent; background: transparent; cursor: pointer; transition: background-color 0.14s, border-color 0.14s, color 0.14s, transform 0.12s; }
-.zbf-reading-ref button:hover, .zbf-notebook-note-box button:hover { background: light-dark(#eef2ff, rgba(99,102,241,0.18)); border-color: light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.32)); }
-.zbf-reading-ref button:active, .zbf-notebook-note-box button:active { transform: scale(0.95); }
-.zbf-reading-ref button[data-copied="true"] { background: light-dark(#dcfce7, rgba(34,197,94,0.2)); color: light-dark(#15803d, #86efac); border-color: light-dark(rgba(22,163,74,0.25), rgba(134,239,172,0.3)); }
-
-.zbf-reading-page blockquote { margin: 0; font: 13.6px/1.66 system-ui; color: light-dark(#1e293b, #e2e8f0); overflow-wrap: anywhere; white-space: pre-line; user-select: text; }
-.zbf-reading-comment { margin: 0; padding: 7px 10px; border-radius: 7px; background: light-dark(linear-gradient(135deg, #eef4ff 0%, #f3f0ff 100%), linear-gradient(135deg, rgba(59,130,246,0.13) 0%, rgba(99,102,241,0.12) 100%)); border: 1px solid light-dark(rgba(79,70,229,0.14), rgba(129,140,248,0.22)); font: 13px/1.6 system-ui; color: light-dark(#1e3a5f, #dbeafe); overflow-wrap: anywhere; white-space: pre-line; user-select: text; display: flex; flex-direction: column; gap: 3px; }
-.zbf-reading-comment strong { display: inline-flex; align-self: flex-start; padding: 1px 6px; border-radius: 4px; background: light-dark(rgba(79,70,229,0.11), rgba(129,140,248,0.24)); color: light-dark(#4338ca, #c7d2fe); font: 600 10.8px/1.4 system-ui; }
-.zbf-notebook-note-box { padding: 9px 11px; border-radius: 9px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); transition: border-color 0.16s, background-color 0.16s; }
-.zbf-notebook-note-box:hover { border-color: light-dark(rgba(79,70,229,0.2), rgba(129,140,248,0.26)); }
-.zbf-notebook-note-box summary { cursor: pointer; font: 600 13.3px/1.5 system-ui; color: light-dark(#0f172a, #f1f5f9); overflow-wrap: anywhere; }
-.zbf-notebook-note-box[open] p { margin: 8px 0 6px; font: 13.2px/1.64 system-ui; color: light-dark(#334155, #cbd5e1); animation: zbfCardEnter 0.16s ease; }
-.zbf-notebook-brief-input { min-width: 0; height: 29px; }
-.zbf-reading-select { display: none; }
-
-@container (max-width: 680px) {
-	.zbf-reading-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
-	.zbf-reading-index { display: none; }
-	.zbf-reading-select { display: block; width: 100%; max-width: 100%; margin: 0; height: 34px; padding: 0 10px; border: 0; border-bottom: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); background: light-dark(#ffffff, #131c2e); color: inherit; font: 13px system-ui; }
-	.zbf-reading-page { padding: 10px; }
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.zbf-reading-page .zbf-notebook-card, .zbf-notebook-note-box[open] p { animation: none !important; }
-	.zbf-reading-index button, .zbf-reading-page .zbf-notebook-card, .zbf-notebook-ann-row, .zbf-reading-open-pill { transition: none !important; }
-}
-`;
-
-  // src/domains/visual-notes/data-source.ts
-  function resolveParentItemID(item) {
-    if (!item) return 0;
-    if (item.isAttachment?.() && item.parentItemID) return Number(item.parentItemID) || 0;
-    return Number(item.id || 0);
-  }
-  var EXTRA_REMARK_CACHE_LIMIT = 5e3;
-  var extraRemarkCache = /* @__PURE__ */ new Map();
-  function clearExtraRemarkCache(itemIDs) {
-    if (!itemIDs) {
-      extraRemarkCache.clear();
-      return;
-    }
-    const targets = new Set(itemIDs);
-    if (!targets.size) return;
-    for (const key of extraRemarkCache.keys()) {
-      if (targets.has(Number(key.split(":", 1)[0]))) extraRemarkCache.delete(key);
-    }
-  }
-  function readItemRemarkWithFallback(item, dataSource) {
-    if (!item) return "";
-    const id = Number(item.id || 0);
-    if (id > 0 && dataSource) {
-      const cached = dataSource.getRemark(id);
-      if (cached) return cached;
-    }
-    const parentID = resolveParentItemID(item);
-    if (parentID > 0 && parentID !== id && dataSource) {
-      const parentCached = dataSource.getRemark(parentID);
-      if (parentCached) return parentCached;
-    }
-    const hostItems = globalThis.Zotero?.Items;
-    const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
-    const targetID = Number(targetItem?.id || 0);
-    const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? "");
-    const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : "";
-    if (cacheKey && extraRemarkCache.has(cacheKey)) {
-      const hit = extraRemarkCache.get(cacheKey);
-      if (hit) return hit;
-      if (!dataSource) return "";
-    }
-    if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function") {
-      for (const attID of item.getAttachments() || []) {
-        const attCached = dataSource.getRemark(attID);
-        if (attCached) return attCached;
-      }
-    }
-    if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey);
-    const resolved = getItemBriefNote(targetItem);
-    if (cacheKey) {
-      if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
-        const oldest = extraRemarkCache.keys().next().value;
-        if (oldest !== void 0) extraRemarkCache.delete(oldest);
-      }
-      extraRemarkCache.set(cacheKey, resolved);
-    }
-    return resolved;
-  }
-  function writeItemRemarkWithSync(item, remark, syncToExtra, dataSource) {
-    if (!item) return;
-    const clean = String(remark || "").replace(/[\r\n]+/g, " ").trim();
-    const id = Number(item.id || 0);
-    const parentID = resolveParentItemID(item);
-    if (id > 0 || parentID > 0) clearExtraRemarkCache([id, parentID].filter((n) => n > 0));
-    if (dataSource) {
-      if (id > 0) dataSource.setRemark(id, clean);
-      if (parentID > 0 && parentID !== id) dataSource.setRemark(parentID, clean);
-    }
-    if (syncToExtra) {
-      const targetID = parentID > 0 ? parentID : id;
-      if (targetID > 0) void syncItemRemarkToExtra(targetID, clean);
-    }
-  }
-
-  // src/domains/visual-notes/collection-notes-ui.ts
-  var HUB_STYLE_ID = "zbf-collection-hub-style";
-  var COLLECTION_HUB_CSS = `
-.zbf-notebook-backdrop { display: flex; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; min-width: 0; }
-.zbf-notebook-dialog { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: light-dark(#ffffff, #131c2e); color: light-dark(#0f172a, #e2e8f0); font: 13px/1.48 system-ui, "Microsoft YaHei UI", sans-serif; }
-.zbf-notebook-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 4px; }
-.zbf-notebook-title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.zbf-notebook-title { font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; }
-.zbf-notebook-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#f1f5f9, #1e293b); gap: 2px; }
-.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.25 inherit; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
-.zbf-notebook-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
-.zbf-notebook-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.08); }
-
-.zbf-notebook-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.zbf-notebook-search { flex: 1 1 240px; min-width: 180px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; transition: border-color 0.14s, background-color 0.14s; }
-.zbf-notebook-search:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
-.zbf-notebook-toggles { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: light-dark(#475569, #cbd5e1); }
-.zbf-notebook-check { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
-.zbf-notebook-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-
-.zbf-notebook-scroll { flex: 1 1 auto; overflow-y: auto; border: 1px solid light-dark(rgba(15,23,42,0.065), rgba(148,163,184,0.14)); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: light-dark(#fafafa, #0d1320); }
-.zbf-notebook-card { padding: 12px 14px; border-radius: 12px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.025); display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.14s ease; }
-.zbf-notebook-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,0.05); }
-.zbf-notebook-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font: 600 13.2px/1.4 inherit; text-align: left; cursor: pointer; }
-.zbf-notebook-item-btn:hover { color: light-dark(#2563eb, #60a5fa); }
-.zbf-notebook-item-btn sub, .zbf-notebook-item-btn sup { font-size: 0.74em; line-height: 0; }
-.zbf-notebook-meta { font-size: 11.5px; color: light-dark(#94a3b8, #64748b); flex: none; white-space: nowrap; }
-
-.zbf-notebook-ann-row { padding: 7px 10px; border-radius: 7px; border-left: 3px solid #3b82f6; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); cursor: pointer; display: flex; flex-direction: column; gap: 4px; font-size: 12.4px; line-height: 1.5; transition: background-color 0.12s; }
-.zbf-notebook-ann-row:hover { background: light-dark(#eff6ff, rgba(96,165,250,0.12)); }
-.zbf-notebook-ann-tags { display: inline-flex; gap: 5px; flex-wrap: wrap; }
-.zbf-notebook-ann-tag { padding: 1px 6px; border-radius: 4px; font-size: 10.8px; font-weight: 500; }
-
-.zbf-notebook-brief-row { display: flex; align-items: center; gap: 8px; }
-.zbf-notebook-brief-lbl { padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; background: light-dark(#dcfce7, rgba(34,197,94,0.18)); color: light-dark(#166534, #86efac); flex: none; }
-.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 12.2px/1.2 inherit; transition: border-color 0.14s, background-color 0.14s; }
-.zbf-notebook-brief-input:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.12); }
-
-.zbf-notebook-note-box { padding: 8px 10px; border-radius: 8px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.06), rgba(148,163,184,0.12)); font-size: 12.2px; line-height: 1.52; color: light-dark(#334155, #cbd5e1); }
-.zbf-notebook-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
-`;
-  function hubEl(doc, tag) {
-    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
-  }
-  function ensureCollectionHubStyles(doc) {
-    if (!doc) return;
-    const existing = doc.getElementById(HUB_STYLE_ID);
-    if (existing) {
-      if (existing.textContent !== COLLECTION_HUB_CSS + READING_LAYOUT_CSS) existing.textContent = COLLECTION_HUB_CSS + READING_LAYOUT_CSS;
-      return;
-    }
-    const style = hubEl(doc, "style");
-    style.id = HUB_STYLE_ID;
-    style.textContent = COLLECTION_HUB_CSS + READING_LAYOUT_CSS;
-    (doc.head || doc.documentElement)?.appendChild(style);
-  }
-  function renderHubAnnotationsList(opts) {
-    const { doc, scroll, annotations, colorHexByLabel, preferComment, terms, zh } = opts;
-    if (!annotations.length) {
-      const empty = hubEl(doc, "div");
-      empty.className = "zbf-matrix-empty";
-      empty.textContent = zh ? "当前范围与筛选条件下暂无标注。" : "No matching annotations in this scope.";
-      scroll.appendChild(empty);
-      return;
-    }
-    const byItem = /* @__PURE__ */ new Map();
-    for (const a of annotations) {
-      const list = byItem.get(a.itemID) || [];
-      list.push(a);
-      byItem.set(a.itemID, list);
-    }
-    mountReadingIndex(scroll, Array.from(byItem, ([id, list]) => {
-      const weight = 2.2 + list.reduce((sum, a) => sum + 1.8 + Math.ceil((a.text.length + a.comment.length) / 90) * 0.9, 0);
-      return { id, title: list[0].itemTitle, meta: list[0].creatorYear, count: list.length, weight, list };
-    }), zh, opts.selection, ({ id: itemID, list }, page) => {
-      const card = hubEl(doc, "div");
-      card.className = "zbf-notebook-card";
-      const head = hubEl(doc, "div");
-      head.className = "zbf-notebook-card-head";
-      const headMain = hubEl(doc, "div");
-      headMain.className = "zbf-notebook-item-head-main";
-      const itemBtn = hubEl(doc, "button");
-      itemBtn.type = "button";
-      itemBtn.className = "zbf-notebook-item-btn";
-      itemBtn.appendChild(createGallerySvgIcon(doc, "doc", 15));
-      const titleSpan = hubEl(doc, "span");
-      renderRichTitleNodes(doc, titleSpan, list[0].itemTitle);
-      itemBtn.appendChild(titleSpan);
-      itemBtn.addEventListener("click", () => {
-        void openItemPdfAtPage({ id: itemID }).then((ok) => {
-          if (!ok) opts.onOpenItem(itemID);
-        });
-      });
-      const meta = hubEl(doc, "span");
-      meta.className = "zbf-notebook-meta";
-      meta.textContent = [list[0].creatorYear, zh ? `${list.length} 条标注` : `${list.length} notes`].filter(Boolean).join(" · ");
-      headMain.append(itemBtn, meta);
-      const openBtn = hubEl(doc, "button");
-      openBtn.type = "button";
-      openBtn.className = "zbf-reading-open-pill";
-      openBtn.textContent = zh ? "打开文献" : "Open";
-      openBtn.addEventListener("click", () => {
-        void openItemPdfAtPage({ id: itemID }).then((ok) => {
-          if (!ok) opts.onOpenItem(itemID);
-        });
-      });
-      head.append(headMain, openBtn);
-      card.appendChild(head);
-      const annGrid = hubEl(doc, "div");
-      annGrid.className = "zbf-notebook-ann-grid";
-      if (list.length > 1) annGrid.setAttribute("data-multi", "true");
-      for (const ann of list) {
-        const row = hubEl(doc, "div");
-        row.className = "zbf-notebook-ann-row";
-        const accent = colorHexByLabel.get(ann.colorLabel) || ann.color || "#3b82f6";
-        row.style.borderInlineStartColor = accent;
-        const body = formatHubAnnotationBody(ann, preferComment);
-        const bar = hubEl(doc, "div");
-        bar.className = "zbf-reading-ref";
-        const refLeft = hubEl(doc, "div");
-        refLeft.className = "zbf-reading-ref-left";
-        const badge = hubEl(doc, "span");
-        badge.className = "zbf-ann-badge";
-        const dot = hubEl(doc, "span");
-        dot.className = "zbf-ann-badge-dot";
-        dot.style.background = accent;
-        const lbl = hubEl(doc, "span");
-        lbl.textContent = ann.colorLabel || "Note";
-        badge.append(dot, lbl);
-        refLeft.appendChild(badge);
-        if (ann.pageLabel) {
-          const pg = hubEl(doc, "span");
-          pg.className = "zbf-ann-page";
-          pg.textContent = `p. ${ann.pageLabel}`;
-          refLeft.appendChild(pg);
-        }
-        const refActs = hubEl(doc, "div");
-        refActs.className = "zbf-reading-ref-actions";
-        const jump = hubEl(doc, "button");
-        jump.type = "button";
-        jump.textContent = zh ? "跳至 PDF" : "Open PDF";
-        jump.addEventListener("click", () => {
-          void openItemPdfAtPage({ id: itemID }, Number(ann.pageLabel) || void 0, ann.annotationID).then((ok) => {
-            if (!ok) opts.onOpenItem(itemID);
-          });
-        });
-        const copy = hubEl(doc, "button");
-        copy.type = "button";
-        const defaultCopyLabel = zh ? "复制" : "Copy";
-        copy.textContent = defaultCopyLabel;
-        copy.addEventListener("click", () => {
-          const ok = writeMatrixClipboard(body, opts.clipboard);
-          copy.textContent = ok ? zh ? "✓ 已复制" : "✓ Copied" : zh ? "复制失败" : "Copy failed";
-          if (ok) copy.setAttribute("data-copied", "true");
-          opts.onStatus(copy.textContent);
-          doc.defaultView?.setTimeout?.(() => {
-            if (copy.isConnected) {
-              copy.textContent = defaultCopyLabel;
-              copy.removeAttribute("data-copied");
-            }
-          }, 1600);
-        });
-        refActs.append(jump, copy);
-        bar.append(refLeft, refActs);
-        row.appendChild(bar);
-        if (ann.text && !(preferComment && ann.comment)) {
-          const quote = hubEl(doc, "blockquote");
-          renderHighlightedSnippet(doc, quote, ann.text, terms);
-          row.appendChild(quote);
-        }
-        if (ann.comment) {
-          const comment = hubEl(doc, "p");
-          comment.className = "zbf-reading-comment";
-          const label = hubEl(doc, "strong");
-          label.textContent = zh ? "评注" : "Comment";
-          const content = hubEl(doc, "span");
-          renderHighlightedSnippet(doc, content, ann.comment, terms);
-          comment.append(label, content);
-          row.appendChild(comment);
-        }
-        if (ann.tags.length) {
-          const tagRow = hubEl(doc, "div");
-          tagRow.className = "zbf-notebook-ann-tags";
-          for (const t of ann.tags) {
-            const pill = hubEl(doc, "span");
-            pill.className = "zbf-notebook-ann-tag";
-            const pal = resolvePastelTagStyle(t);
-            pill.style.background = `light-dark(${pal.bg}, ${pal.darkBg})`;
-            pill.style.color = `light-dark(${pal.fg}, ${pal.darkFg})`;
-            pill.textContent = t;
-            tagRow.appendChild(pill);
-          }
-          row.appendChild(tagRow);
-        }
-        annGrid.appendChild(row);
-      }
-      card.appendChild(annGrid);
-      page.appendChild(card);
-    });
-  }
-  function renderHubNotesList(opts) {
-    const { doc, win, scroll, entries, syncExtra, dataSource, terms, zh } = opts;
-    if (!entries.length) {
-      const empty = hubEl(doc, "div");
-      empty.className = "zbf-matrix-empty";
-      empty.textContent = zh ? "当前范围下暂无匹配的文献或笔记。" : "No matching items or notes.";
-      scroll.appendChild(empty);
-      return;
-    }
-    mountReadingIndex(scroll, entries.map((entry) => ({
-      id: entry.itemID,
-      title: entry.title,
-      meta: entry.creatorYear,
-      count: entry.childNotes.length + Number(Boolean(entry.briefNote)),
-      weight: 2.2 + entry.childNotes.length * 1.6 + (entry.briefNote ? 0.6 : 0),
-      entry
-    })), zh, opts.selection, ({ entry }, page) => {
-      const card = hubEl(doc, "div");
-      card.className = "zbf-notebook-card";
-      const head = hubEl(doc, "div");
-      head.className = "zbf-notebook-card-head";
-      const headMain = hubEl(doc, "div");
-      headMain.className = "zbf-notebook-item-head-main";
-      const itemBtn = hubEl(doc, "button");
-      itemBtn.type = "button";
-      itemBtn.className = "zbf-notebook-item-btn";
-      itemBtn.appendChild(createGallerySvgIcon(doc, "doc", 15));
-      const titleSpan = hubEl(doc, "span");
-      renderRichTitleNodes(doc, titleSpan, entry.title);
-      itemBtn.appendChild(titleSpan);
-      const openEntry = () => {
-        if (opts.onOpenItem) opts.onOpenItem(entry.itemID);
-        else win.ZoteroPane?.itemsView?.selectItem?.(entry.itemID);
-      };
-      itemBtn.addEventListener("click", openEntry);
-      const meta = hubEl(doc, "span");
-      meta.className = "zbf-notebook-meta";
-      meta.textContent = entry.creatorYear;
-      headMain.append(itemBtn, meta);
-      const openBtn = hubEl(doc, "button");
-      openBtn.type = "button";
-      openBtn.className = "zbf-reading-open-pill";
-      openBtn.textContent = zh ? "打开文献" : "Open";
-      openBtn.addEventListener("click", openEntry);
-      head.append(headMain, openBtn);
-      const briefRow = hubEl(doc, "div");
-      briefRow.className = "zbf-notebook-brief-row";
-      const briefLbl = hubEl(doc, "span");
-      briefLbl.className = "zbf-notebook-brief-lbl";
-      briefLbl.textContent = zh ? "简记" : "Brief";
-      const briefInput = hubEl(doc, "input");
-      briefInput.type = "text";
-      briefInput.className = "zbf-notebook-brief-input";
-      briefInput.value = entry.briefNote;
-      briefInput.placeholder = zh ? "添加简记…" : "Add a brief note…";
-      briefInput.setAttribute("aria-label", briefLbl.textContent);
-      const commitBrief = async () => {
-        const nextVal = briefInput.value.trim();
-        if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
-        writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
-        opts.onRemarkMutated?.();
-        const saved = await dataSource?.persistRemarks?.();
-        opts.onStatus(saved ? zh ? "✓ 简记已保存至 brief-notes.json" : "✓ Brief note saved" : zh ? "简记未能确认写入磁盘。" : "Brief note could not be confirmed on disk.");
-      };
-      briefInput.addEventListener("blur", commitBrief);
-      briefInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          briefInput.blur();
-        }
-      });
-      briefRow.append(briefLbl, briefInput);
-      card.append(head, briefRow);
-      for (const cn of entry.childNotes) {
-        const noteBox = hubEl(doc, "details");
-        const summary = hubEl(doc, "summary");
-        summary.textContent = cn.heading;
-        const excerpt = hubEl(doc, "p");
-        noteBox.className = "zbf-notebook-note-box";
-        renderHighlightedSnippet(doc, excerpt, `${cn.dateModified ? `[${cn.dateModified}] ` : ""}${cn.snippet}`, terms);
-        const open = hubEl(doc, "button");
-        open.type = "button";
-        open.textContent = zh ? "打开完整笔记" : "Open full note";
-        open.addEventListener("click", () => win.ZoteroPane?.openNote?.(cn.noteID, { openInWindow: false }));
-        noteBox.append(summary, excerpt, open);
-        card.appendChild(noteBox);
-      }
-      page.appendChild(card);
-    });
-  }
-
-  // src/domains/visual-notes/collection-notes-hub.ts
-  function openCollectionNotesHubModal(options) {
-    const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
-    openHubPage(
-      options.win,
-      Boolean(options.prefs.get("visualNotes.collectionHub.separateWindow")),
-      zh ? "文献笔记与标注中心" : "Notes & Annotations",
-      (container, close) => renderHub(options, container, close)
-    );
-  }
-  function renderHub(options, container, close) {
-    const doc = container.ownerDocument;
-    if (!doc) return;
-    ensureMatrixStyles(doc);
-    ensureCollectionHubStyles(doc);
-    const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
-    let activeTab = options.initialTab || "annotations";
-    let activeScope = options.initialScope || "collection";
-    let activeColor = "";
-    const selection = { itemID: 0 };
-    let ignoreFigTable = Boolean(options.prefs.get("visualNotes.collectionHub.ignoreFigureTable"));
-    let preferComment = Boolean(options.prefs.get("visualNotes.collectionHub.preferCommentOverQuote"));
-    const backdrop = hubEl(doc, "div");
-    backdrop.id = "zbf-notebook-backdrop";
-    backdrop.className = "zbf-notebook-backdrop";
-    const dialog = hubEl(doc, "div");
-    dialog.className = "zbf-notebook-dialog";
-    const topRow = hubEl(doc, "div");
-    topRow.className = "zbf-notebook-top";
-    const titleWrap = hubEl(doc, "div");
-    titleWrap.className = "zbf-notebook-title-wrap";
-    const titleEl = hubEl(doc, "div");
-    titleEl.className = "zbf-notebook-title";
-    const tabSeg = hubEl(doc, "div");
-    tabSeg.className = "zbf-notebook-seg";
-    const btnTabAnn = hubEl(doc, "button");
-    btnTabAnn.type = "button";
-    btnTabAnn.className = "zbf-notebook-seg-btn";
-    const btnTabNotes = hubEl(doc, "button");
-    btnTabNotes.type = "button";
-    btnTabNotes.className = "zbf-notebook-seg-btn";
-    tabSeg.append(btnTabAnn, btnTabNotes);
-    const scopeSeg = hubEl(doc, "div");
-    scopeSeg.className = "zbf-notebook-seg";
-    const scopeDefs = [
-      ["collection", zh ? "当前分类/视图" : "Current View"],
-      ["selected", zh ? "已选文献" : "Selected"],
-      ["tabs", zh ? "已开标签" : "Open Tabs"]
-    ];
-    const scopeBtns = /* @__PURE__ */ new Map();
-    for (const [mode, label] of scopeDefs) {
-      const b = hubEl(doc, "button");
-      b.type = "button";
-      b.className = "zbf-notebook-seg-btn";
-      b.textContent = label;
-      b.addEventListener("click", () => {
-        activeScope = mode;
-        activeColor = "";
-        scopeMemo.invalidate();
-        renderAll();
-      });
-      scopeBtns.set(mode, b);
-      scopeSeg.appendChild(b);
-    }
-    const closeBtn = hubEl(doc, "button");
-    closeBtn.type = "button";
-    closeBtn.className = "zbf-matrix-close";
-    closeBtn.textContent = "✕";
-    titleWrap.append(titleEl, tabSeg);
-    const rightTop = hubEl(doc, "div");
-    rightTop.className = "zbf-notebook-title-wrap";
-    rightTop.append(scopeSeg, closeBtn);
-    topRow.append(titleWrap, rightTop);
-    const toolbar = hubEl(doc, "div");
-    toolbar.className = "zbf-notebook-toolbar";
-    const searchWrap = hubEl(doc, "div");
-    searchWrap.className = "zbf-nb-search-wrap";
-    const searchIcon = hubEl(doc, "span");
-    searchIcon.className = "zbf-nb-search-icon";
-    searchIcon.appendChild(createGallerySvgIcon(doc, "search", 13));
-    const searchInput = hubEl(doc, "input");
-    searchInput.type = "text";
-    searchInput.className = "zbf-notebook-search";
-    searchInput.placeholder = zh ? "搜索标题、原文或评注…" : "Filter (supports A && B || C)...";
-    const clearSearchBtn = hubEl(doc, "button");
-    clearSearchBtn.type = "button";
-    clearSearchBtn.className = "zbf-nb-search-clear";
-    clearSearchBtn.textContent = "×";
-    clearSearchBtn.title = zh ? "清空搜索" : "Clear search";
-    searchWrap.append(searchIcon, searchInput, clearSearchBtn);
-    const togglesWrap = hubEl(doc, "div");
-    togglesWrap.className = "zbf-notebook-toggles";
-    const makeCheck = (label, initial, onChange) => {
-      const lbl = hubEl(doc, "label");
-      lbl.className = "zbf-notebook-check";
-      const cb = hubEl(doc, "input");
-      cb.type = "checkbox";
-      cb.checked = initial;
-      cb.addEventListener("change", () => onChange(cb.checked));
-      const txt = hubEl(doc, "span");
-      txt.textContent = label;
-      lbl.append(cb, txt);
-      return lbl;
-    };
-    togglesWrap.append(
-      makeCheck(zh ? "忽略图/表标注" : "Ignore Fig/Table", ignoreFigTable, (v) => {
-        ignoreFigTable = v;
-        options.prefs.set("visualNotes.collectionHub.ignoreFigureTable", v);
-        renderAll();
-      }),
-      makeCheck(zh ? "有评注时仅显示评注" : "Prefer comment", preferComment, (v) => {
-        preferComment = v;
-        options.prefs.set("visualNotes.collectionHub.preferCommentOverQuote", v);
-        renderAll();
-      })
-    );
-    const chipsBar = hubEl(doc, "div");
-    chipsBar.className = "zbf-notebook-chips";
-    toolbar.append(searchWrap, chipsBar, togglesWrap);
-    const scroll = hubEl(doc, "div");
-    scroll.className = "zbf-notebook-scroll";
-    const statusEl = hubEl(doc, "span");
-    statusEl.className = "zbf-matrix-status";
-    let searchTimer = null;
-    let composing = false;
-    const safeClose = () => {
-      if (searchTimer !== null) {
-        clearTimeout(searchTimer);
-        searchTimer = null;
-      }
-      close();
-    };
-    const scheduleRender = () => {
-      if (searchTimer !== null) clearTimeout(searchTimer);
-      searchTimer = setTimeout(() => {
-        searchTimer = null;
-        renderAll();
-      }, 100);
-    };
-    closeBtn.addEventListener("click", safeClose);
-    backdrop.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") {
-        ev.preventDefault();
-        safeClose();
-      }
-    });
-    btnTabAnn.addEventListener("click", () => {
-      activeTab = "annotations";
-      renderAll();
-    });
-    btnTabNotes.addEventListener("click", () => {
-      activeTab = "notes";
-      renderAll();
-    });
-    const syncClearBtn = () => {
-      clearSearchBtn.style.display = searchInput.value ? "inline-flex" : "none";
-    };
-    clearSearchBtn.addEventListener("click", () => {
-      searchInput.value = "";
-      syncClearBtn();
-      if (searchTimer !== null) {
-        clearTimeout(searchTimer);
-        searchTimer = null;
-      }
-      renderAll();
-      searchInput.focus?.();
-    });
-    searchInput.addEventListener("compositionstart", () => {
-      composing = true;
-    });
-    searchInput.addEventListener("compositionend", () => {
-      composing = false;
-      syncClearBtn();
-      scheduleRender();
-    });
-    searchInput.addEventListener("input", () => {
-      syncClearBtn();
-      if (!composing) scheduleRender();
-    });
-    syncClearBtn();
-    const scopeMemo = createHubScopeMemo({
-      win: options.win,
-      zh,
-      getColorJson: () => options.prefs.get("inspector.annotations.colorLabels"),
-      getBriefNote: (it) => readItemRemarkWithFallback(it, options.dataSource)
-    });
-    let latestScope = scopeMemo.compute(activeScope, "", "", ignoreFigTable).scope;
-    const computeCurrent = () => {
-      const res = scopeMemo.compute(activeScope, searchInput.value, activeColor, ignoreFigTable);
-      latestScope = res.scope;
-      return { annData: res.annData, notesData: res.notesData };
-    };
-    const renderAll = () => {
-      const { annData, notesData } = computeCurrent();
-      btnTabAnn.setAttribute("data-active", String(activeTab === "annotations"));
-      btnTabNotes.setAttribute("data-active", String(activeTab === "notes"));
-      btnTabAnn.textContent = zh ? `标注汇总 (${annData.annotations.length})` : `Annotations (${annData.annotations.length})`;
-      btnTabNotes.textContent = zh ? `笔记与简记 (${notesData.totalChildNotes + notesData.totalBriefNotes})` : `Notes & Briefs (${notesData.totalChildNotes + notesData.totalBriefNotes})`;
-      for (const [m, b] of scopeBtns) b.setAttribute("data-active", String(m === activeScope));
-      titleEl.textContent = zh ? `文献笔记与标注中心 · ${latestScope.scopeTitle} (${latestScope.items.length} 篇)` : `Notes & Annotations Hub · ${latestScope.scopeTitle} (${latestScope.items.length})`;
-      togglesWrap.style.display = activeTab === "annotations" ? "inline-flex" : "none";
-      chipsBar.style.display = activeTab === "annotations" ? "flex" : "none";
-      chipsBar.textContent = "";
-      if (activeTab === "annotations") {
-        const makeChip = (lbl, val, count2, hex) => {
-          const c = hubEl(doc, "button");
-          c.type = "button";
-          c.className = "zbf-matrix-chip";
-          if (activeColor === val) c.setAttribute("data-active", "true");
-          if (hex) {
-            const dot = hubEl(doc, "span");
-            dot.className = "zbf-matrix-dot";
-            dot.style.background = hex;
-            c.appendChild(dot);
-          }
-          const s = hubEl(doc, "span");
-          s.textContent = `${lbl} (${count2})`;
-          c.appendChild(s);
-          c.addEventListener("click", () => {
-            activeColor = val;
-            renderAll();
-          });
-          chipsBar.appendChild(c);
-        };
-        makeChip(zh ? "全部维度" : "All", "", annData.totalBeforeFilter);
-        for (const [colLbl, cnt] of annData.colorCounts) {
-          makeChip(colLbl, colLbl, cnt, annData.colorHexByLabel.get(colLbl));
-        }
-      }
-      scroll.textContent = "";
-      const terms = extractQueryTerms(searchInput.value);
-      const onStatus = (msg) => {
-        statusEl.textContent = msg;
-      };
-      const onOpenItem = (itemID) => {
-        options.win.focus?.();
-        options.bus?.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
-      };
-      if (activeTab === "annotations") {
-        const matchedCount = new Set(annData.annotations.map((ann) => ann.itemID)).size;
-        statusEl.textContent = zh ? `共匹配 ${annData.annotations.length} 条标注（来自 ${matchedCount} 篇文献）` : `${annData.annotations.length} annotations across ${matchedCount} items`;
-        renderHubAnnotationsList({
-          doc,
-          scroll,
-          selection,
-          annotations: annData.annotations,
-          colorHexByLabel: annData.colorHexByLabel,
-          preferComment,
-          terms,
-          zh,
-          clipboard: options.clipboard,
-          onStatus,
-          onOpenItem
-        });
-      } else {
-        statusEl.textContent = zh ? `共 ${notesData.entries.length} 篇文献 · ${notesData.totalBriefNotes} 条简记 · ${notesData.totalChildNotes} 篇独立子笔记` : `${notesData.entries.length} items · ${notesData.totalBriefNotes} brief notes · ${notesData.totalChildNotes} child notes`;
-        renderHubNotesList({
-          doc,
-          win: options.win,
-          scroll,
-          selection,
-          entries: notesData.entries,
-          syncExtra: Boolean(options.prefs.get("workspace.syncRemarkToExtra")),
-          dataSource: options.dataSource,
-          terms,
-          zh,
-          onRemarkMutated: () => {
-            scopeMemo.invalidate();
-            options.onRemarkMutated?.();
-          },
-          onStatus,
-          onOpenItem
-        });
-      }
-    };
-    const foot = hubEl(doc, "div");
-    foot.className = "zbf-notebook-foot";
-    const actions = hubEl(doc, "div");
-    actions.className = "zbf-matrix-actions";
-    const flashBtn = (btn, tempText) => {
-      const orig = btn.dataset.origLabel || btn.textContent || "";
-      btn.dataset.origLabel = orig;
-      btn.textContent = tempText;
-      doc.defaultView?.setTimeout?.(() => {
-        if (btn.isConnected) btn.textContent = orig;
-      }, 1800);
-    };
-    const addBtn = (lbl, primary, fn) => {
-      const b = hubEl(doc, "button");
-      b.type = "button";
-      b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
-      b.textContent = lbl;
-      b.addEventListener("click", () => fn(b));
-      actions.appendChild(b);
-    };
-    addBtn(zh ? "打开文献对比矩阵" : "Open Matrix View", false, () => {
-      computeCurrent();
-      const ids = latestScope.items.map((it) => Number(it.id)).filter((id) => id > 0);
-      openAnnotationMatrixModal({
-        win: options.win,
-        title: latestScope.scopeTitle,
-        itemIDs: ids,
-        prefs: options.prefs,
-        bus: options.bus,
-        clipboard: options.clipboard
-      });
-    });
-    addBtn(zh ? "复制 Markdown 综述汇总" : "Copy Markdown Synthesis", false, (btn) => {
-      const { annData, notesData } = computeCurrent();
-      if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
-        statusEl.textContent = zh ? "当前范围暂无可复制的笔记或标注" : "Nothing to copy in current scope";
-        flashBtn(btn, zh ? "暂无内容" : "Empty");
-        return;
-      }
-      const md = renderCollectionHubMarkdown(`${latestScope.scopeTitle} · 笔记与标注汇总`, notesData.entries, annData.annotations, preferComment);
-      const ok = writeMatrixClipboard(md, options.clipboard);
-      statusEl.textContent = ok ? zh ? `✓ 已复制 Markdown 综述（${md.length} 字）` : `✓ Copied Markdown (${md.length} chars)` : "✕ Copy failed";
-      flashBtn(btn, ok ? zh ? "✓ 已复制到剪贴板" : "✓ Copied!" : "✕ 失败");
-    });
-    let savingNote = false;
-    addBtn(zh ? "保存为当前分类 Zotero 笔记" : "Save as Zotero Note", true, (btn) => {
-      if (savingNote) return;
-      const { annData, notesData } = computeCurrent();
-      if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
-        statusEl.textContent = zh ? "当前范围暂无可汇总的笔记或标注" : "No notes or annotations to save";
-        flashBtn(btn, zh ? "暂无可保存内容" : "Nothing to save");
-        return;
-      }
-      savingNote = true;
-      statusEl.textContent = zh ? "正在生成 Zotero 汇总笔记…" : "Saving Zotero note…";
-      void saveCollectionHubAsZoteroNote({
-        heading: `${latestScope.scopeTitle} · 笔记与标注汇总`,
-        notes: notesData.entries,
-        annotations: annData.annotations,
-        preferCommentOverQuote: preferComment,
-        libraryID: latestScope.libraryID,
-        collectionID: latestScope.collectionID
-      }).then(async (nid) => {
-        if (!nid) {
-          statusEl.textContent = "✕ Failed to save note";
-          return;
-        }
-        statusEl.textContent = zh ? `✓ 已生成并打开汇总笔记 (#${nid})` : `✓ Saved & opened Note (#${nid})`;
-        flashBtn(btn, zh ? `✓ 已打开笔记 #${nid}` : `✓ Opened #${nid}`);
-        const zNotes = globalThis.Zotero?.Notes;
-        if (typeof zNotes?.open === "function") {
-          try {
-            await zNotes.open(nid, void 0, { openInWindow: false });
-            return;
-          } catch {
-          }
-        }
-        options.win.Zotero_Tabs?.select?.("zotero-pane");
-        await options.win.ZoteroPane?.selectItem?.(nid);
-      }).catch(() => {
-        statusEl.textContent = zh ? "✕ 保存汇总笔记失败" : "✕ Failed to save note";
-      }).finally(() => {
-        savingNote = false;
-      });
-    });
-    foot.append(statusEl, actions);
-    dialog.append(topRow, toolbar, scroll, foot);
-    backdrop.appendChild(dialog);
-    container.appendChild(backdrop);
-    renderAll();
-    searchInput.focus?.();
-  }
-
-  // src/domains/visual-notes/gallery-card-cache.ts
-  var ITEM_TYPE_ZH = {
-    journalArticle: "期刊文章",
-    conferencePaper: "会议论文",
-    thesis: "学位论文",
-    book: "专著",
-    bookSection: "图书章节",
-    preprint: "预印本",
-    report: "研究报告",
-    webpage: "网页资料"
-  };
-  var CARD_STATIC_CACHE_LIMIT = 5e3;
-  var cardStaticCache = /* @__PURE__ */ new Map();
-  function clearGalleryCardCache(itemIDs) {
-    if (!itemIDs) {
-      cardStaticCache.clear();
-      return;
-    }
-    const targets = new Set(itemIDs);
-    if (!targets.size) return;
-    for (const key of cardStaticCache.keys()) {
-      const id = Number(key.split(":", 1)[0]);
-      if (targets.has(id)) cardStaticCache.delete(key);
-    }
-  }
-  function safeField(item, field) {
-    try {
-      return String(item?.getField?.(field) || "").trim();
-    } catch {
-      return "";
-    }
-  }
-  function resolveVenue(item) {
-    for (const f of ["publicationTitle", "proceedingsTitle", "conferenceName", "university", "publisher", "repository"]) {
-      const val = safeField(item, f);
-      if (val) return val;
-    }
-    return "";
-  }
-  function formatCreatorLine(item, zh) {
-    const first = String(item?.firstCreator || "").trim();
-    if (first && (first.includes("等") || first.toLowerCase().includes("et al"))) return first;
-    try {
-      const creators = item?.getCreators?.();
-      if (Array.isArray(creators) && creators.length > 1) {
-        const lead = String(creators[0]?.lastName || creators[0]?.name || first).trim();
-        if (lead) return zh ? `${lead} 等` : `${lead} et al.`;
-      }
-    } catch {
-    }
-    return first;
-  }
-  function resolvePrimaryPdfAttachmentID(item) {
-    try {
-      const attIDs = isRegularValidItem(item) && typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
-      const hostItems = globalThis.Zotero?.Items;
-      for (const rawId of attIDs) {
-        const id = Number(rawId) || 0;
-        if (!id) continue;
-        const att = hostItems?.get?.(id);
-        if (!att) return id;
-        if (att.deleted) continue;
-        const ct = String(att.attachmentContentType || "").toLowerCase();
-        const fn = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
-        if (ct === "application/pdf" || fn.endsWith(".pdf") || att.isPDFAttachment?.()) return id;
-      }
-    } catch {
-    }
-    return 0;
-  }
-  function extractCleanTags(item, excludedStatusTag) {
-    if (typeof item?.getTags !== "function") return [];
-    const excludedLower = String(excludedStatusTag || "/Citations").trim().toLowerCase();
-    const out = [];
-    for (const entry of item.getTags() || []) {
-      const t = String(entry?.tag || "").trim();
-      if (t && t.toLowerCase() !== excludedLower && isStarRatingTag(t) === 0) out.push(t);
-    }
-    return out;
-  }
-  function resolveCachedCardStatic(ref, itemID, zh, excludedStatusTag) {
-    const stamp = String(ref.version ?? ref.dateModified ?? "");
-    const cacheKey = stamp ? `${itemID}:${stamp}:${excludedStatusTag}:${zh ? 1 : 0}` : "";
-    if (cacheKey) {
-      const hit = cardStaticCache.get(cacheKey);
-      if (hit) {
-        cardStaticCache.delete(cacheKey);
-        cardStaticCache.set(cacheKey, hit);
-        return hit;
-      }
-    }
-    const title = safeField(ref, "title") || String(ref.title || `#${itemID}`);
-    const rawDate = safeField(ref, "year") || safeField(ref, "date");
-    const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(rawDate);
-    const year = yearMatch ? yearMatch[1] : rawDate.slice(0, 4);
-    const creator = formatCreatorLine(ref, zh);
-    const venue = resolveVenue(ref);
-    const itemType = String(ref.itemType || globalThis.Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || "journalArticle");
-    const tags = extractCleanTags(ref, excludedStatusTag);
-    const status = getItemStatus(ref, excludedStatusTag);
-    let attachmentID;
-    let abstractExcerpt;
-    const built = {
-      title,
-      creator,
-      year,
-      venue,
-      itemType,
-      itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : "") || itemType,
-      dateModified: String(ref.dateModified || ""),
-      get pdfAttachmentID() {
-        return attachmentID ??= resolvePrimaryPdfAttachmentID(ref);
-      },
-      get abstractExcerpt() {
-        return abstractExcerpt ??= safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620);
-      },
-      tags,
-      status,
-      baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ""} ${tags.join(" ")}`.toLowerCase()
-    };
-    if (cacheKey) {
-      if (cardStaticCache.size >= CARD_STATIC_CACHE_LIMIT) {
-        const oldest = cardStaticCache.keys().next().value;
-        if (oldest !== void 0) cardStaticCache.delete(oldest);
-      }
-      cardStaticCache.set(cacheKey, built);
-    }
-    return built;
-  }
-
-  // src/domains/visual-notes/gallery-board-helpers.ts
-  var SOFT_TINTS = [
-    { pillBg: "#ffe4e6", pillFg: "#9f1239", surface: "rgba(244,63,94,0.045)" },
-    { pillBg: "#dcfce7", pillFg: "#166534", surface: "rgba(34,197,94,0.045)" },
-    { pillBg: "#e0e7ff", pillFg: "#3730a3", surface: "rgba(99,102,241,0.045)" },
-    { pillBg: "#fef3c7", pillFg: "#92400e", surface: "rgba(245,158,11,0.045)" },
-    { pillBg: "#e0f2fe", pillFg: "#075985", surface: "rgba(14,165,233,0.045)" },
-    { pillBg: "#f3e8ff", pillFg: "#6b21a8", surface: "rgba(168,85,247,0.045)" }
-  ];
-  var GalleryCard = class {
-    item;
-    itemID;
-    dateModified;
-    deps;
-    zh;
-    fields;
-    note;
-    stars;
-    progress;
-    constructor(item, id, deps, zh) {
-      this.item = item;
-      this.itemID = id;
-      this.dateModified = String(item.dateModified || "");
-      this.deps = deps;
-      this.zh = zh;
-    }
-    get stat() {
-      return this.fields ??= resolveCachedCardStatic(this.item, this.itemID, this.zh, this.deps.excludedStatusTag);
-    }
-    get reading() {
-      if (this.progress === void 0) this.progress = this.deps.getReadProgress(this.item) ?? null;
-      return this.progress;
-    }
-    get title() {
-      return this.stat.title;
-    }
-    get creator() {
-      return this.stat.creator;
-    }
-    get year() {
-      return this.stat.year;
-    }
-    get venue() {
-      return this.stat.venue;
-    }
-    get itemType() {
-      return this.stat.itemType;
-    }
-    get itemTypeLabel() {
-      return this.stat.itemTypeLabel;
-    }
-    get pdfAttachmentID() {
-      return this.stat.pdfAttachmentID;
-    }
-    get abstractExcerpt() {
-      return this.stat.abstractExcerpt;
-    }
-    get tags() {
-      return this.stat.tags;
-    }
-    get status() {
-      return this.stat.status;
-    }
-    get rating() {
-      return this.stars ??= getItemRating(this.item, this.deps.ratingStorage);
-    }
-    get briefNote() {
-      return this.note ??= this.deps.getBriefNote(this.item);
-    }
-    get readSeconds() {
-      return Number(this.reading?.readSeconds || 0);
-    }
-    get readRatio() {
-      const p = this.reading;
-      return p?.totalPages && p.totalPages > 0 && p.lastPage ? Math.min(1, Math.max(0, p.lastPage / p.totalPages)) : 0;
-    }
-    get readText() {
-      return formatReadingProgress(this.reading ?? void 0).text;
-    }
-    get searchLower() {
-      return this.briefNote ? this.stat.baseSearchLower + " " + this.briefNote.toLowerCase() : this.stat.baseSearchLower;
-    }
-  };
-  function extractGalleryCards(win, deps) {
-    const zh = deps.zh ?? Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
-    const view = win?.ZoteroPane?.itemsView;
-    const hostItems = globalThis.Zotero?.Items;
-    const rowCount = Math.min(Number(view?.rowCount || 0), 5e3);
-    const seen = /* @__PURE__ */ new Set();
-    const rawItems = [];
-    const cards = [];
-    for (let i = 0; i < rowCount; i++) {
-      let ref = view?.getRow?.(i)?.ref;
-      if (!ref || ref.deleted) continue;
-      if (typeof ref.isRegularItem === "function" && !ref.isRegularItem()) {
-        if (ref.parentItemID) ref = hostItems?.get?.(ref.parentItemID);
-        if (!ref || ref.deleted || typeof ref.isRegularItem === "function" && !ref.isRegularItem()) continue;
-      }
-      const itemID = Number(ref.id || 0);
-      if (!itemID || seen.has(itemID)) continue;
-      seen.add(itemID);
-      rawItems.push(ref);
-      cards.push(new GalleryCard(ref, itemID, deps, zh));
-    }
-    return { cards, rawItems };
-  }
-  function filterAndSortGalleryCards(cards, query, sortField) {
-    const q = String(query || "").trim().toLowerCase();
-    const filtered = q ? cards.filter((c) => (c.searchLower ?? `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ""} ${c.briefNote} ${c.tags.join(" ")}`.toLowerCase()).includes(q)) : [...cards];
-    filtered.sort((a, b) => {
-      if (sortField === "year") return (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title);
-      if (sortField === "rating") return b.rating - a.rating || b.readSeconds - a.readSeconds || a.title.localeCompare(b.title);
-      if (sortField === "readTime") return b.readSeconds - a.readSeconds || b.readRatio - a.readRatio || a.title.localeCompare(b.title);
-      if (sortField === "title") return a.title.localeCompare(b.title);
-      return b.dateModified.localeCompare(a.dateModified) || b.itemID - a.itemID;
-    });
-    return filtered;
-  }
-  function buildKanbanColumns(cards, rawItems, groupBy, zh, excludedStatusTag) {
-    if (groupBy === "readState") {
-      const unread = [];
-      const reading = [];
-      const deep = [];
-      const finished = [];
-      for (const c of cards) {
-        if (c.readRatio >= 0.95 && c.readSeconds >= 60) finished.push(c);
-        else if (c.readSeconds >= 600) deep.push(c);
-        else if (c.readSeconds > 0 || c.readRatio > 0) reading.push(c);
-        else unread.push(c);
-      }
-      return [
-        { key: "unread", title: zh ? "未读" : "Unread", pillBg: "#ffe4e6", pillFg: "#9f1239", surfaceTint: "rgba(244,63,94,0.04)", droppable: false, cards: unread },
-        { key: "skimming", title: zh ? "阅读中" : "Reading", pillBg: "#dcfce7", pillFg: "#166534", surfaceTint: "rgba(34,197,94,0.04)", droppable: false, cards: reading },
-        { key: "deep", title: zh ? "深读 (≥10m)" : "Deep (≥10m)", pillBg: "#e0f2fe", pillFg: "#075985", surfaceTint: "rgba(14,165,233,0.04)", droppable: false, cards: deep },
-        { key: "finished", title: zh ? "已读" : "Finished", pillBg: "#e0e7ff", pillFg: "#3730a3", surfaceTint: "rgba(99,102,241,0.04)", droppable: false, cards: finished }
-      ];
-    }
-    if (groupBy === "status") {
-      const statuses = listAvailableStatuses(rawItems, zh, excludedStatusTag);
-      const map = /* @__PURE__ */ new Map();
-      statuses.forEach((st, idx) => {
-        const t = SOFT_TINTS[(idx + 1) % SOFT_TINTS.length];
-        map.set(st.tag.toLowerCase(), { key: st.tag, title: st.label, color: st.color, pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: [] });
-      });
-      const unassigned = { key: "__none__", title: zh ? "未设状态" : "Unassigned", color: "#94a3b8", pillBg: "#f1f5f9", pillFg: "#475569", surfaceTint: "rgba(100,116,139,0.04)", droppable: true, cards: [] };
-      for (const c of cards) {
-        const k = c.status?.tag.toLowerCase();
-        if (k && map.has(k)) map.get(k).cards.push(c);
-        else unassigned.cards.push(c);
-      }
-      return [unassigned, ...map.values()];
-    }
-    if (groupBy === "rating") {
-      const cols = [];
-      for (let stars = 5; stars >= 1; stars--) {
-        const t = SOFT_TINTS[(5 - stars) % SOFT_TINTS.length];
-        cols.push({ key: String(stars), title: `${stars} ⭐`, color: "#f59e0b", pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
-      }
-      cols.push({ key: "0", title: zh ? "未评级" : "Unrated", color: "#94a3b8", pillBg: "#f1f5f9", pillFg: "#475569", surfaceTint: "rgba(100,116,139,0.04)", droppable: true, cards: cards.filter((c) => c.rating === 0) });
-      return cols;
-    }
-    const buckets = /* @__PURE__ */ new Map();
-    for (const c of cards) {
-      const key = groupBy === "year" ? c.year || (zh ? "未知年份" : "Unknown") : groupBy === "publication" ? c.venue || (zh ? "未标来源" : "No Venue") : c.itemTypeLabel;
-      const list = buckets.get(key) || [];
-      list.push(c);
-      buckets.set(key, list);
-    }
-    const entries = [...buckets.entries()];
-    if (groupBy === "year") entries.sort((a, b) => (Number(b[0]) || -1) - (Number(a[0]) || -1));
-    else entries.sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-    return entries.map(([key, list], idx) => {
-      const t = SOFT_TINTS[idx % SOFT_TINTS.length];
-      return { key, title: key, pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: false, cards: list };
-    });
-  }
-  async function applyKanbanColumnDrop(card, groupBy, targetColumnKey, options) {
-    if (groupBy === "status") {
-      return setItemStatus(card.item, targetColumnKey === "__none__" ? null : targetColumnKey, {
-        color: options.color,
-        excludedTag: options.excludedStatusTag,
-        syncZoteroTagColor: options.syncZoteroTagColor
-      });
-    }
-    if (groupBy === "rating") {
-      return setItemRating(card.item, Number(targetColumnKey) || 0, options.ratingStorage);
-    }
-    return false;
   }
 
   // src/services/pdf-cover-queue.ts
@@ -11789,6 +9499,2675 @@ ${REMINDERS_CARD_CSS}`;
       currentJob.subscribers.delete(sub);
     });
   }
+  function invalidatePdfCover(attID) {
+    const prefix = `${attID}:`;
+    for (const key of memCoverCache.keys()) if (key.startsWith(prefix)) removeMemCover(key);
+    for (const key of failedRetryAt.keys()) if (key.startsWith(prefix)) failedRetryAt.delete(key);
+    for (const [k, job] of activeJobs.entries()) {
+      if (k.startsWith(`${attID}:`)) {
+        job.controller.abort();
+        activeJobs.delete(k);
+      }
+    }
+  }
+
+  // src/services/annotation-matrix.ts
+  function matchesAnnotationQuery(ann, rawQuery) {
+    const query = String(rawQuery || "").trim().toLowerCase();
+    if (!query) return true;
+    const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(" ")}`.toLowerCase();
+    const orClauses = query.split("||").map((s) => s.trim()).filter(Boolean);
+    if (!orClauses.length) return true;
+    return orClauses.some((clause) => {
+      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
+      return andTerms.length > 0 && andTerms.every((term) => hay.includes(term));
+    });
+  }
+  function filterCollectedAnnotations(list, opts = {}) {
+    const wantedColor = String(opts.colorLabel || "").trim().toLowerCase();
+    const wantedHex = normalizeHexColor2(wantedColor);
+    const wantedTag = String(opts.tag || "").trim().toLowerCase();
+    return list.filter((ann) => {
+      if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && (!wantedHex || normalizeHexColor2(ann.color) !== wantedHex)) {
+        return false;
+      }
+      if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
+        return false;
+      }
+      return matchesAnnotationQuery(ann, opts.query || "");
+    });
+  }
+  function buildAnnotationMatrix(items, colorLabelsJson, opts = {}) {
+    const semantics = parseColorSemantics(colorLabelsJson);
+    const all = collectItemAnnotations(items, semantics);
+    const filtered = filterCollectedAnnotations(all, opts);
+    const colOrder = [];
+    const colSeen = /* @__PURE__ */ new Set();
+    for (const label of Object.values(semantics)) {
+      if (filtered.some((a) => a.colorLabel === label) && !colSeen.has(label)) {
+        colSeen.add(label);
+        colOrder.push(label);
+      }
+    }
+    for (const a of filtered) {
+      if (!colSeen.has(a.colorLabel)) {
+        colSeen.add(a.colorLabel);
+        colOrder.push(a.colorLabel);
+      }
+    }
+    const byItem = /* @__PURE__ */ new Map();
+    for (const raw of items) {
+      const id = Number(raw?.id || 0);
+      if (!id || raw?.deleted) continue;
+      const title = String(raw.getField?.("title") || raw.title || `文献 #${id}`);
+      const creator = String(raw.firstCreator || "").trim();
+      const year = String(raw.getField?.("year") || raw.getField?.("date") || "").slice(0, 4);
+      byItem.set(id, { title, creatorYear: [creator, year].filter(Boolean).join(" "), list: [] });
+    }
+    for (const a of filtered) {
+      let bucket = byItem.get(a.itemID);
+      if (!bucket) {
+        bucket = { title: a.itemTitle, creatorYear: a.creatorYear, list: [] };
+        byItem.set(a.itemID, bucket);
+      }
+      bucket.list.push(a);
+    }
+    const rows = [];
+    for (const [itemID, entry] of byItem.entries()) {
+      if (filtered.length > 0 && entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
+      const cells = {};
+      for (const col of colOrder) cells[col] = [];
+      for (const a of entry.list) {
+        if (!cells[a.colorLabel]) cells[a.colorLabel] = [];
+        cells[a.colorLabel].push(a);
+      }
+      rows.push({ itemID, title: entry.title, creatorYear: entry.creatorYear, cells });
+    }
+    return { columns: colOrder, rows, totalAnnotations: filtered.length };
+  }
+  function formatAnnotationCellText(list) {
+    return list.map((a) => {
+      const page = a.pageLabel ? `[p.${a.pageLabel}] ` : "";
+      const body = a.comment && a.text ? `${a.text}（评注：${a.comment}）` : a.comment || a.text;
+      return `${page}${body}`;
+    }).join("；");
+  }
+  function renderMatrixMarkdown(matrix, heading = "文献对比矩阵") {
+    const cols = ["文献", ...matrix.columns];
+    const header = `| ${cols.join(" | ")} |`;
+    const sep = `| ${cols.map(() => "---").join(" | ")} |`;
+    const lines = [`## ${heading}`, "", header, sep];
+    for (const row of matrix.rows) {
+      const meta = row.creatorYear ? `${row.title} (${row.creatorYear})` : row.title;
+      const cells = [
+        meta.replace(/\|/g, "\\|"),
+        ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []).replace(/\|/g, "\\|").replace(/\r?\n/g, " "))
+      ];
+      lines.push(`| ${cells.join(" | ")} |`);
+    }
+    return lines.join("\n");
+  }
+  function csvCell(val) {
+    const s = String(val || "");
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+  function renderMatrixCsv(matrix) {
+    const header = ["文献", "作者年份", ...matrix.columns].map(csvCell).join(",");
+    const rows = matrix.rows.map((row) => [
+      row.title,
+      row.creatorYear,
+      ...matrix.columns.map((c) => formatAnnotationCellText(row.cells[c] || []))
+    ].map(csvCell).join(","));
+    return [header, ...rows].join("\n");
+  }
+  function escHtml(s) {
+    return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function renderMatrixHtmlNote(matrix, heading = "BridgeFlow 文献对比矩阵") {
+    const ths = ["文献", ...matrix.columns].map((c) => `<th>${escHtml(c)}</th>`).join("");
+    const trs = matrix.rows.map((row) => {
+      const meta = row.creatorYear ? `${escHtml(row.title)}<br/><small>${escHtml(row.creatorYear)}</small>` : escHtml(row.title);
+      const tds = matrix.columns.map((c) => `<td>${escHtml(formatAnnotationCellText(row.cells[c] || []))}</td>`).join("");
+      return `<tr><td>${meta}</td>${tds}</tr>`;
+    }).join("");
+    return `<h2>${escHtml(heading)}</h2><table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+  }
+  async function saveMatrixAsZoteroNote(matrix, heading, libraryID) {
+    const ZoteroObj = globalThis.Zotero;
+    const ItemCtor = ZoteroObj?.Item;
+    if (typeof ItemCtor !== "function") return null;
+    try {
+      const userLibID = Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+      const reqLib = libraryID ? ZoteroObj?.Libraries?.get?.(libraryID) : null;
+      const targetLibID = libraryID && (!reqLib || reqLib.editable !== false) ? libraryID : userLibID;
+      const note = new ItemCtor("note");
+      note.libraryID = targetLibID;
+      note.setNote(renderMatrixHtmlNote(matrix, heading));
+      const id = await note.saveTx?.();
+      return Number(id || note.id || 0) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // src/domains/visual-notes/annotation-matrix-ui.ts
+  var MATRIX_STYLE_ID = "zbf-matrix-modal-style";
+  var MATRIX_CSS = `
+.zbf-matrix-backdrop { position: fixed; left: 0; top: 0; right: 0; bottom: 0; width: 100vw; height: 100vh; box-sizing: border-box; z-index: 2147483646; background: rgba(15,23,42,0.52); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center; padding: 20px; }
+.zbf-matrix-dialog { width: min(1040px, 94vw); max-height: 86vh; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 12px; background: light-dark(#ffffff, #1e293b); color: light-dark(#111827, #e2e8f0); border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.24)); box-shadow: 0 20px 50px rgba(0,0,0,0.32); font: 12.5px/1.45 system-ui, "Microsoft YaHei UI", sans-serif; }
+.zbf-matrix-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.zbf-matrix-title { font-size: 15px; font-weight: 600; }
+.zbf-matrix-close { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: inherit; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; justify-content: center; }
+.zbf-matrix-close:hover { background: light-dark(rgba(15,23,42,0.08), rgba(255,255,255,0.1)); }
+.zbf-matrix-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.zbf-matrix-search-wrap { position: relative; flex: 1 1 230px; min-width: 180px; display: flex; align-items: center; }
+.zbf-matrix-input { width: 100%; height: 29px; padding: 0 26px 0 9px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.32)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; box-sizing: border-box; }
+.zbf-matrix-input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 2px rgba(37,99,235,0.16); }
+.zbf-matrix-clear { position: absolute; right: 4px; width: 20px; height: 20px; border: 0; border-radius: 4px; background: transparent; color: inherit; opacity: 0.6; cursor: pointer; display: none; align-items: center; justify-content: center; }
+.zbf-matrix-clear:hover { opacity: 1; background: rgba(128,128,128,0.16); }
+.zbf-matrix-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; border: 1px solid light-dark(rgba(15,23,42,0.16), rgba(148,163,184,0.28)); background: transparent; color: inherit; cursor: pointer; font-size: 11.5px; transition: background-color 0.12s, border-color 0.12s; }
+.zbf-matrix-chip:hover { background: light-dark(rgba(15,23,42,0.05), rgba(255,255,255,0.06)); }
+.zbf-matrix-chip[data-active="true"] { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+.zbf-matrix-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; border: 1px solid rgba(0,0,0,0.18); }
+.zbf-matrix-empty { padding: 32px 16px; text-align: center; font-size: 13px; opacity: 0.72; }
+.zbf-matrix-scroll { flex: 1 1 auto; overflow: auto; border: 1px solid light-dark(rgba(15,23,42,0.14), rgba(148,163,184,0.22)); border-radius: 8px; }
+.zbf-matrix-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }
+.zbf-matrix-table th, .zbf-matrix-table td { border-bottom: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.16)); border-right: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.14)); padding: 7px 9px; vertical-align: top; text-align: left; overflow-wrap: anywhere; }
+.zbf-matrix-table th { position: sticky; top: 0; background: light-dark(#f8fafc, #0f172a); font-weight: 600; z-index: 1; }
+.zbf-matrix-table tbody tr:hover td { background: light-dark(rgba(15,23,42,0.015), rgba(255,255,255,0.02)); }
+.zbf-matrix-item-link { border: 0; padding: 0; background: transparent; color: light-dark(#2563eb, #60a5fa); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.zbf-matrix-item-link sub, .zbf-matrix-item-link sup { font-size: 0.74em; line-height: 0; }
+.zbf-matrix-item-link:hover { text-decoration: underline; }
+.zbf-matrix-ann { margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; border-left: 3px solid transparent; background: light-dark(rgba(15,23,42,0.03), rgba(255,255,255,0.04)); cursor: pointer; transition: background-color 0.12s ease; }
+.zbf-matrix-ann:hover { background: light-dark(rgba(37,99,235,0.09), rgba(96,165,250,0.15)); }
+.zbf-matrix-ann:last-child { margin-bottom: 0; }
+.zbf-matrix-mark { padding: 0 2px; border-radius: 2px; background: light-dark(#fef08a, rgba(250, 204, 21, 0.34)); color: inherit; font-weight: 600; }
+.zbf-matrix-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.zbf-matrix-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 500 12px/1.2 inherit; cursor: pointer; }
+.zbf-matrix-btn:hover { background: light-dark(#e2e8f0, #334155); }
+.zbf-matrix-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+.zbf-matrix-btn.primary:hover { background: #1d4ed8; }
+.zbf-matrix-status { font-size: 12px; opacity: 0.85; }
+`;
+  function matrixEl(doc, tag) {
+    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  }
+  function ensureMatrixStyles(doc) {
+    if (!doc) return;
+    const existing = doc.getElementById(MATRIX_STYLE_ID);
+    if (existing) {
+      if (existing.textContent !== MATRIX_CSS) existing.textContent = MATRIX_CSS;
+      return;
+    }
+    const style = matrixEl(doc, "style");
+    style.id = MATRIX_STYLE_ID;
+    style.textContent = MATRIX_CSS;
+    (doc.head || doc.documentElement)?.appendChild(style);
+  }
+  function writeMatrixClipboard(text2, clipboard) {
+    if (clipboard?.writePayload("", text2, true)) return true;
+    try {
+      const cb = globalThis.Zotero?.Utilities?.Internal?.copyTextToClipboard;
+      if (typeof cb === "function") {
+        cb(text2);
+        return true;
+      }
+    } catch {
+    }
+    return false;
+  }
+  function extractQueryTerms(rawQuery) {
+    return String(rawQuery || "").split(/(?:\|\||&&)/).map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2 || /[\u4e00-\u9fff]/.test(s)).sort((a, b) => b.length - a.length);
+  }
+  function renderHighlightedSnippet(doc, container, text2, terms) {
+    if (!terms.length || !doc.createTextNode) {
+      container.textContent = text2;
+      return;
+    }
+    const escaped = terms.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const re = new RegExp(`(${escaped.join("|")})`, "gi");
+    let last = 0;
+    for (const match of text2.matchAll(re)) {
+      const idx = match.index ?? 0;
+      if (idx > last) container.appendChild(doc.createTextNode(text2.slice(last, idx)));
+      const mark = matrixEl(doc, "mark");
+      mark.className = "zbf-matrix-mark";
+      mark.textContent = match[0];
+      container.appendChild(mark);
+      last = idx + match[0].length;
+    }
+    if (last < text2.length) container.appendChild(doc.createTextNode(text2.slice(last)));
+  }
+
+  // src/domains/visual-notes/annotation-matrix-modal.ts
+  function openAnnotationMatrixModal(options) {
+    const doc = options.mountRoot?.ownerDocument || options.win.document;
+    if (!doc) return;
+    ensureMatrixStyles(doc);
+    doc.getElementById("zbf-matrix-backdrop")?.remove();
+    const hostItems = globalThis.Zotero?.Items;
+    const items = [...new Set(options.itemIDs)].map((id) => hostItems?.get?.(id)).filter((it) => it && !it.deleted);
+    const colorJson = options.prefs.get("inspector.annotations.colorLabels");
+    const semantics = parseColorSemantics(colorJson);
+    const colorByLabel = /* @__PURE__ */ new Map();
+    for (const [hex, lbl] of Object.entries(semantics)) {
+      if (!colorByLabel.has(lbl)) colorByLabel.set(lbl, hex);
+    }
+    const fullMatrix = buildAnnotationMatrix(items, colorJson);
+    const countsByCol = /* @__PURE__ */ new Map();
+    for (const col of fullMatrix.columns) {
+      let total = 0;
+      for (const r of fullMatrix.rows) total += (r.cells[col] || []).length;
+      countsByCol.set(col, total);
+    }
+    const backdrop = matrixEl(doc, "div");
+    backdrop.id = "zbf-matrix-backdrop";
+    backdrop.className = "zbf-matrix-backdrop";
+    const dialog = matrixEl(doc, "div");
+    dialog.className = "zbf-matrix-dialog";
+    const head = matrixEl(doc, "div");
+    head.className = "zbf-matrix-head";
+    const heading = matrixEl(doc, "div");
+    heading.className = "zbf-matrix-title";
+    heading.textContent = `文献对比矩阵 · ${options.title} (${items.length} 篇 / ${fullMatrix.totalAnnotations} 条标注)`;
+    const closeBtn = matrixEl(doc, "button");
+    closeBtn.type = "button";
+    closeBtn.className = "zbf-matrix-close";
+    closeBtn.textContent = "✕";
+    head.append(heading, closeBtn);
+    const controls = matrixEl(doc, "div");
+    controls.className = "zbf-matrix-controls";
+    const searchWrap = matrixEl(doc, "div");
+    searchWrap.className = "zbf-matrix-search-wrap";
+    const queryInput = matrixEl(doc, "input");
+    queryInput.type = "text";
+    queryInput.className = "zbf-matrix-input";
+    queryInput.placeholder = "筛选标注（支持 方法 && 对照 或 局限 || 不足）...";
+    const clearBtn = matrixEl(doc, "button");
+    clearBtn.type = "button";
+    clearBtn.className = "zbf-matrix-clear";
+    clearBtn.textContent = "✕";
+    clearBtn.title = "清空筛选条件";
+    searchWrap.append(queryInput, clearBtn);
+    controls.appendChild(searchWrap);
+    let activeColor = "";
+    const chipButtons = [];
+    const addChip = (label, value, count2) => {
+      const btn = matrixEl(doc, "button");
+      btn.type = "button";
+      btn.className = "zbf-matrix-chip";
+      const dotHex = value ? colorByLabel.get(value) : "";
+      if (dotHex) {
+        const dot = matrixEl(doc, "span");
+        dot.className = "zbf-matrix-dot";
+        dot.style.background = dotHex;
+        btn.appendChild(dot);
+      }
+      const txt = matrixEl(doc, "span");
+      txt.textContent = count2 > 0 ? `${label} (${count2})` : label;
+      btn.appendChild(txt);
+      if (!value) btn.setAttribute("data-active", "true");
+      btn.addEventListener("click", () => {
+        activeColor = value;
+        for (const b of chipButtons) b.removeAttribute("data-active");
+        btn.setAttribute("data-active", "true");
+        renderTable();
+      });
+      chipButtons.push(btn);
+      controls.appendChild(btn);
+    };
+    addChip("全部维度", "", fullMatrix.totalAnnotations);
+    for (const col of fullMatrix.columns) addChip(col, col, countsByCol.get(col) || 0);
+    const scroll = matrixEl(doc, "div");
+    scroll.className = "zbf-matrix-scroll";
+    const statusEl = matrixEl(doc, "span");
+    statusEl.className = "zbf-matrix-status";
+    const selectedIDs = new Set(items.map((it) => Number(it.id)));
+    let currentMatrix = fullMatrix;
+    const updateStatus = () => {
+      const visibleSelected = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
+      statusEl.textContent = `当前显示 ${currentMatrix.rows.length} 篇 / ${currentMatrix.totalAnnotations} 条标注 · 已勾选 ${visibleSelected} 篇`;
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault?.();
+        close();
+      }
+    };
+    const close = () => {
+      doc.removeEventListener?.("keydown", onKey, true);
+      backdrop.remove();
+    };
+    const renderTable = () => {
+      clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
+      currentMatrix = buildAnnotationMatrix(items, colorJson, { query: queryInput.value, colorLabel: activeColor });
+      scroll.textContent = "";
+      updateStatus();
+      if (!currentMatrix.rows.length || !currentMatrix.columns.length) {
+        const empty = matrixEl(doc, "div");
+        empty.className = "zbf-matrix-empty";
+        empty.textContent = items.length ? "当前筛选条件下没有匹配的标注，请尝试调整关键词或颜色维度。" : "未检测到可对比的文献。请先在阅读器中打开文献，或在主文库选中多篇带标注的文献后重试。";
+        scroll.appendChild(empty);
+        return;
+      }
+      const terms = extractQueryTerms(queryInput.value);
+      const table = matrixEl(doc, "table");
+      table.className = "zbf-matrix-table";
+      const thead = matrixEl(doc, "thead");
+      const trHead = matrixEl(doc, "tr");
+      const firstTh = matrixEl(doc, "th");
+      firstTh.style.width = "220px";
+      const allCb = matrixEl(doc, "input");
+      allCb.type = "checkbox";
+      const syncAllCheckbox = () => {
+        const total = currentMatrix.rows.length;
+        const checkedCount = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
+        allCb.checked = total > 0 && checkedCount === total;
+        allCb.indeterminate = checkedCount > 0 && checkedCount < total;
+      };
+      syncAllCheckbox();
+      allCb.style.marginRight = "6px";
+      allCb.title = "全选 / 取消当前列表文献";
+      const rowCbs = [];
+      allCb.addEventListener("change", () => {
+        allCb.indeterminate = false;
+        for (const r of currentMatrix.rows) {
+          if (allCb.checked) selectedIDs.add(r.itemID);
+          else selectedIDs.delete(r.itemID);
+        }
+        for (const cb of rowCbs) cb.checked = allCb.checked;
+        updateStatus();
+      });
+      const headTitle = matrixEl(doc, "span");
+      headTitle.textContent = `文献 (${currentMatrix.rows.length})`;
+      firstTh.append(allCb, headTitle);
+      trHead.appendChild(firstTh);
+      for (const col of currentMatrix.columns) {
+        const th = matrixEl(doc, "th");
+        const dotHex = colorByLabel.get(col);
+        if (dotHex) {
+          const dot = matrixEl(doc, "span");
+          dot.className = "zbf-matrix-dot";
+          dot.style.background = dotHex;
+          dot.style.marginRight = "5px";
+          th.appendChild(dot);
+        }
+        const lbl = matrixEl(doc, "span");
+        lbl.textContent = col;
+        th.appendChild(lbl);
+        trHead.appendChild(th);
+      }
+      thead.appendChild(trHead);
+      table.appendChild(thead);
+      const tbody = matrixEl(doc, "tbody");
+      for (const row of currentMatrix.rows) {
+        const tr = matrixEl(doc, "tr");
+        const tdTitle = matrixEl(doc, "td");
+        const cb = matrixEl(doc, "input");
+        cb.type = "checkbox";
+        cb.checked = selectedIDs.has(row.itemID);
+        cb.style.marginRight = "6px";
+        rowCbs.push(cb);
+        cb.addEventListener("change", () => {
+          if (cb.checked) selectedIDs.add(row.itemID);
+          else selectedIDs.delete(row.itemID);
+          syncAllCheckbox();
+          updateStatus();
+        });
+        const link = matrixEl(doc, "button");
+        link.type = "button";
+        link.className = "zbf-matrix-item-link";
+        renderRichTitleNodes(doc, link, row.title);
+        link.title = "打开并聚焦此文献阅读器";
+        link.addEventListener("click", () => {
+          close();
+          options.bus?.emit("workspace:open-item-request", { itemID: row.itemID, preferExistingTab: true });
+        });
+        tdTitle.append(cb, link);
+        if (row.creatorYear) {
+          const sub = matrixEl(doc, "div");
+          sub.style.opacity = "0.72";
+          sub.style.fontSize = "11px";
+          sub.textContent = row.creatorYear;
+          tdTitle.appendChild(sub);
+        }
+        tr.appendChild(tdTitle);
+        for (const col of currentMatrix.columns) {
+          const td = matrixEl(doc, "td");
+          const colColor = colorByLabel.get(col) || "";
+          for (const ann of row.cells[col] || []) {
+            const block = matrixEl(doc, "div");
+            block.className = "zbf-matrix-ann";
+            if (colColor) block.style.borderLeftColor = colColor;
+            const page = ann.pageLabel ? `[p.${ann.pageLabel}] ` : "";
+            const snippet = ann.comment && ann.text ? `${page}${ann.text}（评注：${ann.comment}）` : `${page}${ann.comment || ann.text}`;
+            renderHighlightedSnippet(doc, block, snippet, terms);
+            block.title = "点击复制此条标注内容";
+            block.addEventListener("click", () => {
+              statusEl.textContent = writeMatrixClipboard(snippet, options.clipboard) ? "✓ 已复制单条标注内容" : "✕ 复制失败";
+            });
+            td.appendChild(block);
+          }
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      scroll.appendChild(table);
+    };
+    clearBtn.addEventListener("click", () => {
+      queryInput.value = "";
+      renderTable();
+      queryInput.focus?.();
+    });
+    queryInput.addEventListener("input", renderTable);
+    renderTable();
+    const foot = matrixEl(doc, "div");
+    foot.className = "zbf-matrix-foot";
+    const actions = matrixEl(doc, "div");
+    actions.className = "zbf-matrix-actions";
+    const mkBtn = (label, primary, onClick) => {
+      const b = matrixEl(doc, "button");
+      b.type = "button";
+      b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
+      b.textContent = label;
+      b.addEventListener("click", onClick);
+      actions.appendChild(b);
+    };
+    mkBtn("存为 Zotero 笔记", true, () => {
+      void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`, items[0]?.libraryID).then(async (id) => {
+        statusEl.textContent = id ? `✓ 已生成并打开笔记 (#${id})` : "✕ 生成笔记失败";
+        if (id) {
+          try {
+            await globalThis.Zotero?.Notes?.open?.(id, void 0, { openInWindow: false });
+          } catch {
+          }
+        }
+      });
+    });
+    mkBtn("复制 Markdown", false, () => {
+      statusEl.textContent = writeMatrixClipboard(renderMatrixMarkdown(currentMatrix, options.title), options.clipboard) ? "✓ 已复制 Markdown 表格" : "✕ 复制失败";
+    });
+    mkBtn("复制 CSV", false, () => {
+      statusEl.textContent = writeMatrixClipboard(renderMatrixCsv(currentMatrix), options.clipboard) ? "✓ 已复制 CSV" : "✕ 复制失败";
+    });
+    if (options.clipboard) {
+      mkBtn("复制勾选 CSL 引文", false, () => {
+        const targets = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => hostItems?.get?.(r.itemID)).filter(Boolean);
+        if (!targets.length) {
+          statusEl.textContent = "请先勾选至少一篇文献";
+          return;
+        }
+        void options.clipboard?.copyItems(targets, { source: "tab-menu" }).then((ok) => {
+          statusEl.textContent = ok ? `✓ 已复制 ${targets.length} 篇 CSL 引文并记入反查历史` : "✕ 复制引文失败";
+        });
+      });
+    }
+    if (options.bus && options.prefs.get("modules.wordCite.enable")) {
+      mkBtn("合并插入 Word", false, () => {
+        const ids = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).map((r) => r.itemID);
+        if (!ids.length) {
+          statusEl.textContent = "请先勾选至少一篇文献";
+          return;
+        }
+        options.bus?.emit("word:insert-items-request", { itemIDs: ids, win: options.win });
+        statusEl.textContent = `✓ 已发送 ${ids.length} 篇文献到 Word`;
+      });
+    }
+    foot.append(statusEl, actions);
+    dialog.append(head, controls, scroll, foot);
+    backdrop.appendChild(dialog);
+    doc.addEventListener?.("keydown", onKey, true);
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) close();
+    });
+    (options.mountRoot || doc.body || doc.documentElement)?.appendChild(backdrop);
+    queryInput.focus?.();
+  }
+
+  // src/domains/visual-notes/annotation-popup-labels.ts
+  var STYLE_ID3 = "zbf-reader-color-labels-style";
+  var LABEL_CLASS = "zbf-popup-color-name";
+  var COLOR_KEYS = Object.keys(DEFAULT_ANNOTATION_COLORS);
+  var POPUP_CSS = `
+.selection-popup, .annotation-popup { max-width: 480px !important; }
+.selection-popup .colors, .annotation-popup .colors { flex-wrap: wrap !important; justify-content: flex-start !important; gap: 4px 6px !important; }
+.selection-popup .colors .color-button, .annotation-popup .colors .color-button {
+  width: auto !important; min-width: 20px; height: 24px !important;
+  padding: 2px 7px !important; display: inline-flex !important;
+  align-items: center !important; gap: 5px !important; border-radius: 6px !important;
+  transition: background-color 0.14s ease, transform 0.12s cubic-bezier(0.22,1,0.36,1) !important;
+}
+.selection-popup .colors .color-button:hover, .annotation-popup .colors .color-button:hover {
+  background-color: rgba(79, 70, 229, 0.08) !important;
+}
+.selection-popup .colors .color-button:active, .annotation-popup .colors .color-button:active {
+  transform: scale(0.95) !important;
+}
+.selection-popup .colors .color-button[data-zbf-dedup-hidden="true"],
+.annotation-popup .colors .color-button[data-zbf-dedup-hidden="true"] {
+  display: none !important;
+}
+.selection-popup .colors .color-button svg, .annotation-popup .colors .color-button svg { flex: none; }
+.${LABEL_CLASS} {
+  font-size: 12px; font-weight: 500; line-height: 1.2; color: var(--fill-primary, currentColor);
+  white-space: nowrap; max-width: 110px; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+}
+`;
+  function rgbToHex(raw) {
+    const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (!m) return "";
+    const toHex = (n) => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, "0");
+    return `#${toHex(m[1])}${toHex(m[2])}${toHex(m[3])}`;
+  }
+  function resolvePopupButtonColor(btn, index) {
+    const fillNode = btn.querySelector?.('path[fill]:not([fill="none"]), rect[fill]:not([fill="none"]), circle[fill]:not([fill="none"])');
+    const fillAttr = String(fillNode?.getAttribute?.("fill") || "").trim();
+    if (fillAttr) {
+      return fillAttr.startsWith("rgb") ? rgbToHex(fillAttr) : normalizeHexColor2(fillAttr);
+    }
+    const bg = String(btn.style?.backgroundColor || "").trim();
+    if (bg.startsWith("#")) return normalizeHexColor2(bg);
+    if (bg.startsWith("rgb")) return rgbToHex(bg);
+    return COLOR_KEYS[index] || "";
+  }
+  function isSelectedColorButton(btn) {
+    try {
+      if (btn.classList?.contains?.("active") || btn.classList?.contains?.("selected")) return true;
+      if (btn.getAttribute?.("aria-pressed") === "true" || btn.getAttribute?.("aria-checked") === "true") return true;
+      if (btn.getAttribute?.("data-selected") === "true" || btn.hasAttribute?.("checked")) return true;
+    } catch {
+    }
+    return false;
+  }
+  function decorateSelectionPopupDoc(readerDoc, semantics, enabledColors) {
+    const buttons = readerDoc.querySelectorAll?.(".selection-popup .colors .color-button, .annotation-popup .colors .color-button");
+    if (!buttons || !buttons.length) return 0;
+    const activeSet = enabledColors && enabledColors.size > 0 ? enabledColors : parseEnabledAnnotationColors("");
+    const groups = /* @__PURE__ */ new Map();
+    let updated = 0;
+    buttons.forEach((btn, index) => {
+      const hex = resolvePopupButtonColor(btn, index);
+      const label = hex && semantics[hex] || "";
+      let span = btn.querySelector?.(`.${LABEL_CLASS}`);
+      const group2 = btn.parentElement ?? null;
+      const seen = groups.get(group2) || /* @__PURE__ */ new Set();
+      groups.set(group2, seen);
+      const slotHex = COLOR_KEYS[index] || "";
+      const disabledByPalette = Boolean(hex) && !activeSet.has(hex) && !(slotHex && activeSet.has(slotHex));
+      const isDup = !label || seen.has(label);
+      if ((disabledByPalette || isDup) && !isSelectedColorButton(btn)) {
+        span?.remove?.();
+        btn.setAttribute?.("data-zbf-dedup-hidden", "true");
+        return;
+      }
+      btn.removeAttribute?.("data-zbf-dedup-hidden");
+      if (!label) {
+        span?.remove?.();
+        return;
+      }
+      seen.add(label);
+      if (!span) {
+        const htmlNs = "http://www.w3.org/1999/xhtml";
+        span = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "span") : readerDoc.createElement("span");
+        span.className = LABEL_CLASS;
+        btn.appendChild(span);
+      }
+      if (span.textContent !== label) span.textContent = label;
+      updated += 1;
+    });
+    return updated;
+  }
+  function clearSelectionPopupDoc(readerDoc) {
+    readerDoc.getElementById?.(STYLE_ID3)?.remove?.();
+    readerDoc.querySelectorAll?.(`.${LABEL_CLASS}`).forEach((el) => el.remove?.());
+    readerDoc.querySelectorAll?.("[data-zbf-dedup-hidden]").forEach((el) => el.removeAttribute?.("data-zbf-dedup-hidden"));
+  }
+  var ReaderPopupLabelsController = class {
+    kernel;
+    attachedDocs = /* @__PURE__ */ new Map();
+    pendingReaders = /* @__PURE__ */ new Set();
+    notifierSub = null;
+    active = false;
+    constructor(kernel) {
+      this.kernel = kernel;
+    }
+    isEnabled() {
+      return Boolean(this.kernel.prefs.get("inspector.annotations.popupLabelsEnable"));
+    }
+    getSemantics() {
+      return parseColorSemantics(String(this.kernel.prefs.get("inspector.annotations.colorLabels") || ""));
+    }
+    getEnabledColors() {
+      return parseEnabledAnnotationColors(String(this.kernel.prefs.get("inspector.annotations.enabledColors") || ""));
+    }
+    start() {
+      if (this.active) return;
+      this.active = true;
+      this.sync();
+      this.notifierSub = this.kernel.notifier?.subscribe?.(["tab"], ({ event }) => {
+        if (!this.active || !this.isEnabled()) return;
+        if (event === "add" || event === "select" || event === "open") {
+          this.scanOpenReaders();
+        } else if (event === "close") {
+          this.pruneClosedDocs();
+        }
+      }) ?? null;
+    }
+    stop() {
+      this.active = false;
+      this.notifierSub?.();
+      this.notifierSub = null;
+      this.pendingReaders.clear();
+      for (const dispose of [...this.attachedDocs.values()]) dispose();
+      this.attachedDocs.clear();
+    }
+    sync() {
+      if (!this.active) return;
+      if (!this.isEnabled()) {
+        for (const dispose of [...this.attachedDocs.values()]) dispose();
+        this.attachedDocs.clear();
+        this.pendingReaders.clear();
+        return;
+      }
+      this.scanOpenReaders();
+      const sem = this.getSemantics();
+      const enabled = this.getEnabledColors();
+      for (const doc of this.attachedDocs.keys()) {
+        decorateSelectionPopupDoc(doc, sem, enabled);
+      }
+    }
+    attachReaderDoc(readerDoc) {
+      if (!this.active || !this.isEnabled() || !readerDoc || this.attachedDocs.has(readerDoc)) return;
+      const headOrRoot = readerDoc.head || readerDoc.documentElement;
+      if (headOrRoot && !readerDoc.getElementById?.(STYLE_ID3)) {
+        const htmlNs = "http://www.w3.org/1999/xhtml";
+        const styleEl = typeof readerDoc.createElementNS === "function" ? readerDoc.createElementNS(htmlNs, "style") : readerDoc.createElement("style");
+        styleEl.id = STYLE_ID3;
+        styleEl.textContent = POPUP_CSS;
+        headOrRoot.appendChild(styleEl);
+      }
+      const sheet = readerDoc.getElementById?.(STYLE_ID3);
+      if (sheet && sheet.textContent !== POPUP_CSS) sheet.textContent = POPUP_CSS;
+      const apply = () => decorateSelectionPopupDoc(readerDoc, this.getSemantics(), this.getEnabledColors());
+      apply();
+      const Obs = readerDoc.defaultView?.MutationObserver || globalThis.MutationObserver;
+      const target = readerDoc.body || readerDoc.documentElement;
+      let observer = null;
+      let applyQueued = false;
+      if (Obs && target) {
+        const isPopupMutation = (records) => {
+          try {
+            for (let r = 0; r < records.length; r++) {
+              const rec = records[r];
+              const t = rec?.target;
+              if (t && t.nodeType === 1 && t.closest?.(".selection-popup, .annotation-popup")) return true;
+              const added = rec?.addedNodes;
+              if (added) {
+                for (let i = 0; i < added.length; i++) {
+                  const el = added[i];
+                  if (el && el.nodeType === 1 && (el.matches?.(".selection-popup, .annotation-popup") || el.querySelector?.(".selection-popup, .annotation-popup"))) {
+                    return true;
+                  }
+                }
+              }
+            }
+            return false;
+          } catch {
+            return true;
+          }
+        };
+        const obs = new Obs((records) => {
+          if (!isPopupMutation(records) || applyQueued) return;
+          applyQueued = true;
+          void Promise.resolve().then(() => {
+            applyQueued = false;
+            if (this.active && this.isEnabled() && this.attachedDocs.has(readerDoc)) apply();
+          });
+        });
+        obs.observe(target, { childList: true, subtree: true });
+        observer = obs;
+      }
+      this.attachedDocs.set(readerDoc, () => {
+        observer?.disconnect();
+        clearSelectionPopupDoc(readerDoc);
+      });
+    }
+    scanOpenReaders() {
+      const readers = globalThis.Zotero?.Reader?._readers || [];
+      for (const reader of readers) {
+        if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
+        const doc = reader._iframeWindow?.document;
+        if (doc?.body) {
+          this.attachReaderDoc(doc);
+        } else if (!this.pendingReaders.has(reader)) {
+          this.pendingReaders.add(reader);
+          const waitReady = reader._waitForReader?.() ?? reader._initPromise ?? Promise.resolve();
+          void Promise.resolve(waitReady).then(() => {
+            this.pendingReaders.delete(reader);
+            if (this.active && this.isEnabled() && !reader._isTabClosed) {
+              const readyDoc = reader._iframeWindow?.document;
+              if (readyDoc?.body) this.attachReaderDoc(readyDoc);
+            }
+          }).catch(() => {
+            this.pendingReaders.delete(reader);
+          });
+        }
+      }
+    }
+    pruneClosedDocs() {
+      for (const [doc, dispose] of [...this.attachedDocs.entries()]) {
+        if (!doc.defaultView || doc.defaultView.closed) {
+          this.attachedDocs.delete(doc);
+          dispose();
+        }
+      }
+    }
+  };
+
+  // src/domains/visual-notes/annotation-tools.ts
+  var ReaderAnnotationTools = class {
+    unregisterListener = null;
+    kernel;
+    popupLabels;
+    constructor(kernel) {
+      this.kernel = kernel;
+      this.popupLabels = new ReaderPopupLabelsController(kernel);
+    }
+    register() {
+      this.popupLabels.start();
+      if (this.unregisterListener) return;
+      const readerApi = globalThis.Zotero?.Reader;
+      if (typeof readerApi?.registerEventListener !== "function") return;
+      const listener = (event) => {
+        if (!this.kernel.prefs.get("inspector.annotations.mergeEnable")) return;
+        const ids = Array.isArray(event?.params?.ids) ? event.params.ids.map((v) => Number(v)).filter((n) => Number.isInteger(n) && n > 0) : [];
+        if (ids.length < 2 || typeof event?.append !== "function") return;
+        const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+        event.append({
+          label: zh ? `合并选中的 ${ids.length} 条标注` : `Merge ${ids.length} Selected Annotations`,
+          onCommand: () => {
+            void mergeAnnotationsByIDs(ids).then((res) => {
+              try {
+                const PW = globalThis.Zotero?.ProgressWindow;
+                if (typeof PW !== "function") return;
+                const win = new PW({ closeOnClick: true });
+                win.changeHeadline(zh ? "BridgeFlow 批注合并" : "BridgeFlow Annotation Merge");
+                win.addDescription(res.ok ? zh ? `已合并 ${ids.length} 条标注为 1 条` : `Merged ${ids.length} annotations` : zh ? "无法合并所选批注（请确认属于同一有效附件）" : "Unable to merge selected annotations");
+                win.show();
+                win.startCloseTimer(2600);
+              } catch {
+              }
+            });
+          }
+        });
+      };
+      try {
+        readerApi.registerEventListener("createAnnotationContextMenu", listener, this.kernel.info.id);
+        this.unregisterListener = () => {
+          try {
+            readerApi.unregisterEventListener?.("createAnnotationContextMenu", listener);
+          } catch {
+          }
+        };
+      } catch {
+        this.unregisterListener = null;
+      }
+    }
+    unregister() {
+      this.popupLabels.stop();
+      this.unregisterListener?.();
+      this.unregisterListener = null;
+    }
+    mergeByIDs(ids) {
+      return mergeAnnotationsByIDs(ids);
+    }
+  };
+
+  // src/services/collection-notes.ts
+  var FIG_TABLE_RE = /^(?:fig(?:ure)?|tab(?:le|el)?|图|表)\b/i;
+  function isFigureOrTableAnnotation(ann) {
+    for (const t of ann.tags) {
+      if (FIG_TABLE_RE.test(String(t || "").trim())) return true;
+    }
+    return FIG_TABLE_RE.test(String(ann.comment || "").trim());
+  }
+  function stripNoteHtml(rawHtml) {
+    const raw = String(rawHtml || "");
+    if (!raw.trim()) return { heading: "", snippet: "" };
+    const withBreaks = raw.replace(/<(?:style|script)\b[^>]*>[\s\S]*?<\/(?:style|script)>/gi, "").replace(/<\/(p|div|h[1-6]|li|tr|blockquote)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"').replace(/&#39;/gi, "'").replace(/&amp;/gi, "&");
+    const lines = withBreaks.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+    const heading = (lines[0] || "").slice(0, 80);
+    const body = lines.join(" · ").slice(0, 360);
+    return { heading, snippet: body };
+  }
+  function resolveRegularParent(raw) {
+    if (!raw || raw.deleted) return null;
+    const hostItems = globalThis.Zotero?.Items;
+    if (typeof raw.isRegularItem === "function") {
+      if (raw.isRegularItem()) return raw;
+      if (raw.parentItemID) {
+        const parent = hostItems?.get?.(raw.parentItemID);
+        if (parent && !parent.deleted && parent.isRegularItem?.()) return parent;
+      }
+      return null;
+    }
+    if (raw.parentItemID && hostItems?.get) {
+      return hostItems.get(raw.parentItemID) || raw;
+    }
+    return raw;
+  }
+  function resolveHubScopeItems(win, mode, zh = true) {
+    const pane = win?.ZoteroPane;
+    const seen = /* @__PURE__ */ new Set();
+    const items = [];
+    const push = (raw) => {
+      const reg = resolveRegularParent(raw);
+      const id = Number(reg?.id || 0);
+      if (id > 0 && !seen.has(id)) {
+        seen.add(id);
+        items.push(reg);
+      }
+    };
+    let collectionID;
+    let libraryID;
+    try {
+      const treeRow = pane?.getCollectionTreeRow?.();
+      if (treeRow?.isCollection?.() && treeRow.ref?.id) {
+        collectionID = Number(treeRow.ref.id);
+        libraryID = Number(treeRow.ref.libraryID || 1);
+      } else if (treeRow?.ref?.libraryID) {
+        libraryID = Number(treeRow.ref.libraryID);
+      }
+    } catch {
+    }
+    if (mode === "selected") {
+      for (const it of pane?.getSelectedItems?.() || []) push(it);
+      return { scopeTitle: zh ? "当前选中文献" : "Selected Items", items, libraryID: items[0]?.libraryID || libraryID };
+    }
+    if (mode === "tabs") {
+      const hostItems = globalThis.Zotero?.Items;
+      for (const t of win?.Zotero_Tabs?._tabs || []) {
+        const id = Number(t?.data?.itemID || 0);
+        const resolved = id > 0 ? hostItems?.get?.(id) : null;
+        if (resolved) push(resolved);
+      }
+      return { scopeTitle: zh ? "已打开阅读标签" : "Open Reader Tabs", items, libraryID: items[0]?.libraryID || libraryID };
+    }
+    const view = pane?.itemsView;
+    const rowCount = Math.min(Number(view?.rowCount || 0), 2500);
+    for (let i = 0; i < rowCount; i++) {
+      push(view?.getRow?.(i)?.ref);
+    }
+    const colName = String(pane?.getSelectedCollections?.()?.[0]?.name || pane?.getCollectionTreeRow?.()?.ref?.name || "").trim();
+    const scopeTitle = colName || (zh ? "当前视图全部文献" : "Current Library View");
+    return {
+      scopeTitle,
+      items,
+      libraryID: libraryID || items[0]?.libraryID,
+      collectionID
+    };
+  }
+  function collectHubAnnotations(items, colorLabelsJson, opts = {}) {
+    const semantics = parseColorSemantics(colorLabelsJson);
+    const colorHexByLabel = /* @__PURE__ */ new Map();
+    for (const [hex, lbl] of Object.entries(semantics)) {
+      if (!colorHexByLabel.has(lbl)) colorHexByLabel.set(lbl, hex);
+    }
+    let base = collectItemAnnotations(items, semantics);
+    if (opts.ignoreFigureTable) {
+      base = base.filter((a) => !isFigureOrTableAnnotation(a));
+    }
+    const colorCounts = /* @__PURE__ */ new Map();
+    for (const a of base) {
+      colorCounts.set(a.colorLabel, (colorCounts.get(a.colorLabel) || 0) + 1);
+    }
+    const annotations = filterCollectedAnnotations(base, {
+      query: opts.query,
+      colorLabel: opts.colorLabel
+    });
+    return {
+      totalBeforeFilter: base.length,
+      annotations,
+      colorCounts,
+      colorHexByLabel
+    };
+  }
+  function matchesBooleanText(haystack, rawQuery) {
+    const q = String(rawQuery || "").trim().toLowerCase();
+    if (!q) return true;
+    const hay = haystack.toLowerCase();
+    const orParts = q.split("||").map((s) => s.trim()).filter(Boolean);
+    if (!orParts.length) return true;
+    return orParts.some((clause) => {
+      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
+      return andTerms.length > 0 && andTerms.every((t) => hay.includes(t));
+    });
+  }
+  function collectHubNotes(items, getBriefNote, query = "") {
+    const hostItems = globalThis.Zotero?.Items;
+    const entries = [];
+    let totalChildNotes = 0;
+    let totalBriefNotes = 0;
+    for (const item of items) {
+      const itemID = Number(item?.id || 0);
+      if (!itemID || item?.deleted) continue;
+      const title = String(item.getField?.("title") || item.title || `#${itemID}`);
+      const creator = String(item.firstCreator || "").trim();
+      const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+      const creatorYear = [creator, year].filter(Boolean).join(" ");
+      const briefNote = String(getBriefNote(item) || "").trim();
+      const childNotes = [];
+      const noteIDs = typeof item.getNotes === "function" ? item.getNotes() || [] : [];
+      for (const nid of noteIDs) {
+        const noteItem = hostItems?.get?.(nid);
+        if (!noteItem || noteItem.deleted) continue;
+        const rawHtml = String(noteItem.getNote?.() || noteItem.note || "");
+        const parsed = stripNoteHtml(rawHtml);
+        if (!parsed.snippet) continue;
+        childNotes.push({
+          noteID: Number(nid),
+          heading: parsed.heading || "笔记",
+          snippet: parsed.snippet,
+          dateModified: String(noteItem.dateModified || "").slice(0, 10)
+        });
+      }
+      const hay = [title, creatorYear, briefNote, ...childNotes.map((n) => `${n.heading} ${n.snippet}`)].join(" ");
+      if (!matchesBooleanText(hay, query)) continue;
+      if (query.trim() && !briefNote && !childNotes.length && !matchesBooleanText(`${title} ${creatorYear}`, query)) {
+        continue;
+      }
+      if (briefNote) totalBriefNotes++;
+      totalChildNotes += childNotes.length;
+      entries.push({ item, itemID, title, creatorYear, briefNote, childNotes });
+    }
+    return { entries, totalChildNotes, totalBriefNotes };
+  }
+  function formatHubAnnotationBody(ann, preferCommentOverQuote) {
+    const page = ann.pageLabel ? `[p.${ann.pageLabel}] ` : "";
+    if (preferCommentOverQuote && ann.comment) {
+      return `${page}${ann.comment}`;
+    }
+    if (ann.comment && ann.text) {
+      return `${page}${ann.text}（评注：${ann.comment}）`;
+    }
+    return `${page}${ann.comment || ann.text}`;
+  }
+  function mergeHubSynthesisEntries(notes, annotations) {
+    const byItemAnn = /* @__PURE__ */ new Map();
+    for (const a of annotations) {
+      const arr = byItemAnn.get(a.itemID) || [];
+      arr.push(a);
+      byItemAnn.set(a.itemID, arr);
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const merged = [];
+    for (const n of notes) {
+      seen.add(n.itemID);
+      merged.push(n);
+    }
+    for (const [itemID, anns] of byItemAnn.entries()) {
+      if (seen.has(itemID) || !anns.length) continue;
+      seen.add(itemID);
+      merged.push({
+        item: null,
+        itemID,
+        title: anns[0].itemTitle || `#${itemID}`,
+        creatorYear: anns[0].creatorYear || "",
+        briefNote: "",
+        childNotes: []
+      });
+    }
+    return { merged, byItemAnn };
+  }
+  function renderCollectionHubMarkdown(heading, notes, annotations, preferCommentOverQuote = false) {
+    const { merged, byItemAnn } = mergeHubSynthesisEntries(notes, annotations);
+    const lines = [`# ${heading}`, ""];
+    for (const entry of merged) {
+      const anns = byItemAnn.get(entry.itemID) || [];
+      if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
+      lines.push(`## ${entry.title}${entry.creatorYear ? ` (${entry.creatorYear})` : ""}`);
+      if (entry.briefNote) lines.push(`- **简记**：${entry.briefNote}`);
+      for (const cn of entry.childNotes) {
+        lines.push(`- **子笔记**${cn.dateModified ? ` [${cn.dateModified}]` : ""}：${cn.snippet}`);
+      }
+      for (const ann of anns) {
+        lines.push(`- **[${ann.colorLabel}]** ${formatHubAnnotationBody(ann, preferCommentOverQuote)}`);
+      }
+      lines.push("");
+    }
+    return lines.join("\n").trim();
+  }
+  function escHtml2(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  async function saveCollectionHubAsZoteroNote(options) {
+    const ZoteroObj = globalThis.Zotero;
+    const ItemCtor = ZoteroObj?.Item;
+    if (typeof ItemCtor !== "function") return null;
+    const { merged, byItemAnn } = mergeHubSynthesisEntries(options.notes, options.annotations);
+    const sections = [`<h2>${escHtml2(options.heading)}</h2>`];
+    for (const entry of merged) {
+      const anns = byItemAnn.get(entry.itemID) || [];
+      if (!entry.briefNote && !entry.childNotes.length && !anns.length) continue;
+      sections.push(`<h3>${escHtml2(entry.title)}${entry.creatorYear ? ` <small>(${escHtml2(entry.creatorYear)})</small>` : ""}</h3><ul>`);
+      if (entry.briefNote) sections.push(`<li><strong>简记：</strong>${escHtml2(entry.briefNote)}</li>`);
+      for (const cn of entry.childNotes) {
+        sections.push(`<li><strong>子笔记：</strong>${escHtml2(cn.snippet)}</li>`);
+      }
+      for (const ann of anns) {
+        sections.push(`<li><strong>[${escHtml2(ann.colorLabel)}]</strong> ${escHtml2(formatHubAnnotationBody(ann, Boolean(options.preferCommentOverQuote)))}</li>`);
+      }
+      sections.push("</ul>");
+    }
+    try {
+      const userLibID = Number(ZoteroObj?.Libraries?.userLibraryID || 1);
+      const reqLib = options.libraryID ? ZoteroObj?.Libraries?.get?.(options.libraryID) : null;
+      const targetLibID = options.libraryID && (!reqLib || reqLib.editable !== false) ? options.libraryID : userLibID;
+      const note = new ItemCtor("note");
+      note.libraryID = targetLibID;
+      note.setNote(sections.join(""));
+      if (options.collectionID && typeof note.addToCollection === "function") {
+        const col = ZoteroObj?.Collections?.get?.(options.collectionID);
+        if (!col || Number(col.libraryID || targetLibID) === targetLibID) {
+          note.addToCollection(options.collectionID);
+        }
+      }
+      const id = await note.saveTx?.();
+      return Number(id || note.id || 0) || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // src/domains/visual-notes/hub-cache.ts
+  function matchesNotesQuery(haystack, rawQuery) {
+    const q = String(rawQuery || "").trim().toLowerCase();
+    if (!q) return true;
+    const hay = haystack.toLowerCase();
+    const orParts = q.split("||").map((s) => s.trim()).filter(Boolean);
+    return !orParts.length || orParts.some((clause) => {
+      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
+      return andTerms.length > 0 && andTerms.every((t) => hay.includes(t));
+    });
+  }
+  function createHubScopeMemo(opts) {
+    let cachedMode = null;
+    let cachedColorRaw = "";
+    let scopeRes = resolveHubScopeItems(opts.win, "collection", opts.zh);
+    let rawAnnotations = [];
+    let colorHexByLabel = /* @__PURE__ */ new Map();
+    let rawNoteRecords = [];
+    const invalidate = () => {
+      cachedMode = null;
+    };
+    const ensureScope = (mode) => {
+      const colorRaw = String(opts.getColorJson() || "");
+      if (cachedMode === mode && cachedColorRaw === colorRaw) return;
+      cachedMode = mode;
+      cachedColorRaw = colorRaw;
+      scopeRes = resolveHubScopeItems(opts.win, mode, opts.zh);
+      const semantics = parseColorSemantics(colorRaw);
+      colorHexByLabel = /* @__PURE__ */ new Map();
+      for (const [hex, lbl] of Object.entries(semantics)) {
+        if (!colorHexByLabel.has(lbl)) colorHexByLabel.set(lbl, hex);
+      }
+      rawAnnotations = collectItemAnnotations(scopeRes.items, semantics);
+      const allNotes = collectHubNotes(scopeRes.items, opts.getBriefNote, "");
+      rawNoteRecords = allNotes.entries.map((entry) => ({
+        entry,
+        hay: [entry.title, entry.creatorYear, entry.briefNote, ...entry.childNotes.map((n) => `${n.heading} ${n.snippet}`)].join(" "),
+        metaHay: `${entry.title} ${entry.creatorYear}`
+      }));
+    };
+    const compute = (mode, query, colorLabel, ignoreFigureTable) => {
+      ensureScope(mode);
+      const base = ignoreFigureTable ? rawAnnotations.filter((a) => !isFigureOrTableAnnotation(a)) : rawAnnotations;
+      const colorCounts = /* @__PURE__ */ new Map();
+      for (const a of base) colorCounts.set(a.colorLabel, (colorCounts.get(a.colorLabel) || 0) + 1);
+      const annotations = filterCollectedAnnotations(base, { query, colorLabel });
+      const qTrim = query.trim();
+      const entries = [];
+      let totalBriefNotes = 0;
+      let totalChildNotes = 0;
+      for (const rec of rawNoteRecords) {
+        if (qTrim) {
+          if (!matchesNotesQuery(rec.hay, qTrim)) continue;
+          if (!rec.entry.briefNote && !rec.entry.childNotes.length && !matchesNotesQuery(rec.metaHay, qTrim)) continue;
+        }
+        if (rec.entry.briefNote) totalBriefNotes++;
+        totalChildNotes += rec.entry.childNotes.length;
+        entries.push(rec.entry);
+      }
+      return {
+        scope: scopeRes,
+        annData: { totalBeforeFilter: base.length, annotations, colorCounts, colorHexByLabel },
+        notesData: { entries, totalChildNotes, totalBriefNotes }
+      };
+    };
+    return { compute, invalidate, matchesAnnotationQuery };
+  }
+  function resolveAffectedVisualItemIDs(rawIDs) {
+    const out = /* @__PURE__ */ new Set();
+    const hostItems = globalThis.Zotero?.Items;
+    for (const raw of rawIDs) {
+      let curID = Number(raw || 0);
+      for (let hop = 0; hop < 3 && Number.isInteger(curID) && curID > 0; hop++) {
+        out.add(curID);
+        const obj = hostItems?.get?.(curID);
+        const nextParent = Number(obj?.parentItemID || obj?.parentID || 0);
+        if (!nextParent || nextParent === curID) break;
+        curID = nextParent;
+      }
+    }
+    return out;
+  }
+
+  // src/domains/visual-notes/gallery-styles.ts
+  var GALLERY_STYLE_ID = "zbf-gallery-board-style";
+  var GALLERY_BOARD_CSS = `
+@keyframes zbfGalFadeIn { from { opacity: 0.9; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes zbfCoverReveal { from { opacity: 0.25; transform: scale(1.015); } to { opacity: 1; transform: scale(1); } }
+
+.zbf-items-tb-group { display: inline-flex; align-items: center; gap: 3px; margin-inline: 3px; }
+.zbf-items-tb-icon { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: light-dark(#475569, #cbd5e1); cursor: pointer; transition: background-color 0.16s cubic-bezier(0.22,1,0.36,1), color 0.16s ease, transform 0.14s cubic-bezier(0.22,1,0.36,1); }
+.zbf-items-tb-icon:hover { background: light-dark(rgba(79,70,229,0.08), rgba(129,140,248,0.14)); color: light-dark(#0f172a, #f8fafc); }
+.zbf-items-tb-icon:active { transform: scale(0.93); }
+.zbf-items-tb-icon[aria-pressed="true"] { background: light-dark(linear-gradient(135deg, rgba(99,91,217,0.16), rgba(22,154,153,0.12)), rgba(129,140,248,0.22)); color: light-dark(#4f46e5, #a5b4fc); box-shadow: inset 0 0 0 1px light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.32)); }
+
+#zotero-items-pane[data-zbf-gallery] { position:relative }
+#zotero-items-pane[data-zbf-gallery] > :not(#zbf-gallery-panel) { visibility:hidden !important; pointer-events:none !important; }
+#zotero-items-pane[data-zbf-gallery] > #zbf-gallery-panel { position:absolute; inset:0; z-index:20; width:auto; height:auto; animation: zbfGalFadeIn 0.18s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gallery-panel * { box-sizing:border-box }
+.zbf-gallery-panel { container-type:inline-size; flex: 1 1 auto; width: 100%; height: 100%; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: light-dark(linear-gradient(180deg, #f8fafc 0%, #f3f6fb 100%), linear-gradient(180deg, #0d1320 0%, #0b101b 100%)); color: light-dark(#111827, #e2e8f0); font: 12.5px/1.45 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif; overflow: hidden; }
+
+/* Minimal Single-Row Editorial Top Bar */
+.zbf-gal-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 38px; padding: 5px 12px; border-bottom: 1px solid light-dark(rgba(15,23,42,0.075), rgba(148,163,184,0.14)); background: light-dark(rgba(255,255,255,0.92), rgba(17,24,39,0.92)); backdrop-filter: blur(8px); flex-wrap: wrap; flex: none; }
+.zbf-gal-bar-left, .zbf-gal-bar-right { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.zbf-gal-tabs { display: inline-flex; align-items: center; gap: 16px; margin-right: 4px; }
+.zbf-gal-tab { position: relative; border: 0; padding: 6px 2px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 13px/1.2 system-ui; cursor: pointer; transition: color 0.16s ease; }
+.zbf-gal-tab:hover { color: light-dark(#0f172a, #f1f5f9); }
+.zbf-gal-tab::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, #635bd9, #169a99); transform: scaleX(0); opacity: 0; transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), opacity 0.16s ease; }
+.zbf-gal-tab[data-active="true"] { color: light-dark(#0f172a, #ffffff); font-weight: 650; }
+.zbf-gal-tab[data-active="true"]::after { transform: scaleX(1); opacity: 1; }
+.zbf-gal-count { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; background: light-dark(rgba(15,23,42,0.05), rgba(255,255,255,0.08)); color: light-dark(#64748b, #94a3b8); font-variant-numeric: tabular-nums; }
+
+.zbf-gal-search-box { position: relative; display: inline-flex; align-items: center; }
+.zbf-gal-search-icon { position: absolute; left: 8px; color: light-dark(#94a3b8, #64748b); pointer-events: none; display: inline-flex; transition: color 0.15s ease; }
+.zbf-gal-search-box:focus-within .zbf-gal-search-icon { color: light-dark(#4f46e5, #818cf8); }
+.zbf-gal-search { width: clamp(96px,17cqi,164px); height: 28px; padding: 0 10px 0 27px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.16)); background: light-dark(#f1f5f9, #1e293b); color: inherit; font: 12px/1.2 system-ui; transition: width 0.2s cubic-bezier(0.22,1,0.36,1), background-color 0.16s, border-color 0.16s, box-shadow 0.16s; }
+.zbf-gal-search:focus { outline: none; width: clamp(128px,21cqi,208px); background: light-dark(#ffffff, #0f172a); border-color: light-dark(rgba(79,70,229,0.5), rgba(129,140,248,0.55)); box-shadow: 0 0 0 3px light-dark(rgba(79,70,229,0.12), rgba(129,140,248,0.16)); }
+
+.zbf-gal-select { height: 28px; padding: 0 8px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: light-dark(#475569, #cbd5e1); font: 500 12px/1.2 system-ui; cursor: pointer; transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
+.zbf-gal-select:hover { background: light-dark(#f1f5f9, #1e293b); color: light-dark(#0f172a, #ffffff); }
+.zbf-gal-select:focus { outline: none; border-color: light-dark(rgba(79,70,229,0.35), rgba(129,140,248,0.45)); }
+
+.zbf-gal-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#edf1f7, #1e293b); gap: 2px; }
+.zbf-gal-seg-btn { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 6.5px; padding: 4px 10px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.2 system-ui; cursor: pointer; transition: background-color 0.18s cubic-bezier(0.22,1,0.36,1), color 0.16s, box-shadow 0.18s, transform 0.12s; }
+.zbf-gal-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
+.zbf-gal-seg-btn:active { transform: scale(0.96); }
+.zbf-gal-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 4px rgba(15,23,42,0.1); }
+
+/* Viewport, Virtualized Masonry Grid & Soft Pastel Kanban Swimlanes */
+.zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; overflow-anchor: none; }
+.zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-items: start; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gal-masonry-col { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
+.zbf-gallery-panel[data-density="compact"] .zbf-gal-grid, .zbf-gallery-panel[data-density="compact"] .zbf-gal-masonry-col { gap: 8px; }
+.zbf-gal-virtual-spacer { flex: none; pointer-events: none; width: 100%; }
+
+.zbf-gal-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 240px; padding: 36px 20px; text-align: center; color: light-dark(#64748b, #94a3b8); animation: zbfGalFadeIn 0.2s ease; }
+.zbf-gal-empty p { margin: 0; font-size: 13.5px; font-weight: 500; }
+
+.zbf-gal-board { display: flex; align-items: flex-start; gap: 13px; min-height: 100%; overflow-x: auto; padding-bottom: 10px; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gal-col { flex: 0 0 clamp(248px, calc(var(--zbf-card-width, 220px) + 56px), 440px); max-height: calc(100vh - 150px); display: flex; flex-direction: column; border-radius: 14px; background: var(--zbf-col-surface, rgba(100,116,139,0.045)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); overflow: hidden; transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1), background-color 0.18s ease; }
+.zbf-gallery-panel[data-density="compact"] .zbf-gal-col { flex: 0 0 clamp(220px, calc(var(--zbf-card-width, 220px) + 28px), 400px); }
+.zbf-gal-col[data-drop-over="true"], .zbf-gal-col[data-col-drag-over="true"] { border-color: #4f46e5; box-shadow: 0 0 0 2.5px rgba(79,70,229,0.2), 0 8px 20px rgba(79,70,229,0.08); transform: scale(1.006); }
+.zbf-gal-col-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 8px; flex: none; cursor: grab; user-select: none; }
+.zbf-gal-col-head:active { cursor: grabbing; }
+.zbf-gal-col-pill { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 6px; font-size: 12px; font-weight: 600; line-height: 1.4; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-gal-col-count { font-size: 11.5px; font-weight: 600; color: light-dark(#64748b, #94a3b8); font-variant-numeric: tabular-nums; }
+.zbf-gal-col-body { flex: 1 1 auto; overflow-y: auto; padding: 4px 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+/* Editorial Literature Card */
+.zbf-gal-card { position: relative; display: flex; flex-direction: column; min-width: 0; gap: 6px; padding: 8px; border-radius: 9px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.035); cursor: pointer; transition: transform 0.2s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s cubic-bezier(0.22,1,0.36,1), border-color 0.18s ease; }
+.zbf-gallery-panel[data-density="compact"] .zbf-gal-card { padding: 6px; gap: 4px; border-radius: 7px; }
+.zbf-gal-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(15,23,42,0.08), 0 2px 6px rgba(15,23,42,0.04); border-color: light-dark(rgba(79,70,229,0.28), rgba(129,140,248,0.36)); }
+.zbf-gal-card:active { transform: translateY(0) scale(0.992); }
+.zbf-gal-card[data-selected="true"] { border-color: light-dark(#4f46e5, #818cf8); box-shadow: 0 0 0 2px light-dark(rgba(79,70,229,0.18), rgba(129,140,248,0.28)), 0 4px 12px rgba(79,70,229,0.08); }
+.zbf-gal-card:focus-visible { outline: 2px solid light-dark(#4f46e5, #818cf8); outline-offset: 2px; }
+
+/* Card Top Cover (PDF First Page / Abstract Excerpt / Clean Fallback) */
+.zbf-gal-cover { position: relative; width: 100%; box-sizing: border-box; aspect-ratio: var(--zbf-cover-aspect, 1.95); height: var(--zbf-cover-height, auto); border-radius: 6px; overflow: hidden; background: light-dark(linear-gradient(135deg, #f4f6fa 0%, #eef2f8 100%), linear-gradient(135deg, #0f172a 0%, #152035 100%)); border: 1px solid light-dark(rgba(15,23,42,0.055), rgba(148,163,184,0.12)); flex: none; display: flex; align-items: center; justify-content: center; }
+.zbf-gal-cover-img { width: 100%; height: 100%; object-fit: cover; object-position: top center; background: #ffffff; display: block; animation: zbfCoverReveal 0.24s cubic-bezier(0.22,1,0.36,1); transition: transform 0.3s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gal-card:hover .zbf-gal-cover-img { transform: scale(1.018); }
+.zbf-gal-cover-abstract { width: 100%; height: 100%; padding: 9px 11px 14px; box-sizing: border-box; font-size: 11px; line-height: 1.56; color: light-dark(#4b5563, #94a3b8); overflow: hidden; align-self: flex-start; mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent 100%); transition: padding-top 0.16s ease; }
+.zbf-gal-cover:has(.zbf-gal-rate-float[data-has-rating="true"]) .zbf-gal-cover-abstract { padding-top: 28px; }
+.zbf-gal-cover-fallback { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: light-dark(#94a3b8, #64748b); font-size: 11.5px; }
+
+/* Hover-Reveal Floating Star Rater */
+.zbf-gal-rate-float { position: absolute; top: 6px; right: 6px; z-index: 2; display: inline-flex; align-items: center; gap: 1px; padding: 2px 6px; border-radius: 999px; background: light-dark(rgba(255,255,255,0.92), rgba(15,23,42,0.88)); backdrop-filter: blur(6px); border: 1px solid rgba(15,23,42,0.08); box-shadow: 0 2px 8px rgba(0,0,0,0.09); opacity: 0; transform: translateY(-2px); transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1); }
+.zbf-gal-rate-float[data-has-rating="true"], .zbf-gal-card:hover .zbf-gal-rate-float { opacity: 1; transform: translateY(0); }
+.zbf-gal-star { display: inline-block; font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", system-ui, sans-serif; font-size: 11px; line-height: 1; filter: grayscale(1) opacity(0.28); padding: 0.5px; cursor: pointer; transition: transform 0.14s cubic-bezier(0.34,1.56,0.64,1), filter 0.12s, opacity 0.12s; }
+.zbf-gal-star[data-lit="true"] { filter: none; opacity: 1; }
+.zbf-gal-rate-float[data-hover] .zbf-gal-star { filter: grayscale(1) opacity(0.22); }
+.zbf-gal-rate-float[data-hover="1"] .zbf-gal-star:nth-child(-n+1),
+.zbf-gal-rate-float[data-hover="2"] .zbf-gal-star:nth-child(-n+2),
+.zbf-gal-rate-float[data-hover="3"] .zbf-gal-star:nth-child(-n+3),
+.zbf-gal-rate-float[data-hover="4"] .zbf-gal-star:nth-child(-n+4),
+.zbf-gal-rate-float[data-hover="5"] .zbf-gal-star:nth-child(-n+5) { filter: drop-shadow(0 1px 2px rgba(245,158,11,0.38)); opacity: 1; }
+.zbf-gal-rate-float[data-clear-hint="true"] .zbf-gal-star[data-lit="true"] { opacity: 0.72; }
+.zbf-gal-star:hover { transform: scale(1.22); }
+
+/* Card Body Typography & Icon Metadata Rows */
+.zbf-gal-title-row { display: flex; align-items: flex-start; gap: 6px; color: light-dark(#111827, #f1f5f9); }
+.zbf-gal-title-icon { margin-top: 2px; color: light-dark(#94a3b8, #64748b); display: inline-flex; flex: none; transition: color 0.16s ease; }
+.zbf-gal-card:hover .zbf-gal-title-icon { color: light-dark(#635bd9, #818cf8); }
+.zbf-gal-title { font-weight: 600; font-size: 13px; line-height: 1.42; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.zbf-gal-title sub, .zbf-gal-title sup { font-size: 0.74em; line-height: 0; }
+
+.zbf-gal-meta-stack { display: flex; flex-direction: column; gap: 4px; }
+.zbf-gal-meta-row { display: flex; align-items: center; gap: 6px; font-size: 11.8px; line-height: 1.35; color: light-dark(#64748b, #94a3b8); min-width: 0; }
+.zbf-gal-meta-txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.zbf-gal-brief { font-size: 11.4px; line-height: 1.45; padding: 5px 8px; border-radius: 6px; background: light-dark(linear-gradient(90deg, #f0fdfa, #ecfdf5), rgba(20,184,166,0.12)); color: light-dark(#0f766e, #5eead4); border-left: 2.5px solid #14b8a6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+.zbf-gal-tags-row { display: flex; align-items: center; gap: 5px; flex-wrap: nowrap; overflow: hidden; margin-top: auto; padding-top: 1px; }
+.zbf-gal-tag-pill { display: inline-flex; align-items: center; max-width: 116px; padding: 1.5px 7px; border-radius: 5px; font-size: 11px; font-weight: 500; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 0 1 auto; transition: filter 0.14s ease; }
+.zbf-gal-tag-pill:hover { filter: brightness(0.96); }
+.zbf-gal-tag-more { display: inline-flex; align-items: center; padding: 1.5px 6px; border-radius: 5px; font-size: 10.5px; font-weight: 600; background: light-dark(#e0f2fe, rgba(56,189,248,0.18)); color: light-dark(#0369a1, #7dd3fc); flex: none; }
+
+/* Inline Notes & Annotations Feed Cards inside Gallery */
+.zbf-gal-feed-grid { display:block; height:100%; }
+.zbf-gal-more { margin: 14px auto 4px; padding: 6px 18px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.24)); background: light-dark(#ffffff, #1e293b); color: inherit; font: 500 12px/1.2 system-ui; cursor: pointer; display: block; transition: background-color 0.16s, border-color 0.16s, transform 0.12s, box-shadow 0.16s; }
+.zbf-gal-more:hover { background: light-dark(#f8fafc, #334155); border-color: light-dark(rgba(79,70,229,0.35), rgba(129,140,248,0.4)); box-shadow: 0 2px 8px rgba(15,23,42,0.06); }
+.zbf-gal-more:active { transform: scale(0.97); }
+
+@media (prefers-reduced-motion: reduce) {
+  #zotero-items-pane[data-zbf-gallery] > #zbf-gallery-panel, .zbf-gal-grid, .zbf-gal-board, .zbf-gal-cover-img, .zbf-gal-empty { animation: none !important; }
+  .zbf-gal-card, .zbf-gal-cover-img, .zbf-gal-col, .zbf-gal-tab::after, .zbf-gal-rate-float, .zbf-gal-star { transition: none !important; }
+}
+`;
+  function galEl(doc, tag) {
+    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  }
+  function ensureGalleryStyles(doc) {
+    if (!doc) return;
+    const existing = doc.getElementById(GALLERY_STYLE_ID);
+    if (existing) {
+      if (existing.textContent !== GALLERY_BOARD_CSS) existing.textContent = GALLERY_BOARD_CSS;
+      return;
+    }
+    const style = galEl(doc, "style");
+    style.id = GALLERY_STYLE_ID;
+    style.textContent = GALLERY_BOARD_CSS;
+    (doc.head || doc.documentElement)?.appendChild(style);
+  }
+
+  // src/domains/visual-notes/reading-index.ts
+  function resolveMasonryCols(width) {
+    if (width >= 1680) return 4;
+    if (width >= 1120) return 3;
+    if (width >= 740) return 2;
+    return 1;
+  }
+  var activeRootDisposers = /* @__PURE__ */ new WeakMap();
+  function mountReadingIndex(root, entries, zh, selection, render) {
+    activeRootDisposers.get(root)?.();
+    activeRootDisposers.delete(root);
+    if (!entries.length) return;
+    const doc = root.ownerDocument;
+    const layout = galEl(doc, "section");
+    layout.className = "zbf-reading-layout";
+    const nav = galEl(doc, "nav");
+    nav.className = "zbf-reading-index";
+    const label = zh ? "文献目录" : "Documents";
+    nav.setAttribute("aria-label", label);
+    const heading = galEl(doc, "header");
+    heading.textContent = `${label} · ${entries.length}`;
+    nav.appendChild(heading);
+    const select = galEl(doc, "select");
+    select.className = "zbf-reading-select";
+    select.setAttribute("aria-label", label);
+    const page = galEl(doc, "article");
+    page.className = "zbf-reading-page";
+    const buttons = /* @__PURE__ */ new Map();
+    const showAllOption = entries.length > 1;
+    const totalCount = entries.reduce((sum, e) => sum + e.count, 0);
+    let active;
+    let resizeObs = null;
+    let masonryRaf = 0;
+    const disposeObserver = () => {
+      if (masonryRaf && typeof doc.defaultView?.cancelAnimationFrame === "function") {
+        doc.defaultView.cancelAnimationFrame(masonryRaf);
+      }
+      masonryRaf = 0;
+      try {
+        resizeObs?.disconnect();
+      } catch {
+      }
+      resizeObs = null;
+    };
+    activeRootDisposers.set(root, disposeObserver);
+    const renderMasonryAll = () => {
+      disposeObserver();
+      page.setAttribute("data-view-mode", "all");
+      const grid = galEl(doc, "div");
+      grid.className = "zbf-reading-grid";
+      const renderedItems = [];
+      let cols = [];
+      let heights = [];
+      let currentCols = 0;
+      const placeItem = (item) => {
+        if (!cols.length) return;
+        let best = 0;
+        for (let i = 1; i < cols.length; i++) {
+          if (heights[i] < heights[best]) best = i;
+        }
+        cols[best].appendChild(item.node);
+        heights[best] += item.weight;
+      };
+      const distribute = (colCount) => {
+        const nextCols = Math.max(1, Math.min(colCount, entries.length));
+        if (nextCols === currentCols) return;
+        currentCols = nextCols;
+        grid.replaceChildren();
+        cols = [];
+        heights = [];
+        for (let i = 0; i < nextCols; i++) {
+          const col = galEl(doc, "div");
+          col.className = "zbf-masonry-col";
+          cols.push(col);
+          heights.push(0);
+          grid.appendChild(col);
+        }
+        for (const item of renderedItems) placeItem(item);
+      };
+      page.appendChild(grid);
+      const initWidth = page.clientWidth || (doc.defaultView?.innerWidth ? doc.defaultView.innerWidth - 280 : 1200);
+      distribute(resolveMasonryCols(initWidth));
+      const raf = doc.defaultView?.requestAnimationFrame?.bind(doc.defaultView);
+      const initialBatch = raf ? Math.min(entries.length, 24) : entries.length;
+      let cursor = 0;
+      const appendBatch = (limit) => {
+        const stop = Math.min(entries.length, cursor + limit);
+        for (; cursor < stop; cursor++) {
+          const entry = entries[cursor];
+          const holder = galEl(doc, "div");
+          render(entry, holder);
+          const cardNode = holder.firstElementChild || holder;
+          const weight = entry.weight ?? 1.6 + Math.max(1, entry.count) * 2.4;
+          const item = { node: cardNode, weight };
+          renderedItems.push(item);
+          placeItem(item);
+        }
+      };
+      appendBatch(initialBatch);
+      const pumpRemaining = () => {
+        masonryRaf = 0;
+        if (!grid.isConnected || cursor >= entries.length) return;
+        appendBatch(28);
+        if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
+      };
+      if (cursor < entries.length && raf) masonryRaf = raf(pumpRemaining);
+      const RO = doc.defaultView?.ResizeObserver || globalThis.ResizeObserver;
+      if (typeof RO === "function") {
+        const obs = new RO((recs) => {
+          if (!page.isConnected) {
+            disposeObserver();
+            return;
+          }
+          const w = recs[0]?.contentRect?.width || page.clientWidth || 0;
+          if (w > 0) distribute(resolveMasonryCols(w));
+        });
+        obs.observe(page);
+        resizeObs = obs;
+      }
+    };
+    const chooseId = (targetId) => {
+      active?.removeAttribute("aria-current");
+      active = buttons.get(targetId);
+      active?.setAttribute("aria-current", "true");
+      select.value = String(targetId);
+      if (selection) selection.itemID = targetId;
+      disposeObserver();
+      page.replaceChildren();
+      if (targetId === 0 && showAllOption) {
+        renderMasonryAll();
+      } else {
+        const picked = entries.find((e) => e.id === targetId) || entries[0];
+        page.setAttribute("data-view-mode", "single");
+        const wrap = galEl(doc, "div");
+        wrap.className = "zbf-reading-single";
+        render(picked, wrap);
+        page.appendChild(wrap);
+      }
+      page.scrollTop = 0;
+    };
+    if (showAllOption) {
+      const allBtn = galEl(doc, "button");
+      allBtn.type = "button";
+      allBtn.className = "zbf-reading-all-btn";
+      const rowTop = galEl(doc, "div");
+      rowTop.className = "zbf-idx-row";
+      const title = galEl(doc, "span");
+      title.textContent = zh ? "全部文献汇总" : "All Documents";
+      const badge = galEl(doc, "em");
+      badge.className = "zbf-idx-badge";
+      badge.textContent = String(totalCount);
+      rowTop.append(title, badge);
+      const meta = galEl(doc, "small");
+      meta.textContent = zh ? `共 ${entries.length} 篇 · 瀑布流全览` : `${entries.length} items · Masonry`;
+      allBtn.append(rowTop, meta);
+      allBtn.addEventListener("click", () => chooseId(0));
+      nav.appendChild(allBtn);
+      buttons.set(0, allBtn);
+      const allOpt = galEl(doc, "option");
+      allOpt.value = "0";
+      allOpt.textContent = zh ? `全部文献汇总 (${entries.length} 篇 / ${totalCount} 条)` : `All Documents (${entries.length} / ${totalCount})`;
+      select.appendChild(allOpt);
+    }
+    for (const entry of entries) {
+      const btn = galEl(doc, "button");
+      btn.type = "button";
+      const rowTop = galEl(doc, "div");
+      rowTop.className = "zbf-idx-row";
+      const title = galEl(doc, "span");
+      renderRichTitleNodes(doc, title, entry.title);
+      const badge = galEl(doc, "em");
+      badge.className = "zbf-idx-badge";
+      badge.textContent = String(entry.count);
+      rowTop.append(title, badge);
+      btn.title = title.textContent || "";
+      const meta = galEl(doc, "small");
+      meta.textContent = entry.meta || (zh ? `${entry.count} 条` : `${entry.count}`);
+      btn.append(rowTop, meta);
+      btn.addEventListener("click", () => chooseId(entry.id));
+      nav.appendChild(btn);
+      buttons.set(entry.id, btn);
+      const opt = galEl(doc, "option");
+      opt.value = String(entry.id);
+      opt.textContent = `${btn.title} (${entry.count})`;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", () => chooseId(Number(select.value) || 0));
+    layout.append(nav, select, page);
+    root.appendChild(layout);
+    const initialId = selection?.itemID && entries.some((e) => e.id === selection.itemID) ? selection.itemID : showAllOption ? 0 : entries[0].id;
+    chooseId(initialId);
+  }
+
+  // src/domains/visual-notes/reading-layout.ts
+  var READING_LAYOUT_CSS = `
+@keyframes zbfCardEnter { from { opacity: 0.88; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+
+.zbf-notebook-backdrop, .zbf-notebook-dialog, .zbf-reading-layout, .zbf-reading-layout * { box-sizing: border-box; }
+.zbf-notebook-dialog { padding: 0; gap: 0; min-width: 0; background: light-dark(#f2f4f8, #0c121d); font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif; }
+.zbf-notebook-top { padding: 8px 16px; min-height: 44px; background: light-dark(linear-gradient(180deg, #ffffff 0%, #fcfdff 100%), linear-gradient(180deg, #141e32 0%, #111a2c 100%)); border-bottom: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); }
+.zbf-notebook-title { position: relative; padding-inline-start: 10px; font-size: 14.5px; font-weight: 650; letter-spacing: -0.01em; color: light-dark(#0f172a, #f8fafc); }
+.zbf-notebook-title::before { content: ""; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3.5px; border-radius: 3px; background: linear-gradient(180deg, #635bd9 0%, #169a99 100%); }
+.zbf-notebook-toolbar { padding: 7px 16px; min-height: 40px; justify-content: flex-start; gap: 8px 12px; background: light-dark(#fafbfd, #101828); border-bottom: 1px solid light-dark(rgba(15,23,42,0.075), rgba(148,163,184,0.14)); }
+
+.zbf-nb-search-wrap { position: relative; flex: 0 1 286px; min-width: 156px; display: inline-flex; align-items: center; }
+.zbf-nb-search-icon { position: absolute; left: 9px; color: light-dark(#94a3b8, #64748b); pointer-events: none; display: inline-flex; transition: color 0.16s ease; }
+.zbf-nb-search-wrap:focus-within .zbf-nb-search-icon { color: light-dark(#4f46e5, #818cf8); }
+.zbf-notebook-search { width: 100%; height: 29px; padding: 0 26px 0 28px; border-radius: 8px; font-size: 12.5px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#ffffff, #0f172a); transition: border-color 0.16s, box-shadow 0.16s, background-color 0.16s; }
+.zbf-notebook-search:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px light-dark(rgba(79,70,229,0.12), rgba(129,140,248,0.18)); }
+.zbf-nb-search-clear { position: absolute; right: 5px; width: 18px; height: 18px; border: 0; border-radius: 50%; background: light-dark(rgba(15,23,42,0.08), rgba(255,255,255,0.12)); color: light-dark(#475569, #cbd5e1); font: 600 12px/1 system-ui; cursor: pointer; display: none; align-items: center; justify-content: center; transition: background-color 0.14s, transform 0.12s; }
+.zbf-nb-search-clear:hover { background: light-dark(rgba(15,23,42,0.16), rgba(255,255,255,0.22)); }
+.zbf-nb-search-clear:active { transform: scale(0.9); }
+
+.zbf-notebook-chips { width: auto; flex: 0 1 auto; align-items: center; gap: 5px; }
+.zbf-notebook-chips .zbf-matrix-chip { transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.12s ease, box-shadow 0.16s ease; }
+.zbf-notebook-chips .zbf-matrix-chip:active { transform: scale(0.95); }
+.zbf-notebook-chips .zbf-matrix-chip[data-active="true"] { background: linear-gradient(135deg, #4f46e5, #2563eb); border-color: transparent; box-shadow: 0 2px 6px rgba(79,70,229,0.28); }
+.zbf-notebook-toggles { margin-inline-start: auto; gap: 14px; font-size: 12px; }
+.zbf-notebook-foot { padding: 8px 16px; background: light-dark(#ffffff, #131c2e); border-top: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); }
+.zbf-notebook-foot .zbf-matrix-actions { flex-wrap: wrap; gap: 8px; }
+.zbf-notebook-foot .zbf-matrix-btn { border-radius: 7px; padding: 6px 12px; transition: background-color 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.12s; }
+.zbf-notebook-foot .zbf-matrix-btn:active { transform: scale(0.97); }
+.zbf-notebook-foot .zbf-matrix-btn.primary { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%); border-color: transparent; box-shadow: 0 2px 8px rgba(79,70,229,0.26); }
+.zbf-notebook-foot .zbf-matrix-btn.primary:hover { filter: brightness(1.06); box-shadow: 0 4px 12px rgba(79,70,229,0.34); }
+
+.zbf-notebook-scroll, .zbf-gal-feed-grid { container-type: inline-size; display: block; flex: 1 1 auto; min-height: 0; padding: 0; background: transparent; border: 0; border-radius: 0; overflow: hidden; }
+.zbf-gal-feed-grid { height: 100%; }
+
+.zbf-reading-layout { height: 100%; display: grid; grid-template-columns: clamp(220px, 21%, 292px) minmax(0, 1fr); overflow: hidden; color: light-dark(#1e293b, #e2e8f0); }
+.zbf-reading-index { overflow-y: auto; padding: 10px 8px 14px; border-inline-end: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.15)); background: light-dark(#ffffff, #121a2a); }
+.zbf-reading-index header { padding: 4px 10px 10px; color: light-dark(#64748b, #94a3b8); font-size: 11.5px; font-weight: 650; letter-spacing: 0.02em; line-height: 1.4; }
+.zbf-reading-index button { appearance: none; display: block; width: 100%; height: auto; max-height: none; margin: 0 0 4px; padding: 8px 10px; text-align: start; white-space: normal; border: 1px solid transparent; border-inline-start: 3px solid transparent; border-radius: 8px; color: inherit; background: transparent; font: inherit; cursor: pointer; transition: background-color 0.16s ease, border-color 0.16s ease, transform 0.16s cubic-bezier(0.22,1,0.36,1); }
+.zbf-reading-index button:hover { background: light-dark(#f1f5f9, #1e293b); transform: translateX(2px); }
+.zbf-reading-index button[aria-current="true"] { background: light-dark(linear-gradient(90deg, rgba(79,70,229,0.1), rgba(37,99,235,0.05)), rgba(79,70,229,0.2)); border-color: light-dark(rgba(79,70,229,0.18), rgba(129,140,248,0.28)); border-inline-start-color: light-dark(#4f46e5, #818cf8); transform: none; }
+.zbf-reading-all-btn { margin-bottom: 10px !important; padding-bottom: 9px !important; position: relative; }
+.zbf-reading-all-btn::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -6px; height: 1px; background: light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); }
+.zbf-idx-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.zbf-reading-index button span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: 550 12.6px/1.42 system-ui; color: light-dark(#0f172a, #f1f5f9); flex: 1 1 auto; }
+.zbf-idx-badge { flex: none; font-style: normal; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font: 600 11px/1 system-ui; font-variant-numeric: tabular-nums; background: light-dark(#f1f5f9, #1e293b); color: light-dark(#475569, #cbd5e1); transition: background-color 0.16s, color 0.16s; }
+.zbf-reading-index button[aria-current="true"] .zbf-idx-badge { background: linear-gradient(135deg, #4f46e5, #2563eb); color: #ffffff; }
+.zbf-reading-index button small { display: block; margin-top: 3px; font: 11.5px/1.35 system-ui; color: light-dark(#64748b, #94a3b8); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.zbf-reading-page { overflow-y: auto; min-width: 0; padding: 12px 14px 20px; background: light-dark(linear-gradient(180deg, #f3f5fa 0%, #eef2f8 100%), linear-gradient(180deg, #0c121d 0%, #090e17 100%)); }
+.zbf-reading-grid { display: flex; align-items: flex-start; gap: 11px; width: 100%; }
+.zbf-masonry-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 11px; }
+.zbf-reading-single { width: 100%; max-width: 1240px; margin-inline: auto; }
+
+.zbf-reading-page .zbf-notebook-card { width: 100%; max-width: none; padding: 12px 14px 13px; border-radius: 12px; background: light-dark(#ffffff, #151f31); border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); box-shadow: 0 1px 3px rgba(15,23,42,0.04); display: flex; flex-direction: column; gap: 9px; animation: zbfCardEnter 0.2s cubic-bezier(0.22,1,0.36,1); transition: box-shadow 0.2s cubic-bezier(0.22,1,0.36,1), border-color 0.18s ease, transform 0.2s cubic-bezier(0.22,1,0.36,1); }
+.zbf-reading-page .zbf-notebook-card:hover { box-shadow: 0 8px 22px rgba(15,23,42,0.07), 0 2px 6px rgba(15,23,42,0.03); border-color: light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.3)); }
+.zbf-reading-page .zbf-notebook-card-head { display: flex; flex-direction: row; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 8px; border-bottom: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); }
+.zbf-reading-page .zbf-notebook-item-head-main { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; gap: 4px; }
+.zbf-reading-page .zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 7px; height: auto; max-height: none; white-space: normal; font: 650 14.5px/1.4 system-ui; color: light-dark(#0f172a, #f8fafc); overflow-wrap: anywhere; text-align: left; transition: color 0.14s ease; }
+.zbf-reading-page[data-view-mode="single"] .zbf-notebook-item-btn { font-size: 17px; }
+.zbf-reading-page .zbf-notebook-item-btn svg { flex: none; margin-top: 3px; color: light-dark(#635bd9, #818cf8); }
+.zbf-reading-page .zbf-notebook-meta { font-size: 11.8px; color: light-dark(#64748b, #94a3b8); }
+.zbf-reading-open-pill { flex: none; padding: 4px 10px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#f8fafc, #1e293b); color: light-dark(#334155, #cbd5e1); font: 500 11.5px/1.2 system-ui; cursor: pointer; transition: background-color 0.16s, color 0.16s, border-color 0.16s, transform 0.12s; }
+.zbf-reading-open-pill:hover { background: light-dark(#eef2ff, rgba(99,91,217,0.22)); color: light-dark(#4338ca, #a5b4fc); border-color: light-dark(rgba(79,70,229,0.32), rgba(129,140,248,0.42)); }
+.zbf-reading-open-pill:active { transform: scale(0.95); }
+
+.zbf-notebook-ann-grid { display: flex; flex-direction: column; gap: 9px; }
+.zbf-reading-page[data-view-mode="single"] .zbf-notebook-ann-grid[data-multi="true"] { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 12px; align-items: start; }
+
+.zbf-reading-page .zbf-notebook-ann-row { cursor: auto; padding: 10px 12px; border-radius: 9px; border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); border-inline-start: 3.5px solid #3b82f6; background: light-dark(#f9fafd, rgba(255,255,255,0.03)); display: flex; flex-direction: column; gap: 7px; transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease; }
+.zbf-reading-page .zbf-notebook-ann-row:hover { background: light-dark(#f5f7ff, rgba(99,102,241,0.08)); border-color: light-dark(rgba(79,70,229,0.2), rgba(129,140,248,0.28)); box-shadow: 0 2px 8px rgba(15,23,42,0.04); }
+
+.zbf-reading-ref { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.zbf-reading-ref-left { display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.zbf-ann-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font: 600 11.5px/1.25 system-ui; background: light-dark(rgba(15,23,42,0.055), rgba(255,255,255,0.08)); color: light-dark(#1e293b, #f1f5f9); }
+.zbf-ann-badge-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.zbf-ann-page { font: 500 11.5px/1.2 ui-monospace, Consolas, monospace; color: light-dark(#64748b, #94a3b8); }
+.zbf-reading-ref-actions { display: inline-flex; align-items: center; gap: 3px; opacity: 0.78; transition: opacity 0.16s ease; }
+.zbf-notebook-ann-row:hover .zbf-reading-ref-actions { opacity: 1; }
+.zbf-reading-ref button, .zbf-notebook-note-box button { padding: 3px 8px; border-radius: 6px; font: 500 11.5px/1.25 system-ui; color: light-dark(#4338ca, #a5b4fc); border: 1px solid transparent; background: transparent; cursor: pointer; transition: background-color 0.14s, border-color 0.14s, color 0.14s, transform 0.12s; }
+.zbf-reading-ref button:hover, .zbf-notebook-note-box button:hover { background: light-dark(#eef2ff, rgba(99,102,241,0.18)); border-color: light-dark(rgba(79,70,229,0.22), rgba(129,140,248,0.32)); }
+.zbf-reading-ref button:active, .zbf-notebook-note-box button:active { transform: scale(0.95); }
+.zbf-reading-ref button[data-copied="true"] { background: light-dark(#dcfce7, rgba(34,197,94,0.2)); color: light-dark(#15803d, #86efac); border-color: light-dark(rgba(22,163,74,0.25), rgba(134,239,172,0.3)); }
+
+.zbf-reading-page blockquote { margin: 0; font: 13.6px/1.66 system-ui; color: light-dark(#1e293b, #e2e8f0); overflow-wrap: anywhere; white-space: pre-line; user-select: text; }
+.zbf-reading-comment { margin: 0; padding: 7px 10px; border-radius: 7px; background: light-dark(linear-gradient(135deg, #eef4ff 0%, #f3f0ff 100%), linear-gradient(135deg, rgba(59,130,246,0.13) 0%, rgba(99,102,241,0.12) 100%)); border: 1px solid light-dark(rgba(79,70,229,0.14), rgba(129,140,248,0.22)); font: 13px/1.6 system-ui; color: light-dark(#1e3a5f, #dbeafe); overflow-wrap: anywhere; white-space: pre-line; user-select: text; display: flex; flex-direction: column; gap: 3px; }
+.zbf-reading-comment strong { display: inline-flex; align-self: flex-start; padding: 1px 6px; border-radius: 4px; background: light-dark(rgba(79,70,229,0.11), rgba(129,140,248,0.24)); color: light-dark(#4338ca, #c7d2fe); font: 600 10.8px/1.4 system-ui; }
+.zbf-notebook-note-box { padding: 9px 11px; border-radius: 9px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); transition: border-color 0.16s, background-color 0.16s; }
+.zbf-notebook-note-box:hover { border-color: light-dark(rgba(79,70,229,0.2), rgba(129,140,248,0.26)); }
+.zbf-notebook-note-box summary { cursor: pointer; font: 600 13.3px/1.5 system-ui; color: light-dark(#0f172a, #f1f5f9); overflow-wrap: anywhere; }
+.zbf-notebook-note-box[open] p { margin: 8px 0 6px; font: 13.2px/1.64 system-ui; color: light-dark(#334155, #cbd5e1); animation: zbfCardEnter 0.16s ease; }
+.zbf-notebook-brief-input { min-width: 0; height: 29px; }
+.zbf-reading-select { display: none; }
+
+@container (max-width: 680px) {
+	.zbf-reading-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+	.zbf-reading-index { display: none; }
+	.zbf-reading-select { display: block; width: 100%; max-width: 100%; margin: 0; height: 34px; padding: 0 10px; border: 0; border-bottom: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.16)); background: light-dark(#ffffff, #131c2e); color: inherit; font: 13px system-ui; }
+	.zbf-reading-page { padding: 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.zbf-reading-page .zbf-notebook-card, .zbf-notebook-note-box[open] p { animation: none !important; }
+	.zbf-reading-index button, .zbf-reading-page .zbf-notebook-card, .zbf-notebook-ann-row, .zbf-reading-open-pill { transition: none !important; }
+}
+`;
+
+  // src/domains/visual-notes/data-source.ts
+  function resolveParentItemID(item) {
+    if (!item) return 0;
+    if (item.isAttachment?.() && item.parentItemID) return Number(item.parentItemID) || 0;
+    return Number(item.id || 0);
+  }
+  var EXTRA_REMARK_CACHE_LIMIT = 5e3;
+  var extraRemarkCache = /* @__PURE__ */ new Map();
+  function clearExtraRemarkCache(itemIDs) {
+    if (!itemIDs) {
+      extraRemarkCache.clear();
+      return;
+    }
+    const targets = new Set(itemIDs);
+    if (!targets.size) return;
+    for (const key of extraRemarkCache.keys()) {
+      if (targets.has(Number(key.split(":", 1)[0]))) extraRemarkCache.delete(key);
+    }
+  }
+  function readItemRemarkWithFallback(item, dataSource) {
+    if (!item) return "";
+    const id = Number(item.id || 0);
+    if (id > 0 && dataSource) {
+      const cached = dataSource.getRemark(id);
+      if (cached) return cached;
+    }
+    const parentID = resolveParentItemID(item);
+    if (parentID > 0 && parentID !== id && dataSource) {
+      const parentCached = dataSource.getRemark(parentID);
+      if (parentCached) return parentCached;
+    }
+    const hostItems = globalThis.Zotero?.Items;
+    const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
+    const targetID = Number(targetItem?.id || 0);
+    const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? "");
+    const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : "";
+    if (cacheKey && extraRemarkCache.has(cacheKey)) {
+      const hit = extraRemarkCache.get(cacheKey);
+      if (hit) return hit;
+      if (!dataSource) return "";
+    }
+    if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function") {
+      for (const attID of item.getAttachments() || []) {
+        const attCached = dataSource.getRemark(attID);
+        if (attCached) return attCached;
+      }
+    }
+    if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey);
+    const resolved = getItemBriefNote(targetItem);
+    if (cacheKey) {
+      if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
+        const oldest = extraRemarkCache.keys().next().value;
+        if (oldest !== void 0) extraRemarkCache.delete(oldest);
+      }
+      extraRemarkCache.set(cacheKey, resolved);
+    }
+    return resolved;
+  }
+  function writeItemRemarkWithSync(item, remark, syncToExtra, dataSource) {
+    if (!item) return;
+    const clean = String(remark || "").replace(/[\r\n]+/g, " ").trim();
+    const id = Number(item.id || 0);
+    const parentID = resolveParentItemID(item);
+    const targetID = parentID > 0 ? parentID : id;
+    if (targetID > 0) {
+      if (clean) clearItemRemarkLocalSuppression(targetID);
+      else markItemRemarkClearedLocally(targetID);
+    }
+    if (id > 0 || parentID > 0) clearExtraRemarkCache([id, parentID].filter((n) => n > 0));
+    if (dataSource) {
+      if (targetID > 0) dataSource.setRemark(targetID, clean, syncToExtra);
+      if (id > 0 && id !== targetID) dataSource.setRemark(id, clean, syncToExtra);
+    }
+    if (syncToExtra && targetID > 0) {
+      void syncItemRemarkToExtra(targetID, clean);
+    }
+  }
+
+  // src/domains/visual-notes/collection-notes-ui.ts
+  var HUB_STYLE_ID = "zbf-collection-hub-style";
+  var COLLECTION_HUB_CSS = `
+.zbf-notebook-backdrop { display: flex; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; min-width: 0; }
+.zbf-notebook-dialog { box-sizing: border-box; width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: light-dark(#ffffff, #131c2e); color: light-dark(#0f172a, #e2e8f0); font: 13px/1.48 system-ui, "Microsoft YaHei UI", sans-serif; }
+.zbf-notebook-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-bottom: 4px; }
+.zbf-notebook-title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.zbf-notebook-title { font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; }
+.zbf-notebook-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#f1f5f9, #1e293b); gap: 2px; }
+.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.25 inherit; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
+.zbf-notebook-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
+.zbf-notebook-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.08); }
+
+.zbf-notebook-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.zbf-notebook-search { flex: 1 1 240px; min-width: 180px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid light-dark(rgba(15,23,42,0.1), rgba(148,163,184,0.22)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; transition: border-color 0.14s, background-color 0.14s; }
+.zbf-notebook-search:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.12); }
+.zbf-notebook-toggles { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: light-dark(#475569, #cbd5e1); }
+.zbf-notebook-check { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; }
+.zbf-notebook-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.zbf-notebook-scroll { flex: 1 1 auto; overflow-y: auto; border: 1px solid light-dark(rgba(15,23,42,0.065), rgba(148,163,184,0.14)); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: light-dark(#fafafa, #0d1320); }
+.zbf-notebook-card { padding: 12px 14px; border-radius: 12px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.025); display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.14s ease; }
+.zbf-notebook-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,0.05); }
+.zbf-notebook-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font: 600 13.2px/1.4 inherit; text-align: left; cursor: pointer; }
+.zbf-notebook-item-btn:hover { color: light-dark(#2563eb, #60a5fa); }
+.zbf-notebook-item-btn sub, .zbf-notebook-item-btn sup { font-size: 0.74em; line-height: 0; }
+.zbf-notebook-meta { font-size: 11.5px; color: light-dark(#94a3b8, #64748b); flex: none; white-space: nowrap; }
+
+.zbf-notebook-ann-row { padding: 7px 10px; border-radius: 7px; border-left: 3px solid #3b82f6; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); cursor: pointer; display: flex; flex-direction: column; gap: 4px; font-size: 12.4px; line-height: 1.5; transition: background-color 0.12s; }
+.zbf-notebook-ann-row:hover { background: light-dark(#eff6ff, rgba(96,165,250,0.12)); }
+.zbf-notebook-ann-tags { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+.zbf-notebook-ann-tag { padding: 1px 6px; border-radius: 4px; font-size: 10.8px; font-weight: 500; }
+
+.zbf-notebook-brief-row { display: flex; align-items: center; gap: 8px; }
+.zbf-notebook-brief-lbl { padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; background: light-dark(#dcfce7, rgba(34,197,94,0.18)); color: light-dark(#166534, #86efac); flex: none; }
+.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 12.2px/1.2 inherit; transition: border-color 0.14s, background-color 0.14s; }
+.zbf-notebook-brief-input:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.12); }
+
+.zbf-notebook-note-box { padding: 8px 10px; border-radius: 8px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.06), rgba(148,163,184,0.12)); font-size: 12.2px; line-height: 1.52; color: light-dark(#334155, #cbd5e1); }
+.zbf-notebook-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 2px; }
+`;
+  function hubEl(doc, tag) {
+    return doc.createElementNS("http://www.w3.org/1999/xhtml", tag);
+  }
+  function ensureCollectionHubStyles(doc) {
+    if (!doc) return;
+    const existing = doc.getElementById(HUB_STYLE_ID);
+    if (existing) {
+      if (existing.textContent !== COLLECTION_HUB_CSS + READING_LAYOUT_CSS) existing.textContent = COLLECTION_HUB_CSS + READING_LAYOUT_CSS;
+      return;
+    }
+    const style = hubEl(doc, "style");
+    style.id = HUB_STYLE_ID;
+    style.textContent = COLLECTION_HUB_CSS + READING_LAYOUT_CSS;
+    (doc.head || doc.documentElement)?.appendChild(style);
+  }
+  function renderHubAnnotationsList(opts) {
+    const { doc, scroll, annotations, colorHexByLabel, preferComment, terms, zh } = opts;
+    if (!annotations.length) {
+      const empty = hubEl(doc, "div");
+      empty.className = "zbf-matrix-empty";
+      empty.textContent = zh ? "当前范围与筛选条件下暂无标注。" : "No matching annotations in this scope.";
+      scroll.appendChild(empty);
+      return;
+    }
+    const byItem = /* @__PURE__ */ new Map();
+    for (const a of annotations) {
+      const list = byItem.get(a.itemID) || [];
+      list.push(a);
+      byItem.set(a.itemID, list);
+    }
+    mountReadingIndex(scroll, Array.from(byItem, ([id, list]) => {
+      const weight = 2.2 + list.reduce((sum, a) => sum + 1.8 + Math.ceil((a.text.length + a.comment.length) / 90) * 0.9, 0);
+      return { id, title: list[0].itemTitle, meta: list[0].creatorYear, count: list.length, weight, list };
+    }), zh, opts.selection, ({ id: itemID, list }, page) => {
+      const card = hubEl(doc, "div");
+      card.className = "zbf-notebook-card";
+      const head = hubEl(doc, "div");
+      head.className = "zbf-notebook-card-head";
+      const headMain = hubEl(doc, "div");
+      headMain.className = "zbf-notebook-item-head-main";
+      const itemBtn = hubEl(doc, "button");
+      itemBtn.type = "button";
+      itemBtn.className = "zbf-notebook-item-btn";
+      itemBtn.appendChild(createGallerySvgIcon(doc, "doc", 15));
+      const titleSpan = hubEl(doc, "span");
+      renderRichTitleNodes(doc, titleSpan, list[0].itemTitle);
+      itemBtn.appendChild(titleSpan);
+      itemBtn.addEventListener("click", () => {
+        void openItemPdfAtPage({ id: itemID }).then((ok) => {
+          if (!ok) opts.onOpenItem(itemID);
+        });
+      });
+      const meta = hubEl(doc, "span");
+      meta.className = "zbf-notebook-meta";
+      meta.textContent = [list[0].creatorYear, zh ? `${list.length} 条标注` : `${list.length} notes`].filter(Boolean).join(" · ");
+      headMain.append(itemBtn, meta);
+      const openBtn = hubEl(doc, "button");
+      openBtn.type = "button";
+      openBtn.className = "zbf-reading-open-pill";
+      openBtn.textContent = zh ? "打开文献" : "Open";
+      openBtn.addEventListener("click", () => {
+        void openItemPdfAtPage({ id: itemID }).then((ok) => {
+          if (!ok) opts.onOpenItem(itemID);
+        });
+      });
+      head.append(headMain, openBtn);
+      card.appendChild(head);
+      const annGrid = hubEl(doc, "div");
+      annGrid.className = "zbf-notebook-ann-grid";
+      if (list.length > 1) annGrid.setAttribute("data-multi", "true");
+      for (const ann of list) {
+        const row = hubEl(doc, "div");
+        row.className = "zbf-notebook-ann-row";
+        const accent = colorHexByLabel.get(ann.colorLabel) || ann.color || "#3b82f6";
+        row.style.borderInlineStartColor = accent;
+        const body = formatHubAnnotationBody(ann, preferComment);
+        const bar = hubEl(doc, "div");
+        bar.className = "zbf-reading-ref";
+        const refLeft = hubEl(doc, "div");
+        refLeft.className = "zbf-reading-ref-left";
+        const badge = hubEl(doc, "span");
+        badge.className = "zbf-ann-badge";
+        const dot = hubEl(doc, "span");
+        dot.className = "zbf-ann-badge-dot";
+        dot.style.background = accent;
+        const lbl = hubEl(doc, "span");
+        lbl.textContent = ann.colorLabel || "Note";
+        badge.append(dot, lbl);
+        refLeft.appendChild(badge);
+        if (ann.pageLabel) {
+          const pg = hubEl(doc, "span");
+          pg.className = "zbf-ann-page";
+          pg.textContent = `p. ${ann.pageLabel}`;
+          refLeft.appendChild(pg);
+        }
+        const refActs = hubEl(doc, "div");
+        refActs.className = "zbf-reading-ref-actions";
+        const jump = hubEl(doc, "button");
+        jump.type = "button";
+        jump.textContent = zh ? "跳至 PDF" : "Open PDF";
+        jump.addEventListener("click", () => {
+          void openItemPdfAtPage({ id: itemID }, Number(ann.pageLabel) || void 0, ann.annotationID).then((ok) => {
+            if (!ok) opts.onOpenItem(itemID);
+          });
+        });
+        const copy = hubEl(doc, "button");
+        copy.type = "button";
+        const defaultCopyLabel = zh ? "复制" : "Copy";
+        copy.textContent = defaultCopyLabel;
+        copy.addEventListener("click", () => {
+          const ok = writeMatrixClipboard(body, opts.clipboard);
+          copy.textContent = ok ? zh ? "✓ 已复制" : "✓ Copied" : zh ? "复制失败" : "Copy failed";
+          if (ok) copy.setAttribute("data-copied", "true");
+          opts.onStatus(copy.textContent);
+          doc.defaultView?.setTimeout?.(() => {
+            if (copy.isConnected) {
+              copy.textContent = defaultCopyLabel;
+              copy.removeAttribute("data-copied");
+            }
+          }, 1600);
+        });
+        refActs.append(jump, copy);
+        bar.append(refLeft, refActs);
+        row.appendChild(bar);
+        if (ann.text && !(preferComment && ann.comment)) {
+          const quote = hubEl(doc, "blockquote");
+          renderHighlightedSnippet(doc, quote, ann.text, terms);
+          row.appendChild(quote);
+        }
+        if (ann.comment) {
+          const comment = hubEl(doc, "p");
+          comment.className = "zbf-reading-comment";
+          const label = hubEl(doc, "strong");
+          label.textContent = zh ? "评注" : "Comment";
+          const content = hubEl(doc, "span");
+          renderHighlightedSnippet(doc, content, ann.comment, terms);
+          comment.append(label, content);
+          row.appendChild(comment);
+        }
+        if (ann.tags.length) {
+          const tagRow = hubEl(doc, "div");
+          tagRow.className = "zbf-notebook-ann-tags";
+          for (const t of ann.tags) {
+            const pill = hubEl(doc, "span");
+            pill.className = "zbf-notebook-ann-tag";
+            const pal = resolvePastelTagStyle(t);
+            pill.style.background = `light-dark(${pal.bg}, ${pal.darkBg})`;
+            pill.style.color = `light-dark(${pal.fg}, ${pal.darkFg})`;
+            pill.textContent = t;
+            tagRow.appendChild(pill);
+          }
+          row.appendChild(tagRow);
+        }
+        annGrid.appendChild(row);
+      }
+      card.appendChild(annGrid);
+      page.appendChild(card);
+    });
+  }
+  function renderHubNotesList(opts) {
+    const { doc, win, scroll, entries, syncExtra, dataSource, terms, zh } = opts;
+    if (!entries.length) {
+      const empty = hubEl(doc, "div");
+      empty.className = "zbf-matrix-empty";
+      empty.textContent = zh ? "当前范围下暂无匹配的文献或笔记。" : "No matching items or notes.";
+      scroll.appendChild(empty);
+      return;
+    }
+    mountReadingIndex(scroll, entries.map((entry) => ({
+      id: entry.itemID,
+      title: entry.title,
+      meta: entry.creatorYear,
+      count: entry.childNotes.length + Number(Boolean(entry.briefNote)),
+      weight: 2.2 + entry.childNotes.length * 1.6 + (entry.briefNote ? 0.6 : 0),
+      entry
+    })), zh, opts.selection, ({ entry }, page) => {
+      const card = hubEl(doc, "div");
+      card.className = "zbf-notebook-card";
+      const head = hubEl(doc, "div");
+      head.className = "zbf-notebook-card-head";
+      const headMain = hubEl(doc, "div");
+      headMain.className = "zbf-notebook-item-head-main";
+      const itemBtn = hubEl(doc, "button");
+      itemBtn.type = "button";
+      itemBtn.className = "zbf-notebook-item-btn";
+      itemBtn.appendChild(createGallerySvgIcon(doc, "doc", 15));
+      const titleSpan = hubEl(doc, "span");
+      renderRichTitleNodes(doc, titleSpan, entry.title);
+      itemBtn.appendChild(titleSpan);
+      const openEntry = () => {
+        if (opts.onOpenItem) opts.onOpenItem(entry.itemID);
+        else win.ZoteroPane?.itemsView?.selectItem?.(entry.itemID);
+      };
+      itemBtn.addEventListener("click", openEntry);
+      const meta = hubEl(doc, "span");
+      meta.className = "zbf-notebook-meta";
+      meta.textContent = entry.creatorYear;
+      headMain.append(itemBtn, meta);
+      const openBtn = hubEl(doc, "button");
+      openBtn.type = "button";
+      openBtn.className = "zbf-reading-open-pill";
+      openBtn.textContent = zh ? "打开文献" : "Open";
+      openBtn.addEventListener("click", openEntry);
+      head.append(headMain, openBtn);
+      const briefRow = hubEl(doc, "div");
+      briefRow.className = "zbf-notebook-brief-row";
+      const briefLbl = hubEl(doc, "span");
+      briefLbl.className = "zbf-notebook-brief-lbl";
+      briefLbl.textContent = zh ? "简记" : "Brief";
+      const briefInput = hubEl(doc, "input");
+      briefInput.type = "text";
+      briefInput.className = "zbf-notebook-brief-input";
+      briefInput.value = entry.briefNote;
+      briefInput.placeholder = zh ? "添加简记…" : "Add a brief note…";
+      briefInput.setAttribute("aria-label", briefLbl.textContent);
+      const commitBrief = async () => {
+        const nextVal = briefInput.value.trim();
+        if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
+        writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
+        opts.onRemarkMutated?.();
+        const saved = await dataSource?.persistRemarks?.();
+        opts.onStatus(saved ? zh ? "✓ 简记已保存至 brief-notes.json" : "✓ Brief note saved" : zh ? "简记未能确认写入磁盘。" : "Brief note could not be confirmed on disk.");
+      };
+      briefInput.addEventListener("blur", commitBrief);
+      briefInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          briefInput.blur();
+        }
+      });
+      briefRow.append(briefLbl, briefInput);
+      card.append(head, briefRow);
+      for (const cn of entry.childNotes) {
+        const noteBox = hubEl(doc, "details");
+        const summary = hubEl(doc, "summary");
+        summary.textContent = cn.heading;
+        const excerpt = hubEl(doc, "p");
+        noteBox.className = "zbf-notebook-note-box";
+        renderHighlightedSnippet(doc, excerpt, `${cn.dateModified ? `[${cn.dateModified}] ` : ""}${cn.snippet}`, terms);
+        const open = hubEl(doc, "button");
+        open.type = "button";
+        open.textContent = zh ? "打开完整笔记" : "Open full note";
+        open.addEventListener("click", () => win.ZoteroPane?.openNote?.(cn.noteID, { openInWindow: false }));
+        noteBox.append(summary, excerpt, open);
+        card.appendChild(noteBox);
+      }
+      page.appendChild(card);
+    });
+  }
+
+  // src/domains/visual-notes/collection-notes-hub.ts
+  function openCollectionNotesHubModal(options) {
+    const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+    openHubPage(
+      options.win,
+      Boolean(options.prefs.get("visualNotes.collectionHub.separateWindow")),
+      zh ? "文献笔记与标注中心" : "Notes & Annotations",
+      (container, close) => renderHub(options, container, close)
+    );
+  }
+  function renderHub(options, container, close) {
+    const doc = container.ownerDocument;
+    if (!doc) return;
+    ensureMatrixStyles(doc);
+    ensureCollectionHubStyles(doc);
+    const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+    let activeTab = options.initialTab || "annotations";
+    let activeScope = options.initialScope || "collection";
+    let activeColor = "";
+    const selection = { itemID: 0 };
+    let ignoreFigTable = Boolean(options.prefs.get("visualNotes.collectionHub.ignoreFigureTable"));
+    let preferComment = Boolean(options.prefs.get("visualNotes.collectionHub.preferCommentOverQuote"));
+    const backdrop = hubEl(doc, "div");
+    backdrop.id = "zbf-notebook-backdrop";
+    backdrop.className = "zbf-notebook-backdrop";
+    const dialog = hubEl(doc, "div");
+    dialog.className = "zbf-notebook-dialog";
+    const topRow = hubEl(doc, "div");
+    topRow.className = "zbf-notebook-top";
+    const titleWrap = hubEl(doc, "div");
+    titleWrap.className = "zbf-notebook-title-wrap";
+    const titleEl = hubEl(doc, "div");
+    titleEl.className = "zbf-notebook-title";
+    const tabSeg = hubEl(doc, "div");
+    tabSeg.className = "zbf-notebook-seg";
+    const btnTabAnn = hubEl(doc, "button");
+    btnTabAnn.type = "button";
+    btnTabAnn.className = "zbf-notebook-seg-btn";
+    const btnTabNotes = hubEl(doc, "button");
+    btnTabNotes.type = "button";
+    btnTabNotes.className = "zbf-notebook-seg-btn";
+    tabSeg.append(btnTabAnn, btnTabNotes);
+    const scopeSeg = hubEl(doc, "div");
+    scopeSeg.className = "zbf-notebook-seg";
+    const scopeDefs = [
+      ["collection", zh ? "当前分类/视图" : "Current View"],
+      ["selected", zh ? "已选文献" : "Selected"],
+      ["tabs", zh ? "已开标签" : "Open Tabs"]
+    ];
+    const scopeBtns = /* @__PURE__ */ new Map();
+    for (const [mode, label] of scopeDefs) {
+      const b = hubEl(doc, "button");
+      b.type = "button";
+      b.className = "zbf-notebook-seg-btn";
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        activeScope = mode;
+        activeColor = "";
+        scopeMemo.invalidate();
+        renderAll();
+      });
+      scopeBtns.set(mode, b);
+      scopeSeg.appendChild(b);
+    }
+    const closeBtn = hubEl(doc, "button");
+    closeBtn.type = "button";
+    closeBtn.className = "zbf-matrix-close";
+    closeBtn.textContent = "✕";
+    titleWrap.append(titleEl, tabSeg);
+    const rightTop = hubEl(doc, "div");
+    rightTop.className = "zbf-notebook-title-wrap";
+    rightTop.append(scopeSeg, closeBtn);
+    topRow.append(titleWrap, rightTop);
+    const toolbar = hubEl(doc, "div");
+    toolbar.className = "zbf-notebook-toolbar";
+    const searchWrap = hubEl(doc, "div");
+    searchWrap.className = "zbf-nb-search-wrap";
+    const searchIcon = hubEl(doc, "span");
+    searchIcon.className = "zbf-nb-search-icon";
+    searchIcon.appendChild(createGallerySvgIcon(doc, "search", 13));
+    const searchInput = hubEl(doc, "input");
+    searchInput.type = "text";
+    searchInput.className = "zbf-notebook-search";
+    searchInput.placeholder = zh ? "搜索标题、原文或评注…" : "Filter (supports A && B || C)...";
+    const clearSearchBtn = hubEl(doc, "button");
+    clearSearchBtn.type = "button";
+    clearSearchBtn.className = "zbf-nb-search-clear";
+    clearSearchBtn.textContent = "×";
+    clearSearchBtn.title = zh ? "清空搜索" : "Clear search";
+    searchWrap.append(searchIcon, searchInput, clearSearchBtn);
+    const togglesWrap = hubEl(doc, "div");
+    togglesWrap.className = "zbf-notebook-toggles";
+    const makeCheck = (label, initial, onChange) => {
+      const lbl = hubEl(doc, "label");
+      lbl.className = "zbf-notebook-check";
+      const cb = hubEl(doc, "input");
+      cb.type = "checkbox";
+      cb.checked = initial;
+      cb.addEventListener("change", () => onChange(cb.checked));
+      const txt = hubEl(doc, "span");
+      txt.textContent = label;
+      lbl.append(cb, txt);
+      return lbl;
+    };
+    togglesWrap.append(
+      makeCheck(zh ? "忽略图/表标注" : "Ignore Fig/Table", ignoreFigTable, (v) => {
+        ignoreFigTable = v;
+        options.prefs.set("visualNotes.collectionHub.ignoreFigureTable", v);
+        renderAll();
+      }),
+      makeCheck(zh ? "有评注时仅显示评注" : "Prefer comment", preferComment, (v) => {
+        preferComment = v;
+        options.prefs.set("visualNotes.collectionHub.preferCommentOverQuote", v);
+        renderAll();
+      })
+    );
+    const chipsBar = hubEl(doc, "div");
+    chipsBar.className = "zbf-notebook-chips";
+    toolbar.append(searchWrap, chipsBar, togglesWrap);
+    const scroll = hubEl(doc, "div");
+    scroll.className = "zbf-notebook-scroll";
+    const statusEl = hubEl(doc, "span");
+    statusEl.className = "zbf-matrix-status";
+    let searchTimer = null;
+    let composing = false;
+    const cleanup = () => {
+      if (searchTimer !== null) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+      doc.removeEventListener?.("keydown", onDocKey, true);
+    };
+    const safeClose = () => {
+      cleanup();
+      close();
+    };
+    const scheduleRender = () => {
+      if (searchTimer !== null) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        searchTimer = null;
+        renderAll();
+      }, 100);
+    };
+    const onDocKey = (ev) => {
+      if (ev.key === "Escape" && !doc.getElementById("zbf-matrix-backdrop")) {
+        ev.preventDefault?.();
+        safeClose();
+      }
+    };
+    closeBtn.addEventListener("click", safeClose);
+    doc.addEventListener?.("keydown", onDocKey, true);
+    btnTabAnn.addEventListener("click", () => {
+      activeTab = "annotations";
+      renderAll();
+    });
+    btnTabNotes.addEventListener("click", () => {
+      activeTab = "notes";
+      renderAll();
+    });
+    const syncClearBtn = () => {
+      clearSearchBtn.style.display = searchInput.value ? "inline-flex" : "none";
+    };
+    clearSearchBtn.addEventListener("click", () => {
+      searchInput.value = "";
+      syncClearBtn();
+      if (searchTimer !== null) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+      renderAll();
+      searchInput.focus?.();
+    });
+    searchInput.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    searchInput.addEventListener("compositionend", () => {
+      composing = false;
+      syncClearBtn();
+      scheduleRender();
+    });
+    searchInput.addEventListener("input", () => {
+      syncClearBtn();
+      if (!composing) scheduleRender();
+    });
+    syncClearBtn();
+    const scopeMemo = createHubScopeMemo({
+      win: options.win,
+      zh,
+      getColorJson: () => options.prefs.get("inspector.annotations.colorLabels"),
+      getBriefNote: (it) => readItemRemarkWithFallback(it, options.dataSource)
+    });
+    let latestScope = scopeMemo.compute(activeScope, "", "", ignoreFigTable).scope;
+    const computeCurrent = () => {
+      const res = scopeMemo.compute(activeScope, searchInput.value, activeColor, ignoreFigTable);
+      latestScope = res.scope;
+      return { annData: res.annData, notesData: res.notesData };
+    };
+    const renderAll = () => {
+      const { annData, notesData } = computeCurrent();
+      btnTabAnn.setAttribute("data-active", String(activeTab === "annotations"));
+      btnTabNotes.setAttribute("data-active", String(activeTab === "notes"));
+      btnTabAnn.textContent = zh ? `标注汇总 (${annData.annotations.length})` : `Annotations (${annData.annotations.length})`;
+      btnTabNotes.textContent = zh ? `笔记与简记 (${notesData.totalChildNotes + notesData.totalBriefNotes})` : `Notes & Briefs (${notesData.totalChildNotes + notesData.totalBriefNotes})`;
+      for (const [m, b] of scopeBtns) b.setAttribute("data-active", String(m === activeScope));
+      titleEl.textContent = zh ? `文献笔记与标注中心 · ${latestScope.scopeTitle} (${latestScope.items.length} 篇)` : `Notes & Annotations Hub · ${latestScope.scopeTitle} (${latestScope.items.length})`;
+      togglesWrap.style.display = activeTab === "annotations" ? "inline-flex" : "none";
+      chipsBar.style.display = activeTab === "annotations" ? "flex" : "none";
+      chipsBar.textContent = "";
+      if (activeTab === "annotations") {
+        const makeChip = (lbl, val, count2, hex) => {
+          const c = hubEl(doc, "button");
+          c.type = "button";
+          c.className = "zbf-matrix-chip";
+          if (activeColor === val) c.setAttribute("data-active", "true");
+          if (hex) {
+            const dot = hubEl(doc, "span");
+            dot.className = "zbf-matrix-dot";
+            dot.style.background = hex;
+            c.appendChild(dot);
+          }
+          const s = hubEl(doc, "span");
+          s.textContent = `${lbl} (${count2})`;
+          c.appendChild(s);
+          c.addEventListener("click", () => {
+            activeColor = val;
+            renderAll();
+          });
+          chipsBar.appendChild(c);
+        };
+        makeChip(zh ? "全部维度" : "All", "", annData.totalBeforeFilter);
+        for (const [colLbl, cnt] of annData.colorCounts) {
+          makeChip(colLbl, colLbl, cnt, annData.colorHexByLabel.get(colLbl));
+        }
+      }
+      scroll.textContent = "";
+      const terms = extractQueryTerms(searchInput.value);
+      const onStatus = (msg) => {
+        statusEl.textContent = msg;
+      };
+      const onOpenItem = (itemID) => {
+        options.win.focus?.();
+        options.bus?.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
+      };
+      if (activeTab === "annotations") {
+        const matchedCount = new Set(annData.annotations.map((ann) => ann.itemID)).size;
+        statusEl.textContent = zh ? `共匹配 ${annData.annotations.length} 条标注（来自 ${matchedCount} 篇文献）` : `${annData.annotations.length} annotations across ${matchedCount} items`;
+        renderHubAnnotationsList({
+          doc,
+          scroll,
+          selection,
+          annotations: annData.annotations,
+          colorHexByLabel: annData.colorHexByLabel,
+          preferComment,
+          terms,
+          zh,
+          clipboard: options.clipboard,
+          onStatus,
+          onOpenItem
+        });
+      } else {
+        statusEl.textContent = zh ? `共 ${notesData.entries.length} 篇文献 · ${notesData.totalBriefNotes} 条简记 · ${notesData.totalChildNotes} 篇独立子笔记` : `${notesData.entries.length} items · ${notesData.totalBriefNotes} brief notes · ${notesData.totalChildNotes} child notes`;
+        renderHubNotesList({
+          doc,
+          win: options.win,
+          scroll,
+          selection,
+          entries: notesData.entries,
+          syncExtra: Boolean(options.prefs.get("workspace.syncRemarkToExtra")),
+          dataSource: options.dataSource,
+          terms,
+          zh,
+          onRemarkMutated: () => {
+            scopeMemo.invalidate();
+            options.onRemarkMutated?.();
+          },
+          onStatus,
+          onOpenItem
+        });
+      }
+    };
+    const foot = hubEl(doc, "div");
+    foot.className = "zbf-notebook-foot";
+    const actions = hubEl(doc, "div");
+    actions.className = "zbf-matrix-actions";
+    const flashBtn = (btn, tempText) => {
+      const orig = btn.dataset.origLabel || btn.textContent || "";
+      btn.dataset.origLabel = orig;
+      btn.textContent = tempText;
+      doc.defaultView?.setTimeout?.(() => {
+        if (btn.isConnected) btn.textContent = orig;
+      }, 1800);
+    };
+    const addBtn = (lbl, primary, fn) => {
+      const b = hubEl(doc, "button");
+      b.type = "button";
+      b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
+      b.textContent = lbl;
+      b.addEventListener("click", () => fn(b));
+      actions.appendChild(b);
+    };
+    addBtn(zh ? "打开文献对比矩阵" : "Open Matrix View", false, () => {
+      computeCurrent();
+      const ids = latestScope.items.map((it) => Number(it.id)).filter((id) => id > 0);
+      openAnnotationMatrixModal({
+        win: options.win,
+        title: latestScope.scopeTitle,
+        itemIDs: ids,
+        prefs: options.prefs,
+        bus: options.bus,
+        clipboard: options.clipboard,
+        mountRoot: container
+      });
+    });
+    addBtn(zh ? "复制 Markdown 综述汇总" : "Copy Markdown Synthesis", false, (btn) => {
+      const { annData, notesData } = computeCurrent();
+      if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
+        statusEl.textContent = zh ? "当前范围暂无可复制的笔记或标注" : "Nothing to copy in current scope";
+        flashBtn(btn, zh ? "暂无内容" : "Empty");
+        return;
+      }
+      const md = renderCollectionHubMarkdown(`${latestScope.scopeTitle} · 笔记与标注汇总`, notesData.entries, annData.annotations, preferComment);
+      const ok = writeMatrixClipboard(md, options.clipboard);
+      statusEl.textContent = ok ? zh ? `✓ 已复制 Markdown 综述（${md.length} 字）` : `✓ Copied Markdown (${md.length} chars)` : "✕ Copy failed";
+      flashBtn(btn, ok ? zh ? "✓ 已复制到剪贴板" : "✓ Copied!" : "✕ 失败");
+    });
+    let savingNote = false;
+    addBtn(zh ? "保存为当前分类 Zotero 笔记" : "Save as Zotero Note", true, (btn) => {
+      if (savingNote) return;
+      const { annData, notesData } = computeCurrent();
+      if (!annData.annotations.length && !notesData.totalBriefNotes && !notesData.totalChildNotes) {
+        statusEl.textContent = zh ? "当前范围暂无可汇总的笔记或标注" : "No notes or annotations to save";
+        flashBtn(btn, zh ? "暂无可保存内容" : "Nothing to save");
+        return;
+      }
+      savingNote = true;
+      statusEl.textContent = zh ? "正在生成 Zotero 汇总笔记…" : "Saving Zotero note…";
+      void saveCollectionHubAsZoteroNote({
+        heading: `${latestScope.scopeTitle} · 笔记与标注汇总`,
+        notes: notesData.entries,
+        annotations: annData.annotations,
+        preferCommentOverQuote: preferComment,
+        libraryID: latestScope.libraryID,
+        collectionID: latestScope.collectionID
+      }).then(async (nid) => {
+        if (!nid) {
+          statusEl.textContent = "✕ Failed to save note";
+          return;
+        }
+        statusEl.textContent = zh ? `✓ 已生成并打开汇总笔记 (#${nid})` : `✓ Saved & opened Note (#${nid})`;
+        flashBtn(btn, zh ? `✓ 已打开笔记 #${nid}` : `✓ Opened #${nid}`);
+        const zNotes = globalThis.Zotero?.Notes;
+        if (typeof zNotes?.open === "function") {
+          try {
+            await zNotes.open(nid, void 0, { openInWindow: false });
+            return;
+          } catch {
+          }
+        }
+        options.win.Zotero_Tabs?.select?.("zotero-pane");
+        await options.win.ZoteroPane?.selectItem?.(nid);
+      }).catch(() => {
+        statusEl.textContent = zh ? "✕ 保存汇总笔记失败" : "✕ Failed to save note";
+      }).finally(() => {
+        savingNote = false;
+      });
+    });
+    foot.append(statusEl, actions);
+    dialog.append(topRow, toolbar, scroll, foot);
+    backdrop.appendChild(dialog);
+    container.appendChild(backdrop);
+    renderAll();
+    searchInput.focus?.();
+    return cleanup;
+  }
+
+  // src/domains/visual-notes/gallery-card-cache.ts
+  var ITEM_TYPE_ZH = {
+    journalArticle: "期刊文章",
+    conferencePaper: "会议论文",
+    thesis: "学位论文",
+    book: "专著",
+    bookSection: "图书章节",
+    preprint: "预印本",
+    report: "研究报告",
+    webpage: "网页资料"
+  };
+  var CARD_STATIC_CACHE_LIMIT = 5e3;
+  var cardStaticCache = /* @__PURE__ */ new Map();
+  function clearGalleryCardCache(itemIDs) {
+    if (!itemIDs) {
+      cardStaticCache.clear();
+      return;
+    }
+    const targets = new Set(itemIDs);
+    if (!targets.size) return;
+    for (const key of cardStaticCache.keys()) {
+      const id = Number(key.split(":", 1)[0]);
+      if (targets.has(id)) cardStaticCache.delete(key);
+    }
+  }
+  function safeField(item, field) {
+    try {
+      return String(item?.getField?.(field) || "").trim();
+    } catch {
+      return "";
+    }
+  }
+  function resolveVenue(item) {
+    for (const f of ["publicationTitle", "proceedingsTitle", "conferenceName", "university", "publisher", "repository"]) {
+      const val = safeField(item, f);
+      if (val) return val;
+    }
+    return "";
+  }
+  function formatCreatorLine(item, zh) {
+    const first = String(item?.firstCreator || "").trim();
+    if (first && (first.includes("等") || first.toLowerCase().includes("et al"))) return first;
+    try {
+      const creators = item?.getCreators?.();
+      if (Array.isArray(creators) && creators.length > 1) {
+        const lead = String(creators[0]?.lastName || creators[0]?.name || first).trim();
+        if (lead) return zh ? `${lead} 等` : `${lead} et al.`;
+      }
+    } catch {
+    }
+    return first;
+  }
+  function resolvePrimaryPdfAttachmentID(item) {
+    try {
+      const attIDs = isRegularValidItem(item) && typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
+      const hostItems = globalThis.Zotero?.Items;
+      for (const rawId of attIDs) {
+        const id = Number(rawId) || 0;
+        if (!id) continue;
+        const att = hostItems?.get?.(id);
+        if (!att || att.deleted) continue;
+        const ct = String(att.attachmentContentType || "").toLowerCase();
+        const fn = String(att.attachmentFilename || att.getField?.("title") || "").toLowerCase();
+        if (ct === "application/pdf" || fn.endsWith(".pdf") || att.isPDFAttachment?.()) return id;
+      }
+    } catch {
+    }
+    return 0;
+  }
+  function extractCleanTags(item, excludedStatusTag) {
+    if (typeof item?.getTags !== "function") return [];
+    const excludedLower = String(excludedStatusTag || "/Citations").trim().toLowerCase();
+    const out = [];
+    for (const entry of item.getTags() || []) {
+      const t = String(entry?.tag || "").trim();
+      if (t && t.toLowerCase() !== excludedLower && isStarRatingTag(t) === 0) out.push(t);
+    }
+    return out;
+  }
+  function resolveCachedCardStatic(ref, itemID, zh, excludedStatusTag) {
+    const stamp = String(ref.version ?? ref.dateModified ?? "");
+    const cacheKey = stamp ? `${itemID}:${stamp}:${excludedStatusTag}:${zh ? 1 : 0}` : "";
+    if (cacheKey) {
+      const hit = cardStaticCache.get(cacheKey);
+      if (hit) {
+        cardStaticCache.delete(cacheKey);
+        cardStaticCache.set(cacheKey, hit);
+        return hit;
+      }
+    }
+    const title = safeField(ref, "title") || String(ref.title || `#${itemID}`);
+    const rawDate = safeField(ref, "year") || safeField(ref, "date");
+    const yearMatch = /\b(19\d\d|20\d\d)\b/.exec(rawDate);
+    const year = yearMatch ? yearMatch[1] : rawDate.slice(0, 4);
+    const creator = formatCreatorLine(ref, zh);
+    const venue = resolveVenue(ref);
+    const itemType = String(ref.itemType || globalThis.Zotero?.ItemTypes?.getName?.(ref.itemTypeID) || "journalArticle");
+    const tags = extractCleanTags(ref, excludedStatusTag);
+    const status = getItemStatus(ref, excludedStatusTag);
+    let attachmentID;
+    let abstractExcerpt;
+    const built = {
+      title,
+      creator,
+      year,
+      venue,
+      itemType,
+      itemTypeLabel: (zh ? ITEM_TYPE_ZH[itemType] : "") || itemType,
+      dateModified: String(ref.dateModified || ""),
+      get pdfAttachmentID() {
+        return attachmentID ??= resolvePrimaryPdfAttachmentID(ref);
+      },
+      get abstractExcerpt() {
+        return abstractExcerpt ??= safeField(ref, "abstractNote").replace(/\s+/g, " ").slice(0, 620);
+      },
+      tags,
+      status,
+      baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ""} ${tags.join(" ")}`.toLowerCase()
+    };
+    if (cacheKey) {
+      if (cardStaticCache.size >= CARD_STATIC_CACHE_LIMIT) {
+        const oldest = cardStaticCache.keys().next().value;
+        if (oldest !== void 0) cardStaticCache.delete(oldest);
+      }
+      cardStaticCache.set(cacheKey, built);
+    }
+    return built;
+  }
+
+  // src/domains/visual-notes/gallery-board-helpers.ts
+  var SOFT_TINTS = [
+    { pillBg: "#ffe4e6", pillFg: "#9f1239", surface: "rgba(244,63,94,0.045)" },
+    { pillBg: "#dcfce7", pillFg: "#166534", surface: "rgba(34,197,94,0.045)" },
+    { pillBg: "#e0e7ff", pillFg: "#3730a3", surface: "rgba(99,102,241,0.045)" },
+    { pillBg: "#fef3c7", pillFg: "#92400e", surface: "rgba(245,158,11,0.045)" },
+    { pillBg: "#e0f2fe", pillFg: "#075985", surface: "rgba(14,165,233,0.045)" },
+    { pillBg: "#f3e8ff", pillFg: "#6b21a8", surface: "rgba(168,85,247,0.045)" }
+  ];
+  var GalleryCard = class {
+    item;
+    itemID;
+    dateModified;
+    deps;
+    zh;
+    fields;
+    note;
+    stars;
+    progress;
+    constructor(item, id, deps, zh) {
+      this.item = item;
+      this.itemID = id;
+      this.dateModified = String(item.dateModified || "");
+      this.deps = deps;
+      this.zh = zh;
+    }
+    get stat() {
+      return this.fields ??= resolveCachedCardStatic(this.item, this.itemID, this.zh, this.deps.excludedStatusTag);
+    }
+    get reading() {
+      if (this.progress === void 0) this.progress = this.deps.getReadProgress(this.item) ?? null;
+      return this.progress;
+    }
+    get title() {
+      return this.stat.title;
+    }
+    get creator() {
+      return this.stat.creator;
+    }
+    get year() {
+      return this.stat.year;
+    }
+    get venue() {
+      return this.stat.venue;
+    }
+    get itemType() {
+      return this.stat.itemType;
+    }
+    get itemTypeLabel() {
+      return this.stat.itemTypeLabel;
+    }
+    get pdfAttachmentID() {
+      return this.stat.pdfAttachmentID;
+    }
+    get abstractExcerpt() {
+      return this.stat.abstractExcerpt;
+    }
+    get tags() {
+      return this.stat.tags;
+    }
+    get status() {
+      return this.stat.status;
+    }
+    get rating() {
+      return this.stars ??= getItemRating(this.item, this.deps.ratingStorage);
+    }
+    get briefNote() {
+      return this.note ??= this.deps.getBriefNote(this.item);
+    }
+    get readSeconds() {
+      return Number(this.reading?.readSeconds || 0);
+    }
+    get readRatio() {
+      const p = this.reading;
+      return p?.totalPages && p.totalPages > 0 && p.lastPage ? Math.min(1, Math.max(0, p.lastPage / p.totalPages)) : 0;
+    }
+    get readText() {
+      return formatReadingProgress(this.reading ?? void 0).text;
+    }
+    get searchLower() {
+      return this.briefNote ? this.stat.baseSearchLower + " " + this.briefNote.toLowerCase() : this.stat.baseSearchLower;
+    }
+  };
+  function extractGalleryCards(win, deps) {
+    const zh = deps.zh ?? Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
+    const view = win?.ZoteroPane?.itemsView;
+    const hostItems = globalThis.Zotero?.Items;
+    const rowCount = Math.min(Number(view?.rowCount || 0), 5e3);
+    const seen = /* @__PURE__ */ new Set();
+    const rawItems = [];
+    const cards = [];
+    for (let i = 0; i < rowCount; i++) {
+      let ref = view?.getRow?.(i)?.ref;
+      if (!ref || ref.deleted) continue;
+      if (typeof ref.isRegularItem === "function" && !ref.isRegularItem()) {
+        if (ref.parentItemID) ref = hostItems?.get?.(ref.parentItemID);
+        if (!ref || ref.deleted || typeof ref.isRegularItem === "function" && !ref.isRegularItem()) continue;
+      }
+      const itemID = Number(ref.id || 0);
+      if (!itemID || seen.has(itemID)) continue;
+      seen.add(itemID);
+      rawItems.push(ref);
+      cards.push(new GalleryCard(ref, itemID, deps, zh));
+    }
+    return { cards, rawItems };
+  }
+  function filterAndSortGalleryCards(cards, query, sortField) {
+    const q = String(query || "").trim().toLowerCase();
+    const filtered = q ? cards.filter((c) => (c.searchLower ?? `${c.title} ${c.creator} ${c.year} ${c.venue} ${c.status?.label || ""} ${c.briefNote} ${c.tags.join(" ")}`.toLowerCase()).includes(q)) : [...cards];
+    filtered.sort((a, b) => {
+      if (sortField === "year") return (Number(b.year) || 0) - (Number(a.year) || 0) || a.title.localeCompare(b.title);
+      if (sortField === "rating") return b.rating - a.rating || b.readSeconds - a.readSeconds || a.title.localeCompare(b.title);
+      if (sortField === "readTime") return b.readSeconds - a.readSeconds || b.readRatio - a.readRatio || a.title.localeCompare(b.title);
+      if (sortField === "title") return a.title.localeCompare(b.title);
+      return b.dateModified.localeCompare(a.dateModified) || b.itemID - a.itemID;
+    });
+    return filtered;
+  }
+  function buildKanbanColumns(cards, rawItems, groupBy, zh, excludedStatusTag) {
+    if (groupBy === "readState") {
+      const unread = [];
+      const reading = [];
+      const deep = [];
+      const finished = [];
+      for (const c of cards) {
+        if (c.readRatio >= 0.95 && c.readSeconds >= 60) finished.push(c);
+        else if (c.readSeconds >= 600) deep.push(c);
+        else if (c.readSeconds > 0 || c.readRatio > 0) reading.push(c);
+        else unread.push(c);
+      }
+      return [
+        { key: "unread", title: zh ? "未读" : "Unread", pillBg: "#ffe4e6", pillFg: "#9f1239", surfaceTint: "rgba(244,63,94,0.04)", droppable: false, cards: unread },
+        { key: "skimming", title: zh ? "阅读中" : "Reading", pillBg: "#dcfce7", pillFg: "#166534", surfaceTint: "rgba(34,197,94,0.04)", droppable: false, cards: reading },
+        { key: "deep", title: zh ? "深读 (≥10m)" : "Deep (≥10m)", pillBg: "#e0f2fe", pillFg: "#075985", surfaceTint: "rgba(14,165,233,0.04)", droppable: false, cards: deep },
+        { key: "finished", title: zh ? "已读" : "Finished", pillBg: "#e0e7ff", pillFg: "#3730a3", surfaceTint: "rgba(99,102,241,0.04)", droppable: false, cards: finished }
+      ];
+    }
+    if (groupBy === "status") {
+      const statuses = listAvailableStatuses(rawItems, zh, excludedStatusTag);
+      const map = /* @__PURE__ */ new Map();
+      statuses.forEach((st, idx) => {
+        const t = SOFT_TINTS[(idx + 1) % SOFT_TINTS.length];
+        map.set(st.tag.toLowerCase(), { key: st.tag, title: st.label, color: st.color, pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: [] });
+      });
+      const unassigned = { key: "__none__", title: zh ? "未设状态" : "Unassigned", color: "#94a3b8", pillBg: "#f1f5f9", pillFg: "#475569", surfaceTint: "rgba(100,116,139,0.04)", droppable: true, cards: [] };
+      for (const c of cards) {
+        const k = c.status?.tag.toLowerCase();
+        if (k && map.has(k)) map.get(k).cards.push(c);
+        else unassigned.cards.push(c);
+      }
+      return [unassigned, ...map.values()];
+    }
+    if (groupBy === "rating") {
+      const cols = [];
+      for (let stars = 5; stars >= 1; stars--) {
+        const t = SOFT_TINTS[(5 - stars) % SOFT_TINTS.length];
+        cols.push({ key: String(stars), title: `${stars} ⭐`, color: "#f59e0b", pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: true, cards: cards.filter((c) => c.rating === stars) });
+      }
+      cols.push({ key: "0", title: zh ? "未评级" : "Unrated", color: "#94a3b8", pillBg: "#f1f5f9", pillFg: "#475569", surfaceTint: "rgba(100,116,139,0.04)", droppable: true, cards: cards.filter((c) => c.rating === 0) });
+      return cols;
+    }
+    const buckets = /* @__PURE__ */ new Map();
+    for (const c of cards) {
+      const key = groupBy === "year" ? c.year || (zh ? "未知年份" : "Unknown") : groupBy === "publication" ? c.venue || (zh ? "未标来源" : "No Venue") : c.itemTypeLabel;
+      const list = buckets.get(key) || [];
+      list.push(c);
+      buckets.set(key, list);
+    }
+    const entries = [...buckets.entries()];
+    if (groupBy === "year") entries.sort((a, b) => (Number(b[0]) || -1) - (Number(a[0]) || -1));
+    else entries.sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+    return entries.map(([key, list], idx) => {
+      const t = SOFT_TINTS[idx % SOFT_TINTS.length];
+      return { key, title: key, pillBg: t.pillBg, pillFg: t.pillFg, surfaceTint: t.surface, droppable: false, cards: list };
+    });
+  }
+  async function applyKanbanColumnDrop(card, groupBy, targetColumnKey, options) {
+    if (groupBy === "status") {
+      return setItemStatus(card.item, targetColumnKey === "__none__" ? null : targetColumnKey, {
+        color: options.color,
+        excludedTag: options.excludedStatusTag,
+        syncZoteroTagColor: options.syncZoteroTagColor
+      });
+    }
+    if (groupBy === "rating") {
+      return setItemRating(card.item, Number(targetColumnKey) || 0, options.ratingStorage);
+    }
+    return false;
+  }
 
   // src/domains/visual-notes/gallery-card-renderer.ts
   function renderGalleryTopBar(opts) {
@@ -11915,10 +12294,12 @@ ${REMINDERS_CARD_CSS}`;
       el.draggable = true;
       el.addEventListener("dragstart", (ev) => {
         el.setAttribute("data-dragging", "true");
+        opts.onDragStateChange?.(true);
         ev.dataTransfer?.setData("text/zbf-item-id", String(card.itemID));
       });
       el.addEventListener("dragend", () => {
         el.removeAttribute("data-dragging");
+        opts.onDragStateChange?.(false);
       });
     }
     const cover = galEl(doc, "div");
@@ -11990,12 +12371,23 @@ ${REMINDERS_CARD_CSS}`;
       });
       s.addEventListener("click", (ev) => {
         ev.stopPropagation();
+        const prev = currentRating;
         const next = currentRating === k ? 0 : k;
         currentRating = next;
         rateFloat.removeAttribute("data-hover");
         rateFloat.removeAttribute("data-clear-hint");
         syncCardStars(next);
-        void setItemRating(card.item, next, opts.ratingStorage).then(() => opts.onRated());
+        void setItemRating(card.item, next, opts.ratingStorage).then((ok) => {
+          if (!ok) {
+            currentRating = prev;
+            syncCardStars(prev);
+            return;
+          }
+          opts.onRated();
+        }, () => {
+          currentRating = prev;
+          syncCardStars(prev);
+        });
       });
       starEls.push(s);
       rateFloat.appendChild(s);
@@ -13101,7 +13493,10 @@ ${REMINDERS_CARD_CSS}`;
       estimateHeight,
       measurements: opts.measurements,
       columns: colSpecs,
-      createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue)),
+      createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), (dragging) => {
+        notifyGalleryCoverScroll(dragging);
+        layoutRef?.setDragging(dragging);
+      }),
       onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
       onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl)
     });
@@ -13205,6 +13600,7 @@ ${REMINDERS_CARD_CSS}`;
         readingSelection: { itemID: 0 },
         columnOrders: /* @__PURE__ */ new Map(),
         measurements: /* @__PURE__ */ new Map(),
+        measureSig: "",
         tbGroup: null,
         btnGallery: null,
         btnHub: null,
@@ -13362,6 +13758,12 @@ ${REMINDERS_CARD_CSS}`;
       if (!doc || !panel || !st.open) return;
       const prevScrollTop = panel.querySelector(".zbf-gal-viewport")?.scrollTop || 0;
       const prevScrollLeft = panel.querySelector(".zbf-gal-viewport")?.scrollLeft || 0;
+      const prevColScroll = /* @__PURE__ */ new Map();
+      panel.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((colNode) => {
+        const k = colNode.dataset.colKey;
+        const stTop = colNode.querySelector(".zbf-gal-col-body")?.scrollTop || 0;
+        if (k && stTop > 0) prevColScroll.set(k, stTop);
+      });
       this.disposeViewport(st);
       const zh = this.isZh();
       const density = this.kernel.prefs.get("visualNotes.gallery.cardDensity") === "compact" ? "compact" : "comfortable";
@@ -13370,6 +13772,9 @@ ${REMINDERS_CARD_CSS}`;
       const ratingStorage = normalizeRatingStorage(this.kernel.prefs.get("visualNotes.ratingStorage"));
       const cardWidth = Number(this.kernel.prefs.get("visualNotes.gallery.cardWidth")) || 220;
       const coverHeight = Number(this.kernel.prefs.get("visualNotes.gallery.coverHeight")) || 0;
+      const nextMeasureSig = `${cardWidth}|${coverHeight}|${density}|${showBrief ? 1 : 0}`;
+      if (st.measureSig && st.measureSig !== nextMeasureSig) st.measurements.clear();
+      st.measureSig = nextMeasureSig;
       panel.setAttribute("data-density", density);
       panel.style.setProperty("--zbf-card-width", `${cardWidth}px`);
       panel.style.setProperty("--zbf-cover-height", coverHeight > 0 ? `${coverHeight}px` : "auto");
@@ -13402,13 +13807,14 @@ ${REMINDERS_CARD_CSS}`;
           excludedTag,
           ratingStorage,
           syncZoteroTagColor: Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")),
-          makeCard: (c, draggable) => renderGalleryCardElement({
+          makeCard: (c, draggable, onDragStateChange) => renderGalleryCardElement({
             doc,
             card: c,
             selected: st.selectedIDs.has(c.itemID),
             showBrief,
             ratingStorage,
             draggable,
+            onDragStateChange,
             onSelect: (picked, _el, ev) => {
               const order = st.layout?.orderIDs || sorted.map((x) => x.itemID);
               if (ev.shiftKey && st.anchorItemID && order.includes(st.anchorItemID)) {
@@ -13529,6 +13935,13 @@ ${REMINDERS_CARD_CSS}`;
       }
       if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
       if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
+      if (prevColScroll.size) {
+        bodyViewport.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((colNode) => {
+          const stTop = prevColScroll.get(colNode.dataset.colKey || "");
+          const bodyEl = colNode.querySelector(".zbf-gal-col-body");
+          if (stTop && bodyEl) bodyEl.scrollTop = stTop;
+        });
+      }
       st.layout?.refresh();
       activateCovers?.();
     }
@@ -13571,7 +13984,7 @@ ${REMINDERS_CARD_CSS}`;
           onItemChange: ({ item, setEnabled, setEditable }) => {
             const valid = Boolean(item && !item.deleted && (item.isRegularItem?.() || item.isAttachment?.()));
             setEnabled?.(valid);
-            setEditable?.(Boolean(valid && (item?.editable ?? true)));
+            setEditable?.(Boolean(valid && (this.dataSource ? true : isItemWritable(item))));
           }
         });
         if (typeof rowID === "string" && rowID) {
@@ -13651,7 +14064,7 @@ ${REMINDERS_CARD_CSS}`;
     const fill = vcEl(doc, "span");
     fill.className = "zbf-read-bar-fill";
     fill.style.width = `${Math.max(8, Math.round(ratio * 100))}%`;
-    fill.style.background = prog.readSeconds >= 900 ? "#d97706" : prog.readSeconds >= 180 ? "#2563eb" : "#0d9488";
+    fill.style.backgroundColor = prog.readSeconds >= 900 ? "#d97706" : prog.readSeconds >= 180 ? "#2563eb" : "#0d9488";
     bar.appendChild(fill);
     chip.appendChild(bar);
     if (durText && pageText) {
@@ -13710,7 +14123,7 @@ ${zh ? "点击查看页级停留热力柱并直跳 PDF 页码" : "Click for page
       const seg = vcEl(doc, "span");
       seg.className = "zbf-ann-seg";
       seg.style.flexGrow = String(b.count);
-      seg.style.background = b.hex;
+      seg.style.backgroundColor = b.hex;
       stack.appendChild(seg);
     }
     const dots = vcEl(doc, "span");
@@ -13720,7 +14133,7 @@ ${zh ? "点击查看页级停留热力柱并直跳 PDF 页码" : "Click for page
       dItem.className = "zbf-ann-dot-item";
       const dot = vcEl(doc, "span");
       dot.className = "zbf-ann-dot";
-      dot.style.background = b.hex;
+      dot.style.backgroundColor = b.hex;
       const lbl = vcEl(doc, "span");
       lbl.className = "zbf-ann-dot-lbl";
       lbl.textContent = b.label;
@@ -13823,6 +14236,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       this.dataSource = source;
     }
     getDisplayForItem(item) {
+      if (!item || item.deleted || typeof item.isRegularItem === "function" && !item.isRegularItem()) return "";
       return readItemRemarkWithFallback(item, this.dataSource);
     }
     register() {
@@ -13869,6 +14283,9 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
     }
     setDataSource(source) {
       this.dataSource = source;
+    }
+    isReadTimeActive() {
+      return this.activeReadTime && this.registeredKeys.size > 0;
     }
     syncColumns() {
       const wantRead = Boolean(this.kernel.prefs.get("workspace.readingColumn.enable"));
@@ -14034,12 +14451,33 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
   };
 
   // src/domains/visual-notes/status-rating-columns.ts
-  function registerColumnSafe(registeredKeys, descriptor) {
+  function registerColumnSafe(registeredKeys, descriptor, isActive, onFailed) {
     const manager = globalThis.Zotero?.ItemTreeManager;
-    const key = manager?.registerColumn?.(descriptor);
-    if (typeof key !== "string" || !key) return false;
-    registeredKeys.add(key);
-    return true;
+    const regFn = manager?.registerColumn || manager?.registerColumns;
+    if (typeof regFn !== "function") return false;
+    try {
+      const res = regFn.call(manager, descriptor);
+      const recordKey = (val) => {
+        let added = false;
+        for (const k of Array.isArray(val) ? val : [val]) {
+          if (typeof k === "string" && k) {
+            registeredKeys.add(k);
+            added = true;
+          }
+        }
+        if (!added) onFailed();
+        else if (!isActive() && registeredKeys.size) unregisterAllSafe(registeredKeys);
+      };
+      if (res && typeof res.then === "function") {
+        void res.then(recordKey, () => onFailed());
+      } else {
+        if (typeof res !== "string" || !res) return false;
+        registeredKeys.add(res);
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
   function unregisterAllSafe(registeredKeys) {
     if (!registeredKeys.size) return;
@@ -14201,6 +14639,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           span.appendChild(trigger);
           return span;
         }
+      }, () => this.activeStatus, () => {
+        this.activeStatus = false;
       });
     }
     registerRatingColumn() {
@@ -14257,6 +14697,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
             bindInstantCellPress(star, () => {
               const selected = win?.ZoteroPane?.getSelectedItems?.() || [];
               const targets = captureBatchTargets(selected, item);
+              const prev = current;
               const next = current === k ? 0 : k;
               current = next;
               wrap.removeAttribute("data-hover");
@@ -14264,14 +14705,19 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
               syncVisual(next);
               const storage = this.ratingStorage();
               void (async () => {
+                let anySaved = false;
                 try {
                   for (const t of targets) {
                     try {
-                      await setItemRating(t, next, storage);
+                      if (await setItemRating(t, next, storage)) anySaved = true;
                     } catch {
                     }
                   }
                 } finally {
+                  if (!anySaved) {
+                    current = prev;
+                    syncVisual(prev);
+                  }
                   this.notifyApplied();
                 }
               })();
@@ -14284,6 +14730,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
           span.appendChild(fit);
           return span;
         }
+      }, () => this.activeRating, () => {
+        this.activeRating = false;
       });
     }
   };
@@ -14556,7 +15004,9 @@ ${summary}` : summary;
         } catch {
         }
         try {
-          win?.ZoteroPane?.itemsView?.tree?.invalidate?.();
+          const view = win?.ZoteroPane?.itemsView;
+          view?.invalidateRowCache?.(true);
+          view?.tree?.invalidate?.();
         } catch {
         }
       }
@@ -14634,19 +15084,11 @@ ${summary}` : summary;
       this.services = services;
       this.remarkColumn = new RemarkColumnController(kernel);
       this.readingColumns = new ReadingColumnsController(kernel, void 0, {
-        onOpenItem: (itemID) => {
-          this.kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true });
-        },
-        onOpenMatrix: (win, title, itemIDs) => {
-          this.openMatrixModal(win, title, itemIDs);
-        },
-        onOpenHub: (win) => {
-          this.openCollectionHub(win, "annotations");
-        }
+        onOpenItem: (itemID) => this.kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true }),
+        onOpenMatrix: (win, title, itemIDs) => this.openMatrixModal(win, title, itemIDs),
+        onOpenHub: (win) => this.openCollectionHub(win, "annotations")
       });
-      this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => {
-        this.galleryBoard.refreshWindows();
-      });
+      this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => this.galleryBoard.refreshWindows());
       this.infoBriefNote = new InfoBriefNoteController(kernel, () => {
         this.remarkColumn.refresh();
         this.galleryBoard.refreshWindows();
@@ -14715,6 +15157,8 @@ ${summary}` : summary;
             "visualNotes.gallery.coverHeight",
             "visualNotes.gallery.showBriefNote",
             "visualNotes.collectionHub.enable",
+            "visualNotes.collectionHub.ignoreFigureTable",
+            "visualNotes.collectionHub.preferCommentOverQuote",
             "workspace.remarkColumn.enable",
             "workspace.readingColumn.enable",
             "workspace.readingTitleHeatmap.enable",
@@ -14723,13 +15167,15 @@ ${summary}` : summary;
             "workspace.annotationColumn.enable",
             "inspector.annotations.popupLabelsEnable",
             "inspector.annotations.colorLabels",
-            "inspector.annotations.enabledColors"
+            "inspector.annotations.enabledColors",
+            "wordCite.citationTags.text"
           ],
           (key) => {
             if (!this.active) return;
             this.syncFeatureStates();
             if (key === "visualNotes.statusCustomColors") {
               loadCustomStatusColors(this.kernel.prefs.get("visualNotes.statusCustomColors"));
+              clearGalleryCardCache();
               this.statusRatingColumns.refreshColumns();
               this.galleryBoard.refreshWindows();
             }
@@ -14745,8 +15191,13 @@ ${summary}` : summary;
             if (key === "visualNotes.collectionHub.enable" && !this.kernel.prefs.get(key)) {
               for (const win of this.windows) closeHubPage(win);
             }
-            if (key === "visualNotes.ratingStorage") {
+            if (key === "visualNotes.ratingStorage" || key === "wordCite.citationTags.text") {
+              clearGalleryCardCache();
               this.statusRatingColumns.refreshColumns();
+              this.galleryBoard.refreshWindows();
+            }
+            if (key === "visualNotes.collectionHub.ignoreFigureTable" || key === "visualNotes.collectionHub.preferCommentOverQuote") {
+              this.galleryBoard.refreshWindows();
             }
           }
         )
@@ -14784,8 +15235,14 @@ ${summary}` : summary;
       this.disposables.add(
         this.kernel.notifier.subscribe(["item"], ({ event, ids }) => {
           if (!this.active) return;
-          if (event === "modify" || event === "add" || event === "trash" || event === "restore") {
-            this.scheduleLibraryRefresh(50, resolveAffectedVisualItemIDs(ids));
+          if (event === "modify" || event === "trash" || event === "delete") {
+            for (const raw of ids) {
+              const n = Number(raw);
+              if (n > 0) invalidatePdfCover(n);
+            }
+          }
+          if (event === "modify" || event === "add" || event === "trash" || event === "restore" || event === "delete") {
+            this.scheduleLibraryRefresh(50, event === "delete" ? void 0 : resolveAffectedVisualItemIDs(ids));
           }
         })
       );
@@ -14824,17 +15281,25 @@ ${summary}` : summary;
     }
     refreshLibraryViews(affectedIDs, readingOnly = false) {
       if (!this.active) return;
+      if (readingOnly) {
+        if (this.readingColumns.isReadTimeActive()) {
+          try {
+            globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
+          } catch {
+          }
+        }
+        this.titleHeatmap.refreshWindows();
+        return;
+      }
       if (this.refreshTimer !== null) {
         clearTimeout(this.refreshTimer);
         this.refreshTimer = null;
       }
       this.readingColumns.clearCache(affectedIDs);
-      if (!readingOnly) {
-        this.statusRatingColumns.clearCache(affectedIDs);
-        clearGalleryCardCache(affectedIDs);
-        clearExtraRemarkCache(affectedIDs);
-        this.infoBriefNote.refresh();
-      }
+      this.statusRatingColumns.clearCache(affectedIDs);
+      clearGalleryCardCache(affectedIDs);
+      clearExtraRemarkCache(affectedIDs);
+      this.infoBriefNote.refresh();
       this.titleHeatmap.refreshWindows();
       this.galleryBoard.refreshWindows();
     }
@@ -14855,7 +15320,7 @@ ${summary}` : summary;
       });
     }
     openMatrixModal(win, title, itemIDs) {
-      if (!this.active) return;
+      if (!this.active || !this.kernel.prefs.get("workspace.enableAnnotationMatrix")) return;
       openAnnotationMatrixModal({
         win,
         title,
@@ -14944,7 +15409,7 @@ ${summary}` : summary;
     if (ref._isBridgeFlowCollection === true || ref._isCiteFlowCollection === true) return true;
     if (typeof ref.key === "string" && ref.key && activeKeys.has(ref.key)) return true;
     const name = String(ref.name || "");
-    if (name && (activeNames?.has(name) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(name))) return true;
+    if (name && activeNames?.has(name)) return true;
     try {
       const rels = ref.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION) || [];
       if (Array.isArray(rels) && rels.some((r) => RECOGNIZED_MARKERS.has(r))) return true;
@@ -15122,6 +15587,7 @@ ${summary}` : summary;
       );
     }
     if (typeof cv._addSortedRow === "function") {
+      const maskRegistry = /* @__PURE__ */ new WeakMap();
       disposers.push(
         runtime.patch(cv, "_addSortedRow", "collectionsView", (orig) => async function(...args) {
           const [objectType, id] = args;
@@ -15137,21 +15603,33 @@ ${summary}` : summary;
               return res;
             }
           }
-          const masked = [];
+          const touched = [];
           for (const row of this._rows || []) {
-            if ((row?.isCollection?.() || row?.type === "collection") && isCitationCollectionRef(row?.ref, activeKeys)) {
+            if (!row || typeof row !== "object") continue;
+            const alreadyMasked = maskRegistry.get(row);
+            if (alreadyMasked) {
+              alreadyMasked.depth += 1;
+              touched.push(row);
+            } else if ((row.isCollection?.() || row.type === "collection") && isCitationCollectionRef(row.ref, activeKeys)) {
               const hasOwn = Object.prototype.hasOwnProperty.call(row, "isCollection");
               const original = row.isCollection;
+              maskRegistry.set(row, { depth: 1, hasOwn, original });
               row.isCollection = () => false;
-              masked.push({ row, hasOwn, original });
+              touched.push(row);
             }
           }
           try {
             return await orig.apply(this, args);
           } finally {
-            for (const { row, hasOwn, original } of masked) {
-              if (hasOwn) row.isCollection = original;
-              else delete row.isCollection;
+            for (const row of touched) {
+              const entry = maskRegistry.get(row);
+              if (!entry) continue;
+              entry.depth -= 1;
+              if (entry.depth <= 0) {
+                maskRegistry.delete(row);
+                if (entry.hasOwn) row.isCollection = entry.original;
+                else delete row.isCollection;
+              }
             }
           }
         })
@@ -15173,6 +15651,7 @@ ${summary}` : summary;
     sessionCollections = /* @__PURE__ */ new Map();
     trackedCollectionKeys = /* @__PURE__ */ new Set();
     windowDisposers = /* @__PURE__ */ new Map();
+    pendingTimers = /* @__PURE__ */ new Map();
     syncQueue = Promise.resolve();
     kernel;
     constructor(kernel) {
@@ -15218,15 +15697,16 @@ ${summary}` : summary;
       return names;
     }
     attachWindow(win) {
-      if (!win || this.windowDisposers.has(win)) return;
+      if (!win || this.windowDisposers.has(win) || this.pendingTimers.has(win)) return;
       const iconURI = this.kernel.info.rootURI ? `${this.kernel.info.rootURI}assets/word.svg` : void 0;
       const tryPatch = (attempt = 0) => {
+        this.pendingTimers.delete(win);
         if (win.closed || this.windowDisposers.has(win)) return;
         const cv = win?.ZoteroPane?.collectionsView;
         if (!cv) {
           if (attempt < 120) {
             const schedule = typeof win.setTimeout === "function" ? win.setTimeout.bind(win) : setTimeout;
-            schedule(() => tryPatch(attempt + 1), 50);
+            this.pendingTimers.set(win, schedule(() => tryPatch(attempt + 1), 50));
           }
           return;
         }
@@ -15244,6 +15724,11 @@ ${summary}` : summary;
       tryPatch();
     }
     detachWindow(win) {
+      const timer = this.pendingTimers.get(win);
+      if (timer !== void 0) {
+        this.pendingTimers.delete(win);
+        clearTimeout(timer);
+      }
       const dispose = this.windowDisposers.get(win);
       if (!dispose) return;
       this.windowDisposers.delete(win);
@@ -15311,45 +15796,54 @@ ${summary}` : summary;
       }
       await col.eraseTx();
     }
-    async purgeStaleCollections() {
-      const host2 = globalThis.Zotero;
-      const api = host2?.Collections;
-      const libraryID = host2?.Libraries?.userLibraryID;
-      if (!libraryID || typeof api?.getByLibraryAndKey !== "function") return;
-      for (const key of [...this.trackedCollectionKeys]) {
-        try {
-          if (this.getSessionIdByCollectionKey(key)) continue;
-          const col = api.getByLibraryAndKey(libraryID, key);
-          await this.eraseOwnedLeaf(col);
-          this.trackedCollectionKeys.delete(key);
-        } catch (err) {
-          this.kernel.logger.error("word-cite:purge-collection", err);
+    purgeStaleCollections() {
+      const run = this.syncQueue.then(async () => {
+        const host2 = globalThis.Zotero;
+        const api = host2?.Collections;
+        const libraryID = host2?.Libraries?.userLibraryID;
+        if (!libraryID || typeof api?.getByLibraryAndKey !== "function" && typeof api?.getByLibraryAndKeyAsync !== "function") return;
+        for (const key of [...this.trackedCollectionKeys]) {
+          try {
+            if (this.getSessionIdByCollectionKey(key)) continue;
+            const col = api.getByLibraryAndKey?.(libraryID, key) || await api.getByLibraryAndKeyAsync?.(libraryID, key);
+            if (col) await this.eraseOwnedLeaf(col);
+            if (col || typeof api.getByLibraryAndKeyAsync === "function") this.trackedCollectionKeys.delete(key);
+          } catch (err) {
+            this.kernel.logger.error("word-cite:purge-collection", err);
+          }
         }
-      }
-      this.savePersistedKeys();
+        this.savePersistedKeys();
+      });
+      this.syncQueue = run.catch((err) => this.kernel.logger.error("word-cite:purge-collection", err));
+      return run;
     }
     sync(sessions) {
       this.syncQueue = this.syncQueue.then(() => this.runSync(sessions)).catch((err) => this.kernel.logger.error("word-cite:collections", err));
     }
-    async clearAll() {
-      await this.syncQueue;
-      for (const dispose of this.windowDisposers.values()) {
-        try {
-          dispose();
-        } catch {
+    clearAll() {
+      const run = this.syncQueue.then(async () => {
+        for (const timer of this.pendingTimers.values()) clearTimeout(timer);
+        this.pendingTimers.clear();
+        for (const dispose of this.windowDisposers.values()) {
+          try {
+            dispose();
+          } catch {
+          }
         }
-      }
-      this.windowDisposers.clear();
-      for (const col of this.sessionCollections.values()) {
-        try {
-          await this.eraseOwnedLeaf(col);
-          if (col?.key) this.trackedCollectionKeys.delete(col.key);
-        } catch (err) {
-          this.kernel.logger.error("word-cite:erase-collection", err);
+        this.windowDisposers.clear();
+        for (const col of this.sessionCollections.values()) {
+          try {
+            await this.eraseOwnedLeaf(col);
+            if (col?.key) this.trackedCollectionKeys.delete(col.key);
+          } catch (err) {
+            this.kernel.logger.error("word-cite:erase-collection", err);
+          }
         }
-      }
-      this.sessionCollections.clear();
-      this.savePersistedKeys();
+        this.sessionCollections.clear();
+        this.savePersistedKeys();
+      });
+      this.syncQueue = run.catch((err) => this.kernel.logger.error("word-cite:erase-collection", err));
+      return run;
     }
     async runSync(sessions) {
       const enabled = this.kernel.prefs.get("wordCite.collections.enable");
@@ -15510,21 +16004,25 @@ ${summary}` : summary;
       try {
         const res = regFn.call(manager, descriptor);
         const recordKey = (val) => {
-          const list = Array.isArray(val) ? val : [val];
-          for (const k of list) {
-            if (typeof k === "string" && k) this.registeredKeys.add(k);
+          let added = false;
+          for (const k of Array.isArray(val) ? val : [val]) {
+            if (typeof k === "string" && k) {
+              this.registeredKeys.add(k);
+              added = true;
+            }
           }
-          if (!this.active && this.registeredKeys.size) {
-            this.flushUnregister();
-          }
+          if (!added) this.active = false;
+          else if (!this.active && this.registeredKeys.size) this.flushUnregister();
         };
         if (res && typeof res.then === "function") {
-          void res.then(recordKey).catch(() => {
+          void res.then(recordKey, () => {
+            this.active = false;
           });
         } else {
           recordKey(res);
         }
       } catch {
+        this.active = false;
       }
     }
     unregister() {
@@ -15686,7 +16184,7 @@ ${summary}` : summary;
         }
         await citation.prepareForEditing();
         let fieldIndex = -1;
-        if (!this.data.prefs.delayCitationUpdates || !Object.keys(this.citationsByItemID).length) {
+        if (!this.data?.prefs?.delayCitationUpdates || !Object.keys(this.citationsByItemID || {}).length) {
           const findFieldIndex = this.getFields().then(async (fields) => {
             for (const [index, candidate] of fields.entries()) {
               if (await candidate.equals(activeField?._field)) {
@@ -15694,7 +16192,7 @@ ${summary}` : summary;
                 return index;
               }
             }
-            throw new Error("Could not locate the Word citation field");
+            return -1;
           });
           const [fieldResult, updateResult] = await Promise.allSettled([findFieldIndex, this.updateFromDocument(0)]);
           if (fieldResult.status === "rejected") throw fieldResult.reason;
@@ -15716,7 +16214,7 @@ ${summary}` : summary;
         }
         for (const cit of citations) {
           const idx = cit.fieldIndex ?? cit._fieldIndex;
-          if (refreshedFields) {
+          if (refreshedFields && refreshedFields[idx]) {
             const rep = new integration.CitationField(refreshedFields[idx]);
             if ("field" in cit) cit.field = rep;
             else cit._field = rep;
@@ -15785,6 +16283,7 @@ ${summary}` : summary;
   // src/domains/word-cite/drag-cite-controller.ts
   var DragCiteController = class {
     windowDisposers = /* @__PURE__ */ new Map();
+    pendingTimers = /* @__PURE__ */ new Map();
     activeDragItems = null;
     activeDragStartedAt = 0;
     kernel;
@@ -15797,12 +16296,13 @@ ${summary}` : summary;
       this.onInserted = onInserted;
     }
     attachWindow(win) {
-      if (this.windowDisposers.has(win)) return;
+      if (this.windowDisposers.has(win) || this.pendingTimers.has(win)) return;
       const tryBind = (attempt = 0) => {
+        this.pendingTimers.delete(win);
         if (win.closed || this.windowDisposers.has(win)) return;
         const itemsView = win.ZoteroPane?.itemsView;
         if (!itemsView && attempt < 120 && typeof win.setTimeout === "function") {
-          win.setTimeout(() => tryBind(attempt + 1), 50);
+          this.pendingTimers.set(win, win.setTimeout(() => tryBind(attempt + 1), 50));
           return;
         }
         this.bindWindowImmediate(win, itemsView);
@@ -15812,7 +16312,7 @@ ${summary}` : summary;
     bindWindowImmediate(win, itemsView) {
       if (this.windowDisposers.has(win)) return;
       const disposers = [];
-      if (itemsView && typeof itemsView.onDragStart === "function" && (this.win32.supportsNativeWin32() || globalThis.Zotero?.isMac)) {
+      if (itemsView && typeof itemsView.onDragStart === "function" && this.win32.supportsNativeWin32()) {
         const unpatch = this.kernel.runtime.patch(
           itemsView,
           "onDragStart",
@@ -15870,6 +16370,14 @@ ${summary}` : summary;
       });
     }
     detachWindow(win) {
+      const timer = this.pendingTimers.get(win);
+      if (timer !== void 0) {
+        this.pendingTimers.delete(win);
+        try {
+          win.clearTimeout?.(timer);
+        } catch {
+        }
+      }
       const disposer = this.windowDisposers.get(win);
       if (!disposer) return;
       this.windowDisposers.delete(win);
@@ -15878,7 +16386,7 @@ ${summary}` : summary;
     async handleDropEnd(items) {
       if (!this.kernel.prefs.get("wordCite.dragCite.enable")) return "unavailable";
       const probe = this.win32.probeCursorWordDropTarget();
-      if (probe.status !== "word-confirmed" && !globalThis.Zotero?.isMac) {
+      if (probe.status !== "word-confirmed") {
         if (probe.status === "unknown") {
           this.notifyHint(tLocale(
             "未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。",
@@ -15910,6 +16418,13 @@ ${summary}` : summary;
       return result;
     }
     disposeAll() {
+      for (const [win, timer] of this.pendingTimers.entries()) {
+        try {
+          win.clearTimeout?.(timer);
+        } catch {
+        }
+      }
+      this.pendingTimers.clear();
       for (const disposer of this.windowDisposers.values()) disposer();
       this.windowDisposers.clear();
     }
@@ -15994,17 +16509,26 @@ ${summary}` : summary;
     return { key, doi, fpAlias, aliases };
   }
   function isForeignUserItemUri(uri, zoteroObj) {
-    const userMatch = uri.match(/^https?:\/\/zotero\.org\/users\/(\d+)\/items\/([A-Za-z0-9]+)\/?$/i);
-    if (userMatch) {
+    const clean = String(uri || "").trim().replace(/[?#].*$/, "").replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
+    const match = clean.match(/^http:\/\/zotero\.org\/(?:users\/local\/([A-Za-z0-9_-]+)|users\/(\d+)|groups\/(\d+))\/items\/([A-Za-z0-9_-]+)$/i);
+    if (!match) return true;
+    const [, localKey, userId, groupId] = match;
+    if (userId) {
       const currentUid = typeof zoteroObj?.Users?.getCurrentUserID === "function" ? String(zoteroObj.Users.getCurrentUserID() || "").trim() : "";
-      return !currentUid || userMatch[1] !== currentUid;
+      return !currentUid || userId !== currentUid;
     }
-    const localMatch = uri.match(/^https?:\/\/zotero\.org\/users\/local\/([A-Za-z0-9]+)\/items\/([A-Za-z0-9]+)\/?$/i);
-    if (localMatch) {
+    if (localKey) {
       const ownLocal = typeof zoteroObj?.Users?.getLocalUserKey === "function" ? String(zoteroObj.Users.getLocalUserKey() || "").trim() : "";
-      return !ownLocal || localMatch[1] !== ownLocal;
+      return !ownLocal || localKey !== ownLocal;
     }
-    return false;
+    if (groupId) {
+      if (typeof zoteroObj?.Groups?.getLibraryIDFromGroupID === "function") {
+        const libId = Number(zoteroObj.Groups.getLibraryIDFromGroupID(Number(groupId)) ?? 0);
+        return !(Number.isSafeInteger(libId) && libId > 0);
+      }
+      return typeof zoteroObj?.URI?.getURIItemID !== "function" && typeof zoteroObj?.URI?.getURIItemLibraryKey !== "function";
+    }
+    return true;
   }
   var relinkedUriMap = /* @__PURE__ */ new Map();
   function rememberRelinkedItemUris(uris, itemID) {
@@ -16021,7 +16545,11 @@ ${summary}` : summary;
     if (!uris.length || !hostItems) return 0;
     const uriSvc = zoteroObj?.URI;
     for (const uri of uris) {
-      if (!uri || isForeignUserItemUri(uri, zoteroObj)) continue;
+      if (!uri) continue;
+      const norm = uri.trim().replace(/[?#].*$/, "").replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
+      const mapped = relinkedUriMap.get(norm);
+      if (mapped && hostItems.get?.(mapped)) return mapped;
+      if (isForeignUserItemUri(uri, zoteroObj)) continue;
       try {
         if (typeof uriSvc?.getURIItemID === "function") {
           const id = Number(uriSvc.getURIItemID(uri));
@@ -16041,9 +16569,6 @@ ${summary}` : summary;
             }
           }
         }
-        const norm = uri.replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
-        const mapped = relinkedUriMap.get(norm);
-        if (mapped && hostItems.get?.(mapped)) return mapped;
       } catch {
       }
     }
@@ -16132,16 +16657,14 @@ ${summary}` : summary;
     }
     return ordinals;
   }
-  function lookupKnownOrdinal(ci, citeprocMap, resolvedItemID, rawData) {
+  function lookupKnownOrdinal(ci, citeprocMap, resolvedItemID, rawData, skipRawItemId = false) {
     const explicit = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
     if (Number.isSafeInteger(explicit) && explicit > 0) return explicit;
     if (!citeprocMap.size) return void 0;
-    const candidates = [
-      ci?.id !== void 0 && ci?.id !== null ? String(ci.id).trim() : "",
-      ci?.itemID !== void 0 && ci?.itemID !== null ? String(ci.itemID).trim() : "",
-      resolvedItemID > 0 ? String(resolvedItemID) : "",
-      rawData?.id !== void 0 && rawData?.id !== null ? String(rawData.id).trim() : ""
-    ];
+    const rawCiId = ci?.id !== void 0 && ci?.id !== null ? String(ci.id).trim() : "";
+    const rawItemId = ci?.itemID !== void 0 && ci?.itemID !== null ? String(ci.itemID).trim() : "";
+    const rawDataId = rawData?.id !== void 0 && rawData?.id !== null ? String(rawData.id).trim() : "";
+    const candidates = skipRawItemId ? [resolvedItemID > 0 ? String(resolvedItemID) : "", rawDataId && rawDataId !== rawCiId && rawDataId !== rawItemId ? rawDataId : ""] : [rawCiId, rawItemId, resolvedItemID > 0 ? String(resolvedItemID) : "", rawDataId];
     for (const key of candidates) {
       if (!key) continue;
       const seq = citeprocMap.get(key);
@@ -16183,21 +16706,33 @@ ${summary}` : summary;
     "paper-conference": "conferencePaper",
     book: "book",
     chapter: "bookSection",
+    "entry-encyclopedia": "encyclopediaArticle",
+    "entry-dictionary": "dictionaryEntry",
     thesis: "thesis",
     report: "report",
     webpage: "webpage",
+    "post-weblog": "blogPost",
+    speech: "presentation",
     patent: "patent",
     manuscript: "manuscript",
     software: "computerProgram",
     dataset: "dataset",
+    legislation: "statute",
+    bill: "bill",
+    legal_case: "case",
+    standard: "standard",
+    motion_picture: "film",
+    broadcast: "tvBroadcast",
+    interview: "interview",
     article: "preprint",
     document: "document"
   };
   function normCompareToken(raw) {
     return String(raw ?? "").toLowerCase().replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
   }
-  function mapCslCreators(itemData) {
+  function mapCslCreators(itemData, itemType) {
     const creators = [];
+    const primaryRole = itemType === "patent" ? "inventor" : itemType === "computerProgram" ? "programmer" : itemType === "presentation" ? "presenter" : itemType === "film" || itemType === "tvBroadcast" ? "director" : "author";
     const pushRole = (list, creatorType) => {
       if (!Array.isArray(list)) return;
       for (const entry of list) {
@@ -16208,8 +16743,12 @@ ${summary}` : summary;
           creators.push({ lastName: literal2, creatorType, fieldMode: 1 });
           continue;
         }
-        const family = String(rec.family || "").trim();
-        const given = String(rec.given || "").trim();
+        const nonDrop = String(rec["non-dropping-particle"] || "").trim();
+        const drop = String(rec["dropping-particle"] || "").trim();
+        const rawFamily = String(rec.family || "").trim();
+        const rawGiven = String(rec.given || "").trim();
+        const family = [nonDrop, rawFamily].filter(Boolean).join(" ");
+        const given = [rawGiven, drop].filter(Boolean).join(" ");
         if (family || given) {
           creators.push({
             lastName: family || given,
@@ -16219,9 +16758,10 @@ ${summary}` : summary;
         }
       }
     };
-    pushRole(itemData.author, "author");
+    pushRole(itemData.author, primaryRole);
     pushRole(itemData.editor, "editor");
     pushRole(itemData.translator, "translator");
+    pushRole(itemData.director, itemType === "film" || itemType === "tvBroadcast" ? "director" : "contributor");
     return creators;
   }
   function formatCslIssuedDate(itemData) {
@@ -16304,11 +16844,12 @@ ${summary}` : summary;
         const raw = await runFieldSearch("DOI", rawDoi);
         normalized.push(...raw);
       }
-      return [...new Map(normalized.map((item) => [item.id, item])).values()];
+      const uniqueByDoi = [...new Map(normalized.map((item) => [item.id, item])).values()];
+      if (uniqueByDoi.length > 0) return uniqueByDoi;
     }
     const title = String(cslData?.title || "").trim();
     if (!cslData || !buildBatchMetadataKey(libraryID, cslData)) return [];
-    return (await runFieldSearch("title", title)).filter((item) => matchesExactTitleAuthorYear(item, cslData, ""));
+    return (await runFieldSearch("title", title)).filter((item) => matchesExactTitleAuthorYear(item, cslData, doi));
   }
   function setFieldIfEmpty(item, field, value) {
     if (typeof item?.setField !== "function") return;
@@ -16323,7 +16864,7 @@ ${summary}` : summary;
   function populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, zoteroObj) {
     if (typeof zoteroObj?.Utilities?.itemFromCSLJSON === "function") {
       try {
-        zoteroObj.Utilities.itemFromCSLJSON(item, { type: String(csl.type || "article-journal"), ...csl });
+        zoteroObj.Utilities.itemFromCSLJSON(item, { ...csl, type: String(csl.type || "article-journal") });
       } catch {
       }
     }
@@ -16406,7 +16947,7 @@ ${summary}` : summary;
     let selfUri = "";
     if (targetItem.key && typeof zoteroObj?.URI?.getItemURI === "function") {
       try {
-        selfUri = String(zoteroObj.URI.getItemURI(targetItem) || "").trim();
+        selfUri = String(zoteroObj.URI.getItemURI(targetItem) || "").trim().replace(/^https:\/\/zotero\.org\//i, "http://zotero.org/").replace(/\/+$/, "");
       } catch {
       }
     }
@@ -16491,13 +17032,13 @@ ${summary}` : summary;
         foreignSkipped: relRes2.foreignSkipped
       };
     }
-    const creators = data ? mapCslCreators(data) : [];
+    const rawType = String(data?.type || "article-journal").trim();
+    const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : "journalArticle";
+    const creators = data ? mapCslCreators(data, itemType) : [];
     if (!hasRecoverableCslMetadata(data, creators.length, doi)) {
       return { outcome: "failed", relinked: false, foreignSkipped: false };
     }
     const csl = data;
-    const rawType = String(csl.type || "article-journal").trim();
-    const itemType = Object.hasOwn(CSL_TO_ZOTERO_TYPE, rawType) ? CSL_TO_ZOTERO_TYPE[rawType] : "journalArticle";
     const item = new ItemCtor(itemType);
     item.libraryID = targetLibraryID;
     populateZoteroItemFromCsl(item, itemType, csl, orphan, creators, ZoteroObj);
@@ -16574,6 +17115,18 @@ ${summary}` : summary;
               }
             }
             await saveInTx(existing);
+            const childIDs = [
+              ...typeof existing.getAttachments === "function" ? existing.getAttachments(true) || [] : [],
+              ...typeof existing.getNotes === "function" ? existing.getNotes(true) || [] : []
+            ];
+            for (const cid of childIDs) {
+              const child = typeof hostItems?.getAsync === "function" ? await hostItems.getAsync(cid).catch(() => null) : hostItems?.get?.(cid);
+              if (child && child.deleted === true) {
+                child.deleted = false;
+                await saveInTx(child).catch(() => {
+                });
+              }
+            }
             restoredIDs.add(orphan.itemID);
             pushRecoveredID(Number(existing.id || orphan.itemID));
             restoredCount += 1;
@@ -16717,20 +17270,24 @@ ${summary}` : summary;
       }
       return union;
     }
+    formatCitationHit(hit) {
+      if (!hit) return "";
+      const prefix = `[${hit.ordinal}]`;
+      if (!hit.shortText || hit.shortText === prefix) return prefix;
+      return hit.shortText.startsWith(`${prefix} `) ? hit.shortText : `${prefix} ${hit.shortText}`.trim();
+    }
     getCitationDisplayForItem(itemID, preferredSessionID) {
       if (preferredSessionID && this.sessions.has(preferredSessionID)) {
-        const prefSes = this.sessions.get(preferredSessionID);
-        const hit = prefSes.itemCitations.get(itemID);
-        return hit ? `[${hit.ordinal}] ${hit.shortText}`.trim() : "";
+        return this.formatCitationHit(this.sessions.get(preferredSessionID).itemCitations.get(itemID));
       }
       const active = this.getActiveSession();
       if (active) {
         const hit = active.itemCitations.get(itemID);
-        if (hit) return `[${hit.ordinal}] ${hit.shortText}`.trim();
+        if (hit) return this.formatCitationHit(hit);
       }
       for (const ses of this.sessions.values()) {
         const hit = ses.itemCitations.get(itemID);
-        if (hit) return `[${hit.ordinal}] ${hit.shortText}`.trim();
+        if (hit) return this.formatCitationHit(hit);
       }
       return "";
     }
@@ -16778,16 +17335,25 @@ ${summary}` : summary;
      */
     syncForegroundActiveSession(overrideTitle) {
       if (this.sessions.size <= 1) return false;
-      const fgTitle = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim().toLowerCase();
-      if (!fgTitle) return false;
-      const matches = [];
+      const rawFg = (overrideTitle ?? this.win32.probeForegroundWordTitle()).trim();
+      if (!rawFg) return false;
+      const docExtRe = /\.(?:docx|docm|doc|dotx|dotm|rtf|odt)$/i;
+      const fgBase = extractDocumentBaseName(`window-title:${rawFg}`).toLowerCase();
+      const fgStem = fgBase.replace(docExtRe, "");
+      const fgLower = rawFg.toLowerCase();
+      const exactMatches = [];
+      const fuzzyMatches = [];
       for (const ses of this.sessions.values()) {
         const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
-        const stem = base.replace(/\.(docx?|rtf)$/i, "");
-        if (base && (fgTitle.includes(base) || stem && fgTitle.includes(stem))) {
-          matches.push(ses.sessionID);
+        const stem = base.replace(docExtRe, "");
+        if (!base) continue;
+        if (fgBase === base || fgBase === stem || fgStem && fgStem === stem) {
+          exactMatches.push(ses.sessionID);
+        } else if (fgLower.includes(base) || stem && fgLower.includes(stem)) {
+          fuzzyMatches.push(ses.sessionID);
         }
       }
+      const matches = exactMatches.length > 0 ? exactMatches : fuzzyMatches;
       if (matches.length !== 1) return false;
       if (this.activeSessionID === matches[0]) return false;
       this.activeSessionID = matches[0];
@@ -16861,6 +17427,7 @@ ${summary}` : summary;
 
   // src/domains/word-cite/tag-governance.ts
   var MANAGED_TAG_IDS_PREF = "extensions.zotero.bridgeflow.wordCite.managedTagItemIDs";
+  var defaultResolveItem = (id) => globalThis.Zotero?.Items?.get?.(id);
   var CitationTagGovernance = class {
     managedItemIDs = /* @__PURE__ */ new Set();
     activeTagText;
@@ -16876,18 +17443,21 @@ ${summary}` : summary;
         const raw = String(globalThis.Zotero?.Prefs?.get?.(MANAGED_TAG_IDS_PREF, true) || "");
         if (!raw) return;
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          for (const id of parsed) {
-            const n = Number(id);
-            if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
-          }
+        const ids = Array.isArray(parsed) ? parsed : parsed && Array.isArray(parsed.ids) ? parsed.ids : [];
+        if (parsed && !Array.isArray(parsed) && typeof parsed.tag === "string" && parsed.tag.trim()) {
+          this.activeTagText = this.sanitizeTagText(parsed.tag);
+        }
+        for (const id of ids) {
+          const n = Number(id);
+          if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
         }
       } catch {
       }
     }
     savePersistedIDs() {
       try {
-        globalThis.Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, JSON.stringify([...this.managedItemIDs]), true);
+        const payload = JSON.stringify({ tag: this.activeTagText, ids: [...this.managedItemIDs] });
+        globalThis.Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, payload, true);
       } catch {
       }
     }
@@ -16898,15 +17468,30 @@ ${summary}` : summary;
       const clean = String(raw || "").replace(/[\r\n\x00-\x1f]/g, "").trim().slice(0, 200);
       return clean || "/Citations";
     }
-    syncCitedItems(citedUnion, resolveItem = (id) => globalThis.Zotero?.Items?.get?.(id)) {
-      const snapshotUnion = new Set(citedUnion);
-      const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem));
+    stripAllManagedTags(resolveItem = defaultResolveItem) {
+      const run = this.syncQueue.then(() => this.performSync(/* @__PURE__ */ new Set(), resolveItem, true));
       this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
       return run;
     }
-    async performSync(citedUnion, resolveItem) {
-      const enabled = this.prefs.get("wordCite.citationTags.enable");
+    syncCitedItems(citedUnion, resolveItem = defaultResolveItem) {
+      const snapshotUnion = new Set(citedUnion);
+      const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem, false));
+      this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
+      return run;
+    }
+    async resolveWithAsyncFallback(id, resolveItem) {
+      const syncHit = resolveItem(id);
+      if (syncHit && typeof syncHit.then === "function") return syncHit;
+      if (syncHit) return syncHit;
+      if (resolveItem === defaultResolveItem) {
+        return await globalThis.Zotero?.Items?.getAsync?.(id).catch(() => null) ?? null;
+      }
+      return null;
+    }
+    async performSync(citedUnion, resolveItem, forceDisable = false) {
+      const enabled = !forceDisable && this.prefs.get("wordCite.citationTags.enable");
       const nextTag = this.sanitizeTagText(this.prefs.get("wordCite.citationTags.text"));
+      const userLibID = Number(globalThis.Zotero?.Libraries?.userLibraryID || 0);
       let added = 0;
       let removed = 0;
       const saveItemInTx = async (item) => {
@@ -16920,58 +17505,68 @@ ${summary}` : summary;
         const db = globalThis.Zotero?.DB;
         return typeof db?.executeTransaction === "function" ? db.executeTransaction(work) : work();
       };
-      try {
-        return await runBatch(async () => {
-          if (nextTag !== this.activeTagText) {
-            const prevTag = this.activeTagText;
-            this.activeTagText = nextTag;
-            for (const id of [...this.managedItemIDs]) {
-              const item = resolveItem(id);
-              if (!isItemWritable(item)) continue;
-              if (item.hasTag?.(prevTag)) {
-                item.removeTag?.(prevTag);
-                if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
-                await saveItemInTx(item);
-              }
-            }
-          }
-          if (!enabled) {
-            for (const id of [...this.managedItemIDs]) {
-              const item = resolveItem(id);
-              if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-                item.removeTag?.(this.activeTagText);
-                await saveItemInTx(item);
-                removed++;
-              }
-              this.managedItemIDs.delete(id);
-            }
-            return { added, removed };
-          }
-          for (const id of citedUnion) {
-            const item = resolveItem(id);
+      const stagedManaged = new Set(this.managedItemIDs);
+      let stagedTag = this.activeTagText;
+      const outcome = await runBatch(async () => {
+        if (nextTag !== stagedTag) {
+          const prevTag = stagedTag;
+          stagedTag = nextTag;
+          for (const id of [...stagedManaged]) {
+            const item = await this.resolveWithAsyncFallback(id, resolveItem);
             if (!isItemWritable(item)) continue;
-            if (!item.hasTag?.(this.activeTagText)) {
-              item.addTag?.(this.activeTagText);
+            if (item.hasTag?.(prevTag)) {
+              item.removeTag?.(prevTag);
+              if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
               await saveItemInTx(item);
-              this.managedItemIDs.add(id);
-              added++;
             }
           }
-          for (const id of [...this.managedItemIDs]) {
-            if (citedUnion.has(id)) continue;
-            const item = resolveItem(id);
-            if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-              item.removeTag?.(this.activeTagText);
+        }
+        if (!enabled) {
+          for (const id of [...stagedManaged]) {
+            const item = await this.resolveWithAsyncFallback(id, resolveItem);
+            if (!item && resolveItem === defaultResolveItem && typeof globalThis.Zotero?.Items?.getAsync !== "function") {
+              stagedManaged.delete(id);
+              continue;
+            }
+            if (isItemWritable(item) && item.hasTag?.(stagedTag)) {
+              item.removeTag?.(stagedTag);
               await saveItemInTx(item);
               removed++;
             }
-            this.managedItemIDs.delete(id);
+            stagedManaged.delete(id);
           }
           return { added, removed };
-        });
-      } finally {
-        this.savePersistedIDs();
-      }
+        }
+        for (const id of citedUnion) {
+          const item = await this.resolveWithAsyncFallback(id, resolveItem);
+          if (!isItemWritable(item)) continue;
+          if (userLibID > 0 && item.libraryID != null && item.libraryID !== userLibID) continue;
+          if (!item.hasTag?.(stagedTag)) {
+            item.addTag?.(stagedTag);
+            await saveItemInTx(item);
+            stagedManaged.add(id);
+            added++;
+          }
+        }
+        for (const id of [...stagedManaged]) {
+          if (citedUnion.has(id)) continue;
+          const item = await this.resolveWithAsyncFallback(id, resolveItem);
+          if (isItemWritable(item) && item.hasTag?.(stagedTag)) {
+            item.removeTag?.(stagedTag);
+            await saveItemInTx(item);
+            removed++;
+          }
+          if (item || typeof globalThis.Zotero?.Items?.getAsync === "function" || resolveItem !== defaultResolveItem) {
+            stagedManaged.delete(id);
+          }
+        }
+        return { added, removed };
+      });
+      this.activeTagText = stagedTag;
+      this.managedItemIDs.clear();
+      for (const id of stagedManaged) this.managedItemIDs.add(id);
+      this.savePersistedIDs();
+      return outcome;
     }
   };
 
@@ -17002,7 +17597,7 @@ ${summary}` : summary;
         statusCache2.set(itemID, res2);
         return res2;
       }
-      const inTrash = typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true;
+      const inTrash = (typeof zotItem.inTrash === "function" ? zotItem.inTrash() === true : zotItem.inTrash === true) || zotItem.isTrashed?.() === true;
       const res = { status: zotItem.deleted === true || inTrash ? "trashed" : "valid", zotItem };
       statusCache2.set(itemID, res);
       return res;
@@ -17084,20 +17679,32 @@ ${summary}` : summary;
           if (!ci || typeof ci !== "object") continue;
           const uris = extractCitationItemUris(ci);
           const rawData = ci?.itemData && typeof ci.itemData === "object" ? ci.itemData : void 0;
-          let resolvedID = Number(ci?.id ?? ci?.itemID ?? 0);
+          const rawNumericID = Number(ci?.id ?? ci?.itemID ?? 0);
+          let resolvedID = rawNumericID;
           let inspected = inspectItemById(resolvedID);
           if (uris.length && hasItemLookup) {
-            const canonical = inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === "function" ? String(zoteroObj.URI.getItemURI(inspected.zotItem)).replace(/^https:/i, "http:") : "";
-            if (!canonical || !uris.some((uri) => uri.replace(/^https:/i, "http:").replace(/\/+$/, "") === canonical)) {
+            let canonical = "";
+            if (inspected.zotItem && typeof zoteroObj?.URI?.getItemURI === "function") {
+              try {
+                canonical = String(zoteroObj.URI.getItemURI(inspected.zotItem) || "").replace(/^https:/i, "http:").replace(/\/+$/, "");
+              } catch {
+              }
+            }
+            if (!canonical || !uris.some((uri) => uri.replace(/[?#].*$/, "").replace(/^https:/i, "http:").replace(/\/+$/, "") === canonical)) {
               const uriID = resolveItemIdFromUris(uris, zoteroObj, hostItems);
-              if ((uriID || canonical) && uriID !== resolvedID) {
-                conflictingIDs.add(resolvedID);
+              const hasAuthCtx = Boolean(
+                canonical || typeof zoteroObj?.Users?.getCurrentUserID === "function" || typeof zoteroObj?.Users?.getLocalUserKey === "function" || typeof zoteroObj?.Groups?.getLibraryIDFromGroupID === "function"
+              );
+              const allForeign = hasAuthCtx && uris.every((u) => isForeignUserItemUri(u, zoteroObj));
+              if ((uriID || canonical || allForeign) && uriID !== resolvedID) {
+                if (Number.isSafeInteger(resolvedID) && resolvedID > 0) conflictingIDs.add(resolvedID);
                 resolvedID = uriID;
                 inspected = inspectItemById(resolvedID);
               }
             }
           }
-          const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData);
+          const skipRawId = Number.isSafeInteger(rawNumericID) && rawNumericID > 0 && conflictingIDs.has(rawNumericID) && resolvedID !== rawNumericID;
+          const knownOrdinal = lookupKnownOrdinal(ci, citeprocOrdinals, resolvedID, rawData, skipRawId);
           if (inspected.status === "valid") {
             recordValidHit(resolvedID, cleanedShort, knownOrdinal, true);
           } else {
@@ -17211,6 +17818,8 @@ ${summary}` : summary;
       this.unpatchExec = null;
       this.unpatchGetSession?.();
       this.unpatchGetSession = null;
+      this.execDepth = 0;
+      this.pendingCmdDocHint = "";
       this.emptyStreakBySession.clear();
       this.docPathBySession.clear();
     }
@@ -17326,7 +17935,7 @@ ${summary}` : summary;
         session2?.name
       ];
       for (const c of candidates) {
-        if (typeof c === "string" && c.trim() && c.trim() !== "__doc__") {
+        if (typeof c === "string" && c.trim() && c.trim() !== "__doc__" && !/\.app\/?$/i.test(c.trim())) {
           return c.trim();
         }
       }
@@ -17414,7 +18023,7 @@ ${summary}` : summary;
           "Zotero.Integration",
           (orig) => async (...args) => {
             const [, , docId] = args;
-            if (typeof docId === "string" && docId.trim() && docId.trim() !== "__doc__") {
+            if (typeof docId === "string" && docId.trim() && docId.trim() !== "__doc__" && !/\.app\/?$/i.test(docId.trim())) {
               this.pendingCmdDocHint = docId.trim();
             }
             this.execDepth++;
@@ -17658,27 +18267,43 @@ ${summary}` : summary;
       this.recoveringOrphans = false;
       this.notifiedOrphanSigs.clear();
       clearRelinkedItemUris();
+      this.disposables.disposeAll();
       this.poller.stop();
       this.column.unregister();
       this.dragCite.disposeAll();
       void this.collections.clearAll();
+      if (!this.kernel.prefs.get("modules.wordCite.enable")) {
+        void this.tagGovernance.stripAllManagedTags();
+      }
       this.tracker.clear();
-      this.disposables.disposeAll();
     }
     /** Prevents auto-refreshing the wrong open Word window when multiple Word sessions exist. */
     canSafelyAutoRefreshSession(targetSessionID) {
       if (this.tracker.getActiveSession()?.sessionID !== targetSessionID) return false;
       const all = this.tracker.getAllSessions();
       if (all.length <= 1) return true;
-      const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
-      if (!fgTitle) return false;
-      const title = extractDocumentBaseName(fgTitle).toLowerCase();
-      const matches = all.filter((ses) => {
-        const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
-        const stem = base.replace(/\.(docx?|rtf)$/i, "");
-        return title === base || title === stem;
-      });
-      return matches.length === 1 && matches[0].sessionID === targetSessionID;
+      const docExtRe = /\.(?:docx|docm|doc|dotx|dotm|rtf|odt)$/i;
+      const matchTitle = (rawTitle) => {
+        const title = extractDocumentBaseName(`window-title:${rawTitle}`).toLowerCase();
+        if (!title || title === "untitled word document") return [];
+        const titleStem = title.replace(docExtRe, "");
+        return all.filter((ses) => {
+          const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
+          const stem = base.replace(docExtRe, "");
+          return title === base || title === stem || titleStem === stem;
+        });
+      };
+      const fgRaw = this.win32.probeForegroundWordTitle().trim();
+      if (fgRaw) {
+        const matches = matchTitle(fgRaw);
+        return matches.length === 1 && matches[0].sessionID === targetSessionID;
+      }
+      const visible = this.win32.probeWordWindowTitles().visibleTitles;
+      if (visible.length === 1) {
+        const matches = matchTitle(visible[0]);
+        return matches.length === 1 && matches[0].sessionID === targetSessionID;
+      }
+      return false;
     }
     showSpotlightRecoverToast(docName, res) {
       try {
@@ -17773,14 +18398,28 @@ ${summary}` : summary;
       const needle = tabList ? "" : term;
       const results = [];
       const limit = term ? 40 : 12;
+      if (term === ">recent") {
+        for (const rec of this.tabs.getRecentlyClosed(win)) {
+          results.push({
+            id: "closed:" + rec.key,
+            category: "tab",
+            title: stripItemTitleMarkup(rec.title) || rec.key,
+            badge: "已关闭",
+            action: () => {
+              void this.tabs.openVirtualOrItem(win, rec.itemID, rec.groupId || void 0, false);
+            }
+          });
+          if (results.length === limit) return results;
+        }
+      }
       const nativeTabs = win.Zotero_Tabs?._tabs || [];
       const viewedAt = (tab) => this.store.state.lastViewedAt[tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id] || 0;
       const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;
       for (const tab of source) {
         if (tab.type === "library") continue;
         const key = tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id;
-        const title = tab.title || key;
-        const remark = this.prefs.get("workspace.enableTabRemarks") ? this.store.state.remarks[key] || "" : "";
+        const title = stripItemTitleMarkup(tab.title || "") || key;
+        const remark = this.prefs.get("workspace.enableTabRemarks") ? tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks[key] || "" : "";
         if (needle && !(title + " " + remark).toLowerCase().includes(needle)) continue;
         results.push({
           id: "tab:" + key,
@@ -17825,6 +18464,15 @@ ${summary}` : summary;
         }
       }
       if (needle.length >= 2 && !needle.startsWith("@")) {
+        for (const provider of this.providers) {
+          try {
+            for (const hit of provider.query(needle, win)) {
+              results.push(hit);
+              if (results.length === limit) return results;
+            }
+          } catch {
+          }
+        }
         for (const cmd of this.filterBuiltInCommands(needle, win)) {
           results.push(cmd);
           if (results.length === limit) break;
@@ -18103,6 +18751,20 @@ ${summary}` : summary;
       message: message$1,
       "~run"(dataset, config$1) {
         if (dataset.typed && !(dataset.value >= this.requirement)) _addIssue(this, "value", dataset, config$1, { received: dataset.value instanceof Date ? dataset.value.toJSON() : /* @__PURE__ */ _stringify(dataset.value) });
+        return dataset;
+      }
+    };
+  }
+  // @__NO_SIDE_EFFECTS__
+  function transform(operation) {
+    return {
+      kind: "transformation",
+      type: "transform",
+      reference: transform,
+      async: false,
+      operation,
+      "~run"(dataset) {
+        dataset.value = this.operation(dataset.value);
         return dataset;
       }
     };
@@ -18436,7 +19098,8 @@ ${summary}` : summary;
   var optionalText = optional(text);
   var count = pipe(number(), minValue(0));
   var strings = record(text, text);
-  var group = strictObject({ id: text, name: text, color: text, memberKeys: keys });
+  var hexColor = pipe(text, transform((c) => /^#[0-9a-fA-F]{3,8}$/.test(c.trim()) ? c.trim() : "#2563EB"));
+  var group = strictObject({ id: text, name: text, color: hexColor, memberKeys: keys });
   var virtualMember = strictObject({
     key: text,
     itemID: count,
@@ -18573,6 +19236,21 @@ ${summary}` : summary;
     );
   }
 
+  // src/domains/workspace/types.ts
+  var GROUP_PALETTE = [
+    "#2563EB",
+    "#0D9488",
+    "#D97706",
+    "#DC2626",
+    "#7C3AED",
+    "#DB2777",
+    "#059669",
+    "#4F46E5"
+  ];
+  var MAX_REMARK_LENGTH = 300;
+  var MAX_ROLLING_SESSIONS = 3;
+  var MAX_MANUAL_SESSIONS = 30;
+
   // src/domains/workspace/workspace-disk-cache.ts
   var WorkspaceDiskCache = class {
     flushTimer = null;
@@ -18611,7 +19289,7 @@ ${summary}` : summary;
         void this.flushNow(state, serialized);
       }, 320);
     }
-    flushNow(state, _serialized) {
+    flushNow(state, _serialized, replaceBackup = false) {
       let cleanState = state;
       if (state && Array.isArray(state.groups)) {
         const activeGroupKeys = new Set(state.groups.flatMap((g) => g.memberKeys || []));
@@ -18627,7 +19305,7 @@ ${summary}` : summary;
         version: 2,
         state: cleanState
       }, null, 2)}
-`);
+`, 0, replaceBackup);
     }
     loadFromDisk() {
       return this.file.load((text2) => {
@@ -18669,8 +19347,8 @@ ${summary}` : summary;
         if (target.length > max) target.length = max;
         void byIdOrName;
       };
-      mergeSessions(current.sessions, disk.sessions, 30);
-      mergeSessions(current.rollingSessions, disk.rollingSessions, 5);
+      mergeSessions(current.sessions, disk.sessions, MAX_MANUAL_SESSIONS);
+      mergeSessions(current.rollingSessions, disk.rollingSessions, MAX_ROLLING_SESSIONS);
       const diskGroupKeys = new Set([...current.groups, ...disk.groups].flatMap((g) => g.memberKeys));
       for (const [k, meta] of Object.entries(disk.virtualMembers)) {
         if (diskGroupKeys.has(k) && !current.virtualMembers[k]) {
@@ -18776,13 +19454,13 @@ ${summary}` : summary;
         void this.flushNow(state);
       }, 320);
     }
-    flushNow(state) {
+    flushNow(state, replaceBackup = false) {
       return this.file.write(() => `${JSON.stringify({
         format: "zotero-bridgeflow-reading-progress",
         version: 1,
         state: pickReadingProgressState(state)
       }, null, 2)}
-`, 6e5);
+`, 6e5, replaceBackup);
     }
     loadFromDisk() {
       const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
@@ -18917,22 +19595,13 @@ ${summary}` : summary;
     }
   };
 
-  // src/domains/workspace/types.ts
-  var GROUP_PALETTE = [
-    "#2563EB",
-    "#0D9488",
-    "#D97706",
-    "#DC2626",
-    "#7C3AED",
-    "#DB2777",
-    "#059669",
-    "#4F46E5"
-  ];
-  var MAX_REMARK_LENGTH = 300;
-  var MAX_ROLLING_SESSIONS = 3;
-  var MAX_MANUAL_SESSIONS = 30;
-
   // src/domains/workspace/workspace-session-ops.ts
+  function assignSafeRecord(target, source) {
+    for (const [k, val] of Object.entries(source)) {
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      target[k] = val;
+    }
+  }
   async function hydrateWorkspaceDiskCaches(store) {
     const [diskLayout, diskReading, diskNotes] = await Promise.all([
       store.diskCache.loadFromDisk(),
@@ -18997,8 +19666,8 @@ ${summary}` : summary;
       state.pinnedKeys = [...session2.pinnedKeys];
       state.collapsed = [...session2.collapsed];
       state.virtualMembers = { ...session2.virtualMembers };
-      Object.assign(state.remarks, session2.remarks);
-      Object.assign(state.remarkModes, session2.remarkModes);
+      assignSafeRecord(state.remarks, session2.remarks);
+      assignSafeRecord(state.remarkModes, session2.remarkModes);
       return hasNotes;
     }
     for (const sg of session2.groups) {
@@ -19036,14 +19705,96 @@ ${summary}` : summary;
       virtualMembers: options.isTemplate ? {} : { ...prior?.virtualMembers || {}, ...captured.virtualMembers }
     };
     if (options.rolling) {
+      const priorPreReplace = session2.kind !== "pre-replace" ? state.rollingSessions.find((s) => s.kind === "pre-replace") : void 0;
       state.rollingSessions.unshift(session2);
       state.rollingSessions = state.rollingSessions.slice(0, MAX_ROLLING_SESSIONS);
+      if (priorPreReplace && !state.rollingSessions.some((s) => s.kind === "pre-replace") && state.rollingSessions.length >= MAX_ROLLING_SESSIONS) {
+        state.rollingSessions[state.rollingSessions.length - 1] = priorPreReplace;
+      }
     } else {
       if (existingIdx >= 0) state.sessions.splice(existingIdx, 1);
       state.sessions.unshift(session2);
       state.sessions = state.sessions.slice(0, MAX_MANUAL_SESSIONS);
     }
     return session2;
+  }
+  function getNormalizedItemRemark(state, itemID) {
+    if (!Number.isInteger(itemID) || itemID <= 0) return "";
+    const direct = state.remarks[`item:${itemID}`];
+    if (direct) return direct;
+    const hostItems = globalThis.Zotero?.Items;
+    const item = hostItems?.get?.(itemID);
+    if (item && (item.isAttachment?.() || item.isNote?.()) && item.parentItemID) {
+      const parentRemark = state.remarks[`item:${item.parentItemID}`];
+      if (parentRemark) return parentRemark;
+    }
+    const attIDs = typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
+    for (const attID of attIDs) {
+      const childRemark = state.remarks[`item:${attID}`];
+      if (childRemark) return childRemark;
+    }
+    for (const [k, vm] of Object.entries(state.virtualMembers)) {
+      if (vm.parentItemID === itemID && state.remarks[k]) return state.remarks[k];
+    }
+    return "";
+  }
+  function setNormalizedItemRemark(state, itemID, remark, maxLen = MAX_REMARK_LENGTH) {
+    if (!Number.isInteger(itemID) || itemID <= 0) return false;
+    const clean = remark.trim().slice(0, maxLen);
+    const hostItems = globalThis.Zotero?.Items;
+    const item = hostItems?.get?.(itemID);
+    const canonicalID = item && (item.isAttachment?.() || item.isNote?.()) && Number(item.parentItemID) > 0 ? Number(item.parentItemID) : itemID;
+    const canonicalKey = `item:${canonicalID}`;
+    const relatedKeys = /* @__PURE__ */ new Set();
+    if (canonicalID !== itemID) relatedKeys.add(`item:${itemID}`);
+    const parentObj = canonicalID === itemID ? item : hostItems?.get?.(canonicalID);
+    const attIDs = typeof parentObj?.getAttachments === "function" ? parentObj.getAttachments() || [] : [];
+    for (const attID of attIDs) {
+      if (Number(attID) > 0 && Number(attID) !== canonicalID) relatedKeys.add(`item:${attID}`);
+    }
+    for (const [k, vm] of Object.entries(state.virtualMembers)) {
+      if (vm.parentItemID === canonicalID && k !== canonicalKey) relatedKeys.add(k);
+    }
+    let changed = false;
+    if (clean) {
+      if (state.remarks[canonicalKey] !== clean) {
+        state.remarks[canonicalKey] = clean;
+        changed = true;
+      }
+    } else if (canonicalKey in state.remarks) {
+      delete state.remarks[canonicalKey];
+      changed = true;
+    }
+    for (const rk of relatedKeys) {
+      if (rk in state.remarks) {
+        delete state.remarks[rk];
+        changed = true;
+      }
+    }
+    return changed;
+  }
+  function mergeImportedWorkspaceState(current, imported) {
+    const hasReading = Boolean(Object.keys(imported.readingProgress).length || Object.keys(imported.lastViewedAt).length);
+    const hasNotes = Boolean(Object.keys(imported.remarks).length || Object.keys(imported.remarkModes).length);
+    const state = {
+      ...imported,
+      lastViewedAt: { ...current.lastViewedAt, ...imported.lastViewedAt },
+      readingProgress: { ...current.readingProgress, ...imported.readingProgress },
+      remarks: { ...current.remarks, ...imported.remarks },
+      remarkModes: { ...current.remarkModes, ...imported.remarkModes }
+    };
+    return { state, hasReading, hasNotes };
+  }
+  function saveVirtualMembersToState(state, metas) {
+    let changed = false;
+    for (const meta of metas) {
+      const prev = state.virtualMembers[meta.key];
+      if (!prev || prev.title !== meta.title || prev.shortTitle !== meta.shortTitle || prev.filename !== meta.filename || prev.source !== meta.source || prev.creatorYear !== meta.creatorYear || prev.collection !== meta.collection || prev.parentItemID !== meta.parentItemID || prev.itemID !== meta.itemID || prev.type !== meta.type) {
+        state.virtualMembers[meta.key] = meta;
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   // src/domains/workspace/state-store.ts
@@ -19140,11 +19891,13 @@ ${summary}` : summary;
       this.state = { ...createEmptyState(), ...notes };
       this.readOnlyGuard = false;
       this.save(true);
+      void this.diskCache.flushNow(pickWorkspaceLayoutState(this.state), void 0, true);
     }
     clearReadingProgress() {
       this.state.lastViewedAt = {};
       this.state.readingProgress = {};
-      this.saveReadingProgress(true);
+      void this.readingCache.flushNow(this.state, true);
+      this.emitChange("reading");
     }
     clearBriefNotes() {
       if (this.legacyMigrationPending) return Promise.resolve(false);
@@ -19184,17 +19937,16 @@ ${summary}` : summary;
       return true;
     }
     renameGroup(groupId, name) {
-      const group2 = this.state.groups.find((g) => g.id === groupId);
-      const trimmed = name.trim();
+      const group2 = this.state.groups.find((g) => g.id === groupId), trimmed = name.trim();
       if (!group2 || !trimmed) return false;
       group2.name = trimmed;
       this.save();
       return true;
     }
     setGroupColor(groupId, color) {
-      const group2 = this.state.groups.find((g) => g.id === groupId);
-      if (!group2 || !color) return false;
-      group2.color = color;
+      const group2 = this.state.groups.find((g) => g.id === groupId), trimmed = color.trim();
+      if (!group2 || !/^#[0-9a-fA-F]{3,8}$/.test(trimmed)) return false;
+      group2.color = trimmed;
       this.save();
       return true;
     }
@@ -19237,8 +19989,7 @@ ${summary}` : summary;
       return true;
     }
     renameSession(sessionId, name) {
-      const trimmed = name.trim();
-      const ses = this.state.sessions.find((s) => s.id === sessionId);
+      const trimmed = name.trim(), ses = this.state.sessions.find((s) => s.id === sessionId);
       if (!ses || !trimmed) return false;
       ses.name = trimmed;
       this.save();
@@ -19292,7 +20043,22 @@ ${summary}` : summary;
     isSleeping(key) {
       return this.state.sleepingKeys.includes(key);
     }
+    getItemRemark(itemID) {
+      return getNormalizedItemRemark(this.state, itemID);
+    }
+    setItemRemark(itemID, remark, silent = false) {
+      if (!setNormalizedItemRemark(this.state, itemID, remark, MAX_REMARK_LENGTH)) return;
+      if (!silent) this.saveBriefNotes();
+    }
+    notifyNotesChanged() {
+      this.saveBriefNotes();
+    }
     setRemark(key, remark) {
+      const match = /^item:(\d+)$/.exec(key);
+      if (match) {
+        this.setItemRemark(Number(match[1]), remark);
+        return;
+      }
       const clean = remark.trim().slice(0, MAX_REMARK_LENGTH);
       if (clean) this.state.remarks[key] = clean;
       else delete this.state.remarks[key];
@@ -19312,8 +20078,10 @@ ${summary}` : summary;
       };
     }
     saveVirtualMember(meta) {
-      this.state.virtualMembers[meta.key] = meta;
-      this.save();
+      if (saveVirtualMembersToState(this.state, [meta])) this.save();
+    }
+    saveVirtualMembersBatch(metas) {
+      if (metas.length && saveVirtualMembersToState(this.state, metas)) this.save();
     }
     removeVirtualMember(key) {
       if (!(key in this.state.virtualMembers)) return;
@@ -19336,15 +20104,22 @@ ${summary}` : summary;
     }
     importJson(jsonText) {
       try {
-        this.state = readBackup(jsonText);
+        const { state, hasReading, hasNotes } = mergeImportedWorkspaceState(this.state, readBackup(jsonText));
+        this.state = state;
         this.readOnlyGuard = false;
-        this.save(true);
-        void this.readingCache.flushNow(this.state);
-        void this.notesCache.flushNow(this.state);
+        this.save(true, "import");
+        if (hasReading) void this.readingCache.flushNow(this.state);
+        if (hasNotes) void this.notesCache.flushNow(this.state);
         return true;
       } catch {
         return false;
       }
+    }
+    importAnyJson(jsonText) {
+      if (this.importJson(jsonText)) return "workspace";
+      if (this.importReadingJson(jsonText)) return "reading";
+      if (this.importBriefNotesJson(jsonText)) return "notes";
+      return null;
     }
     importReadingJson(jsonText) {
       try {
@@ -19581,6 +20356,11 @@ ${summary}` : summary;
           false
         );
         if (openedParent) return "opened";
+        const hostItems = globalThis.Zotero?.Items;
+        const resolved = typeof hostItems?.get === "function" ? hostItems.get(req.itemID) : void 0;
+        if (typeof hostItems?.get === "function" && (!resolved || resolved.deleted || resolved.isRegularItem?.())) {
+          return "not-found";
+        }
       }
       const reader = globalThis.Zotero?.Reader;
       const targetAttachmentID = req.attachmentID || req.itemID;
@@ -19682,7 +20462,7 @@ ${summary}` : summary;
         groupId: groups.get(key) || "",
         pinned: Boolean(tab && showPins && store.isPinned(key)),
         sleeping: Boolean(tab && (tab.type.endsWith("-unloaded") || store.isSleeping(key))),
-        remark: store.state.remarks[key] || "",
+        remark: store.state.remarks[key] || (meta.parentItemID ? store.state.remarks[`item:${meta.parentItemID}`] : "") || "",
         lastViewedAt: store.state.lastViewedAt[key] || 0
       });
     }
@@ -19741,6 +20521,7 @@ ${summary}` : summary;
         store.removeVirtualMember(t.key);
         store.assignToGroup(t.key, null);
       }
+      if (t.pinned) store.setPinned(t.key, false);
       if (t.sleeping) store.setSleeping(t.key, false);
     }
     return toClose.length;
@@ -19780,20 +20561,14 @@ ${summary}` : summary;
     }
     openKeys(win) {
       const tracked = this.buildTrackedTabs(win);
-      for (const t of tracked) {
-        if (t.itemID > 0) this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
-      }
+      this.store.saveVirtualMembersBatch(tracked.filter((t) => t.itemID > 0).map((t) => buildVirtualMetaFromTracked(t)));
       return tracked.filter((t) => !t.virtual && t.itemID > 0).map((t) => t.key);
     }
     syncTrackedVirtualMeta(win, groupId) {
       const tracked = this.buildTrackedTabs(win).filter((t) => !groupId || t.groupId === groupId);
-      const keys2 = [];
-      for (const t of tracked) {
-        if (t.itemID > 0) {
-          this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
-          keys2.push(t.key);
-        }
-      }
+      const withItem = tracked.filter((t) => t.itemID > 0);
+      this.store.saveVirtualMembersBatch(withItem.map((t) => buildVirtualMetaFromTracked(t)));
+      const keys2 = withItem.map((t) => t.key);
       if (groupId) {
         const grp = this.store.state.groups.find((g) => g.id === groupId);
         for (const k of grp?.memberKeys || []) {
@@ -20122,7 +20897,7 @@ ${summary}` : summary;
     }
     if (ctx.kernel.prefs.get("workspace.enableRollingSnapshots") && Date.now() - lastRollingAt > 9e5) {
       const openKeys = [...new Set([...ctx.windows].flatMap((win) => ctx.tabs.openKeys(win)))];
-      if (openKeys.length || ctx.store.state.groups.length > 0 || ctx.store.state.pinnedKeys.length > 0) {
+      if (openKeys.length || ctx.store.state.groups.some((g) => g.memberKeys.length > 0)) {
         const time = (/* @__PURE__ */ new Date()).toLocaleTimeString();
         ctx.store.saveSession(tLocale(`自动滚动快照 ${time}`, `Auto Snapshot ${time}`), { rolling: true, openKeys });
         lastRollingAt = Date.now();
@@ -20280,21 +21055,24 @@ ${summary}` : summary;
     pop.className = "zbf-popup-menu";
     pop.style.minWidth = `${minWidth}px`;
     host2.appendChild(pop);
-    const rect = anchor.getBoundingClientRect();
-    const hasMouse = Boolean(event && event.clientX > 0 && event.clientY > 0);
-    const winW = doc.defaultView?.innerWidth || 1200;
-    const winH = doc.defaultView?.innerHeight || 800;
-    const popW = pop.offsetWidth || minWidth;
-    const popH = Math.min(pop.offsetHeight || 260, winH - 16);
-    const rawX = hasMouse ? event.clientX + 2 : rect.left > winW * 0.55 ? rect.right - popW : rect.left;
-    let rawY = hasMouse ? event.clientY + 6 : rect.bottom + 6;
-    if (rawY + popH > winH - 8) {
-      rawY = hasMouse ? event.clientY - popH - 6 : rect.top - popH - 6;
-    }
-    const left = Math.max(8, Math.min(rawX, winW - popW - 12));
-    const top = Math.max(8, Math.min(rawY, winH - popH - 8));
-    pop.style.left = `${left}px`;
-    pop.style.top = `${top}px`;
+    const positionPopup = () => {
+      if (!pop.isConnected) return;
+      const rect = anchor.getBoundingClientRect();
+      const hasMouse = Boolean(event && event.clientX > 0 && event.clientY > 0);
+      const winW = doc.defaultView?.innerWidth || 1200;
+      const winH = doc.defaultView?.innerHeight || 800;
+      const popW = pop.offsetWidth || minWidth;
+      const popH = Math.min(pop.offsetHeight || 260, winH - 16);
+      const rawX = hasMouse ? event.clientX + 2 : rect.left > winW * 0.55 ? rect.right - popW : rect.left;
+      let rawY = hasMouse ? event.clientY + 6 : rect.bottom + 6;
+      if (rawY + popH > winH - 8) {
+        rawY = hasMouse ? event.clientY - popH - 6 : rect.top - popH - 6;
+      }
+      pop.style.left = `${Math.max(8, Math.min(rawX, winW - popW - 12))}px`;
+      pop.style.top = `${Math.max(8, Math.min(rawY, winH - popH - 8))}px`;
+    };
+    positionPopup();
+    queueMicrotask(positionPopup);
     return pop;
   }
   function addPopupButton(doc, pop, label, onClick, closePopup, options = {}) {
@@ -20346,7 +21124,7 @@ ${summary}` : summary;
     if (dotColor) {
       const dot = createWorkspaceElement(doc, "span");
       dot.className = "zbf-popup-color-dot";
-      dot.style.background = dotColor;
+      dot.style.backgroundColor = dotColor;
       left.appendChild(dot);
     }
     const arrow = createWorkspaceElement(doc, "span");
@@ -20370,8 +21148,8 @@ ${summary}` : summary;
     const host2 = doc.documentElement || doc.body;
     if (!host2) return;
     const backdrop = createWorkspaceElement(doc, "div");
-    backdrop.id = "zbf-hub-backdrop";
-    backdrop.style.zIndex = "100020";
+    backdrop.className = "zbf-prompt-backdrop";
+    backdrop.style.zIndex = "2147483647";
     const modal = createWorkspaceElement(doc, "div");
     modal.className = "zbf-hub-box";
     modal.style.maxWidth = "380px";
@@ -20428,6 +21206,7 @@ ${summary}` : summary;
     okBtn.addEventListener("click", submit);
     input.addEventListener("keydown", (e) => {
       const ke = e;
+      if (ke.isComposing) return;
       if (ke.key === "Enter") {
         ke.preventDefault();
         submit();
@@ -20646,8 +21425,9 @@ ${summary}` : summary;
       const selectedID = String(this.win.Zotero_Tabs?.selectedID || "");
       const compactMode = this.prefs.get("workspace.horizontalTabCompactMode");
       const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(",");
-      const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join("|");
-      const renderKey = `${selectedID}|${compactMode}|${this.prefs.get("workspace.pinnedIconOnly")}|${this.store.state.collapsed.join(",")}|${gKey}|${tKey}`;
+      const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${this.store.state.remarkModes[t.key] || ""}:${t.title}:${t.shortTitle}:${t.filename}`).join("|");
+      const pKey = `${this.prefs.get("workspace.pinnedIconOnly")}|${this.prefs.get("workspace.enablePinnedTabs")}|${this.prefs.get("workspace.enableTabRemarks")}|${this.prefs.get("workspace.remarkDisplayMode")}|${this.prefs.get("workspace.verticalTabTitleMode")}`;
+      const renderKey = `${selectedID}|${compactMode}|${pKey}|${this.store.state.collapsed.join(",")}|${gKey}|${tKey}`;
       if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
       this.lastRenderKey = renderKey;
       const frag = this.doc.createDocumentFragment();
@@ -20714,7 +21494,7 @@ ${summary}` : summary;
       head.title = labelText;
       const dot = createWorkspaceElement(this.doc, "span");
       dot.className = "zbf-sb-group-dot";
-      dot.style.background = group2.color;
+      dot.style.backgroundColor = group2.color;
       const nameSpan = createWorkspaceElement(this.doc, "span");
       nameSpan.textContent = labelText;
       head.append(dot, nameSpan);
@@ -20784,7 +21564,7 @@ ${summary}` : summary;
         if (e.button !== 1) return;
         e.preventDefault();
         e.stopPropagation();
-        if (!tab.virtual) void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+        if (!tab.virtual) void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
       });
       chip.addEventListener("contextmenu", (e) => {
         if (!this.prefs.get("workspace.enableTabContextMenu")) return;
@@ -20812,6 +21592,7 @@ ${summary}` : summary;
       };
       input.addEventListener("keydown", (e) => {
         const ke = e;
+        if (ke.isComposing) return;
         if (ke.key === "Enter") finish(true);
         else if (ke.key === "Escape") finish(false);
       });
@@ -21105,6 +21886,7 @@ ${summary}` : summary;
     }
     show(anchor, tab) {
       this.hide();
+      if (anchor.isConnected === false) return;
       const host2 = this.doc.documentElement || this.doc.body;
       if (!host2) return;
       const card = createWorkspaceElement(this.doc, "div");
@@ -21485,6 +22267,7 @@ ${summary}` : summary;
       if (scroll) this.rows[next]?.scrollIntoView?.({ block: "nearest" });
     }
     handleKeydown(e) {
+      if (e.isComposing) return;
       if (e.key === "Escape") {
         e.preventDefault();
         this.close();
@@ -21680,7 +22463,7 @@ ${summary}` : summary;
           const swatch = createWorkspaceElement(this.doc, "button");
           swatch.type = "button";
           swatch.className = `zbf-color-swatch${color === group2.color ? " active" : ""}`;
-          swatch.style.background = color;
+          swatch.style.backgroundColor = color;
           swatch.title = color;
           swatch.addEventListener("click", () => {
             this.store.setGroupColor(group2.id, color);
@@ -21966,7 +22749,7 @@ ${summary}` : summary;
       if (e.button !== 1) return;
       e.preventDefault();
       e.stopPropagation();
-      if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true });
+      if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
     });
     row.addEventListener("contextmenu", (e) => {
       if (!prefs.get("workspace.enableTabContextMenu")) return;
@@ -22291,7 +23074,7 @@ ${summary}` : summary;
       this.unpinBtn.disabled = !count2;
       this.copyRefsBtn.hidden = !this.onCopySelected || !this.prefs.get("workspace.enableCopyReference");
       this.copyRefsBtn.disabled = !count2;
-      this.citeWordBtn.hidden = !this.onCiteSelected || !this.prefs.get("modules.wordCite.enable") || !this.prefs.get("wordCite.dragCite.enable");
+      this.citeWordBtn.hidden = !this.onCiteSelected || !this.prefs.get("modules.wordCite.enable") || !this.prefs.get("wordCite.tabContextMenu.enable");
       this.citeWordBtn.disabled = !count2;
       this.closeBtn.disabled = !count2;
     }
@@ -22462,7 +23245,7 @@ ${summary}` : summary;
         aside,
         list,
         () => this.onRefresh(),
-        (ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true }),
+        (ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }),
         (itemIDs) => void this.tabs.copyItemsCitations(itemIDs),
         (itemIDs) => {
           this.tabs.citeItemsInWord(this.win, itemIDs);
@@ -22498,11 +23281,14 @@ ${summary}` : summary;
       const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(",");
       const subtitleMode = this.prefs.get("workspace.verticalTabSubtitleMode");
       const tabKey = allTracked.map((t) => {
-        const prog = subtitleMode === "reading" ? this.store.state.readingProgress[t.key] : void 0;
-        const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}` : "";
-        return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}${progTag}`;
+        const prog = this.store.state.readingProgress[t.key];
+        const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}:${prog.totalPages || 0}` : "";
+        const viewedTag = subtitleMode === "lastViewed" ? `@${Math.floor(t.lastViewedAt / 6e4)}` : "";
+        const rMode = this.store.state.remarkModes[t.key] || "";
+        return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${rMode}:${t.title}:${t.shortTitle}:${t.filename}${progTag}${viewedTag}`;
       }).join("|");
-      const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(",")}|${this.prefs.get("workspace.verticalTabRowHeight")}|${this.prefs.get("workspace.verticalTabTitleMode")}|${subtitleMode}|${this.prefs.get("workspace.enableBatchSelection")}|${groupKey}|${badgeKey}|${tabKey}`;
+      const prefSig = `${this.prefs.get("workspace.verticalTabRowHeight")}|${this.prefs.get("workspace.verticalTabTitleMode")}|${subtitleMode}|${this.prefs.get("workspace.enableBatchSelection")}|${this.prefs.get("workspace.enableTabRemarks")}|${this.prefs.get("workspace.remarkDisplayMode")}|${this.prefs.get("workspace.enableTabSleep")}|${this.prefs.get("workspace.enableShowInFilesystem")}|${this.prefs.get("workspace.enablePinnedTabs")}|${this.prefs.get("workspace.activeReaderBudget")}`;
+      const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(",")}|${prefSig}|${groupKey}|${badgeKey}|${tabKey}`;
       if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
       this.lastRenderKey = renderKey;
       const prevScroll = this.listEl.scrollTop;
@@ -22537,7 +23323,7 @@ ${summary}` : summary;
           head.setAttribute("data-zbf-nav", "head");
           const dot = createWorkspaceElement(this.doc, "span");
           dot.className = "zbf-sb-group-dot";
-          dot.style.background = grp.color;
+          dot.style.backgroundColor = grp.color;
           const label = createWorkspaceElement(this.doc, "span");
           label.textContent = `${collapsed ? "▸" : "▾"} ${grp.name} (${members.length})`;
           head.append(dot, label);
@@ -22573,11 +23359,13 @@ ${summary}` : summary;
       if (prevScroll > 0) this.listEl.scrollTop = prevScroll;
     }
     renderStatusView(filtered, rowDeps) {
-      const cited = filtered.filter((t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID));
-      const pinned = filtered.filter((t) => !t.virtual && t.pinned);
-      const active = filtered.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
-      const sleeping = filtered.filter((t) => !t.virtual && t.sleeping);
-      const virtual = filtered.filter((t) => t.virtual);
+      const isCited = (t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID);
+      const cited = filtered.filter((t) => isCited(t));
+      const rest = filtered.filter((t) => !isCited(t));
+      const pinned = rest.filter((t) => !t.virtual && t.pinned);
+      const active = rest.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
+      const sleeping = rest.filter((t) => !t.virtual && t.sleeping);
+      const virtual = rest.filter((t) => t.virtual);
       if (cited.length) this.appendSimpleSection("Word 正在引用", "#0D9488", cited, rowDeps);
       if (pinned.length) this.appendSimpleSection("已固定", "#f59e0b", pinned, rowDeps);
       if (active.length) this.appendSimpleSection("当前活动", "#245ac7", active, rowDeps);
@@ -22670,7 +23458,7 @@ ${summary}` : summary;
         const rv = await fp.show();
         if (rv === fp.returnOK && fp.file) {
           const content = await ZoteroObj.File.getContentsAsync(fp.file);
-          if (content && store.importJson(String(content))) onImported();
+          if (content && store.importAnyJson(String(content))) onImported();
           else if (content) onInvalid?.();
           return;
         }
@@ -22678,8 +23466,8 @@ ${summary}` : summary;
       }
     } catch {
     }
-    openTextPromptModal(win, "导入工作区 JSON", "请在此粘贴工作区 JSON 内容...", "", (raw) => {
-      if (raw && store.importJson(raw)) onImported();
+    openTextPromptModal(win, "导入工作区 JSON", "请在此粘贴工作区 / 阅读进度 / 简注 JSON 内容...", "", (raw) => {
+      if (raw && store.importAnyJson(raw)) onImported();
       else if (raw?.trim()) onInvalid?.();
     });
   }
@@ -22895,7 +23683,8 @@ ${summary}` : summary;
       nameInput.className = "zbf-hub-input";
       nameInput.placeholder = "输入工作区快照或模板名称（如：论文修改轮次）...";
       nameInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
+        const ke = e;
+        if (!ke.isComposing && ke.key === "Enter") {
           e.preventDefault();
           saveBtn.click();
         }
@@ -23146,7 +23935,7 @@ ${summary}` : summary;
 #tab-bar-container[data-zbf-inline] .scroll-start-arrow,
 #tab-bar-container[data-zbf-inline] .scroll-end-arrow { display: none !important; }
 
-#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, #zbf-spotlight-panel, #zbf-spotlight-panel * {
+#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, .zbf-prompt-backdrop, .zbf-prompt-backdrop *, #zbf-spotlight-panel, #zbf-spotlight-panel * {
   -moz-window-dragging: no-drag;
 }
 
@@ -23406,7 +24195,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-spot-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--zbf-accent-soft); color: var(--zbf-accent); font-weight: 600; flex: none; }
 .zbf-spotlight-empty { padding: 14px; text-align: center; font-size: 12px; color: var(--zbf-muted); }
 
-#zbf-hub-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center; padding-top: 68px; background: transparent; }
+#zbf-hub-backdrop, .zbf-prompt-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center; padding-top: 68px; background: transparent; }
 .zbf-hub-box {
   width: 520px; max-width: calc(100vw - 24px); max-height: calc(100vh - 72px); overflow-y: auto; padding: 14px 16px; box-sizing: border-box;
   border-radius: 10px; background: var(--zbf-card); color: var(--zbf-text); border: 1px solid var(--zbf-border);
@@ -23438,7 +24227,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-hub-btn.primary { background: var(--zbf-accent); border-color: var(--zbf-accent); color: #fff; font-weight: 600; }
 
 .zbf-popup-menu {
-  position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 2px; padding: 6px; max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box;
   border-radius: 10px; border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.08); font: 12.5px/1.4 system-ui, "Microsoft YaHei UI", sans-serif;
 }
@@ -23498,6 +24287,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     destroyed = false;
     lifetime;
     onActivity;
+    onWindowBlur;
+    boundReaderDocs = /* @__PURE__ */ new WeakSet();
     lastActivitySentAt = 0;
     onInputActivity = () => {
       const now = Date.now();
@@ -23521,12 +24312,13 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     onResize = () => {
       this.scheduleRender(140);
     };
-    constructor(win, prefs, store, tabs, spotlightEngine, onActivity) {
+    constructor(win, prefs, store, tabs, spotlightEngine, onActivity, onWindowBlur) {
       this.win = win;
       this.doc = win.document;
       this.prefs = prefs;
       this.tabs = tabs;
       this.onActivity = onActivity;
+      this.onWindowBlur = onWindowBlur;
       this.lifetime = this.doc ? new win.AbortController() : null;
       if (!this.doc || !this.lifetime) return;
       this.mountStyle();
@@ -23544,6 +24336,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.doc.addEventListener("keydown", this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
       this.doc.addEventListener("wheel", this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
       this.win.addEventListener("resize", this.onResize, { signal: this.lifetime.signal });
+      this.win.addEventListener("focus", this.onInputActivity, { signal: this.lifetime.signal });
+      this.win.addEventListener("blur", () => this.onWindowBlur?.(), { signal: this.lifetime.signal });
       this.render();
     }
     setCitationBadges(badges) {
@@ -23557,6 +24351,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     render() {
       if (this.destroyed || !this.doc) return [];
       try {
+        this.bindOpenReaderDocs();
         const snapshot = this.tabs.buildTrackedTabs(this.win);
         this.sidebar?.render(snapshot);
         this.horizontal?.render(snapshot);
@@ -23564,6 +24359,21 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       } catch (error) {
         globalThis.Zotero?.logError?.(error);
         return [];
+      }
+    }
+    bindOpenReaderDocs() {
+      if (!this.lifetime) return;
+      const nativeTabs = this.win.Zotero_Tabs?._tabs ?? [];
+      for (const tab of nativeTabs) {
+        if (!tab?.id || tab.type === "library") continue;
+        const iframeDoc = globalThis.Zotero?.Reader?.getByTabID?.(tab.id)?._internalReader?._primaryView?._iframeWindow?.document;
+        if (!iframeDoc || this.boundReaderDocs.has(iframeDoc)) continue;
+        this.boundReaderDocs.add(iframeDoc);
+        const sig = this.lifetime.signal;
+        iframeDoc.addEventListener("keydown", this.onKeydown, { capture: true, signal: sig });
+        iframeDoc.addEventListener("pointerdown", this.onInputActivity, { capture: true, passive: true, signal: sig });
+        iframeDoc.addEventListener("keydown", this.onInputActivity, { capture: true, passive: true, signal: sig });
+        iframeDoc.addEventListener("wheel", this.onInputActivity, { capture: true, passive: true, signal: sig });
       }
     }
     destroy() {
@@ -23649,7 +24459,13 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "workspace.enableTabSleep",
     "workspace.activeReaderBudget",
     "workspace.enableStaleSuggestions",
-    "workspace.staleSuggestDays"
+    "workspace.staleSuggestDays",
+    "workspace.enableShowInFilesystem",
+    "workspace.enableTabContextMenu",
+    "workspace.enableCopyReference",
+    "workspace.enableReloadTab",
+    "workspace.enableAnnotationMatrix",
+    "fusion.sidebarCiteBadge"
   ];
   var WorkspaceDomainModule = class {
     id = "workspace";
@@ -23755,7 +24571,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.readingDirty = false;
       void this.store.flushLayoutToDisk();
       void this.store.readingCache.flushNow(this.store.state);
+      void this.store.notesCache.flushNow(this.store.state);
       this.store.readingCache.dispose();
+      this.store.notesCache.dispose();
       this.store.diskCache.dispose();
       this.neighbors.reset();
       this.disposables.disposeAll();
@@ -23767,7 +24585,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (!this.active || this.windows.has(win)) return;
       const ui = new WorkspaceWindowUI(win, this.kernel.prefs, this.store, this.tabs, this.spotlight, () => {
         this.lastActivityAt = Date.now();
-      });
+      }, () => this.flushReadingProgress(1, false));
       ui.setCitationBadges(this.latestBadges);
       this.windows.set(win, ui);
       const snap = this.tabs.resolveActiveReaderSnapshot(win);
@@ -23977,6 +24795,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   var KernelLogger = class {
     debugEnabled = false;
     slowThresholdMs = 50;
+    healthWindowMs = 3e5;
     slowRecords = [];
     maxRecords = 100;
     configure(options) {
@@ -23984,6 +24803,18 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (typeof options.slowThresholdMs === "number" && Number.isFinite(options.slowThresholdMs)) {
         this.slowThresholdMs = Math.max(5, Math.min(5e3, Math.round(options.slowThresholdMs)));
       }
+      if (typeof options.healthWindowMs === "number" && Number.isFinite(options.healthWindowMs)) {
+        this.healthWindowMs = Math.max(1e4, Math.min(36e5, Math.round(options.healthWindowMs)));
+        this.pruneExpired();
+      }
+    }
+    pruneExpired(now = Date.now()) {
+      const cutoff = now - this.healthWindowMs;
+      let dropCount = 0;
+      while (dropCount < this.slowRecords.length && this.slowRecords[dropCount].timestamp < cutoff) {
+        dropCount++;
+      }
+      if (dropCount > 0) this.slowRecords.splice(0, dropCount);
     }
     debug(scope, message, detail) {
       if (!this.debugEnabled) return;
@@ -24004,13 +24835,16 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     recordPerf(op, durationMs) {
       if (durationMs < this.slowThresholdMs) return;
-      this.slowRecords.push({ op, durationMs, timestamp: Date.now() });
+      const now = Date.now();
+      this.pruneExpired(now);
+      this.slowRecords.push({ op, durationMs, timestamp: now });
       if (this.slowRecords.length > this.maxRecords) {
         this.slowRecords.splice(0, this.slowRecords.length - this.maxRecords);
       }
       this.debug("perf", `slow op "${op}" took ${durationMs.toFixed(1)}ms`);
     }
     getSlowRecords() {
+      this.pruneExpired();
       return this.slowRecords;
     }
     clearPerf() {
@@ -24361,9 +25195,23 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return clamped;
     }
     const str = String(raw);
-    if (key === "inspector.cslPreview.fontsize" || key === "inspector.cslPreview.spacing") {
+    if (key === "inspector.cslPreview.fontsize") {
       const num = Number(str);
       if (!Number.isFinite(num) || num <= 0) return def;
+      return String(Math.min(3, Math.max(0.4, num)));
+    }
+    if (key === "inspector.cslPreview.spacing") {
+      const num = Number(str);
+      if (!Number.isFinite(num) || num <= 0) return def;
+      return String(Math.min(3, Math.max(0.8, num)));
+    }
+    if (key === "workspace.readingHeatmap.color") {
+      const hex = str.trim().toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(hex)) return hex;
+      if (/^#[0-9a-f]{3}$/.test(hex)) {
+        return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+      }
+      return def;
     }
     if (desc.enumValues && !desc.enumValues.includes(str)) {
       return def;
@@ -24372,6 +25220,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   }
   var UnifiedPrefService = class {
     cache = /* @__PURE__ */ new Map();
+    cacheWatchedKeys = /* @__PURE__ */ new Set();
     observerIDs = [];
     bus;
     adapterOverride;
@@ -24382,10 +25231,25 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     get adapter() {
       return this.adapterOverride ?? resolveDefaultAdapter();
     }
+    ensureCacheInvalidationObserver(key) {
+      if (this.cacheWatchedKeys.has(key)) return;
+      const adapter = this.adapter;
+      if (!adapter?.registerObserver) return;
+      this.cacheWatchedKeys.add(key);
+      try {
+        const token = adapter.registerObserver(this.fullKey(key), () => {
+          this.invalidate(key);
+        }, true);
+        this.observerIDs.push(token);
+      } catch {
+        this.cacheWatchedKeys.delete(key);
+      }
+    }
     fullKey(key) {
       return PREF_PREFIX + key;
     }
     get(key) {
+      this.ensureCacheInvalidationObserver(key);
       if (this.cache.has(key)) return this.cache.get(key);
       const raw = this.readRaw(this.fullKey(key));
       const normalized = normalizePrefValue(key, raw);
@@ -24393,6 +25257,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return normalized;
     }
     set(key, value) {
+      this.ensureCacheInvalidationObserver(key);
       const normalized = normalizePrefValue(key, value);
       this.cache.set(key, normalized);
       try {
@@ -24474,13 +25339,14 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         }
       }
       this.observerIDs.length = 0;
+      this.cacheWatchedKeys.clear();
       this.cache.clear();
     }
   };
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.7.8" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.7.9" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;
@@ -24524,6 +25390,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       const watchedKeys = [
         "debug",
         "wordCite.perfSlowThresholdMs",
+        "wordCite.healthWindowMs",
         "modules.workspace.enable",
         "modules.visualNotes.enable",
         "modules.inspector.enable",
@@ -24531,7 +25398,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       ];
       this.disposables.add(
         this.prefs.observeKeys(watchedKeys, (key) => {
-          if (key === "debug" || key === "wordCite.perfSlowThresholdMs") {
+          if (key === "debug" || key === "wordCite.perfSlowThresholdMs" || key === "wordCite.healthWindowMs") {
             this.syncLoggerConfig();
             return;
           }
@@ -24656,7 +25523,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     syncLoggerConfig() {
       this.logger.configure({
         debug: this.prefs.get("debug"),
-        slowThresholdMs: this.prefs.get("wordCite.perfSlowThresholdMs")
+        slowThresholdMs: this.prefs.get("wordCite.perfSlowThresholdMs"),
+        healthWindowMs: this.prefs.get("wordCite.healthWindowMs")
       });
     }
   };
@@ -25317,7 +26185,11 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     lastDroppedWordWindow = null;
     supportsNativeWin32() {
       const host2 = globalThis.Zotero;
-      return typeof host2 === "undefined" || host2.isWin !== false;
+      if (!host2) return true;
+      if (host2.isMac || host2.isLinux) return false;
+      if (typeof host2.isWin === "boolean") return host2.isWin;
+      const proc = globalThis.process;
+      return !proc?.platform || proc.platform === "win32";
     }
     probeForegroundWordTitle() {
       if (!this.supportsNativeWin32()) return "";
@@ -25411,32 +26283,47 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     getApi() {
       if (this.cached) return this.cached;
       const ctypes = globalThis.ChromeUtils.importESModule("resource://gre/modules/ctypes.sys.mjs").ctypes;
+      const wchar = ctypes.char16_t ?? ctypes.jschar;
       const POINT = new ctypes.StructType("BridgeFlowDropPoint", [
         { x: ctypes.long },
         { y: ctypes.long }
       ]);
-      const user32 = ctypes.open("user32.dll");
-      const kernel32 = ctypes.open("kernel32.dll");
-      this.cached = {
-        ctypes,
-        POINT,
-        user32,
-        kernel32,
-        getCursorPos: user32.declare("GetCursorPos", ctypes.winapi_abi, ctypes.int32_t, POINT.ptr),
-        windowFromPoint: user32.declare("WindowFromPoint", ctypes.winapi_abi, ctypes.voidptr_t, POINT),
-        getWindowThreadProcessId: user32.declare("GetWindowThreadProcessId", ctypes.winapi_abi, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t.ptr),
-        openProcess: kernel32.declare("OpenProcess", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.uint32_t, ctypes.int32_t, ctypes.uint32_t),
-        queryFullProcessImageName: kernel32.declare("QueryFullProcessImageNameW", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.uint32_t, ctypes.jschar.ptr, ctypes.uint32_t.ptr),
-        closeHandle: kernel32.declare("CloseHandle", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
-        getAncestor: user32.declare("GetAncestor", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.uint32_t),
-        getForegroundWindow: user32.declare("GetForegroundWindow", ctypes.winapi_abi, ctypes.voidptr_t),
-        findWindowEx: user32.declare("FindWindowExW", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.jschar.ptr, ctypes.voidptr_t),
-        isWindowVisible: user32.declare("IsWindowVisible", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
-        getWindowText: user32.declare("GetWindowTextW", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.jschar.ptr, ctypes.int32_t),
-        pathBuffer: ctypes.jschar.array(32768)(),
-        titleBuffer: ctypes.jschar.array(1024)()
-      };
-      return this.cached;
+      let user32;
+      let kernel32;
+      try {
+        user32 = ctypes.open("user32.dll");
+        kernel32 = ctypes.open("kernel32.dll");
+        this.cached = {
+          ctypes,
+          POINT,
+          user32,
+          kernel32,
+          getCursorPos: user32.declare("GetCursorPos", ctypes.winapi_abi, ctypes.int32_t, POINT.ptr),
+          windowFromPoint: user32.declare("WindowFromPoint", ctypes.winapi_abi, ctypes.voidptr_t, POINT),
+          getWindowThreadProcessId: user32.declare("GetWindowThreadProcessId", ctypes.winapi_abi, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t.ptr),
+          openProcess: kernel32.declare("OpenProcess", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.uint32_t, ctypes.int32_t, ctypes.uint32_t),
+          queryFullProcessImageName: kernel32.declare("QueryFullProcessImageNameW", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.uint32_t, wchar.ptr, ctypes.uint32_t.ptr),
+          closeHandle: kernel32.declare("CloseHandle", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
+          getAncestor: user32.declare("GetAncestor", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.uint32_t),
+          getForegroundWindow: user32.declare("GetForegroundWindow", ctypes.winapi_abi, ctypes.voidptr_t),
+          findWindowEx: user32.declare("FindWindowExW", ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.voidptr_t, wchar.ptr, ctypes.voidptr_t),
+          isWindowVisible: user32.declare("IsWindowVisible", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
+          getWindowText: user32.declare("GetWindowTextW", ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, wchar.ptr, ctypes.int32_t),
+          pathBuffer: wchar.array(32768)(),
+          titleBuffer: wchar.array(1024)()
+        };
+        return this.cached;
+      } catch (err) {
+        try {
+          kernel32?.close();
+        } catch {
+        }
+        try {
+          user32?.close();
+        } catch {
+        }
+        throw err;
+      }
     }
     readWindowTitle(api, hwnd) {
       if (!hwnd || hwnd.isNull()) return "";

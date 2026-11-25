@@ -6,8 +6,39 @@ const ALLOWED_TAGS = new Set([
 	'a', 'b', 'i', 'u', 'em', 'strong', 'sub', 'sup', 'small', 'span', 'div', 'p', 'br', 'ol', 'ul', 'li',
 ]);
 const VOID_TAGS = new Set(['br']);
-const SAFE_STYLE_RE = /^[\w\s:;.,%#()'"-]*$/;
 const SAFE_HREF_RE = /^(?:https?:|doi:|mailto:)/i;
+const ALLOWED_STYLE_PROPS = new Set([
+	'font-style', 'font-weight', 'font-variant', 'text-decoration', 'vertical-align',
+	'text-indent', 'margin-left', 'margin-right', 'margin-top', 'margin-bottom',
+	'padding-left', 'padding-right', 'line-height', 'display', 'float', 'clear', 'width',
+]);
+const SAFE_STYLE_VAL_RE = /^[a-z0-9\s.,%+-]+$/i;
+const FORBIDDEN_STYLE_TOKEN_RE = /url\s*\(|expression\s*\(|var\s*\(|calc\s*\(|-moz-|-webkit-|javascript:|\\/i;
+
+function sanitizeInlineStyle(raw: string): string {
+	if (!raw) return '';
+	const kept: string[] = [];
+	for (const decl of raw.split(';')) {
+		if (FORBIDDEN_STYLE_TOKEN_RE.test(decl)) continue;
+		const colonIdx = decl.indexOf(':');
+		if (colonIdx <= 0) continue;
+		const prop = decl.slice(0, colonIdx).trim().toLowerCase();
+		const val = decl.slice(colonIdx + 1).replace(/!important/gi, '').trim();
+		if (!ALLOWED_STYLE_PROPS.has(prop) || !val || !SAFE_STYLE_VAL_RE.test(val)) continue;
+		const lowerVal = val.toLowerCase();
+		if (prop === 'display' && lowerVal !== 'inline' && lowerVal !== 'inline-block' && lowerVal !== 'block') continue;
+		if (prop === 'float' && lowerVal !== 'left' && lowerVal !== 'right' && lowerVal !== 'none') continue;
+		if (prop === 'clear' && lowerVal !== 'both' && lowerVal !== 'left' && lowerVal !== 'right' && lowerVal !== 'none') continue;
+		if (prop === 'width') {
+			const m = lowerVal.match(/^(\d+(?:\.\d+)?)(em|rem|ch|px)$/);
+			if (!m) continue;
+			const num = Number(m[1]);
+			if ((m[2] === 'px' && num > 160) || (m[2] !== 'px' && num > 24)) continue;
+		}
+		kept.push(`${prop}: ${val}`);
+	}
+	return kept.join('; ');
+}
 
 export function escapeHtmlText(value: string): string {
 	return String(value)
@@ -37,8 +68,8 @@ function serializeNode(node: Node, out: string[]): void {
 	let attrs = '';
 	const className = el.getAttribute('class');
 	if (className && /^[\w\s-]+$/.test(className)) attrs += ` class="${escapeAttribute(className)}"`;
-	const style = el.getAttribute('style');
-	if (style && SAFE_STYLE_RE.test(style) && !/url\s*\(|expression\s*\(/i.test(style)) {
+	const style = sanitizeInlineStyle(el.getAttribute('style') || '');
+	if (style) {
 		attrs += ` style="${escapeAttribute(style)}"`;
 	}
 	if (tag === 'a') {

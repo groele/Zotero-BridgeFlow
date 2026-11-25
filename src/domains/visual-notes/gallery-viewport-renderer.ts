@@ -42,7 +42,7 @@ export function renderGalleryViewport(opts: {
 	excludedTag: string;
 	ratingStorage: RatingStorageLocation;
 	syncZoteroTagColor?: boolean;
-	makeCard: (card: GalleryCardModel, draggable: boolean) => HTMLElement;
+	makeCard: (card: GalleryCardModel, draggable: boolean, onDragStateChange?: (dragging: boolean) => void) => HTMLElement;
 	onColumnOrderChange?: (nextKeys: string[]) => void;
 	onDropMutated: () => void;
 	onClearQuery?: () => void;
@@ -195,7 +195,10 @@ export function renderGalleryViewport(opts: {
 		doc, scroll: viewport, content: board, board: true,
 		cardMinWidth: opts.cardMinWidth, gap: 10, estimateHeight,
 		measurements: opts.measurements, columns: colSpecs,
-		createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue)),
+		createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), (dragging) => {
+			notifyGalleryCoverScroll(dragging);
+			layoutRef?.setDragging(dragging);
+		}),
 		onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
 		onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl),
 	});

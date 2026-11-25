@@ -300,7 +300,11 @@ export class TitleHeatmapController {
 		if (dispose) {
 			this.disposers.delete(win);
 			try { dispose(); } catch { /* ignore */ }
-			try { (win as any)?.ZoteroPane?.itemsView?.tree?.invalidate?.(); } catch { /* ignore */ }
+			try {
+				const view = (win as any)?.ZoteroPane?.itemsView;
+				view?.invalidateRowCache?.(true);
+				view?.tree?.invalidate?.();
+			} catch { /* ignore */ }
 		}
 	}
 

@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.8 - Preferences controller. */
+/* Zotero BridgeFlow v0.7.9 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -231,9 +231,23 @@
       return clamped;
     }
     const str = String(raw);
-    if (key === "inspector.cslPreview.fontsize" || key === "inspector.cslPreview.spacing") {
+    if (key === "inspector.cslPreview.fontsize") {
       const num = Number(str);
       if (!Number.isFinite(num) || num <= 0) return def;
+      return String(Math.min(3, Math.max(0.4, num)));
+    }
+    if (key === "inspector.cslPreview.spacing") {
+      const num = Number(str);
+      if (!Number.isFinite(num) || num <= 0) return def;
+      return String(Math.min(3, Math.max(0.8, num)));
+    }
+    if (key === "workspace.readingHeatmap.color") {
+      const hex = str.trim().toLowerCase();
+      if (/^#[0-9a-f]{6}$/.test(hex)) return hex;
+      if (/^#[0-9a-f]{3}$/.test(hex)) {
+        return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+      }
+      return def;
     }
     if (desc.enumValues && !desc.enumValues.includes(str)) {
       return def;
@@ -242,6 +256,7 @@
   }
   var UnifiedPrefService = class {
     cache = /* @__PURE__ */ new Map();
+    cacheWatchedKeys = /* @__PURE__ */ new Set();
     observerIDs = [];
     bus;
     adapterOverride;
@@ -252,10 +267,25 @@
     get adapter() {
       return this.adapterOverride ?? resolveDefaultAdapter();
     }
+    ensureCacheInvalidationObserver(key) {
+      if (this.cacheWatchedKeys.has(key)) return;
+      const adapter = this.adapter;
+      if (!adapter?.registerObserver) return;
+      this.cacheWatchedKeys.add(key);
+      try {
+        const token = adapter.registerObserver(this.fullKey(key), () => {
+          this.invalidate(key);
+        }, true);
+        this.observerIDs.push(token);
+      } catch {
+        this.cacheWatchedKeys.delete(key);
+      }
+    }
     fullKey(key) {
       return PREF_PREFIX + key;
     }
     get(key) {
+      this.ensureCacheInvalidationObserver(key);
       if (this.cache.has(key)) return this.cache.get(key);
       const raw = this.readRaw(this.fullKey(key));
       const normalized = normalizePrefValue(key, raw);
@@ -263,6 +293,7 @@
       return normalized;
     }
     set(key, value) {
+      this.ensureCacheInvalidationObserver(key);
       const normalized = normalizePrefValue(key, value);
       this.cache.set(key, normalized);
       try {
@@ -344,6 +375,7 @@
         }
       }
       this.observerIDs.length = 0;
+      this.cacheWatchedKeys.clear();
       this.cache.clear();
     }
   };
@@ -377,7 +409,7 @@
     if (/^#[0-9a-f]{3}$/.test(clean)) {
       return `#${clean[1]}${clean[1]}${clean[2]}${clean[2]}${clean[3]}${clean[3]}`;
     }
-    return clean;
+    return "";
   }
   function parseColorSemantics(rawJson) {
     const merged = { ...DEFAULT_ANNOTATION_COLORS };
@@ -551,7 +583,7 @@
       if (swatch) {
         swatch.value = effectiveHex;
         swatch.setAttribute("value", effectiveHex);
-        swatch.title = `${effectiveHex}（点击自定义颜色）`;
+        swatch.title = tLocale(`${effectiveHex}（点击自定义颜色）`, `${effectiveHex} (Click to customize color)`, doc);
       }
       input.setAttribute("data-zbf-color", effectiveHex);
       row.style?.setProperty?.("--zbf-pill-color", effectiveHex);
@@ -604,7 +636,7 @@
       swatch.className = "zbf-color-label-dot";
       swatch.value = hex;
       swatch.setAttribute("value", hex);
-      swatch.title = `${hex}（点击自定义颜色）`;
+      swatch.title = tLocale(`${hex}（点击自定义颜色）`, `${hex} (Click to customize color)`, doc);
       const input = doc.createElementNS(XHTML_NS, "input");
       input.type = "text";
       input.className = "zbf-text-input zbf-color-label-input";
@@ -613,13 +645,13 @@
       input.placeholder = defLabel;
       input.value = merged[hex] || defLabel;
       input.setAttribute("value", input.value);
-      input.title = "点击编辑颜色语义标签";
+      input.title = tLocale("点击编辑颜色语义标签", "Click to edit semantic color label", doc);
       const toggle = doc.createElementNS(XHTML_NS, "input");
       toggle.type = "checkbox";
       toggle.className = "zbf-color-label-toggle";
       toggle.checked = isEnabled;
       if (isEnabled) toggle.setAttribute("checked", "true");
-      toggle.title = "在 PDF 选词弹窗中启用/隐藏此颜色";
+      toggle.title = tLocale("在 PDF 选词弹窗中启用/隐藏此颜色", "Show or hide this color in PDF selection popup", doc);
       const commit = (fallbackEmpty) => {
         if (fallbackEmpty && !input.value.trim()) input.value = defLabel;
         const allInputs = Array.from(grid.querySelectorAll("input[data-zbf-color]"));
@@ -630,7 +662,7 @@
       const applyColor = () => {
         const nextHex = normalizeHexColor(swatch.value) || defHex;
         input.setAttribute("data-zbf-color", nextHex);
-        swatch.title = `${nextHex}（点击自定义颜色）`;
+        swatch.title = tLocale(`${nextHex}（点击自定义颜色）`, `${nextHex} (Click to customize color)`, doc);
         row.style?.setProperty?.("--zbf-pill-color", nextHex);
         commit(true);
         if (toggle.checked) commitEnabledFromGrid();
@@ -1062,7 +1094,7 @@
           const mod = cu.importESModule("chrome://zotero/content/modules/filePicker.mjs");
           const picker = new mod.FilePicker();
           picker.init(targetWin, title, picker.modeSave ?? 1);
-          picker.appendFilter("JSON 文件", "*.json");
+          picker.appendFilter(tLocale("JSON 文件", "JSON Files", doc), "*.json");
           picker.defaultString = defaultName;
           const rv = await picker.show();
           if ((rv === picker.returnOK || rv === picker.returnReplace) && picker.file) {
@@ -1075,75 +1107,91 @@
     };
     bindActionBtn(doc.getElementById("zbf-btn-export-reading"), () => {
       void exportJsonBackup(
-        "导出阅读时长与热力图备份 (JSON)",
+        tLocale("导出阅读时长与热力图备份 (JSON)", "Export Reading Progress & Heatmap Backup (JSON)", doc),
         `BridgeFlow-ReadingProgress-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`,
         getApp()?.workspace?.store?.exportReadingJson?.(),
         "zbf-prefs-status-reading-exported",
-        "✓ 已导出阅读时长与热力图 JSON 备份"
+        tLocale("✓ 已导出阅读时长与热力图 JSON 备份", "✓ Exported reading progress & heatmap JSON backup", doc)
       );
     });
     bindActionBtn(doc.getElementById("zbf-clear-reading-notes"), () => {
-      if (targetWin?.confirm && !targetWin.confirm("确定要清空所有文献的累计阅读时长与热力图记录吗？（不影响工作区分组与条目简记 Note，此操作不可撤销）")) {
+      if (targetWin?.confirm && !targetWin.confirm(tLocale(
+        "确定要清空所有文献的累计阅读时长与热力图记录吗？（不影响工作区分组与条目简记 Note，此操作不可撤销）",
+        "Clear all reading duration and heatmap records? (Workspace groups and brief notes are preserved; this cannot be undone.)",
+        doc
+      ))) {
         return;
       }
       const app = getApp();
       app?.workspace?.store?.clearReadingProgress?.();
       app?.workspace?.refreshAllWindows?.();
       app?.visualNotes?.refreshLibraryViews?.();
-      setStatusFeedback(doc, "zbf-prefs-status-reading-cleared", "✓ 已清空阅读时长与热力图缓存（简记已保留）");
+      setStatusFeedback(doc, "zbf-prefs-status-reading-cleared", tLocale("✓ 已清空阅读时长与热力图缓存（简记已保留）", "✓ Cleared reading progress & heatmap cache", doc));
     });
     bindActionBtn(doc.getElementById("zbf-btn-export-brief-notes"), () => {
       void exportJsonBackup(
-        "导出条目简记 (Note) 备份 (JSON)",
+        tLocale("导出条目简记 (Note) 备份 (JSON)", "Export Brief Notes Backup (JSON)", doc),
         `BridgeFlow-BriefNotes-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`,
         getApp()?.workspace?.store?.exportBriefNotesJson?.(),
         "zbf-prefs-status-notes-exported",
-        "✓ 已导出独立简记 JSON 备份"
+        tLocale("✓ 已导出独立简记 JSON 备份", "✓ Exported brief notes JSON backup", doc)
       );
     });
     bindActionBtn(doc.getElementById("zbf-clear-brief-notes"), async () => {
-      if (targetWin?.confirm && !targetWin.confirm("确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）")) {
+      if (targetWin?.confirm && !targetWin.confirm(tLocale(
+        "确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）",
+        "Clear all local brief notes in brief-notes.json? (Workspace, reading progress, and Zotero Extra remarks are untouched.)",
+        doc
+      ))) {
         return;
       }
       const app = getApp();
       const saved = await app?.workspace?.store?.clearBriefNotes?.();
       if (!saved) {
-        setStatusFeedback(doc, "zbf-prefs-status-notes-clear-failed", "The local brief notes cache could not be fully cleared.");
+        setStatusFeedback(doc, "zbf-prefs-status-notes-clear-failed", tLocale("未能完整清空本地简记缓存。", "The local brief notes cache could not be fully cleared.", doc));
         return;
       }
       app?.workspace?.refreshAllWindows?.();
       app?.visualNotes?.refreshLibraryViews?.();
-      setStatusFeedback(doc, "zbf-prefs-status-notes-cleared", "✓ 已清空本地简记缓存文件");
+      setStatusFeedback(doc, "zbf-prefs-status-notes-cleared", tLocale("✓ 已清空本地简记缓存文件", "✓ Cleared local brief notes cache file", doc));
     });
     bindActionBtn(doc.getElementById("zbf-btn-export-ratings"), () => {
       void exportJsonBackup(
-        "导出文献星级评价备份 (JSON)",
+        tLocale("导出文献星级评价备份 (JSON)", "Export Star Ratings Backup (JSON)", doc),
         `BridgeFlow-ItemRatings-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.json`,
         getApp()?.services?.ratings?.exportJson?.(),
         "zbf-prefs-status-ratings-exported",
-        "✓ 已导出星级评价 JSON 备份"
+        tLocale("✓ 已导出星级评价 JSON 备份", "✓ Exported item ratings JSON backup", doc)
       );
     });
     bindActionBtn(doc.getElementById("zbf-clear-ratings-cache"), () => {
-      if (targetWin?.confirm && !targetWin.confirm("确定要清空本地独立缓存 item-ratings.json 中的文献星级评价吗？（不影响工作区、简记及 Zotero 原生字段）")) {
+      if (targetWin?.confirm && !targetWin.confirm(tLocale(
+        "确定要清空本地独立缓存 item-ratings.json 中的文献星级评价吗？（不影响工作区、简记及 Zotero 原生字段）",
+        "Clear all local star ratings in item-ratings.json? (Workspace, brief notes, and Zotero fields are untouched.)",
+        doc
+      ))) {
         return;
       }
       const app = getApp();
       app?.services?.ratings?.clearAll?.(true);
       app?.visualNotes?.refreshLibraryViews?.();
-      setStatusFeedback(doc, "zbf-prefs-status-ratings-cleared", "✓ 已清空本地星级评价缓存文件");
+      setStatusFeedback(doc, "zbf-prefs-status-ratings-cleared", tLocale("✓ 已清空本地星级评价缓存文件", "✓ Cleared local item ratings cache file", doc));
     });
     bindActionBtn(doc.getElementById("zbf-clear-covers-cache"), () => {
-      if (targetWin?.confirm && !targetWin.confirm("确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。")) {
+      if (targetWin?.confirm && !targetWin.confirm(tLocale(
+        "确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。",
+        "Clear Gallery PDF cover thumbnail cache (covers/)? Thumbnails regenerate automatically on next open without affecting PDFs.",
+        doc
+      ))) {
         return;
       }
       void clearPdfCoverCache().then((cleared) => {
         if (!cleared) {
-          setStatusFeedback(doc, "zbf-prefs-status-covers-clear-failed", "PDF cover cache could not be fully cleared.");
+          setStatusFeedback(doc, "zbf-prefs-status-covers-clear-failed", tLocale("无法完全清理画廊 PDF 封面缩略图缓存。", "PDF cover cache could not be fully cleared.", doc));
           return;
         }
         getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
-        setStatusFeedback(doc, "zbf-prefs-status-covers-cleared", "✓ 已清空画廊 PDF 封面缩略图缓存");
+        setStatusFeedback(doc, "zbf-prefs-status-covers-cleared", tLocale("✓ 已清空画廊 PDF 封面缩略图缓存", "✓ Cleared Gallery PDF cover thumbnail cache", doc));
       });
     });
     bindActionBtn(doc.getElementById("zbf-reset-defaults"), () => {
@@ -1307,8 +1355,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.7.8" }));
-        versionEl.textContent = `v${"0.7.8"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.7.9" }));
+        versionEl.textContent = `v${"0.7.9"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

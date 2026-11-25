@@ -21,7 +21,7 @@ export function isCitationCollectionRef(
 	if (ref._isBridgeFlowCollection === true || ref._isCiteFlowCollection === true) return true;
 	if (typeof ref.key === 'string' && ref.key && activeKeys.has(ref.key)) return true;
 	const name = String(ref.name || '');
-	if (name && (activeNames?.has(name) || /\.(?:docx|docm|doc|dotx|rtf)\s*(?:\([^)]+\))?$/i.test(name))) return true;
+	if (name && activeNames?.has(name)) return true;
 	try {
 		const rels = ref.getRelationsByPredicate?.(TEMP_COLLECTION_RELATION) || [];
 		if (Array.isArray(rels) && rels.some((r) => RECOGNIZED_MARKERS.has(r))) return true;
@@ -234,6 +234,7 @@ export function patchCollectionsViewForWindow(
 	}
 
 	if (typeof cv._addSortedRow === 'function') {
+		const maskRegistry = new WeakMap<object, { depth: number; hasOwn: boolean; original: unknown }>();
 		disposers.push(
 			runtime.patch(cv, '_addSortedRow', 'collectionsView', (orig) => async function (this: any, ...args: unknown[]) {
 				const [objectType, id] = args as [string, number];
@@ -249,21 +250,33 @@ export function patchCollectionsViewForWindow(
 						return res;
 					}
 				}
-				const masked: Array<{ row: any; hasOwn: boolean; original: unknown }> = [];
+				const touched: any[] = [];
 				for (const row of this._rows || []) {
-					if ((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, activeKeys)) {
+					if (!row || typeof row !== 'object') continue;
+					const alreadyMasked = maskRegistry.get(row);
+					if (alreadyMasked) {
+						alreadyMasked.depth += 1;
+						touched.push(row);
+					} else if ((row.isCollection?.() || row.type === 'collection') && isCitationCollectionRef(row.ref, activeKeys)) {
 						const hasOwn = Object.prototype.hasOwnProperty.call(row, 'isCollection');
 						const original = row.isCollection;
+						maskRegistry.set(row, { depth: 1, hasOwn, original });
 						row.isCollection = () => false;
-						masked.push({ row, hasOwn, original });
+						touched.push(row);
 					}
 				}
 				try {
 					return await orig.apply(this, args);
 				} finally {
-					for (const { row, hasOwn, original } of masked) {
-						if (hasOwn) row.isCollection = original;
-						else delete row.isCollection;
+					for (const row of touched) {
+						const entry = maskRegistry.get(row);
+						if (!entry) continue;
+						entry.depth -= 1;
+						if (entry.depth <= 0) {
+							maskRegistry.delete(row);
+							if (entry.hasOwn) row.isCollection = entry.original;
+							else delete row.isCollection;
+						}
 					}
 				}
 			}),

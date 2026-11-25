@@ -92,6 +92,7 @@ export class RemarkColumnController {
 	}
 
 	getDisplayForItem(item: any): string {
+		if (!item || item.deleted || (typeof item.isRegularItem === 'function' && !item.isRegularItem())) return '';
 		return readItemRemarkWithFallback(item, this.dataSource);
 	}
 
@@ -149,6 +150,10 @@ export class ReadingColumnsController {
 
 	setDataSource(source?: VisualNotesDataSource): void {
 		this.dataSource = source;
+	}
+
+	isReadTimeActive(): boolean {
+		return this.activeReadTime && this.registeredKeys.size > 0;
 	}
 
 	syncColumns(): void {

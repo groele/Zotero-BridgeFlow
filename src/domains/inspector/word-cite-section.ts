@@ -95,7 +95,7 @@ export class WordCiteSectionController {
 				}
 				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
-				return this.isSectionEnabled() && Boolean(item);
+				return this.isSectionEnabled() && (Boolean(item) || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
 			},
 			onRender: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
 				this.updateState(body, item, setEnabled, setSectionSummary);
@@ -257,7 +257,7 @@ export class WordCiteSectionController {
 	}
 
 	private handleIgnoreReminder(rec: ReminderItemRecord, st: WordCiteBodyState, zh: boolean): void {
-		const key = this.services.reminders.setIgnored(rec.cacheKey, true);
+		const key = this.services.reminders.setIgnored(rec.item || rec.cacheKey, true);
 		this.reminderState.lastUndoKey = key;
 		this.receiptOwner = st;
 		this.receipt = formatIgnoreReminderReceipt(key, zh);
@@ -319,9 +319,9 @@ export class WordCiteSectionController {
 		if (setSectionSummary) st.setSectionSummary = setSectionSummary;
 		st.activeItem = item ?? null;
 		const items = resolveWordCiteTargetItems(body.ownerDocument?.defaultView || null, item);
-		const enabled = this.isSectionEnabled() && items.length > 0;
+		const enabled = this.isSectionEnabled() && (items.length > 0 || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
 		setEnabled?.(enabled);
-		st.lastItemIDs = enabled ? items.map((it) => Number(it.id)) : [];
+		st.lastItemIDs = this.isSectionEnabled() ? items.map((it) => Number(it.id)) : [];
 		this.renderBodyState(st, items);
 	}
 
@@ -347,7 +347,7 @@ export class WordCiteSectionController {
 		renderWordCitePanel(st, vm, orphanCb, {
 			onLocateItem: (itemID) => this.handleLocateReminder(itemID, st, zh),
 			onIgnoreItem: (rec) => this.handleIgnoreReminder(rec, st, zh),
-			onRestoreItem: (rec) => { this.services.reminders.setIgnored(rec.cacheKey, false); this.renderAllBodies(); },
+			onRestoreItem: (rec) => { this.services.reminders.setIgnored(rec.item || rec.cacheKey, false); this.renderAllBodies(); },
 		});
 	}
 }

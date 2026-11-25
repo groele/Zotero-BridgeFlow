@@ -18,6 +18,7 @@ export class WordCitationCollectionManager {
 	private readonly sessionCollections = new Map<string, any>();
 	private readonly trackedCollectionKeys = new Set<string>();
 	private readonly windowDisposers = new Map<Window, Disposable>();
+	private readonly pendingTimers = new Map<Window, ReturnType<typeof setTimeout>>();
 	private syncQueue: Promise<void> = Promise.resolve();
 	private readonly kernel: PluginKernel;
 
@@ -67,15 +68,16 @@ export class WordCitationCollectionManager {
 	}
 
 	attachWindow(win: Window): void {
-		if (!win || this.windowDisposers.has(win)) return;
+		if (!win || this.windowDisposers.has(win) || this.pendingTimers.has(win)) return;
 		const iconURI = this.kernel.info.rootURI ? `${this.kernel.info.rootURI}assets/word.svg` : undefined;
 		const tryPatch = (attempt = 0): void => {
+			this.pendingTimers.delete(win);
 			if ((win as any).closed || this.windowDisposers.has(win)) return;
 			const cv = (win as any)?.ZoteroPane?.collectionsView;
 			if (!cv) {
 				if (attempt < 120) {
 					const schedule = typeof win.setTimeout === 'function' ? win.setTimeout.bind(win) : setTimeout;
-					schedule(() => tryPatch(attempt + 1), 50);
+					this.pendingTimers.set(win, schedule(() => tryPatch(attempt + 1), 50));
 				}
 				return;
 			}
@@ -94,6 +96,11 @@ export class WordCitationCollectionManager {
 	}
 
 	detachWindow(win: Window): void {
+		const timer = this.pendingTimers.get(win);
+		if (timer !== undefined) {
+			this.pendingTimers.delete(win);
+			clearTimeout(timer);
+		}
 		const dispose = this.windowDisposers.get(win);
 		if (!dispose) return;
 		this.windowDisposers.delete(win);
@@ -161,22 +168,26 @@ export class WordCitationCollectionManager {
 		await col.eraseTx();
 	}
 
-	async purgeStaleCollections(): Promise<void> {
-		const host = (globalThis as any).Zotero;
-		const api = host?.Collections;
-		const libraryID = host?.Libraries?.userLibraryID;
-		if (!libraryID || typeof api?.getByLibraryAndKey !== 'function') return;
-		for (const key of [...this.trackedCollectionKeys]) {
-			try {
-				if (this.getSessionIdByCollectionKey(key)) continue;
-				const col = api.getByLibraryAndKey(libraryID, key);
-				await this.eraseOwnedLeaf(col);
-				this.trackedCollectionKeys.delete(key);
-			} catch (err) {
-				this.kernel.logger.error('word-cite:purge-collection', err);
+	purgeStaleCollections(): Promise<void> {
+		const run = this.syncQueue.then(async () => {
+			const host = (globalThis as any).Zotero;
+			const api = host?.Collections;
+			const libraryID = host?.Libraries?.userLibraryID;
+			if (!libraryID || (typeof api?.getByLibraryAndKey !== 'function' && typeof api?.getByLibraryAndKeyAsync !== 'function')) return;
+			for (const key of [...this.trackedCollectionKeys]) {
+				try {
+					if (this.getSessionIdByCollectionKey(key)) continue;
+					const col = api.getByLibraryAndKey?.(libraryID, key) || (await api.getByLibraryAndKeyAsync?.(libraryID, key));
+					if (col) await this.eraseOwnedLeaf(col);
+					if (col || typeof api.getByLibraryAndKeyAsync === 'function') this.trackedCollectionKeys.delete(key);
+				} catch (err) {
+					this.kernel.logger.error('word-cite:purge-collection', err);
+				}
 			}
-		}
-		this.savePersistedKeys();
+			this.savePersistedKeys();
+		});
+		this.syncQueue = run.catch((err) => this.kernel.logger.error('word-cite:purge-collection', err));
+		return run;
 	}
 
 	sync(sessions: readonly WordSessionRecord[]): void {
@@ -185,22 +196,27 @@ export class WordCitationCollectionManager {
 			.catch((err) => this.kernel.logger.error('word-cite:collections', err));
 	}
 
-	async clearAll(): Promise<void> {
-		await this.syncQueue;
-		for (const dispose of this.windowDisposers.values()) {
-			try { dispose(); } catch { /* ignore */ }
-		}
-		this.windowDisposers.clear();
-		for (const col of this.sessionCollections.values()) {
-			try {
-				await this.eraseOwnedLeaf(col);
-				if (col?.key) this.trackedCollectionKeys.delete(col.key);
-			} catch (err) {
-				this.kernel.logger.error('word-cite:erase-collection', err);
+	clearAll(): Promise<void> {
+		const run = this.syncQueue.then(async () => {
+			for (const timer of this.pendingTimers.values()) clearTimeout(timer);
+			this.pendingTimers.clear();
+			for (const dispose of this.windowDisposers.values()) {
+				try { dispose(); } catch { /* ignore */ }
 			}
-		}
-		this.sessionCollections.clear();
-		this.savePersistedKeys();
+			this.windowDisposers.clear();
+			for (const col of this.sessionCollections.values()) {
+				try {
+					await this.eraseOwnedLeaf(col);
+					if (col?.key) this.trackedCollectionKeys.delete(col.key);
+				} catch (err) {
+					this.kernel.logger.error('word-cite:erase-collection', err);
+				}
+			}
+			this.sessionCollections.clear();
+			this.savePersistedKeys();
+		});
+		this.syncQueue = run.catch((err) => this.kernel.logger.error('word-cite:erase-collection', err));
+		return run;
 	}
 
 	private async runSync(sessions: readonly WordSessionRecord[]): Promise<void> {

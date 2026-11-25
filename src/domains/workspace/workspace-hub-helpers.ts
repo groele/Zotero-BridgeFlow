@@ -49,7 +49,7 @@ export async function importWorkspaceJsonInteractive(
 			const rv = await fp.show();
 			if (rv === fp.returnOK && fp.file) {
 				const content = await ZoteroObj.File.getContentsAsync(fp.file);
-				if (content && store.importJson(String(content))) onImported();
+				if (content && store.importAnyJson(String(content))) onImported();
 				else if (content) onInvalid?.();
 				return;
 			}
@@ -57,8 +57,8 @@ export async function importWorkspaceJsonInteractive(
 		}
 	} catch { /* fall back to paste dialog */ }
 
-	openTextPromptModal(win, '导入工作区 JSON', '请在此粘贴工作区 JSON 内容...', '', (raw) => {
-		if (raw && store.importJson(raw)) onImported();
+	openTextPromptModal(win, '导入工作区 JSON', '请在此粘贴工作区 / 阅读进度 / 简注 JSON 内容...', '', (raw) => {
+		if (raw && store.importAnyJson(raw)) onImported();
 		else if (raw?.trim()) onInvalid?.();
 	});
 }

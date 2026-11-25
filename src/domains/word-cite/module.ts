@@ -248,12 +248,15 @@ export class WordCiteDomainModule implements DomainModule {
 		this.recoveringOrphans = false;
 		this.notifiedOrphanSigs.clear();
 		clearRelinkedItemUris();
+		this.disposables.disposeAll();
 		this.poller.stop();
 		this.column.unregister();
 		this.dragCite.disposeAll();
 		void this.collections.clearAll();
+		if (!this.kernel.prefs.get('modules.wordCite.enable')) {
+			void this.tagGovernance.stripAllManagedTags();
+		}
 		this.tracker.clear();
-		this.disposables.disposeAll();
 	}
 
 	/** Prevents auto-refreshing the wrong open Word window when multiple Word sessions exist. */
@@ -261,15 +264,29 @@ export class WordCiteDomainModule implements DomainModule {
 		if (this.tracker.getActiveSession()?.sessionID !== targetSessionID) return false;
 		const all = this.tracker.getAllSessions();
 		if (all.length <= 1) return true;
-		const fgTitle = this.win32.probeForegroundWordTitle().trim().toLowerCase();
-		if (!fgTitle) return false;
-		const title = extractDocumentBaseName(fgTitle).toLowerCase();
-		const matches = all.filter((ses) => {
-			const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
-			const stem = base.replace(/\.(docx?|rtf)$/i, '');
-			return title === base || title === stem;
-		});
-		return matches.length === 1 && matches[0].sessionID === targetSessionID;
+		const docExtRe = /\.(?:docx|docm|doc|dotx|dotm|rtf|odt)$/i;
+		const matchTitle = (rawTitle: string): WordSessionRecordLike[] => {
+			const title = extractDocumentBaseName(`window-title:${rawTitle}`).toLowerCase();
+			if (!title || title === 'untitled word document') return [];
+			const titleStem = title.replace(docExtRe, '');
+			return all.filter((ses) => {
+				const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
+				const stem = base.replace(docExtRe, '');
+				return title === base || title === stem || titleStem === stem;
+			});
+		};
+		type WordSessionRecordLike = (typeof all)[number];
+		const fgRaw = this.win32.probeForegroundWordTitle().trim();
+		if (fgRaw) {
+			const matches = matchTitle(fgRaw);
+			return matches.length === 1 && matches[0].sessionID === targetSessionID;
+		}
+		const visible = this.win32.probeWordWindowTitles().visibleTitles;
+		if (visible.length === 1) {
+			const matches = matchTitle(visible[0]);
+			return matches.length === 1 && matches[0].sessionID === targetSessionID;
+		}
+		return false;
 	}
 
 	private showSpotlightRecoverToast(docName: string, res: WordRecoverOrphansResultPayload): void {

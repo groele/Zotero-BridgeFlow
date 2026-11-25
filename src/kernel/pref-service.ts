@@ -34,9 +34,23 @@ export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): Pre
 		return clamped as PrefValue<K>;
 	}
 	const str = String(raw);
-	if (key === 'inspector.cslPreview.fontsize' || key === 'inspector.cslPreview.spacing') {
+	if (key === 'inspector.cslPreview.fontsize') {
 		const num = Number(str);
 		if (!Number.isFinite(num) || num <= 0) return def as PrefValue<K>;
+		return String(Math.min(3, Math.max(0.4, num))) as PrefValue<K>;
+	}
+	if (key === 'inspector.cslPreview.spacing') {
+		const num = Number(str);
+		if (!Number.isFinite(num) || num <= 0) return def as PrefValue<K>;
+		return String(Math.min(3, Math.max(0.8, num))) as PrefValue<K>;
+	}
+	if (key === 'workspace.readingHeatmap.color') {
+		const hex = str.trim().toLowerCase();
+		if (/^#[0-9a-f]{6}$/.test(hex)) return hex as PrefValue<K>;
+		if (/^#[0-9a-f]{3}$/.test(hex)) {
+			return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}` as PrefValue<K>;
+		}
+		return def as PrefValue<K>;
 	}
 	if (desc.enumValues && !desc.enumValues.includes(str)) {
 		return def as PrefValue<K>;
@@ -46,6 +60,7 @@ export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): Pre
 
 export class UnifiedPrefService {
 	private readonly cache = new Map<PrefKey, unknown>();
+	private readonly cacheWatchedKeys = new Set<PrefKey>();
 	private readonly observerIDs: Array<symbol | string | number> = [];
 	private readonly bus?: TypedEventBus;
 	private readonly adapterOverride?: HostPrefsAdapter;
@@ -59,11 +74,27 @@ export class UnifiedPrefService {
 		return this.adapterOverride ?? resolveDefaultAdapter();
 	}
 
+	private ensureCacheInvalidationObserver(key: PrefKey): void {
+		if (this.cacheWatchedKeys.has(key)) return;
+		const adapter = this.adapter;
+		if (!adapter?.registerObserver) return;
+		this.cacheWatchedKeys.add(key);
+		try {
+			const token = adapter.registerObserver(this.fullKey(key), () => {
+				this.invalidate(key);
+			}, true);
+			this.observerIDs.push(token);
+		} catch {
+			this.cacheWatchedKeys.delete(key);
+		}
+	}
+
 	fullKey(key: PrefKey): string {
 		return PREF_PREFIX + key;
 	}
 
 	get<K extends PrefKey>(key: K): PrefValue<K> {
+		this.ensureCacheInvalidationObserver(key);
 		if (this.cache.has(key)) return this.cache.get(key) as PrefValue<K>;
 		const raw = this.readRaw(this.fullKey(key));
 		const normalized = normalizePrefValue(key, raw);
@@ -72,6 +103,7 @@ export class UnifiedPrefService {
 	}
 
 	set<K extends PrefKey>(key: K, value: PrefValue<K>): PrefValue<K> {
+		this.ensureCacheInvalidationObserver(key);
 		const normalized = normalizePrefValue(key, value);
 		this.cache.set(key, normalized);
 		try {
@@ -151,6 +183,7 @@ export class UnifiedPrefService {
 			}
 		}
 		this.observerIDs.length = 0;
+		this.cacheWatchedKeys.clear();
 		this.cache.clear();
 	}
 }

@@ -8,23 +8,26 @@ export function createFloatingPopup(doc: Document, anchor: HTMLElement, event?: 
 	pop.style.minWidth = `${minWidth}px`;
 	host.appendChild(pop);
 
-	const rect = anchor.getBoundingClientRect();
-	const hasMouse = Boolean(event && event.clientX > 0 && event.clientY > 0);
-	const winW = doc.defaultView?.innerWidth || 1200;
-	const winH = doc.defaultView?.innerHeight || 800;
-	const popW = pop.offsetWidth || minWidth;
-	const popH = Math.min(pop.offsetHeight || 260, winH - 16);
-	const rawX = hasMouse
-		? event!.clientX + 2
-		: (rect.left > winW * 0.55 ? rect.right - popW : rect.left);
-	let rawY = hasMouse ? event!.clientY + 6 : rect.bottom + 6;
-	if (rawY + popH > winH - 8) {
-		rawY = hasMouse ? event!.clientY - popH - 6 : rect.top - popH - 6;
-	}
-	const left = Math.max(8, Math.min(rawX, winW - popW - 12));
-	const top = Math.max(8, Math.min(rawY, winH - popH - 8));
-	pop.style.left = `${left}px`;
-	pop.style.top = `${top}px`;
+	const positionPopup = () => {
+		if (!pop.isConnected) return;
+		const rect = anchor.getBoundingClientRect();
+		const hasMouse = Boolean(event && event.clientX > 0 && event.clientY > 0);
+		const winW = doc.defaultView?.innerWidth || 1200;
+		const winH = doc.defaultView?.innerHeight || 800;
+		const popW = pop.offsetWidth || minWidth;
+		const popH = Math.min(pop.offsetHeight || 260, winH - 16);
+		const rawX = hasMouse
+			? event!.clientX + 2
+			: (rect.left > winW * 0.55 ? rect.right - popW : rect.left);
+		let rawY = hasMouse ? event!.clientY + 6 : rect.bottom + 6;
+		if (rawY + popH > winH - 8) {
+			rawY = hasMouse ? event!.clientY - popH - 6 : rect.top - popH - 6;
+		}
+		pop.style.left = `${Math.max(8, Math.min(rawX, winW - popW - 12))}px`;
+		pop.style.top = `${Math.max(8, Math.min(rawY, winH - popH - 8))}px`;
+	};
+	positionPopup();
+	queueMicrotask(positionPopup);
 	return pop;
 }
 
@@ -97,7 +100,7 @@ export function addPopupSubmenuSection(
 	if (dotColor) {
 		const dot = createWorkspaceElement(doc, 'span');
 		dot.className = 'zbf-popup-color-dot';
-		dot.style.background = dotColor;
+		dot.style.backgroundColor = dotColor;
 		left.appendChild(dot);
 	}
 
@@ -133,8 +136,8 @@ export function openTextPromptModal(
 	if (!host) return;
 
 	const backdrop = createWorkspaceElement(doc, 'div');
-	backdrop.id = 'zbf-hub-backdrop';
-	backdrop.style.zIndex = '100020';
+	backdrop.className = 'zbf-prompt-backdrop';
+	backdrop.style.zIndex = '2147483647';
 
 	const modal = createWorkspaceElement(doc, 'div');
 	modal.className = 'zbf-hub-box';
@@ -200,6 +203,7 @@ export function openTextPromptModal(
 	okBtn.addEventListener('click', submit);
 	input.addEventListener('keydown', (e) => {
 		const ke = e as KeyboardEvent;
+		if (ke.isComposing) return;
 		if (ke.key === 'Enter') {
 			ke.preventDefault();
 			submit();

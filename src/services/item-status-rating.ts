@@ -1,4 +1,5 @@
 import { getActiveRatingsCache } from './item-ratings-cache.ts';
+import { isItemTrashedOrDeleted, isItemWritable, isRegularValidItem } from './item-resolution.ts';
 import {
 	getCustomStatusColor,
 	purgeZoteroStatusTagColors,
@@ -94,11 +95,11 @@ function hashTagColor(tag: string): string {
 }
 
 export function resolveStatusColor(libraryID: number | undefined, tag: string): string {
+	const savedCustom = getCustomStatusColor(tag);
+	if (savedCustom) return savedCustom;
 	for (const p of [...DEFAULT_STATUS_PRESETS_ZH, ...DEFAULT_STATUS_PRESETS_EN]) {
 		if (p.tag.toLowerCase() === tag.toLowerCase()) return p.color;
 	}
-	const savedCustom = getCustomStatusColor(tag);
-	if (savedCustom) return savedCustom;
 	try {
 		const zTags = (globalThis as any).Zotero?.Tags;
 		const colorEntry = libraryID ? zTags?.getColor?.(libraryID, tag) : null;
@@ -109,11 +110,12 @@ export function resolveStatusColor(libraryID: number | undefined, tag: string): 
 }
 
 function resolveTargetRegularItem(item: any): any {
-	if (!item) return null;
-	if (typeof item.isRegularItem === 'function' && !item.isRegularItem() && item.parentItemID) {
-		return (globalThis as any).Zotero?.Items?.get?.(item.parentItemID) || item;
+	if (!item || isItemTrashedOrDeleted(item)) return null;
+	let candidate = item;
+	if (!isRegularValidItem(candidate) && (candidate.parentItem || candidate.parentItemID)) {
+		candidate = candidate.parentItem || (globalThis as any).Zotero?.Items?.get?.(candidate.parentItemID) || candidate;
 	}
-	return item;
+	return isRegularValidItem(candidate) ? candidate : null;
 }
 
 export function getItemStatus(rawItem: any, excludedTag = '/Citations'): StatusOption | null {
@@ -122,19 +124,12 @@ export function getItemStatus(rawItem: any, excludedTag = '/Citations'): StatusO
 	const id = Number(item.id || 0);
 	const stamp = String(item.version ?? item.dateModified ?? '');
 	const cacheKey = id > 0 && stamp ? `${id}:${stamp}:${excludedTag}` : '';
-	if (cacheKey && statusCache.has(cacheKey)) {
-		return getLru(statusCache, cacheKey) ?? null;
-	}
-	const tags: Array<{ tag?: string }> = item.getTags() || [];
+	if (cacheKey && statusCache.has(cacheKey)) return getLru(statusCache, cacheKey) ?? null;
 	let found: StatusOption | null = null;
-	for (const entry of tags) {
+	for (const entry of item.getTags() || []) {
 		const t = String(entry?.tag || '').trim();
 		if (isStatusTagName(t, excludedTag)) {
-			found = {
-				tag: t,
-				label: t.replace(/^\/+/, ''),
-				color: resolveStatusColor(item.libraryID, t),
-			};
+			found = { tag: t, label: t.replace(/^\/+/, ''), color: resolveStatusColor(item.libraryID, t) };
 			break;
 		}
 	}
@@ -145,19 +140,14 @@ export function getItemStatus(rawItem: any, excludedTag = '/Citations'): StatusO
 export function listAvailableStatuses(items: readonly any[], zh = true, excludedTag = '/Citations'): StatusOption[] {
 	const presets = zh ? DEFAULT_STATUS_PRESETS_ZH : DEFAULT_STATUS_PRESETS_EN;
 	const byLower = new Map<string, StatusOption>();
-	for (const p of presets) byLower.set(p.tag.toLowerCase(), p);
-
+	for (const p of presets) byLower.set(p.tag.toLowerCase(), { ...p, color: resolveStatusColor(undefined, p.tag) });
 	for (const raw of items) {
 		const item = resolveTargetRegularItem(raw);
 		if (!item || typeof item.getTags !== 'function') continue;
 		for (const entry of item.getTags() || []) {
 			const t = String(entry?.tag || '').trim();
 			if (isStatusTagName(t, excludedTag) && !byLower.has(t.toLowerCase())) {
-				byLower.set(t.toLowerCase(), {
-					tag: t,
-					label: t.replace(/^\/+/, ''),
-					color: resolveStatusColor(item.libraryID, t),
-				});
+				byLower.set(t.toLowerCase(), { tag: t, label: t.replace(/^\/+/, ''), color: resolveStatusColor(item.libraryID, t) });
 			}
 		}
 	}
@@ -170,7 +160,7 @@ export async function setItemStatus(
 	options?: { color?: string; excludedTag?: string; syncZoteroTagColor?: boolean },
 ): Promise<boolean> {
 	const item = resolveTargetRegularItem(rawItem);
-	if (!item || typeof item.getTags !== 'function') return false;
+	if (!item || !isItemWritable(item) || typeof item.getTags !== 'function') return false;
 	const excluded = options?.excludedTag ?? '/Citations';
 	if (statusTag !== null && !isStatusTagName(statusTag, excluded)) return false;
 
@@ -301,6 +291,7 @@ export async function setItemRating(
 		return changed;
 	}
 
+	if (!isItemWritable(item)) return false;
 	let changed = false;
 	if (getActiveRatingsCache().setRating(item, 0)) changed = true;
 

@@ -12,6 +12,7 @@ import { insertItemsIntoWord, type WordInsertResult } from './word-inserter.ts';
  */
 export class DragCiteController {
 	private readonly windowDisposers = new Map<Window, Disposable>();
+	private readonly pendingTimers = new Map<Window, ReturnType<typeof setTimeout>>();
 	private activeDragItems: any[] | null = null;
 	private activeDragStartedAt = 0;
 
@@ -26,12 +27,13 @@ export class DragCiteController {
 	}
 
 	attachWindow(win: Window): void {
-		if (this.windowDisposers.has(win)) return;
+		if (this.windowDisposers.has(win) || this.pendingTimers.has(win)) return;
 		const tryBind = (attempt = 0): void => {
+			this.pendingTimers.delete(win);
 			if ((win as any).closed || this.windowDisposers.has(win)) return;
 			const itemsView = (win as any).ZoteroPane?.itemsView;
 			if (!itemsView && attempt < 120 && typeof win.setTimeout === 'function') {
-				win.setTimeout(() => tryBind(attempt + 1), 50);
+				this.pendingTimers.set(win, win.setTimeout(() => tryBind(attempt + 1), 50));
 				return;
 			}
 			this.bindWindowImmediate(win, itemsView);
@@ -43,7 +45,7 @@ export class DragCiteController {
 		if (this.windowDisposers.has(win)) return;
 		const disposers: Disposable[] = [];
 
-		if (itemsView && typeof itemsView.onDragStart === 'function' && (this.win32.supportsNativeWin32() || (globalThis as any).Zotero?.isMac)) {
+		if (itemsView && typeof itemsView.onDragStart === 'function' && this.win32.supportsNativeWin32()) {
 			const unpatch = this.kernel.runtime.patch(
 				itemsView,
 				'onDragStart',
@@ -102,6 +104,11 @@ export class DragCiteController {
 	}
 
 	detachWindow(win: Window): void {
+		const timer = this.pendingTimers.get(win);
+		if (timer !== undefined) {
+			this.pendingTimers.delete(win);
+			try { win.clearTimeout?.(timer); } catch { /* ignore */ }
+		}
 		const disposer = this.windowDisposers.get(win);
 		if (!disposer) return;
 		this.windowDisposers.delete(win);
@@ -111,7 +118,7 @@ export class DragCiteController {
 	async handleDropEnd(items: readonly any[]): Promise<WordInsertResult> {
 		if (!this.kernel.prefs.get('wordCite.dragCite.enable')) return 'unavailable';
 		const probe = this.win32.probeCursorWordDropTarget();
-		if (probe.status !== 'word-confirmed' && !(globalThis as any).Zotero?.isMac) {
+		if (probe.status !== 'word-confirmed') {
 			if (probe.status === 'unknown') {
 				this.notifyHint(tLocale(
 					'未检测到 Microsoft Word 窗口目标，请确认将文献拖拽至 Word 文档编辑区内。',
@@ -145,6 +152,10 @@ export class DragCiteController {
 	}
 
 	disposeAll(): void {
+		for (const [win, timer] of this.pendingTimers.entries()) {
+			try { win.clearTimeout?.(timer); } catch { /* ignore */ }
+		}
+		this.pendingTimers.clear();
 		for (const disposer of this.windowDisposers.values()) disposer();
 		this.windowDisposers.clear();
 	}

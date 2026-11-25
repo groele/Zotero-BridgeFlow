@@ -1,3 +1,4 @@
+import { tLocale } from './kernel/locale.ts';
 import type { UnifiedPrefService } from './kernel/pref-service.ts';
 import {
 	ANNOTATION_COLOR_PRESETS,
@@ -117,7 +118,7 @@ export function syncAnnotationColorInputs(doc: Document, rawJson: string, rawEna
 		if (swatch) {
 			swatch.value = effectiveHex;
 			swatch.setAttribute('value', effectiveHex);
-			swatch.title = `${effectiveHex}（点击自定义颜色）`;
+			swatch.title = tLocale(`${effectiveHex}（点击自定义颜色）`, `${effectiveHex} (Click to customize color)`, doc);
 		}
 		input.setAttribute('data-zbf-color', effectiveHex);
 		(row as HTMLElement).style?.setProperty?.('--zbf-pill-color', effectiveHex);
@@ -179,7 +180,7 @@ export function initAnnotationColorEditor(
 		swatch.className = 'zbf-color-label-dot';
 		swatch.value = hex;
 		swatch.setAttribute('value', hex);
-		swatch.title = `${hex}（点击自定义颜色）`;
+		swatch.title = tLocale(`${hex}（点击自定义颜色）`, `${hex} (Click to customize color)`, doc);
 
 		const input = doc.createElementNS(XHTML_NS, 'input') as HTMLInputElement;
 		input.type = 'text';
@@ -189,14 +190,14 @@ export function initAnnotationColorEditor(
 		input.placeholder = defLabel;
 		input.value = merged[hex] || defLabel;
 		input.setAttribute('value', input.value);
-		input.title = '点击编辑颜色语义标签';
+		input.title = tLocale('点击编辑颜色语义标签', 'Click to edit semantic color label', doc);
 
 		const toggle = doc.createElementNS(XHTML_NS, 'input') as HTMLInputElement;
 		toggle.type = 'checkbox';
 		toggle.className = 'zbf-color-label-toggle';
 		toggle.checked = isEnabled;
 		if (isEnabled) toggle.setAttribute('checked', 'true');
-		toggle.title = '在 PDF 选词弹窗中启用/隐藏此颜色';
+		toggle.title = tLocale('在 PDF 选词弹窗中启用/隐藏此颜色', 'Show or hide this color in PDF selection popup', doc);
 
 		const commit = (fallbackEmpty: boolean) => {
 			if (fallbackEmpty && !input.value.trim()) input.value = defLabel;
@@ -208,7 +209,7 @@ export function initAnnotationColorEditor(
 		const applyColor = () => {
 			const nextHex = normalizeHexColor(swatch.value) || defHex;
 			input.setAttribute('data-zbf-color', nextHex);
-			swatch.title = `${nextHex}（点击自定义颜色）`;
+			swatch.title = tLocale(`${nextHex}（点击自定义颜色）`, `${nextHex} (Click to customize color)`, doc);
 			row.style?.setProperty?.('--zbf-pill-color', nextHex);
 			commit(true);
 			if (toggle.checked) commitEnabledFromGrid();

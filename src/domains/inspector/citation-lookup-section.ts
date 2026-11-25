@@ -9,6 +9,18 @@ import {
 } from './citation-lookup-ui.ts';
 import { clearLookupResult, ensureViewFlowStyles, setLookupL10n } from './inspector-styles.ts';
 
+function resolveActiveLibraryID(pane: any): number | undefined {
+	const multi = pane?.getSelectedLibraryIDs?.()?.[0];
+	if (typeof multi === 'number' && multi > 0) return multi;
+	try {
+		const single = pane?.getSelectedLibraryID?.();
+		if (typeof single === 'number' && single > 0) return single;
+	} catch { /* ignore */ }
+	const rowLib = pane?.getCollectionTreeRow?.()?.ref?.libraryID;
+	if (typeof rowLib === 'number' && rowLib > 0) return rowLib;
+	return (globalThis as any).Zotero?.Libraries?.userLibraryID;
+}
+
 export class CitationLookupSectionController {
 	private unregisterFn: Disposable | null = null;
 	private sectionID: string | false = false;
@@ -191,7 +203,7 @@ export class CitationLookupSectionController {
 			setLookupL10n(statusDiv, 'zbf-lookup-status-searching', '正在反查本地文献库...');
 			try {
 				const pane = (doc.defaultView as any)?.ZoteroPane;
-				const libraryID = pane?.getSelectedLibraryIDs?.()?.[0] ?? (globalThis as any).Zotero?.Libraries?.userLibraryID;
+				const libraryID = resolveActiveLibraryID(pane);
 				const outcome = await this.engine.resolveRich(textToSearch, {
 					libraryID, signal: controller.signal,
 					useHistory: this.kernel.prefs.get('inspector.lookup.historyEnable'),

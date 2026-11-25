@@ -1,4 +1,4 @@
-import { isRegularValidItem } from './item-resolution.ts';
+import { isItemWritable, isRegularValidItem } from './item-resolution.ts';
 export const DEFAULT_ANNOTATION_COLORS: Readonly<Record<string, string>> = {
 	'#ffd400': 'Context',
 	'#ff6666': 'Method',
@@ -43,7 +43,7 @@ export function normalizeHexColor(color: string | null | undefined): string {
 	if (/^#[0-9a-f]{3}$/.test(clean)) {
 		return `#${clean[1]}${clean[1]}${clean[2]}${clean[2]}${clean[3]}${clean[3]}`;
 	}
-	return clean;
+	return '';
 }
 
 export function parseColorSemantics(rawJson?: string | null): Record<string, string> {
@@ -208,6 +208,7 @@ export async function mergeAnnotationsByIDs(ids: readonly number[]): Promise<{
 
 	const sorted = [...sameParent].sort(compareAnnotationsByOrder);
 	const primary = sorted[0];
+	if (!isItemWritable(primary)) return { ok: false, keptID: 0, removedCount: 0 };
 	const rest = sorted.slice(1);
 	const { mergedText, mergedComment, mergedPosition } = mergeAnnotationPayloads(sorted);
 
@@ -266,7 +267,7 @@ export function collectItemAnnotations(
 				const annID = Number(ann?.id || 0);
 				if (!ann || ann.deleted || (annID > 0 && seenAnn.has(annID))) continue;
 				if (annID > 0) seenAnn.add(annID);
-				const color = normalizeHexColor(ann.annotationColor || ann.color);
+				const color = normalizeHexColor(ann.annotationColor || ann.color) || '#ffd400';
 				const text = String(ann.annotationText || '').trim();
 				const comment = String(ann.annotationComment || '').trim();
 				if (!text && !comment) continue;

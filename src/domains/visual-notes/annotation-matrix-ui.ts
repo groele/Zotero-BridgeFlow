@@ -71,7 +71,8 @@ export function extractQueryTerms(rawQuery: string): string[] {
 	return String(rawQuery || '')
 		.split(/(?:\|\||&&)/)
 		.map((s) => s.trim().toLowerCase())
-		.filter((s) => s.length >= 2);
+		.filter((s) => s.length >= 2 || /[\u4e00-\u9fff]/.test(s))
+		.sort((a, b) => b.length - a.length);
 }
 
 export function renderHighlightedSnippet(doc: Document, container: HTMLElement, text: string, terms: readonly string[]): void {

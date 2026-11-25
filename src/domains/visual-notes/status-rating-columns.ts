@@ -15,12 +15,33 @@ import {
 	srHtmlEl,
 } from './status-rating-popover.ts';
 
-function registerColumnSafe(registeredKeys: Set<string>, descriptor: Record<string, unknown>): boolean {
+function registerColumnSafe(
+	registeredKeys: Set<string>,
+	descriptor: Record<string, unknown>,
+	isActive: () => boolean,
+	onFailed: () => void,
+): boolean {
 	const manager = (globalThis as any).Zotero?.ItemTreeManager;
-	const key = manager?.registerColumn?.(descriptor);
-	if (typeof key !== 'string' || !key) return false;
-	registeredKeys.add(key);
-	return true;
+	const regFn = manager?.registerColumn || manager?.registerColumns;
+	if (typeof regFn !== 'function') return false;
+	try {
+		const res = regFn.call(manager, descriptor);
+		const recordKey = (val: unknown) => {
+			let added = false;
+			for (const k of Array.isArray(val) ? val : [val]) {
+				if (typeof k === 'string' && k) { registeredKeys.add(k); added = true; }
+			}
+			if (!added) onFailed();
+			else if (!isActive() && registeredKeys.size) unregisterAllSafe(registeredKeys);
+		};
+		if (res && typeof (res as Promise<unknown>).then === 'function') {
+			void (res as Promise<unknown>).then(recordKey, () => onFailed());
+		} else {
+			if (typeof res !== 'string' || !res) return false;
+			registeredKeys.add(res);
+		}
+		return true;
+	} catch { return false; }
 }
 
 function unregisterAllSafe(registeredKeys: Set<string>): void {
@@ -200,7 +221,7 @@ export class StatusRatingColumnsController {
 				span.appendChild(trigger);
 				return span;
 			},
-		});
+		}, () => this.activeStatus, () => { this.activeStatus = false; });
 	}
 
 	private registerRatingColumn(): void {
@@ -263,6 +284,7 @@ export class StatusRatingColumnsController {
 					bindInstantCellPress(star, () => {
 						const selected = (win as any)?.ZoteroPane?.getSelectedItems?.() || [];
 						const targets = captureBatchTargets(selected, item);
+						const prev = current;
 						const next = current === k ? 0 : k;
 						current = next;
 						wrap.removeAttribute('data-hover');
@@ -270,11 +292,13 @@ export class StatusRatingColumnsController {
 						syncVisual(next);
 						const storage = this.ratingStorage();
 						void (async () => {
+							let anySaved = false;
 							try {
 								for (const t of targets) {
-									try { await setItemRating(t, next, storage); } catch { /* isolate per-item failure */ }
+									try { if (await setItemRating(t, next, storage)) anySaved = true; } catch { /* isolate per-item failure */ }
 								}
 							} finally {
+								if (!anySaved) { current = prev; syncVisual(prev); }
 								this.notifyApplied();
 							}
 						})();
@@ -287,6 +311,6 @@ export class StatusRatingColumnsController {
 				span.appendChild(fit);
 				return span;
 			},
-		});
+		}, () => this.activeRating, () => { this.activeRating = false; });
 	}
 }

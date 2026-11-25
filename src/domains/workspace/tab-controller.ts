@@ -64,21 +64,15 @@ export class WorkspaceTabController {
 
 	openKeys(win: Window): string[] {
 		const tracked = this.buildTrackedTabs(win);
-		for (const t of tracked) {
-			if (t.itemID > 0) this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
-		}
+		this.store.saveVirtualMembersBatch(tracked.filter((t) => t.itemID > 0).map((t) => buildVirtualMetaFromTracked(t)));
 		return tracked.filter((t) => !t.virtual && t.itemID > 0).map((t) => t.key);
 	}
 
 	syncTrackedVirtualMeta(win: Window, groupId?: string): string[] {
 		const tracked = this.buildTrackedTabs(win).filter((t) => !groupId || t.groupId === groupId);
-		const keys: string[] = [];
-		for (const t of tracked) {
-			if (t.itemID > 0) {
-				this.store.saveVirtualMember(buildVirtualMetaFromTracked(t));
-				keys.push(t.key);
-			}
-		}
+		const withItem = tracked.filter((t) => t.itemID > 0);
+		this.store.saveVirtualMembersBatch(withItem.map((t) => buildVirtualMetaFromTracked(t)));
+		const keys = withItem.map((t) => t.key);
 		if (groupId) {
 			const grp = this.store.state.groups.find((g) => g.id === groupId);
 			for (const k of grp?.memberKeys || []) {

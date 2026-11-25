@@ -108,6 +108,12 @@ export class InspectorDomainModule implements DomainModule {
 				() => { void this.cslPreview.refreshAll(); },
 			),
 		);
+
+		this.disposables.add(
+			this.kernel.notifier.subscribe(['item'], ({ event }) => {
+				if (this.active && event === 'modify') void this.cslPreview.refreshAll();
+			}),
+		);
 	}
 
 	async lookupQuery(query: string, libraryItems?: readonly any[]): Promise<LookupCandidate[]> {

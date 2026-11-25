@@ -57,7 +57,11 @@ export class Win32BridgeService {
 
 	supportsNativeWin32(): boolean {
 		const host = (globalThis as any).Zotero;
-		return typeof host === 'undefined' || host.isWin !== false;
+		if (!host) return true;
+		if (host.isMac || host.isLinux) return false;
+		if (typeof host.isWin === 'boolean') return host.isWin;
+		const proc = (globalThis as any).process;
+		return !proc?.platform || proc.platform === 'win32';
 	}
 
 	probeForegroundWordTitle(): string {
@@ -154,29 +158,38 @@ export class Win32BridgeService {
 		if (this.cached) return this.cached;
 		const ctypes = (globalThis as any).ChromeUtils
 			.importESModule('resource://gre/modules/ctypes.sys.mjs')
-			.ctypes as NativeCtypes;
+			.ctypes as NativeCtypes & { char16_t?: BufferFactory };
+		const wchar = ctypes.char16_t ?? ctypes.jschar;
 		const POINT = new ctypes.StructType('BridgeFlowDropPoint', [
 			{ x: ctypes.long }, { y: ctypes.long },
 		]);
-		const user32 = ctypes.open('user32.dll');
-		const kernel32 = ctypes.open('kernel32.dll');
-		this.cached = {
-			ctypes, POINT, user32, kernel32,
-			getCursorPos: user32.declare('GetCursorPos', ctypes.winapi_abi, ctypes.int32_t, POINT.ptr),
-			windowFromPoint: user32.declare('WindowFromPoint', ctypes.winapi_abi, ctypes.voidptr_t, POINT),
-			getWindowThreadProcessId: user32.declare('GetWindowThreadProcessId', ctypes.winapi_abi, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t.ptr),
-			openProcess: kernel32.declare('OpenProcess', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.uint32_t, ctypes.int32_t, ctypes.uint32_t),
-			queryFullProcessImageName: kernel32.declare('QueryFullProcessImageNameW', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.uint32_t, ctypes.jschar.ptr, ctypes.uint32_t.ptr),
-			closeHandle: kernel32.declare('CloseHandle', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
-			getAncestor: user32.declare('GetAncestor', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.uint32_t),
-			getForegroundWindow: user32.declare('GetForegroundWindow', ctypes.winapi_abi, ctypes.voidptr_t),
-			findWindowEx: user32.declare('FindWindowExW', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.jschar.ptr, ctypes.voidptr_t),
-			isWindowVisible: user32.declare('IsWindowVisible', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
-			getWindowText: user32.declare('GetWindowTextW', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.jschar.ptr, ctypes.int32_t),
-			pathBuffer: ctypes.jschar.array(32768)(),
-			titleBuffer: ctypes.jschar.array(1024)(),
-		} as unknown as NativeWin32Api;
-		return this.cached;
+		let user32: NativeLibrary | undefined;
+		let kernel32: NativeLibrary | undefined;
+		try {
+			user32 = ctypes.open('user32.dll');
+			kernel32 = ctypes.open('kernel32.dll');
+			this.cached = {
+				ctypes, POINT, user32, kernel32,
+				getCursorPos: user32.declare('GetCursorPos', ctypes.winapi_abi, ctypes.int32_t, POINT.ptr),
+				windowFromPoint: user32.declare('WindowFromPoint', ctypes.winapi_abi, ctypes.voidptr_t, POINT),
+				getWindowThreadProcessId: user32.declare('GetWindowThreadProcessId', ctypes.winapi_abi, ctypes.uint32_t, ctypes.voidptr_t, ctypes.uint32_t.ptr),
+				openProcess: kernel32.declare('OpenProcess', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.uint32_t, ctypes.int32_t, ctypes.uint32_t),
+				queryFullProcessImageName: kernel32.declare('QueryFullProcessImageNameW', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, ctypes.uint32_t, wchar.ptr, ctypes.uint32_t.ptr),
+				closeHandle: kernel32.declare('CloseHandle', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
+				getAncestor: user32.declare('GetAncestor', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.uint32_t),
+				getForegroundWindow: user32.declare('GetForegroundWindow', ctypes.winapi_abi, ctypes.voidptr_t),
+				findWindowEx: user32.declare('FindWindowExW', ctypes.winapi_abi, ctypes.voidptr_t, ctypes.voidptr_t, ctypes.voidptr_t, wchar.ptr, ctypes.voidptr_t),
+				isWindowVisible: user32.declare('IsWindowVisible', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t),
+				getWindowText: user32.declare('GetWindowTextW', ctypes.winapi_abi, ctypes.int32_t, ctypes.voidptr_t, wchar.ptr, ctypes.int32_t),
+				pathBuffer: wchar.array(32768)(),
+				titleBuffer: wchar.array(1024)(),
+			} as unknown as NativeWin32Api;
+			return this.cached;
+		} catch (err) {
+			try { kernel32?.close(); } catch { /* ignore */ }
+			try { user32?.close(); } catch { /* ignore */ }
+			throw err;
+		}
 	}
 
 	private readWindowTitle(api: NativeWin32Api, hwnd: NativePointer | null): string {

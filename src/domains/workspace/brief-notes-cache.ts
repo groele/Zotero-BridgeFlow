@@ -83,7 +83,7 @@ export class BriefNotesDiskCache {
 		if (this.flushTimer !== null || this.lastError) void this.flushNow(state);
 	}
 
-	private dispose(): void {
+	dispose(): void {
 		if (this.flushTimer !== null) {
 			clearTimeout(this.flushTimer);
 			this.flushTimer = null;

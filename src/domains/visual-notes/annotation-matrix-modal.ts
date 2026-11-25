@@ -273,7 +273,7 @@ export function openAnnotationMatrixModal(options: {
 	};
 
 	mkBtn('存为 Zotero 笔记', true, () => {
-		void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`).then(async (id) => {
+		void saveMatrixAsZoteroNote(currentMatrix, `文献对比矩阵 · ${options.title}`, items[0]?.libraryID).then(async (id) => {
 			statusEl.textContent = id ? `✓ 已生成并打开笔记 (#${id})` : '✕ 生成笔记失败';
 			if (id) {
 				try { await (globalThis as any).Zotero?.Notes?.open?.(id, undefined, { openInWindow: false }); } catch { /* ignore */ }

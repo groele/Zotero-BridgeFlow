@@ -6,9 +6,9 @@
 	<html:header class="zbf-header">
 		<html:div class="zbf-title-row">
 			<html:div class="zbf-title-left">
-				<html:img class="zbf-brand-icon" src="chrome://zotero-bridgeflow/content/assets/bridgeflow.svg" alt=""/>
+				<html:img class="zbf-brand-icon" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.7.8"}'>v0.7.8</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.7.9"}'>v0.7.9</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -110,8 +110,8 @@
 							<label data-l10n-id="zbf-pref-ws-newtab-mode" control="zbf-sel-newtab"/>
 							<menulist id="zbf-sel-newtab" native="true" preference="extensions.zotero.bridgeflow.workspace.newTabMode">
 								<menupopup>
-									<menuitem value="independent" data-l10n-id="zbf-opt-newtab-independent"/>
-									<menuitem value="collection" data-l10n-id="zbf-opt-newtab-collection"/>
+									<menuitem value="independent" data-l10n-id="zbf-opt-independent"/>
+									<menuitem value="collection" data-l10n-id="zbf-opt-collection"/>
 								</menupopup>
 							</menulist>
 						</html:div>
@@ -119,9 +119,9 @@
 							<label data-l10n-id="zbf-pref-ws-multicol" control="zbf-sel-multicol"/>
 							<menulist id="zbf-sel-multicol" native="true" preference="extensions.zotero.bridgeflow.workspace.multiCollectionStrategy">
 								<menupopup>
-									<menuitem value="active" data-l10n-id="zbf-opt-multicol-active"/>
-									<menuitem value="existing" data-l10n-id="zbf-opt-multicol-existing"/>
-									<menuitem value="first" data-l10n-id="zbf-opt-multicol-first"/>
+									<menuitem value="active" data-l10n-id="zbf-opt-active"/>
+									<menuitem value="existing" data-l10n-id="zbf-opt-existing"/>
+									<menuitem value="first" data-l10n-id="zbf-opt-first"/>
 								</menupopup>
 							</menulist>
 						</html:div>
@@ -140,7 +140,7 @@
 						<html:div id="zbf-sub-sleep-cfg" class="zbf-sub-stack">
 							<html:div class="zbf-field-grid-2">
 								<html:div class="zbf-field-card">
-									<label data-l10n-id="zbf-pref-ws-sleep-min" control="zbf-num-sleepmin"/>
+									<label data-l10n-id="zbf-pref-ws-autosleep" control="zbf-num-sleepmin"/>
 									<html:input id="zbf-num-sleepmin" class="zbf-num-input" type="number" min="0" max="1440" value="0" data-zbf-pref="workspace.autoSleepMinutes"/>
 								</html:div>
 								<html:div class="zbf-field-card">
@@ -192,8 +192,8 @@
 								<menupopup>
 									<menuitem value="source" data-l10n-id="zbf-opt-sub-source"/>
 									<menuitem value="creatorYear" data-l10n-id="zbf-opt-sub-creator"/>
-									<menuitem value="collection" data-l10n-id="zbf-opt-sub-collection"/>
-									<menuitem value="lastViewed" data-l10n-id="zbf-opt-sub-viewed"/>
+									<menuitem value="collection" data-l10n-id="zbf-opt-sub-col"/>
+									<menuitem value="lastViewed" data-l10n-id="zbf-opt-sub-lastviewed"/>
 									<menuitem value="none" data-l10n-id="zbf-opt-sub-none"/>
 								</menupopup>
 							</menulist>

@@ -100,21 +100,30 @@ export function buildOrphanIdentity(
 }
 
 export function isForeignUserItemUri(uri: string, zoteroObj: any): boolean {
-	const userMatch = uri.match(/^https?:\/\/zotero\.org\/users\/(\d+)\/items\/([A-Za-z0-9]+)\/?$/i);
-	if (userMatch) {
+	const clean = String(uri || '').trim().replace(/[?#].*$/, '').replace(/^https:\/\/zotero\.org\//i, 'http://zotero.org/').replace(/\/+$/, '');
+	const match = clean.match(/^http:\/\/zotero\.org\/(?:users\/local\/([A-Za-z0-9_-]+)|users\/(\d+)|groups\/(\d+))\/items\/([A-Za-z0-9_-]+)$/i);
+	if (!match) return true;
+	const [, localKey, userId, groupId] = match;
+	if (userId) {
 		const currentUid = typeof zoteroObj?.Users?.getCurrentUserID === 'function'
 			? String(zoteroObj.Users.getCurrentUserID() || '').trim()
 			: '';
-		return !currentUid || userMatch[1] !== currentUid;
+		return !currentUid || userId !== currentUid;
 	}
-	const localMatch = uri.match(/^https?:\/\/zotero\.org\/users\/local\/([A-Za-z0-9]+)\/items\/([A-Za-z0-9]+)\/?$/i);
-	if (localMatch) {
+	if (localKey) {
 		const ownLocal = typeof zoteroObj?.Users?.getLocalUserKey === 'function'
 			? String(zoteroObj.Users.getLocalUserKey() || '').trim()
 			: '';
-		return !ownLocal || localMatch[1] !== ownLocal;
+		return !ownLocal || localKey !== ownLocal;
 	}
-	return false;
+	if (groupId) {
+		if (typeof zoteroObj?.Groups?.getLibraryIDFromGroupID === 'function') {
+			const libId = Number(zoteroObj.Groups.getLibraryIDFromGroupID(Number(groupId)) ?? 0);
+			return !(Number.isSafeInteger(libId) && libId > 0);
+		}
+		return typeof zoteroObj?.URI?.getURIItemID !== 'function' && typeof zoteroObj?.URI?.getURIItemLibraryKey !== 'function';
+	}
+	return true;
 }
 
 const relinkedUriMap = new Map<string, number>();
@@ -135,7 +144,11 @@ export function resolveItemIdFromUris(uris: readonly string[], zoteroObj: any, h
 	if (!uris.length || !hostItems) return 0;
 	const uriSvc = zoteroObj?.URI;
 	for (const uri of uris) {
-		if (!uri || isForeignUserItemUri(uri, zoteroObj)) continue;
+		if (!uri) continue;
+		const norm = uri.trim().replace(/[?#].*$/, '').replace(/^https:\/\/zotero\.org\//i, 'http://zotero.org/').replace(/\/+$/, '');
+		const mapped = relinkedUriMap.get(norm);
+		if (mapped && hostItems.get?.(mapped)) return mapped;
+		if (isForeignUserItemUri(uri, zoteroObj)) continue;
 		try {
 			if (typeof uriSvc?.getURIItemID === 'function') {
 				const id = Number(uriSvc.getURIItemID(uri));
@@ -155,9 +168,6 @@ export function resolveItemIdFromUris(uris: readonly string[], zoteroObj: any, h
 					}
 				}
 			}
-			const norm = uri.replace(/^https:\/\/zotero\.org\//i, 'http://zotero.org/').replace(/\/+$/, '');
-			const mapped = relinkedUriMap.get(norm);
-			if (mapped && hostItems.get?.(mapped)) return mapped;
 		} catch { /* ignore malformed or unknown URI */ }
 	}
 	return 0;
@@ -277,16 +287,17 @@ export function lookupKnownOrdinal(
 	citeprocMap: ReadonlyMap<string, number>,
 	resolvedItemID: number,
 	rawData: Record<string, unknown> | undefined,
+	skipRawItemId = false,
 ): number | undefined {
 	const explicit = Number(ci?.ordinal ?? ci?.citationNumber ?? 0);
 	if (Number.isSafeInteger(explicit) && explicit > 0) return explicit;
 	if (!citeprocMap.size) return undefined;
-	const candidates = [
-		ci?.id !== undefined && ci?.id !== null ? String(ci.id).trim() : '',
-		ci?.itemID !== undefined && ci?.itemID !== null ? String(ci.itemID).trim() : '',
-		resolvedItemID > 0 ? String(resolvedItemID) : '',
-		rawData?.id !== undefined && rawData?.id !== null ? String(rawData.id).trim() : '',
-	];
+	const rawCiId = ci?.id !== undefined && ci?.id !== null ? String(ci.id).trim() : '';
+	const rawItemId = ci?.itemID !== undefined && ci?.itemID !== null ? String(ci.itemID).trim() : '';
+	const rawDataId = rawData?.id !== undefined && rawData?.id !== null ? String(rawData.id).trim() : '';
+	const candidates = skipRawItemId
+		? [resolvedItemID > 0 ? String(resolvedItemID) : '', rawDataId && rawDataId !== rawCiId && rawDataId !== rawItemId ? rawDataId : '']
+		: [rawCiId, rawItemId, resolvedItemID > 0 ? String(resolvedItemID) : '', rawDataId];
 	for (const key of candidates) {
 		if (!key) continue;
 		const seq = citeprocMap.get(key);

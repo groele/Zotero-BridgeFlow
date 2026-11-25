@@ -28,6 +28,7 @@ export {
 export interface ReminderItemRecord {
 	readonly itemID: number;
 	readonly cacheKey: string;
+	readonly item?: any;
 	readonly itemType: string;
 	readonly itemTypeLabel: string;
 	readonly title: string;
@@ -121,7 +122,7 @@ export function buildMetadataRemindersModel(options: {
 			? (zh ? '当前文档' : 'Active doc')
 			: (zh ? '当前选择' : 'Selected');
 		allRecords.push({
-			itemID, cacheKey, itemType: rawType, itemTypeLabel: formatReminderItemType(rawType, zh),
+			itemID, cacheKey, item: cand.item, itemType: rawType, itemTypeLabel: formatReminderItemType(rawType, zh),
 			title, creatorYear: formatCreatorYear(cand.item), sourceKind: cand.sourceKind,
 			ordinal: cand.ordinal, sourceLabel, fields, ignored: isIgnored(cand.item),
 		});

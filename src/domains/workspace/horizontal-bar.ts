@@ -8,11 +8,7 @@ import type { WorkspaceTabContextMenu } from './tab-context-menu.ts';
 import type { WorkspaceTabController } from './tab-controller.ts';
 import type { TabGroup, TrackedTab } from './types.ts';
 import {
-	beginTabDrag,
-	hasBridgeFlowDraggedTab,
-	hasZoteroDraggedItems,
-	parseZoteroDraggedItemIDs,
-	readTabDragPayload,
+	beginTabDrag, hasBridgeFlowDraggedTab, hasZoteroDraggedItems, parseZoteroDraggedItemIDs, readTabDragPayload,
 } from './workspace-drag.ts';
 import { createWorkspaceIcon } from './workspace-icons.ts';
 import type { WorkspaceToolbarActions } from './horizontal-toolbar.ts';
@@ -75,8 +71,9 @@ export class WorkspaceHorizontalBar {
 		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
 		const compactMode = this.prefs.get('workspace.horizontalTabCompactMode');
 		const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(',');
-		const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}`).join('|');
-		const renderKey = `${selectedID}|${compactMode}|${this.prefs.get('workspace.pinnedIconOnly')}|${this.store.state.collapsed.join(',')}|${gKey}|${tKey}`;
+		const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${this.store.state.remarkModes[t.key] || ''}:${t.title}:${t.shortTitle}:${t.filename}`).join('|');
+		const pKey = `${this.prefs.get('workspace.pinnedIconOnly')}|${this.prefs.get('workspace.enablePinnedTabs')}|${this.prefs.get('workspace.enableTabRemarks')}|${this.prefs.get('workspace.remarkDisplayMode')}|${this.prefs.get('workspace.verticalTabTitleMode')}`;
+		const renderKey = `${selectedID}|${compactMode}|${pKey}|${this.store.state.collapsed.join(',')}|${gKey}|${tKey}`;
 		if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
 		this.lastRenderKey = renderKey;
 		const frag = this.doc.createDocumentFragment();
@@ -153,7 +150,7 @@ export class WorkspaceHorizontalBar {
 
 		const dot = createWorkspaceElement(this.doc, 'span');
 		dot.className = 'zbf-sb-group-dot';
-		dot.style.background = group.color;
+		dot.style.backgroundColor = group.color;
 		const nameSpan = createWorkspaceElement(this.doc, 'span');
 		nameSpan.textContent = labelText;
 		head.append(dot, nameSpan);
@@ -231,7 +228,7 @@ export class WorkspaceHorizontalBar {
 			if ((e as MouseEvent).button !== 1) return;
 			e.preventDefault();
 			e.stopPropagation();
-			if (!tab.virtual) void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true });
+			if (!tab.virtual) void this.tabs.closeTabs(this.win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
 		});
 		chip.addEventListener('contextmenu', (e) => {
 			if (!this.prefs.get('workspace.enableTabContextMenu')) return;
@@ -261,6 +258,7 @@ export class WorkspaceHorizontalBar {
 		};
 		input.addEventListener('keydown', (e) => {
 			const ke = e as KeyboardEvent;
+			if (ke.isComposing) return;
 			if (ke.key === 'Enter') finish(true);
 			else if (ke.key === 'Escape') finish(false);
 		});

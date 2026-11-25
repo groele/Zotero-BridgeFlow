@@ -19,7 +19,7 @@ interface WindowGalleryState {
 	win: Window; open: boolean; contentTab: GalleryContentTab; mode: GalleryMode; groupBy: GalleryGroupBy;
 	sortField: GallerySortField; query: string; selectedIDs: Set<number>; anchorItemID: number;
 	readingSelection: { itemID: number }; columnOrders: Map<GalleryGroupBy, string[]>; measurements: Map<string, number>;
-	tbGroup: HTMLElement | null; btnGallery: HTMLButtonElement | null; btnHub: HTMLButtonElement | null;
+	measureSig: string; tbGroup: HTMLElement | null; btnGallery: HTMLButtonElement | null; btnHub: HTMLButtonElement | null;
 	panel: HTMLElement | null; layout: GalleryVirtualLayoutController | null; viewportDispose: (() => void) | null;
 	queryTimer: ReturnType<typeof setTimeout> | null;
 	visibilityGuard: ReturnType<typeof createGalleryVisibilityGuard> | null;
@@ -35,28 +35,16 @@ export class GalleryBoardController {
 	private readonly onMutated: () => void;
 
 	constructor(options: {
-		kernel: PluginKernel;
-		getReadProgress: (item: any) => TabReadingProgress | undefined;
-		onOpenHub: (win: Window) => void;
-		onMutated: () => void;
+		kernel: PluginKernel; getReadProgress: (item: any) => TabReadingProgress | undefined;
+		onOpenHub: (win: Window) => void; onMutated: () => void;
 	}) {
-		this.kernel = options.kernel;
-		this.getReadProgress = options.getReadProgress;
-		this.onOpenHub = options.onOpenHub;
-		this.onMutated = options.onMutated;
+		this.kernel = options.kernel; this.getReadProgress = options.getReadProgress;
+		this.onOpenHub = options.onOpenHub; this.onMutated = options.onMutated;
 	}
 
-	setDataSource(source?: VisualNotesDataSource): void {
-		this.dataSource = source;
-	}
-
-	private isZh(): boolean {
-		return Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
-	}
-
-	private defaultMode(): GalleryMode {
-		return this.kernel.prefs.get('visualNotes.gallery.defaultMode') === 'board' ? 'board' : 'gallery';
-	}
+	setDataSource(source?: VisualNotesDataSource): void { this.dataSource = source; }
+	private isZh(): boolean { return Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh')); }
+	private defaultMode(): GalleryMode { return this.kernel.prefs.get('visualNotes.gallery.defaultMode') === 'board' ? 'board' : 'gallery'; }
 
 	private defaultGroupBy(): GalleryGroupBy {
 		const v = String(this.kernel.prefs.get('visualNotes.gallery.groupBy') || 'status');
@@ -69,7 +57,7 @@ export class GalleryBoardController {
 		const st: WindowGalleryState = {
 			win, open: false, contentTab: 'items', mode: this.defaultMode(), groupBy: this.defaultGroupBy(),
 			sortField: 'dateModified', query: '', selectedIDs: new Set(), anchorItemID: 0,
-			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(),
+			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(), measureSig: '',
 			tbGroup: null, btnGallery: null, btnHub: null, panel: null, layout: null,
 			viewportDispose: null, queryTimer: null, visibilityGuard: null, paneAdapter: null,
 		};
@@ -224,6 +212,12 @@ export class GalleryBoardController {
 
 		const prevScrollTop = panel.querySelector('.zbf-gal-viewport')?.scrollTop || 0;
 		const prevScrollLeft = panel.querySelector('.zbf-gal-viewport')?.scrollLeft || 0;
+		const prevColScroll = new Map<string, number>();
+		panel.querySelectorAll('.zbf-gal-col[data-col-key]').forEach((colNode) => {
+			const k = (colNode as HTMLElement).dataset.colKey;
+			const stTop = colNode.querySelector('.zbf-gal-col-body')?.scrollTop || 0;
+			if (k && stTop > 0) prevColScroll.set(k, stTop);
+		});
 		this.disposeViewport(st);
 
 		const zh = this.isZh();
@@ -233,6 +227,9 @@ export class GalleryBoardController {
 		const ratingStorage = normalizeRatingStorage(this.kernel.prefs.get('visualNotes.ratingStorage'));
 		const cardWidth = Number(this.kernel.prefs.get('visualNotes.gallery.cardWidth')) || 220;
 		const coverHeight = Number(this.kernel.prefs.get('visualNotes.gallery.coverHeight')) || 0;
+		const nextMeasureSig = `${cardWidth}|${coverHeight}|${density}|${showBrief ? 1 : 0}`;
+		if (st.measureSig && st.measureSig !== nextMeasureSig) st.measurements.clear();
+		st.measureSig = nextMeasureSig;
 
 		panel.setAttribute('data-density', density);
 		panel.style.setProperty('--zbf-card-width', `${cardWidth}px`);
@@ -259,8 +256,8 @@ export class GalleryBoardController {
 				measurements: st.measurements,
 				excludedTag, ratingStorage,
 				syncZoteroTagColor: Boolean(this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')),
-				makeCard: (c: GalleryCardModel, draggable: boolean) => renderGalleryCardElement({
-					doc, card: c, selected: st.selectedIDs.has(c.itemID), showBrief, ratingStorage, draggable,
+				makeCard: (c: GalleryCardModel, draggable: boolean, onDragStateChange?: (d: boolean) => void) => renderGalleryCardElement({
+					doc, card: c, selected: st.selectedIDs.has(c.itemID), showBrief, ratingStorage, draggable, onDragStateChange,
 					onSelect: (picked, _el, ev) => {
 						const order = st.layout?.orderIDs || sorted.map((x) => x.itemID);
 						if (ev.shiftKey && st.anchorItemID && order.includes(st.anchorItemID)) {
@@ -348,6 +345,13 @@ export class GalleryBoardController {
 		}
 		if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
 		if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
+		if (prevColScroll.size) {
+			bodyViewport.querySelectorAll('.zbf-gal-col[data-col-key]').forEach((colNode) => {
+				const stTop = prevColScroll.get((colNode as HTMLElement).dataset.colKey || '');
+				const bodyEl = colNode.querySelector('.zbf-gal-col-body');
+				if (stTop && bodyEl) bodyEl.scrollTop = stTop;
+			});
+		}
 		st.layout?.refresh();
 		activateCovers?.();
 	}

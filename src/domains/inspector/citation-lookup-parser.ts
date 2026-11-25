@@ -14,11 +14,14 @@ export interface ParsedCitation {
 	authorPrefix?: string;
 }
 
+const MAX_CITATION_INPUT_LEN = 2400;
+
 export function extractIdentifier(input: string): { doi?: string; arxiv?: string } {
-	const doiMatch = input.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
+	const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
+	const doiMatch = bounded.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
 	const arxivMatch =
-		input.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) ||
-		input.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
+		bounded.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) ||
+		bounded.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
 	return {
 		doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, '').replace(/\)+$/, trailing => {
 			const opens = (doiMatch[1].match(/\(/g) || []).length;
@@ -30,23 +33,67 @@ export function extractIdentifier(input: string): { doi?: string; arxiv?: string
 }
 
 export function stripAuthorPrefix(text: string): { authors?: string; rest: string } {
-	const quoteMatch = text.match(/^(.+?)[,.\s]+["\u201c].+?["\u201d][,.\s]+(.+)$/);
-	if (quoteMatch) {
-		return { authors: quoteMatch[1].trim(), rest: quoteMatch[2].replace(/^in\s+/i, '').trim() };
+	const bounded = text.length > MAX_CITATION_INPUT_LEN ? text.slice(0, MAX_CITATION_INPUT_LEN) : text;
+	let openQuote = -1;
+	let closeChar = '';
+	for (let i = 0; i < bounded.length; i++) {
+		const ch = bounded[i];
+		if (ch === '"' || ch === '\u201c') {
+			openQuote = i;
+			closeChar = ch === '\u201c' ? '\u201d' : '"';
+			break;
+		}
 	}
-	const gbtMatch = text.match(/^([^.]+?)\.\s*.+?\[J\][.,\s]+(.+)$/i);
-	if (gbtMatch) {
-		return { authors: gbtMatch[1].trim(), rest: gbtMatch[2].trim() };
+	if (openQuote > 0 && /[,.\s]$/.test(bounded.slice(0, openQuote))) {
+		let closeQuote = bounded.indexOf(closeChar, openQuote + 1);
+		if (closeQuote < 0 && closeChar === '\u201d') closeQuote = bounded.indexOf('"', openQuote + 1);
+		if (closeQuote > openQuote + 1) {
+			const afterQuote = bounded.slice(closeQuote + 1);
+			if (/^[,.\s]+\S/.test(afterQuote)) {
+				const authors = bounded.slice(0, openQuote).replace(/[,.\s]+$/, '').trim();
+				const rest = afterQuote.replace(/^[,.\s]+/, '').replace(/^in\s+/i, '').trim();
+				if (authors && rest) return { authors, rest };
+			}
+		}
 	}
-	const etAlMatch = text.match(/^(.+?\bet\s+al\.?),?\s+(.+)$/i);
-	if (etAlMatch) {
-		return { authors: etAlMatch[1].trim(), rest: etAlMatch[2].trim() };
+
+	const jTagIdx = bounded.toLowerCase().indexOf('[j]');
+	if (jTagIdx > 1) {
+		const dotIdx = bounded.indexOf('.');
+		const afterJ = bounded.slice(jTagIdx + 3);
+		if (dotIdx > 0 && dotIdx < jTagIdx && /^[.,\s]+\S/.test(afterJ)) {
+			const authors = bounded.slice(0, dotIdx).trim();
+			const rest = afterJ.replace(/^[.,\s]+/, '').trim();
+			if (authors && rest) return { authors, rest };
+		}
 	}
-	const semiMatch = text.match(/^([^;]+(?:;\s*[^;]+)+)[,;]\s+([A-Z].+)$/);
-	if (semiMatch) {
-		return { authors: semiMatch[1].trim(), rest: semiMatch[2].trim() };
+
+	const etAlHit = /\bet\s+al\.?(?:,\s*|\s+)/i.exec(bounded);
+	if (etAlHit && etAlHit.index > 0) {
+		const endIdx = etAlHit.index + etAlHit[0].length;
+		const rest = bounded.slice(endIdx).trim();
+		const authors = bounded.slice(0, endIdx).replace(/(?:,\s*|\s+)$/, '').trim();
+		if (authors && rest) return { authors, rest };
 	}
-	return { rest: text };
+
+	if (bounded.includes(';')) {
+		const parts = bounded.split(';');
+		if (parts.length >= 2 && parts.slice(0, -1).every((p) => p.trim().length > 0)) {
+			const lastPart = parts[parts.length - 1];
+			const commaSplit = lastPart.match(/^(.+),\s+([A-Z].+)$/);
+			if (commaSplit) {
+				const authors = [...parts.slice(0, -1), commaSplit[1]].join(';').trim();
+				const rest = commaSplit[2].trim();
+				if (authors && rest) return { authors, rest };
+			}
+			if (parts.length >= 3 && /^\s+[A-Z]/.test(lastPart)) {
+				const authors = parts.slice(0, -1).join(';').trim();
+				const rest = lastPart.trim();
+				if (authors && rest) return { authors, rest };
+			}
+		}
+	}
+	return { rest: bounded };
 }
 
 export function normalizeJournal(name: string): string {
@@ -60,7 +107,8 @@ export function normalizeJournal(name: string): string {
 
 export function parseCompactCitation(input: string): ParsedCitation | null {
 	if (!input || typeof input !== 'string') return null;
-	const clean = input
+	const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
+	const clean = bounded
 		.replace(/\s+/g, ' ')
 		.trim()
 		.replace(/^(?:\[\d+\]\s*|\(\d+\)\s*|\d{1,3}[.)]\s+|•\s*)/, '')

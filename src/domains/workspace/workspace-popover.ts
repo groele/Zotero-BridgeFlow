@@ -74,7 +74,8 @@ export class WorkspacePopover {
 		nameInput.className = 'zbf-hub-input';
 		nameInput.placeholder = '输入工作区快照或模板名称（如：论文修改轮次）...';
 		nameInput.addEventListener('keydown', (e) => {
-			if ((e as KeyboardEvent).key === 'Enter') {
+			const ke = e as KeyboardEvent;
+			if (!ke.isComposing && ke.key === 'Enter') {
 				e.preventDefault();
 				saveBtn.click();
 			}

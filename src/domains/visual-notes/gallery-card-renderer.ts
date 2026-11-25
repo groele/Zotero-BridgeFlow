@@ -148,6 +148,7 @@ export function renderGalleryCardElement(opts: {
 	onContextMenu?: (card: GalleryCardModel, el: HTMLElement, ev: MouseEvent) => void;
 	onOpenReader: (card: GalleryCardModel, ev?: MouseEvent | KeyboardEvent) => void;
 	onNavigateKey?: (card: GalleryCardModel, key: string, ev: KeyboardEvent) => void;
+	onDragStateChange?: (dragging: boolean) => void;
 	onRated: () => void;
 }): HTMLElement {
 	const { doc, card } = opts;
@@ -160,10 +161,12 @@ export function renderGalleryCardElement(opts: {
 		el.draggable = true;
 		el.addEventListener('dragstart', (ev) => {
 			el.setAttribute('data-dragging', 'true');
+			opts.onDragStateChange?.(true);
 			ev.dataTransfer?.setData('text/zbf-item-id', String(card.itemID));
 		});
 		el.addEventListener('dragend', () => {
 			el.removeAttribute('data-dragging');
+			opts.onDragStateChange?.(false);
 		});
 	}
 
@@ -238,12 +241,16 @@ export function renderGalleryCardElement(opts: {
 		});
 		s.addEventListener('click', (ev) => {
 			ev.stopPropagation();
+			const prev = currentRating;
 			const next = currentRating === k ? 0 : k;
 			currentRating = next;
 			rateFloat.removeAttribute('data-hover');
 			rateFloat.removeAttribute('data-clear-hint');
 			syncCardStars(next);
-			void setItemRating(card.item, next, opts.ratingStorage).then(() => opts.onRated());
+			void setItemRating(card.item, next, opts.ratingStorage).then((ok) => {
+				if (!ok) { currentRating = prev; syncCardStars(prev); return; }
+				opts.onRated();
+			}, () => { currentRating = prev; syncCardStars(prev); });
 		});
 		starEls.push(s);
 		rateFloat.appendChild(s);

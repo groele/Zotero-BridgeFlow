@@ -21,7 +21,7 @@ export const WORKSPACE_CSS = `
 #tab-bar-container[data-zbf-inline] .scroll-start-arrow,
 #tab-bar-container[data-zbf-inline] .scroll-end-arrow { display: none !important; }
 
-#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, #zbf-spotlight-panel, #zbf-spotlight-panel * {
+#zbf-inline, #zbf-inline *, .zbf-pinned-strip, .zbf-pinned-strip *, #zbf-toolbar-actions, #zbf-toolbar-actions *, #zbf-hub-backdrop, #zbf-hub-backdrop *, .zbf-prompt-backdrop, .zbf-prompt-backdrop *, #zbf-spotlight-panel, #zbf-spotlight-panel * {
   -moz-window-dragging: no-drag;
 }
 
@@ -281,7 +281,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-spot-badge { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--zbf-accent-soft); color: var(--zbf-accent); font-weight: 600; flex: none; }
 .zbf-spotlight-empty { padding: 14px; text-align: center; font-size: 12px; color: var(--zbf-muted); }
 
-#zbf-hub-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center; padding-top: 68px; background: transparent; }
+#zbf-hub-backdrop, .zbf-prompt-backdrop { position: fixed; inset: 0; z-index: 2147483647; display: flex; align-items: flex-start; justify-content: center; padding-top: 68px; background: transparent; }
 .zbf-hub-box {
   width: 520px; max-width: calc(100vw - 24px); max-height: calc(100vh - 72px); overflow-y: auto; padding: 14px 16px; box-sizing: border-box;
   border-radius: 10px; background: var(--zbf-card); color: var(--zbf-text); border: 1px solid var(--zbf-border);
@@ -313,7 +313,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 .zbf-hub-btn.primary { background: var(--zbf-accent); border-color: var(--zbf-accent); color: #fff; font-weight: 600; }
 
 .zbf-popup-menu {
-  position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  position: fixed; z-index: 2147483647; display: flex; flex-direction: column; gap: 2px; padding: 6px; max-height: calc(100vh - 16px); overflow-y: auto; box-sizing: border-box;
   border-radius: 10px; border: 1px solid var(--zbf-border); background: var(--zbf-card); color: var(--zbf-text);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22), 0 2px 6px rgba(0, 0, 0, 0.08); font: 12.5px/1.4 system-ui, "Microsoft YaHei UI", sans-serif;
 }

@@ -9,6 +9,7 @@ import { isItemWritable } from '../../services/item-resolution.ts';
  * 3. Uses multi-document union semantics so closing 1 Word doc keeps tags cited in another.
  */
 const MANAGED_TAG_IDS_PREF = 'extensions.zotero.bridgeflow.wordCite.managedTagItemIDs';
+const defaultResolveItem = (id: number): any => (globalThis as any).Zotero?.Items?.get?.(id);
 
 export class CitationTagGovernance {
 	private readonly managedItemIDs = new Set<number>();
@@ -28,18 +29,21 @@ export class CitationTagGovernance {
 			const raw = String((globalThis as any).Zotero?.Prefs?.get?.(MANAGED_TAG_IDS_PREF, true) || '');
 			if (!raw) return;
 			const parsed = JSON.parse(raw);
-			if (Array.isArray(parsed)) {
-				for (const id of parsed) {
-					const n = Number(id);
-					if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
-				}
+			const ids = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.ids) ? parsed.ids : []);
+			if (parsed && !Array.isArray(parsed) && typeof parsed.tag === 'string' && parsed.tag.trim()) {
+				this.activeTagText = this.sanitizeTagText(parsed.tag);
+			}
+			for (const id of ids) {
+				const n = Number(id);
+				if (Number.isSafeInteger(n) && n > 0) this.managedItemIDs.add(n);
 			}
 		} catch { /* ignore */ }
 	}
 
 	private savePersistedIDs(): void {
 		try {
-			(globalThis as any).Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, JSON.stringify([...this.managedItemIDs]), true);
+			const payload = JSON.stringify({ tag: this.activeTagText, ids: [...this.managedItemIDs] });
+			(globalThis as any).Zotero?.Prefs?.set?.(MANAGED_TAG_IDS_PREF, payload, true);
 		} catch { /* ignore */ }
 	}
 
@@ -52,22 +56,40 @@ export class CitationTagGovernance {
 		return clean || '/Citations';
 	}
 
-	syncCitedItems(
-		citedUnion: ReadonlySet<number>,
-		resolveItem: (id: number) => any = (id) => (globalThis as any).Zotero?.Items?.get?.(id),
-	): Promise<{ added: number; removed: number }> {
-		const snapshotUnion = new Set(citedUnion);
-		const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem));
+	stripAllManagedTags(resolveItem: (id: number) => any = defaultResolveItem): Promise<{ added: number; removed: number }> {
+		const run = this.syncQueue.then(() => this.performSync(new Set(), resolveItem, true));
 		this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
 		return run;
+	}
+
+	syncCitedItems(
+		citedUnion: ReadonlySet<number>,
+		resolveItem: (id: number) => any = defaultResolveItem,
+	): Promise<{ added: number; removed: number }> {
+		const snapshotUnion = new Set(citedUnion);
+		const run = this.syncQueue.then(() => this.performSync(snapshotUnion, resolveItem, false));
+		this.syncQueue = run.catch(() => ({ added: 0, removed: 0 }));
+		return run;
+	}
+
+	private async resolveWithAsyncFallback(id: number, resolveItem: (id: number) => any): Promise<any> {
+		const syncHit = resolveItem(id);
+		if (syncHit && typeof syncHit.then === 'function') return syncHit;
+		if (syncHit) return syncHit;
+		if (resolveItem === defaultResolveItem) {
+			return (await (globalThis as any).Zotero?.Items?.getAsync?.(id).catch(() => null)) ?? null;
+		}
+		return null;
 	}
 
 	private async performSync(
 		citedUnion: ReadonlySet<number>,
 		resolveItem: (id: number) => any,
+		forceDisable = false,
 	): Promise<{ added: number; removed: number }> {
-		const enabled = this.prefs.get('wordCite.citationTags.enable');
+		const enabled = !forceDisable && this.prefs.get('wordCite.citationTags.enable');
 		const nextTag = this.sanitizeTagText(this.prefs.get('wordCite.citationTags.text'));
+		const userLibID = Number((globalThis as any).Zotero?.Libraries?.userLibraryID || 0);
 		let added = 0;
 		let removed = 0;
 		const saveItemInTx = async (item: any): Promise<void> => {
@@ -81,64 +103,70 @@ export class CitationTagGovernance {
 			const db = (globalThis as any).Zotero?.DB;
 			return typeof db?.executeTransaction === 'function' ? db.executeTransaction(work) : work();
 		};
-		try {
-			return await runBatch(async () => {
-				// Handle tag rename migration first
-				if (nextTag !== this.activeTagText) {
-					const prevTag = this.activeTagText;
-					this.activeTagText = nextTag;
-					for (const id of [...this.managedItemIDs]) {
-						const item = resolveItem(id);
-						if (!isItemWritable(item)) continue;
-						if (item.hasTag?.(prevTag)) {
-							item.removeTag?.(prevTag);
-							if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
-							await saveItemInTx(item);
-						}
-					}
-				}
-
-				// If disabled, strip only plugin-owned tags
-				if (!enabled) {
-					for (const id of [...this.managedItemIDs]) {
-						const item = resolveItem(id);
-						if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-							item.removeTag?.(this.activeTagText);
-							await saveItemInTx(item);
-							removed++;
-						}
-						this.managedItemIDs.delete(id);
-					}
-					return { added, removed };
-				}
-
-				// Add tag to newly cited writable items (skip if user already manually added it)
-				for (const id of citedUnion) {
-					const item = resolveItem(id);
+		const stagedManaged = new Set(this.managedItemIDs);
+		let stagedTag = this.activeTagText;
+		const outcome = await runBatch(async () => {
+			if (nextTag !== stagedTag) {
+				const prevTag = stagedTag;
+				stagedTag = nextTag;
+				for (const id of [...stagedManaged]) {
+					const item = await this.resolveWithAsyncFallback(id, resolveItem);
 					if (!isItemWritable(item)) continue;
-					if (!item.hasTag?.(this.activeTagText)) {
-						item.addTag?.(this.activeTagText);
+					if (item.hasTag?.(prevTag)) {
+						item.removeTag?.(prevTag);
+						if (enabled && citedUnion.has(id)) item.addTag?.(nextTag);
 						await saveItemInTx(item);
-						this.managedItemIDs.add(id);
-						added++;
 					}
 				}
+			}
 
-				// Remove tag from uncited plugin-managed items
-				for (const id of [...this.managedItemIDs]) {
-					if (citedUnion.has(id)) continue;
-					const item = resolveItem(id);
-					if (isItemWritable(item) && item.hasTag?.(this.activeTagText)) {
-						item.removeTag?.(this.activeTagText);
+			if (!enabled) {
+				for (const id of [...stagedManaged]) {
+					const item = await this.resolveWithAsyncFallback(id, resolveItem);
+					if (!item && resolveItem === defaultResolveItem && typeof (globalThis as any).Zotero?.Items?.getAsync !== 'function') {
+						stagedManaged.delete(id);
+						continue;
+					}
+					if (isItemWritable(item) && item.hasTag?.(stagedTag)) {
+						item.removeTag?.(stagedTag);
 						await saveItemInTx(item);
 						removed++;
 					}
-					this.managedItemIDs.delete(id);
+					stagedManaged.delete(id);
 				}
 				return { added, removed };
-			});
-		} finally {
-			this.savePersistedIDs();
-		}
+			}
+
+			for (const id of citedUnion) {
+				const item = await this.resolveWithAsyncFallback(id, resolveItem);
+				if (!isItemWritable(item)) continue;
+				if (userLibID > 0 && item.libraryID != null && item.libraryID !== userLibID) continue;
+				if (!item.hasTag?.(stagedTag)) {
+					item.addTag?.(stagedTag);
+					await saveItemInTx(item);
+					stagedManaged.add(id);
+					added++;
+				}
+			}
+
+			for (const id of [...stagedManaged]) {
+				if (citedUnion.has(id)) continue;
+				const item = await this.resolveWithAsyncFallback(id, resolveItem);
+				if (isItemWritable(item) && item.hasTag?.(stagedTag)) {
+					item.removeTag?.(stagedTag);
+					await saveItemInTx(item);
+					removed++;
+				}
+				if (item || typeof (globalThis as any).Zotero?.Items?.getAsync === 'function' || resolveItem !== defaultResolveItem) {
+					stagedManaged.delete(id);
+				}
+			}
+			return { added, removed };
+		});
+		this.activeTagText = stagedTag;
+		this.managedItemIDs.clear();
+		for (const id of stagedManaged) this.managedItemIDs.add(id);
+		this.savePersistedIDs();
+		return outcome;
 	}
 }

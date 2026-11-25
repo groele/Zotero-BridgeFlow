@@ -49,26 +49,13 @@ export class WorkspaceVerticalSidebar {
 	private wordCiteMap = new Map<number, CitationBadgeInfo>();
 
 	constructor(
-		win: Window,
-		prefs: UnifiedPrefService,
-		store: WorkspaceStateStore,
-		tabs: WorkspaceTabController,
-		menus: WorkspaceTabContextMenu,
-		hover: WorkspaceHoverCard,
-		popover: WorkspacePopover,
-		onToggleSpotlight: (anchor?: HTMLElement) => void,
-		onRefresh: () => void,
+		win: Window, prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController,
+		menus: WorkspaceTabContextMenu, hover: WorkspaceHoverCard, popover: WorkspacePopover,
+		onToggleSpotlight: (anchor?: HTMLElement) => void, onRefresh: () => void,
 	) {
-		this.win = win;
-		this.doc = win.document;
-		this.prefs = prefs;
-		this.store = store;
-		this.tabs = tabs;
-		this.menus = menus;
-		this.hover = hover;
-		this.popover = popover;
-		this.onToggleSpotlight = onToggleSpotlight;
-		this.onRefresh = onRefresh;
+		this.win = win; this.doc = win.document; this.prefs = prefs; this.store = store; this.tabs = tabs;
+		this.menus = menus; this.hover = hover; this.popover = popover;
+		this.onToggleSpotlight = onToggleSpotlight; this.onRefresh = onRefresh;
 	}
 
 	setWordCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
@@ -177,7 +164,7 @@ export class WorkspaceVerticalSidebar {
 		this.selection = new SidebarSelection(
 			this.doc, this.prefs, this.store, actions, aside, list,
 			() => this.onRefresh(),
-			(ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true }),
+			(ids) => void this.tabs.closeTabs(this.win, ids, { preserveVirtual: true, protectPinned: true }),
 			(itemIDs) => void this.tabs.copyItemsCitations(itemIDs),
 			(itemIDs) => { this.tabs.citeItemsInWord(this.win, itemIDs); },
 		);
@@ -214,11 +201,14 @@ export class WorkspaceVerticalSidebar {
 		const groupKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}:${g.memberKeys.length}`).join(',');
 		const subtitleMode = this.prefs.get('workspace.verticalTabSubtitleMode');
 		const tabKey = allTracked.map((t) => {
-			const prog = subtitleMode === 'reading' ? this.store.state.readingProgress[t.key] : undefined;
-			const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}` : '';
-			return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${t.title}${progTag}`;
+			const prog = this.store.state.readingProgress[t.key];
+			const progTag = prog ? `~${Math.floor(prog.readSeconds / 60)}:${prog.lastPage || 0}:${prog.totalPages || 0}` : '';
+			const viewedTag = subtitleMode === 'lastViewed' ? `@${Math.floor(t.lastViewedAt / 60_000)}` : '';
+			const rMode = this.store.state.remarkModes[t.key] || '';
+			return `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${rMode}:${t.title}:${t.shortTitle}:${t.filename}${progTag}${viewedTag}`;
 		}).join('|');
-		const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(',')}|${this.prefs.get('workspace.verticalTabRowHeight')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${subtitleMode}|${this.prefs.get('workspace.enableBatchSelection')}|${groupKey}|${badgeKey}|${tabKey}`;
+		const prefSig = `${this.prefs.get('workspace.verticalTabRowHeight')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${subtitleMode}|${this.prefs.get('workspace.enableBatchSelection')}|${this.prefs.get('workspace.enableTabRemarks')}|${this.prefs.get('workspace.remarkDisplayMode')}|${this.prefs.get('workspace.enableTabSleep')}|${this.prefs.get('workspace.enableShowInFilesystem')}|${this.prefs.get('workspace.enablePinnedTabs')}|${this.prefs.get('workspace.activeReaderBudget')}`;
+		const renderKey = `${this.viewMode}|${needle}|${selectedID}|${this.store.state.collapsed.join(',')}|${prefSig}|${groupKey}|${badgeKey}|${tabKey}`;
 		if (renderKey === this.lastRenderKey && this.listEl.children.length > 0) return;
 		this.lastRenderKey = renderKey;
 		const prevScroll = this.listEl.scrollTop;
@@ -250,7 +240,7 @@ export class WorkspaceVerticalSidebar {
 				head.setAttribute('data-zbf-nav', 'head');
 				const dot = createWorkspaceElement(this.doc, 'span');
 				dot.className = 'zbf-sb-group-dot';
-				dot.style.background = grp.color;
+				dot.style.backgroundColor = grp.color;
 				const label = createWorkspaceElement(this.doc, 'span');
 				label.textContent = `${collapsed ? '▸' : '▾'} ${grp.name} (${members.length})`;
 				head.append(dot, label);
@@ -289,11 +279,13 @@ export class WorkspaceVerticalSidebar {
 	}
 
 	private renderStatusView(filtered: readonly TrackedTab[], rowDeps: any): void {
-		const cited = filtered.filter((t) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID));
-		const pinned = filtered.filter((t) => !t.virtual && t.pinned);
-		const active = filtered.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
-		const sleeping = filtered.filter((t) => !t.virtual && t.sleeping);
-		const virtual = filtered.filter((t) => t.virtual);
+		const isCited = (t: TrackedTab) => this.wordCiteMap.has(t.parentItemID) || this.wordCiteMap.has(t.itemID);
+		const cited = filtered.filter((t) => isCited(t));
+		const rest = filtered.filter((t) => !isCited(t));
+		const pinned = rest.filter((t) => !t.virtual && t.pinned);
+		const active = rest.filter((t) => !t.virtual && !t.sleeping && !t.pinned);
+		const sleeping = rest.filter((t) => !t.virtual && t.sleeping);
+		const virtual = rest.filter((t) => t.virtual);
 		if (cited.length) this.appendSimpleSection('Word 正在引用', '#0D9488', cited, rowDeps);
 		if (pinned.length) this.appendSimpleSection('已固定', '#f59e0b', pinned, rowDeps);
 		if (active.length) this.appendSimpleSection('当前活动', '#245ac7', active, rowDeps);

@@ -43,6 +43,7 @@ export async function closeWorkspaceTabs(
 			store.removeVirtualMember(t.key);
 			store.assignToGroup(t.key, null);
 		}
+		if (t.pinned) store.setPinned(t.key, false);
 		if (t.sleeping) store.setSleeping(t.key, false);
 	}
 	return toClose.length;

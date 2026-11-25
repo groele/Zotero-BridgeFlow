@@ -100,7 +100,9 @@ export async function activateNeighborComparison(
 ): Promise<boolean> {
 	const ref = side === 'left' ? neighbors?.left : neighbors?.right;
 	if (!ref) return false;
+	const gen = ++state.generation;
 	const entries = await resolveNeighborPdfEntries(ref);
+	if (gen !== state.generation || state.body.isConnected === false) return false;
 	const chosen = entries[0];
 	if (!chosen?.attachment) return false;
 	controls.activeSide = side;

@@ -54,20 +54,21 @@ export class CitationColumnController {
 		try {
 			const res = regFn.call(manager, descriptor);
 			const recordKey = (val: unknown) => {
-				const list = Array.isArray(val) ? val : [val];
-				for (const k of list) {
-					if (typeof k === 'string' && k) this.registeredKeys.add(k);
+				let added = false;
+				for (const k of Array.isArray(val) ? val : [val]) {
+					if (typeof k === 'string' && k) { this.registeredKeys.add(k); added = true; }
 				}
-				if (!this.active && this.registeredKeys.size) {
-					this.flushUnregister();
-				}
+				if (!added) this.active = false;
+				else if (!this.active && this.registeredKeys.size) this.flushUnregister();
 			};
 			if (res && typeof (res as Promise<unknown>).then === 'function') {
-				void (res as Promise<unknown>).then(recordKey).catch(() => {});
+				void (res as Promise<unknown>).then(recordKey, () => { this.active = false; });
 			} else {
 				recordKey(res);
 			}
-		} catch { /* ignore */ }
+		} catch {
+			this.active = false;
+		}
 	}
 
 	unregister(): void {
