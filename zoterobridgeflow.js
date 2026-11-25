@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.10 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -25355,7 +25355,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.7.10" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.0" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;
