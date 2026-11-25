@@ -45,7 +45,8 @@ export class DurableCacheFile {
 			try {
 				const value = parse(outcome.text, path);
 				if (path === this.path) this.previous = outcome.text;
-				this.needsMigration = path !== this.path;
+				const unformatted = path === this.path && outcome.text.length > 24 && !outcome.text.trimEnd().includes('\n');
+				this.needsMigration = path !== this.path || unformatted;
 				if (!this.writeBlocked) this.lastError = '';
 				return value;
 			} catch {

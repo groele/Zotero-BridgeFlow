@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.7 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.7.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -4077,7 +4077,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (orphan.kind === "trashed" && Boolean(orphan.itemID)) return true;
     const data = orphan.itemData;
     if (!data || typeof data !== "object") return false;
-    const hasCreators = [data.author, data.editor, data.translator].some((arr) => Array.isArray(arr) && arr.length > 0);
+    const hasCreators = [data.author, data.editor, data.translator].some((arr) => Array.isArray(arr) && Array.isArray(arr) && arr.length > 0);
     return Boolean(
       String(data.title || "").trim() || String(data["container-title"] || "").trim() || String(data.DOI || "").trim() || String(data.URL || "").trim() || String(data.ISBN || "").trim() || hasCreators
     );
@@ -4170,12 +4170,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!orphans?.length) {
       return {
         visible: false,
+        accordionOpen: false,
+        countBadge: "0",
         title: "",
+        shortTitle: "",
         listText: "",
         summaryChips: [],
         showToggle: false,
         toggleLabel: "",
         rows: [],
+        footHint: "",
         buttonLabel: "",
         buttonTooltip: "",
         buttonDisabled: true
@@ -4183,6 +4187,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     const unchecked = options?.uncheckedKeys;
     const expanded = Boolean(options?.expanded);
+    const accordionOpen = options?.accordionOpen ?? true;
     let trashedCount = 0;
     let rebuildCount = 0;
     let unrecCount = 0;
@@ -4218,6 +4223,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const ordinals = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ");
     const moreOrd = orphans.length > 4 ? zh ? " 等" : "…" : "";
     const title = zh ? `⚠ 检测到 ${orphans.length} 篇断链引文（${ordinals}${moreOrd}）` : `⚠ ${orphans.length} broken citation(s) (${ordinals}${moreOrd})`;
+    const shortTitle = zh ? "断链引文需要核对" : "Broken citations to review";
     const listText = allRows.slice(0, 4).map((r) => `[${r.ordinal}] ${r.title} (${r.tagText})`).join("\n") + (allRows.length > 4 ? zh ? `
 …另有 ${allRows.length - 4} 篇` : `
 …and ${allRows.length - 4} more` : "");
@@ -4227,26 +4233,30 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     } else if (checkedRows.length === 0) {
       buttonLabel = zh ? "请勾选需要找回的引文" : "Select citations to recover";
     } else if (checkedRows.length < recoverableTotal) {
-      buttonLabel = zh ? `⚡ 找回已选 ${checkedRows.length} 篇并重连 Word` : `⚡ Recover ${checkedRows.length} Selected & Relink`;
+      buttonLabel = zh ? `找回已选 ${checkedRows.length} 篇并重连` : `Recover ${checkedRows.length} Selected`;
     } else if (trashedCount > 0 && rebuildCount === 0) {
-      buttonLabel = zh ? `⚡ 一键从回收站找回并重连 (${trashedCount})` : `⚡ Restore & Relink (${trashedCount})`;
+      buttonLabel = zh ? `一键从回收站找回并重连 (${trashedCount})` : `Restore & Relink (${trashedCount})`;
     } else if (trashedCount === 0) {
-      buttonLabel = zh ? `⚡ 一键找回并重连 Word (${rebuildCount})` : `⚡ Recover & Relink (${rebuildCount})`;
+      buttonLabel = zh ? `一键找回并重连 Word (${rebuildCount})` : `Recover & Relink (${rebuildCount})`;
     } else {
-      buttonLabel = zh ? `⚡ 一键还原并导入 (${checkedRows.length})` : `⚡ Restore & Import (${checkedRows.length})`;
+      buttonLabel = zh ? `一键还原并导入 (${checkedRows.length})` : `Restore & Import (${checkedRows.length})`;
     }
     const buttonTooltip = zh ? "在单个数据库事务中无损还原回收站条目或从 Word 备份重建（自动按 DOI/题录查重），并通过官方 dc:replaces 关系自动重连 Word" : "Atomically restore from Trash or rebuild from Word metadata with DOI/title deduplication and native dc:replaces relinking";
     const showToggle = allRows.length > 3;
-    const toggleLabel = expanded ? zh ? "收起" : "Collapse" : zh ? `展开全部 (${allRows.length})` : `Show all (${allRows.length})`;
+    const toggleLabel = expanded ? zh ? "收起" : "Less" : zh ? `展开全部 (${allRows.length})` : `Show all (${allRows.length})`;
     const rows = showToggle && !expanded ? allRows.slice(0, 3) : allRows;
     return {
       visible: true,
+      accordionOpen,
+      countBadge: String(orphans.length),
       title,
+      shortTitle,
       listText,
       summaryChips,
       showToggle,
       toggleLabel,
       rows,
+      footHint: zh ? "写回前可核对" : "Verify before relink",
       buttonLabel,
       buttonTooltip,
       buttonDisabled: checkedRows.length === 0
@@ -4255,10 +4265,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   var OrphanSelectionState = class {
     uncheckedKeys = /* @__PURE__ */ new Set();
     expanded = false;
+    accordionOpen = true;
     autoOpenedSig = "";
     reset() {
       this.uncheckedKeys.clear();
       this.expanded = false;
+      this.accordionOpen = true;
       this.autoOpenedSig = "";
     }
     toggleKey(key) {
@@ -4270,7 +4282,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       return orphans.filter((o) => isOrphanRecoverable(o) && !this.uncheckedKeys.has(o.key)).map((o) => o.key);
     }
     /** Returns true when a fresh orphan set appears and the section should auto-expand once. */
-    syncSnapshot(activeSessionID, orphans) {
+    syncSnapshot(activeSessionID, orphans, autoExpand = true) {
       if (!orphans?.length) {
         this.reset();
         return false;
@@ -4282,9 +4294,775 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const sig = `${activeSessionID || ""}:${orphans.map((o) => o.key).sort().join("|")}`;
       if (sig === this.autoOpenedSig) return false;
       this.autoOpenedSig = sig;
-      return true;
+      this.accordionOpen = autoExpand;
+      return autoExpand;
     }
   };
+
+  // src/services/cache-directory.ts
+  function cacheDirectory(custom) {
+    if (typeof custom === "string" && custom.trim()) return custom.trim();
+    const host2 = globalThis;
+    const data = host2.Zotero?.DataDirectory?.dir;
+    return data ? cacheFile(data, "bridgeflow-cache") : "bridgeflow-cache";
+  }
+  function cacheFile(directory, name) {
+    return globalThis.PathUtils?.join(directory, name) ?? directory + "/" + name;
+  }
+  function cacheSection(section, custom) {
+    return cacheFile(cacheDirectory(custom), section);
+  }
+  function cacheReadPaths(section, file, backup2, custom) {
+    const roots = /* @__PURE__ */ new Set([cacheDirectory(custom), cacheDirectory()]);
+    return [...roots].flatMap((root) => {
+      const folder = cacheFile(root, section);
+      return [cacheFile(folder, file), cacheFile(folder, backup2), cacheFile(root, file), cacheFile(root, backup2)];
+    });
+  }
+
+  // src/services/safe-io.ts
+  async function readTextOutcome(path) {
+    const ioUtils = globalThis.IOUtils;
+    if (!ioUtils?.exists || !ioUtils?.readUTF8) return { status: "missing" };
+    try {
+      if (!await ioUtils.exists(path)) return { status: "missing" };
+    } catch (error) {
+      return { status: "error", error };
+    }
+    try {
+      return { status: "ok", text: String(await ioUtils.readUTF8(path)) };
+    } catch (error) {
+      return { status: "error", error };
+    }
+  }
+  async function quarantineFile(path) {
+    const ioUtils = globalThis.IOUtils;
+    if (typeof ioUtils?.copy !== "function") return false;
+    try {
+      await ioUtils.copy(path, `${path}.corrupt-${Date.now()}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // src/services/durable-cache-file.ts
+  var DurableCacheFile = class {
+    writes = Promise.resolve(true);
+    previous = "";
+    backedUpAt;
+    writeBlocked = false;
+    loading;
+    directory;
+    path;
+    backup;
+    paths;
+    needsMigration = false;
+    lastError = "";
+    constructor(section, name, root) {
+      const file = `${name}.json`, backup2 = `${name}.bak.json`;
+      this.directory = cacheSection(section, root);
+      this.path = cacheFile(this.directory, file);
+      this.backup = cacheFile(this.directory, backup2);
+      this.paths = cacheReadPaths(section, file, backup2, root);
+    }
+    load(parse2, legacyPaths = []) {
+      const reading = this.read(parse2, legacyPaths);
+      this.loading = reading;
+      return reading;
+    }
+    async read(parse2, legacyPaths) {
+      this.writeBlocked = false;
+      this.needsMigration = false;
+      this.previous = "";
+      this.backedUpAt = void 0;
+      for (const path of /* @__PURE__ */ new Set([...this.paths, ...legacyPaths])) {
+        const outcome = await readTextOutcome(path);
+        if (outcome.status === "missing") continue;
+        if (outcome.status === "error") {
+          this.writeBlocked = true;
+          this.lastError = "Cache could not be read";
+          continue;
+        }
+        try {
+          const value = parse2(outcome.text, path);
+          if (path === this.path) this.previous = outcome.text;
+          const unformatted = path === this.path && outcome.text.length > 24 && !outcome.text.trimEnd().includes("\n");
+          this.needsMigration = path !== this.path || unformatted;
+          if (!this.writeBlocked) this.lastError = "";
+          return value;
+        } catch {
+          if (path === this.path && !await quarantineFile(path)) {
+            this.writeBlocked = true;
+            this.lastError = "Damaged cache could not be preserved";
+          }
+        }
+      }
+      return null;
+    }
+    write(serialize, backupInterval = 0, replaceBackup = false) {
+      const run = async () => {
+        await this.loading;
+        const io = globalThis.IOUtils;
+        if (!io?.writeUTF8) return true;
+        if (this.writeBlocked) return false;
+        try {
+          const text2 = serialize();
+          if (text2 === this.previous && !replaceBackup) return true;
+          await io.makeDirectory?.(this.directory, { ignoreExisting: true, createAncestors: true });
+          if (replaceBackup || this.previous && (this.backedUpAt === void 0 || Date.now() - this.backedUpAt >= backupInterval)) {
+            await io.writeUTF8(this.backup, replaceBackup ? text2 : this.previous, { tmpPath: this.backup + ".tmp" });
+            this.backedUpAt = Date.now();
+          }
+          await io.writeUTF8(this.path, text2, { tmpPath: this.path + ".tmp" });
+          this.previous = text2;
+          this.needsMigration = false;
+          this.lastError = "";
+          return true;
+        } catch (err) {
+          this.lastError = String(err);
+          return false;
+        }
+      };
+      this.writes = this.writes.then(run, run);
+      return this.writes;
+    }
+  };
+
+  // src/services/metadata-reminders-cache.ts
+  var FORMAT_ID = "zotero-bridgeflow-ignored-reminders";
+  function buildReminderItemKeys(itemOrKey) {
+    if (typeof itemOrKey === "string") {
+      const clean = itemOrKey.trim();
+      return { primary: clean, fallback: "" };
+    }
+    const libId = Number(itemOrKey?.libraryID || 1);
+    const itemKey = typeof itemOrKey?.key === "string" && itemOrKey.key.trim() ? itemOrKey.key.trim() : "";
+    const itemId = Number(itemOrKey?.id || 0);
+    const primary = itemKey ? `${libId}:${itemKey}` : itemId > 0 ? `item:${itemId}` : "";
+    const fallback = itemKey && itemId > 0 ? `item:${itemId}` : "";
+    return { primary, fallback };
+  }
+  function parseIgnoredPayload(raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const list = parsed.format === FORMAT_ID && Array.isArray(parsed.ignored) ? parsed.ignored : Array.isArray(parsed.ignored) ? parsed.ignored : null;
+      if (!list) return null;
+      const out = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const entry of list) {
+        const key = String(entry || "").trim();
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          out.push(key);
+        }
+      }
+      return out;
+    } catch {
+      return null;
+    }
+  }
+  var MetadataRemindersDiskCache = class {
+    ignoredKeys = /* @__PURE__ */ new Set();
+    flushTimer = null;
+    file;
+    root;
+    initialized = false;
+    constructor(customDir = "") {
+      this.root = customDir;
+      this.file = new DurableCacheFile("citations", "ignored-reminders", customDir);
+    }
+    configure(customDir = "") {
+      if (!this.initialized) {
+        this.root = customDir;
+        this.file = new DurableCacheFile("citations", "ignored-reminders", customDir);
+      }
+    }
+    async init() {
+      this.initialized = true;
+      const disk = await this.file.load((text2) => {
+        const parsed = parseIgnoredPayload(text2);
+        if (!parsed) throw new Error("Invalid ignored reminders payload");
+        return parsed;
+      });
+      if (disk) {
+        for (const k of disk) this.ignoredKeys.add(k);
+        if (this.file.needsMigration) await this.flushNow();
+        return true;
+      }
+      return false;
+    }
+    isIgnored(itemOrKey) {
+      const { primary, fallback } = buildReminderItemKeys(itemOrKey);
+      return Boolean(primary && this.ignoredKeys.has(primary) || fallback && this.ignoredKeys.has(fallback));
+    }
+    setIgnored(itemOrKey, ignored, immediate = false) {
+      const { primary, fallback } = buildReminderItemKeys(itemOrKey);
+      if (!primary) return "";
+      let changed = false;
+      if (fallback && this.ignoredKeys.has(fallback)) {
+        this.ignoredKeys.delete(fallback);
+        changed = true;
+      }
+      if (ignored) {
+        if (!this.ignoredKeys.has(primary)) {
+          this.ignoredKeys.add(primary);
+          changed = true;
+        }
+      } else if (this.ignoredKeys.has(primary)) {
+        this.ignoredKeys.delete(primary);
+        changed = true;
+      }
+      if (changed) {
+        if (immediate) void this.flushNow();
+        else this.scheduleFlush();
+      }
+      return primary;
+    }
+    clearAll(immediate = false) {
+      if (this.ignoredKeys.size === 0) return;
+      this.ignoredKeys.clear();
+      if (immediate) void this.flushNow(true);
+      else this.scheduleFlush();
+    }
+    scheduleFlush() {
+      if (this.flushTimer !== null) clearTimeout(this.flushTimer);
+      this.flushTimer = setTimeout(() => {
+        this.flushTimer = null;
+        void this.flushNow();
+      }, 180);
+    }
+    async flushNow(replaceBackup = false) {
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+      }
+      return this.file.write(() => {
+        const payload = {
+          format: FORMAT_ID,
+          version: 1,
+          ignored: [...this.ignoredKeys].sort()
+        };
+        return `${JSON.stringify(payload, null, 2)}
+`;
+      }, 0, replaceBackup);
+    }
+    dispose() {
+      if (this.flushTimer !== null) {
+        clearTimeout(this.flushTimer);
+        this.flushTimer = null;
+        void this.flushNow();
+      }
+    }
+  };
+
+  // src/domains/inspector/word-cite-reminder-rules.ts
+  var DEFAULT_REMINDER_RULE_CONFIG = {
+    enabled: true,
+    scope: "both",
+    checkCreatorsYear: true,
+    checkVenue: true,
+    checkPagination: true,
+    showSuggested: true,
+    strictOnlineFirst: false
+  };
+  var ITEM_TYPE_LABELS_ZH = {
+    journalArticle: "期刊论文",
+    conferencePaper: "会议论文",
+    book: "图书",
+    bookSection: "图书章节",
+    preprint: "预印本",
+    thesis: "学位论文",
+    report: "报告",
+    webpage: "网页",
+    patent: "专利",
+    manuscript: "手稿",
+    magazineArticle: "杂志文章",
+    newspaperArticle: "报纸文章"
+  };
+  var ITEM_TYPE_LABELS_EN = {
+    journalArticle: "Journal",
+    conferencePaper: "Conference",
+    book: "Book",
+    bookSection: "Chapter",
+    preprint: "Preprint",
+    thesis: "Thesis",
+    report: "Report",
+    webpage: "Web Page",
+    patent: "Patent",
+    manuscript: "Manuscript",
+    magazineArticle: "Magazine",
+    newspaperArticle: "Newspaper"
+  };
+  function resolveZoteroItemType(item) {
+    if (!item) return "";
+    if (typeof item.itemType === "string" && item.itemType.trim()) return item.itemType.trim();
+    const typeID = Number(item.itemTypeID || 0);
+    if (typeID > 0) {
+      try {
+        const resolved = globalThis.Zotero?.ItemTypes?.getName?.(typeID);
+        if (typeof resolved === "string" && resolved.trim()) return resolved.trim();
+      } catch {
+      }
+    }
+    return "";
+  }
+  function formatReminderItemType(itemType, zh) {
+    if (!itemType) return zh ? "文献" : "Item";
+    return (zh ? ITEM_TYPE_LABELS_ZH[itemType] : ITEM_TYPE_LABELS_EN[itemType]) || (zh ? "文献" : "Item");
+  }
+  function hasAnyCreator(item) {
+    if (typeof item?.getCreators === "function") {
+      try {
+        const list = item.getCreators();
+        if (Array.isArray(list)) return list.length > 0;
+      } catch {
+      }
+    }
+    return Boolean(String(item?.firstCreator || safeGetItemField(item, "firstCreator") || "").trim());
+  }
+  function inspectItemMetadataFields(item, zh, rules = DEFAULT_REMINDER_RULE_CONFIG, options) {
+    const cfg = { ...DEFAULT_REMINDER_RULE_CONFIG, ...rules };
+    const primary = normalizeToRegularItem(item);
+    if (!primary || !isRegularValidItem(primary)) return null;
+    const rawType = resolveZoteroItemType(primary);
+    const badges = [];
+    const add = (kind, zhText, enText) => {
+      if (kind === "suggested" && !cfg.showSuggested) return;
+      badges.push({ kind, text: zh ? zhText : enText });
+    };
+    const title = safeGetItemField(primary, "title").trim();
+    if (!title) add("missing", "缺少题名", "Missing title");
+    if (cfg.checkCreatorsYear) {
+      const creatorOptional = rawType === "webpage" || rawType === "statute" || rawType === "case" || rawType === "standard";
+      if (!hasAnyCreator(primary)) {
+        if (creatorOptional) add("suggested", "作者建议补全", "Author suggested");
+        else add("missing", "缺少作者", "Missing author");
+      }
+      const year = (safeGetItemField(primary, "year") || safeGetItemField(primary, "date")).trim();
+      if (!year) {
+        if (rawType === "webpage") add("suggested", "日期建议补全", "Date suggested");
+        else add("missing", "缺少年份", "Missing year");
+      }
+    }
+    const doi = safeGetItemField(primary, "DOI").trim();
+    const pages2 = safeGetItemField(primary, "pages").trim();
+    const vol = safeGetItemField(primary, "volume").trim();
+    const requireFormalPagination = cfg.strictOnlineFirst || Boolean(options?.isCitedInWord);
+    if (rawType === "journalArticle") {
+      if (cfg.checkVenue && !safeGetItemField(primary, "publicationTitle").trim()) {
+        add("missing", "缺少期刊名", "Missing journal");
+      }
+      if (cfg.checkPagination) {
+        if (!vol && !pages2) {
+          if (doi && !requireFormalPagination) add("suggested", "卷期页码建议补全", "Vol./pages suggested");
+          else add("missing", "缺少卷期页码", "Missing vol./pages");
+        } else if (!vol && pages2) {
+          add("missing", "缺少卷号", "Missing volume");
+        } else if (vol && !pages2) {
+          if (cfg.strictOnlineFirst) add("missing", "缺少页码", "Missing pages");
+          else add("suggested", "页码建议补全", "Pages suggested");
+        }
+      }
+      if (!doi) add("suggested", "DOI 建议补全", "DOI suggested");
+    } else if (rawType === "conferencePaper") {
+      if (cfg.checkVenue && !(safeGetItemField(primary, "proceedingsTitle") || safeGetItemField(primary, "conferenceName")).trim()) {
+        add("missing", "缺少会议名", "Missing venue");
+      }
+      if (cfg.checkPagination && !pages2) add("suggested", "页码建议补全", "Pages suggested");
+      if (!doi) add("suggested", "DOI 建议补全", "DOI suggested");
+    } else if (rawType === "book") {
+      if (cfg.checkVenue && !safeGetItemField(primary, "publisher").trim()) add("missing", "缺少出版社", "Missing publisher");
+      if (!safeGetItemField(primary, "ISBN").trim()) add("suggested", "ISBN 建议补全", "ISBN suggested");
+    } else if (rawType === "bookSection") {
+      if (cfg.checkVenue) {
+        if (!safeGetItemField(primary, "bookTitle").trim()) add("missing", "缺少书名", "Missing book title");
+        if (!safeGetItemField(primary, "publisher").trim()) add("suggested", "出版社建议补全", "Publisher suggested");
+      }
+      if (cfg.checkPagination && !pages2) add("suggested", "页码建议补全", "Pages suggested");
+    } else if (rawType === "thesis") {
+      if (cfg.checkVenue && !(safeGetItemField(primary, "university") || safeGetItemField(primary, "publisher")).trim()) {
+        add("missing", "缺少授予单位", "Missing university");
+      }
+    } else if (rawType === "preprint") {
+      const repo = (safeGetItemField(primary, "repository") || safeGetItemField(primary, "archiveID") || doi || safeGetItemField(primary, "url")).trim();
+      if (cfg.checkVenue && !repo) add("missing", "缺少预印本库", "Missing archive");
+      else if (!doi && !safeGetItemField(primary, "archiveID").trim()) add("suggested", "DOI/arXiv 建议补全", "DOI/arXiv suggested");
+    } else if (rawType === "report") {
+      if (cfg.checkVenue && !(safeGetItemField(primary, "institution") || safeGetItemField(primary, "publisher")).trim()) {
+        add("missing", "缺少机构名", "Missing institution");
+      }
+    } else if (rawType === "webpage") {
+      if (cfg.checkVenue && !safeGetItemField(primary, "url").trim()) add("missing", "缺少网址", "Missing URL");
+    } else if (rawType === "patent") {
+      if (cfg.checkVenue && !safeGetItemField(primary, "patentNumber").trim()) add("missing", "缺少专利号", "Missing patent no.");
+    }
+    return badges.some((b) => b.kind === "missing") ? badges : null;
+  }
+
+  // src/domains/inspector/word-cite-reminders-model.ts
+  function buildMetadataRemindersModel(options) {
+    const { zh, snap, selectedItems, isIgnored, expanded, filter, rules } = options;
+    if (!rules.enabled) {
+      return {
+        visible: false,
+        expanded: false,
+        filter,
+        checkedCount: 0,
+        activeCount: 0,
+        ignoredCount: 0,
+        activeSig: "",
+        headerBadge: "0",
+        headerBadgeTone: "neutral",
+        headerTitle: "",
+        headerActionHint: "",
+        activeTabLabel: "",
+        ignoredTabLabel: "",
+        scopeHint: "",
+        emptyText: "",
+        rows: []
+      };
+    }
+    const hostItems = globalThis.Zotero?.Items;
+    const candidates = [];
+    const seenIDs = /* @__PURE__ */ new Set();
+    const includeWord = rules.scope === "both" || rules.scope === "wordOnly";
+    const includeSelection = rules.scope === "both" || rules.scope === "selectionOnly";
+    if (includeWord && snap?.activeSessionID && snap.byItemID.size > 0 && typeof hostItems?.get === "function") {
+      const sortedBadges = [...snap.byItemID.values()].sort((a, b) => a.ordinal - b.ordinal);
+      for (const badge of sortedBadges) {
+        const it = normalizeToRegularItem(hostItems.get(badge.itemID));
+        const id = Number(it?.id || 0);
+        if (!it || id <= 0 || seenIDs.has(id)) continue;
+        seenIDs.add(id);
+        candidates.push({ item: it, sourceKind: "word", ordinal: badge.ordinal });
+      }
+    }
+    if (includeSelection) {
+      for (const sel of selectedItems) {
+        const it = normalizeToRegularItem(sel);
+        const id = Number(it?.id || 0);
+        if (!it || id <= 0 || seenIDs.has(id)) continue;
+        seenIDs.add(id);
+        const wordBadge = snap?.activeSessionID ? snap.byItemID.get(id) : void 0;
+        candidates.push({
+          item: it,
+          sourceKind: wordBadge ? "word" : "selection",
+          ordinal: wordBadge?.ordinal
+        });
+      }
+    }
+    const allRecords = [];
+    for (const cand of candidates) {
+      const fields = inspectItemMetadataFields(cand.item, zh, rules, { isCitedInWord: cand.sourceKind === "word" });
+      if (!fields) continue;
+      const itemID = Number(cand.item.id);
+      const { primary } = buildReminderItemKeys(cand.item);
+      const cacheKey = primary || `item:${itemID}`;
+      const rawType = resolveZoteroItemType(cand.item);
+      const title = safeGetItemField(cand.item, "title").trim() || (zh ? `未命名条目 #${itemID}` : `Untitled #${itemID}`);
+      const sourceLabel = cand.sourceKind === "word" && cand.ordinal ? zh ? `Word 引用 [${cand.ordinal}] · 当前文档` : `Word [${cand.ordinal}] · Active doc` : zh ? "来源：当前选择" : "Source: Selection";
+      allRecords.push({
+        itemID,
+        cacheKey,
+        itemType: rawType,
+        itemTypeLabel: formatReminderItemType(rawType, zh),
+        title,
+        creatorYear: formatCreatorYear(cand.item),
+        sourceKind: cand.sourceKind,
+        ordinal: cand.ordinal,
+        sourceLabel,
+        fields,
+        ignored: isIgnored(cand.item)
+      });
+    }
+    const activeRows = allRecords.filter((r) => !r.ignored);
+    const ignoredRows = allRecords.filter((r) => r.ignored);
+    const activeCount = activeRows.length;
+    const ignoredCount = ignoredRows.length;
+    const checkedCount = candidates.length;
+    const effectiveFilter = filter === "ignored" ? "ignored" : "active";
+    const rows = effectiveFilter === "ignored" ? ignoredRows : activeRows;
+    const activeSig = activeRows.map((r) => r.cacheKey).join("|");
+    const hasWordSession = Boolean(snap?.activeSessionID);
+    const hasWordActive = activeRows.some((r) => r.sourceKind === "word");
+    let headerBadge = String(activeCount);
+    let headerBadgeTone = "neutral";
+    let headerTitle;
+    if (activeCount > 0) {
+      headerBadgeTone = "warn";
+      headerTitle = hasWordActive || hasWordSession ? zh ? `${activeCount} 篇引用文献的信息不完整` : `${activeCount} cited item(s) incomplete` : zh ? `${activeCount} 篇所选文献的信息不完整` : `${activeCount} selected item(s) incomplete`;
+    } else if (ignoredCount > 0) {
+      headerBadge = String(ignoredCount);
+      headerTitle = zh ? `文献信息提醒 · 已忽略 ${ignoredCount} 篇` : `Metadata reminders · ${ignoredCount} ignored`;
+    } else if (checkedCount > 0) {
+      headerBadge = "✓";
+      headerBadgeTone = "ok";
+      headerTitle = hasWordSession && includeWord ? zh ? `引用文献信息提醒 · ${checkedCount} 篇均完整` : `Citation metadata · All ${checkedCount} complete` : zh ? "文献信息提醒 · 当前条目完整" : "Metadata check · Item complete";
+    } else {
+      headerBadge = "0";
+      headerTitle = zh ? "引用文献信息提醒" : "Citation metadata reminders";
+    }
+    const scopeDescZh = rules.scope === "wordOnly" ? "当前 Word 引用文献" : rules.scope === "selectionOnly" ? "当前所选条目" : "当前文档引用与所选条目";
+    const scopeDescEn = rules.scope === "wordOnly" ? "active Word citations" : rules.scope === "selectionOnly" ? "selected items" : "cited & selected items";
+    return {
+      visible: true,
+      expanded,
+      filter: effectiveFilter,
+      checkedCount,
+      activeCount,
+      ignoredCount,
+      activeSig,
+      headerBadge,
+      headerBadgeTone,
+      headerTitle,
+      headerActionHint: !expanded && activeCount > 0 ? zh ? "查看" : "View" : "",
+      activeTabLabel: zh ? `待处理 ${activeCount}` : `Active ${activeCount}`,
+      ignoredTabLabel: zh ? `已忽略 ${ignoredCount}` : `Ignored ${ignoredCount}`,
+      scopeHint: zh ? `范围：${scopeDescZh}；点击条目定位并在「信息」页补全` : `Scope: ${scopeDescEn}; click item to locate and complete in Info`,
+      emptyText: effectiveFilter === "ignored" ? zh ? "暂无已忽略的条目提醒。" : "No ignored reminders." : ignoredCount > 0 ? zh ? "没有待处理提醒，可在「已忽略」中恢复。" : "No active reminders. Switch to Ignored to restore." : checkedCount > 0 ? zh ? `✓ 已检查 ${checkedCount} 篇文献，核心著录字段均完整。` : `✓ All ${checkedCount} checked item(s) have complete metadata.` : zh ? "连接 Word 文档或选择文献后将自动检查著录完整性。" : "Connect a Word document or select an item to check metadata.",
+      rows
+    };
+  }
+  var ReminderUiState = class {
+    expanded = false;
+    filter = "active";
+    lastUndoKey = null;
+    autoOpenedSig = "";
+    reset() {
+      this.expanded = false;
+      this.filter = "active";
+      this.lastUndoKey = null;
+      this.autoOpenedSig = "";
+    }
+    syncAutoExpand(autoExpand, activeSig) {
+      if (!activeSig) {
+        this.autoOpenedSig = "";
+        return;
+      }
+      if (autoExpand && this.autoOpenedSig !== activeSig) {
+        this.autoOpenedSig = activeSig;
+        this.expanded = true;
+      }
+    }
+  };
+
+  // src/domains/inspector/word-cite-panel-model.ts
+  function formatInsertReceipt(res, zh) {
+    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
+    if (res.status === "inserted") return { tone: "ok", text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到 ${doc}` : `✓ Inserted ${res.itemCount} citation(s) into ${doc}` };
+    if (res.status === "busy") return { tone: "warn", text: zh ? "⌛ Word 正在处理引文，请稍候再试" : "⌛ Word is busy updating citations, try again" };
+    if (res.status === "non-word") return { tone: "warn", text: zh ? "⚠ 当前激活文档不是受支持的 Word 文档" : "⚠ Active document is not a supported Word document" };
+    if (res.status === "cancelled") return { tone: "warn", text: zh ? "ⓘ 已取消插入引文" : "ⓘ Citation insertion cancelled" };
+    return { tone: "err", text: zh ? "✕ 插入失败：请先打开 Word 并确认插件连接正常" : "✕ Unable to insert: verify Word is open and connected" };
+  }
+  function formatRefreshReceipt(res, zh) {
+    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
+    if (res.ok) return { tone: "ok", text: zh ? `↻ 已刷新 ${doc}，并同步序号` : `↻ Refreshed ${doc} citations` };
+    return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
+  }
+  function formatPendingReceipt(kind, zh) {
+    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在单事务还原/重建引文并重连 Word…" : "Recovering & relinking citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
+    return { tone: "warn", text: text2 };
+  }
+  function formatIgnoreReminderReceipt(key, zh) {
+    return {
+      tone: "ok",
+      text: zh ? "ⓘ 提醒已忽略；条目和 Word 引文未更改" : "ⓘ Reminder ignored; item and Word citation unchanged",
+      headline: zh ? "ⓘ 已忽略该条信息提醒" : "ⓘ Metadata reminder ignored",
+      subnote: zh ? "条目与 Word 引文未更改" : "Item & Word citation untouched",
+      actions: key ? [{
+        kind: "undo-ignore-reminder",
+        label: zh ? "撤销" : "Undo",
+        title: zh ? "立即恢复这条信息完整性提醒" : "Restore this metadata reminder",
+        reminderKey: key
+      }] : void 0,
+      stickyUntil: Date.now() + 8e3
+    };
+  }
+  function buildWordCiteSectionSummary(zh, snap, ids) {
+    if (!snap?.activeSessionID) return "";
+    const total = snap.totalCitedCount;
+    const orphanSuffix = snap.orphans?.length ? zh ? ` · ⚠ ${snap.orphans.length} 缺失` : ` · ⚠ ${snap.orphans.length} missing` : "";
+    if (ids.length > 1) return (zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`) + orphanSuffix;
+    const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
+    if (badge) return (zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`) + orphanSuffix;
+    return (zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`) + orphanSuffix;
+  }
+  function buildWordStatStrip(zh, snap) {
+    if (!snap?.activeSessionID) {
+      return {
+        citedValue: "—",
+        citedLabel: zh ? "已引用文献" : "Cited Items",
+        inTextValue: "—",
+        inTextLabel: zh ? "文内引用" : "In-Text",
+        orphanValue: "0",
+        orphanLabel: zh ? "待找回" : "Broken",
+        orphanWarn: false,
+        tooltip: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected"
+      };
+    }
+    let inTextTotal = 0;
+    for (const b of snap.byItemID.values()) {
+      inTextTotal += Math.max(1, Number(b.occurrences ?? 1));
+    }
+    const orphanCount = snap.orphans?.length ?? 0;
+    inTextTotal += orphanCount;
+    return {
+      citedValue: String(snap.totalCitedCount),
+      citedLabel: zh ? "已引用文献" : "Cited Items",
+      inTextValue: String(inTextTotal),
+      inTextLabel: zh ? "文内引用" : "In-Text",
+      orphanValue: String(orphanCount),
+      orphanLabel: zh ? "待找回" : "Broken",
+      orphanWarn: orphanCount > 0,
+      tooltip: zh ? `当前文档共引用 ${snap.totalCitedCount} 篇文献，文内引用 ${inTextTotal} 处${orphanCount > 0 ? `，另有 ${orphanCount} 条断链待找回` : ""}` : `${snap.totalCitedCount} cited items, ${inTextTotal} in-text occurrences${orphanCount > 0 ? `, ${orphanCount} broken` : ""}`
+    };
+  }
+  function buildCurrentCiteDisplay(zh, snap, items, ids) {
+    if (!items.length) {
+      return {
+        kicker: zh ? "当前选中文献" : "Selected Item",
+        badgeText: "",
+        badgeCited: false,
+        title: zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation",
+        submeta: "",
+        tooltip: ""
+      };
+    }
+    const first = getCachedPrimaryItemFields(items[0]);
+    const subParts = [first.creatorYear, first.source].filter(Boolean);
+    const submeta = items.length === 1 ? subParts.join(" · ") : zh ? `共选 ${items.length} 篇文献${subParts.length ? ` · 首篇：${subParts.join(" · ")}` : ""}` : `${items.length} selected${subParts.length ? ` · ${subParts.join(" · ")}` : ""}`;
+    const title = first.title || (zh ? "未命名文献" : "Untitled item");
+    let badgeText = "";
+    let badgeCited = false;
+    if (snap?.activeSessionID) {
+      if (ids.length === 1) {
+        const b = snap.byItemID.get(ids[0]);
+        if (b) {
+          const occ = b.occurrences ?? 1;
+          badgeText = occ > 1 ? zh ? `[${b.ordinal}] · ${occ}次` : `[${b.ordinal}] · ${occ}×` : `[${b.ordinal}]`;
+          badgeCited = true;
+        } else {
+          badgeText = zh ? "未引用" : "Uncited";
+        }
+      } else if (ids.length > 1) {
+        const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
+        if (cited.length) {
+          badgeText = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
+          badgeCited = true;
+        } else {
+          badgeText = zh ? `0/${ids.length} 已引` : `0/${ids.length} cited`;
+        }
+      }
+    }
+    return {
+      kicker: items.length > 1 ? zh ? `当前已选 ${items.length} 篇文献` : `${items.length} Items Selected` : zh ? "当前选中文献" : "Selected Item",
+      badgeText,
+      badgeCited,
+      title,
+      submeta,
+      tooltip: [title, submeta].filter(Boolean).join("\n")
+    };
+  }
+  function assembleWordCiteViewModel(params) {
+    const {
+      zh,
+      snap,
+      items,
+      itemIDs,
+      groups,
+      getPref,
+      sectionEnabled,
+      pending,
+      orphanState,
+      reminderState,
+      isReminderIgnored,
+      receipt
+    } = params;
+    const hasSession = Boolean(snap?.activeSessionID);
+    const sessionCount = snap?.sessions?.length ?? 0;
+    const idSet = new Set(itemIDs);
+    const matchedGroup = getPref("inspector.wordCite.showGroupSynergy") && idSet.size > 0 ? groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
+    const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
+    const showSummaryCounts = Boolean(getPref("inspector.wordCite.showSummaryCounts"));
+    const summary = showSummaryCounts ? buildWordCiteSectionSummary(zh, snap, itemIDs) : "";
+    const tagLabel = String(getPref("wordCite.citationTags.text") || "/Citations").trim() || "/Citations";
+    const showOrphanCard = Boolean(getPref("inspector.wordCite.showOrphanRecovery"));
+    const rawScope = String(getPref("inspector.wordCite.reminderScope") || "both");
+    const scope = rawScope === "wordOnly" || rawScope === "selectionOnly" ? rawScope : "both";
+    const reminderRules = {
+      enabled: Boolean(getPref("inspector.wordCite.showMetadataReminders")),
+      scope,
+      checkCreatorsYear: Boolean(getPref("inspector.wordCite.reminderCheckCreatorsYear")),
+      checkVenue: Boolean(getPref("inspector.wordCite.reminderCheckVenue")),
+      checkPagination: Boolean(getPref("inspector.wordCite.reminderCheckPagination")),
+      showSuggested: Boolean(getPref("inspector.wordCite.reminderShowSuggested")),
+      strictOnlineFirst: Boolean(getPref("inspector.wordCite.reminderStrictOnlineFirst"))
+    };
+    const preReminders = buildMetadataRemindersModel({
+      zh,
+      snap,
+      selectedItems: items,
+      isIgnored: isReminderIgnored,
+      expanded: reminderState.expanded,
+      filter: reminderState.filter,
+      rules: reminderRules
+    });
+    reminderState.syncAutoExpand(Boolean(getPref("inspector.wordCite.reminderAutoExpand")), preReminders.activeSig);
+    const reminders = preReminders.expanded === reminderState.expanded ? preReminders : { ...preReminders, expanded: reminderState.expanded };
+    const vm = {
+      zh,
+      showDocSwitcher: Boolean(getPref("inspector.wordCite.showDocSwitcher")),
+      showSummaryCounts,
+      docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
+      docStatusText: hasSession ? sessionCount >= 2 ? zh ? `已连接 · 共 ${sessionCount} 个文档` : `Connected · ${sessionCount} docs` : zh ? "已连接 · 实时同步" : "Connected · Live sync" : zh ? "请先打开 Word 文档" : "Open a Word document",
+      docSwitchTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Switch active Word document (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
+      isMultiSession: sessionCount >= 2,
+      hasWordSession: hasSession,
+      statStrip: buildWordStatStrip(zh, snap),
+      currentCite: buildCurrentCiteDisplay(zh, snap, items, itemIDs),
+      insertLabel: itemIDs.length > 1 ? zh ? `合并插入 ${itemIDs.length} 篇引文到 Word` : `Insert ${itemIDs.length} Citations in Word` : zh ? "插入到 Word 光标处" : "Insert at Word Cursor",
+      insertDisabled: pending || itemIDs.length === 0 || !sectionEnabled,
+      refreshDisabled: pending || !sectionEnabled,
+      refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
+      groupButtonText: matchedGroup ? zh ? `↗ 引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `↗ Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
+      groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ""}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ""}` : "",
+      showCollectionButton: Boolean(getPref("inspector.wordCite.showCollectionLink") && hasSession && getPref("wordCite.collections.enable")),
+      colButtonText: zh ? `文集：${tagLabel}` : `Cited: ${tagLabel}`,
+      colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
+      orphanCard: buildOrphanBannerModel(showOrphanCard ? snap?.orphans : void 0, zh, {
+        uncheckedKeys: orphanState.uncheckedKeys,
+        expanded: orphanState.expanded,
+        accordionOpen: orphanState.accordionOpen
+      }),
+      orphanDisabled: pending || !sectionEnabled,
+      reminders,
+      receipt
+    };
+    return { vm, matchedGroup, summary };
+  }
+  function resolveWordCiteTargetItems(win, item) {
+    if (!item) return [];
+    const reg = normalizeToRegularItem(item) || item;
+    const paneItems = win?.ZoteroPane?.getSelectedItems?.() || [];
+    const regId = Number(reg?.id || 0);
+    const itemId = Number(item?.id || 0);
+    if (paneItems.length > 1 && paneItems.some((p) => Number(p?.id || 0) === itemId || regId > 0 && Number(p?.id || 0) === regId)) {
+      return deduplicateRegularItems(paneItems).items;
+    }
+    return deduplicateRegularItems([reg]).items;
+  }
+  function preloadUnloadedCitedItems(citedIDs, enabled, onLoaded) {
+    if (!citedIDs?.length || !enabled) return;
+    const hostItems = globalThis.Zotero?.Items;
+    if (typeof hostItems?.get !== "function" || typeof hostItems?.getAsync !== "function") return;
+    const missing = citedIDs.filter((id) => Number.isSafeInteger(id) && id > 0 && !hostItems.get(id));
+    if (!missing.length) return;
+    void Promise.resolve(hostItems.getAsync(missing)).then(onLoaded).catch(() => {
+    });
+  }
 
   // src/domains/inspector/word-cite-orphan-ui.ts
   var XHTML_NS2 = "http://www.w3.org/1999/xhtml";
@@ -4304,73 +5082,104 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     el.textContent = "";
   }
   var ORPHAN_AND_RECEIPT_CSS = `
-.zbf-wc-orphan-box { order: 1; display: grid; gap: 6px; padding: 8px 9px; border-radius: 8px; border: 1px solid rgba(217,119,6,0.36); background: linear-gradient(180deg, rgba(245,158,11,0.11), rgba(245,158,11,0.05)); font-size: 11.5px; }
-.zbf-wc-orphan-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.zbf-wc-orphan-title { font-weight: 600; color: #b45309; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-toggle { flex: none; background: none; border: none; padding: 1px 4px; border-radius: 4px; font-size: 11px; color: #b45309; cursor: pointer; opacity: 0.88; }
-.zbf-wc-orphan-toggle:hover { background: rgba(217,119,6,0.14); opacity: 1; }
-.zbf-wc-orphan-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.zbf-wc-orphan-chip, .zbf-wc-orphan-tag, .zbf-wc-rcp-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; line-height: 1.45; white-space: nowrap; font-weight: 500; }
-.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { background: rgba(13,148,136,0.14); color: #0f766e; }
-.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild { background: rgba(37,99,235,0.12); color: #1d4ed8; }
-.zbf-wc-orphan-chip.is-unrec, .zbf-wc-orphan-tag.is-unrec { background: rgba(128,128,128,0.15); color: inherit; opacity: 0.75; }
-.zbf-wc-orphan-list { display: grid; gap: 4px; max-height: 184px; overflow-y: auto; padding-right: 1px; }
-.zbf-wc-orphan-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px; border-radius: 6px; background: var(--fill-primary, rgba(255,255,255,0.58)); border: 1px solid rgba(128,128,128,0.15); cursor: pointer; min-width: 0; }
-.zbf-wc-orphan-row:hover { border-color: rgba(217,119,6,0.4); }
-.zbf-wc-orphan-row.is-disabled { opacity: 0.62; cursor: default; }
-.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; }
-.zbf-wc-orphan-ord { flex: none; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; line-height: 1.45; }
+.zbf-wc-orphan-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.zbf-wc-orphan-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.zbf-wc-orphan-chip, .zbf-wc-orphan-tag, .zbf-wc-rcp-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10px; line-height: 1.4; white-space: nowrap; font-weight: 500; }
+.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { background: light-dark(rgba(24,121,78,0.12), rgba(34,197,94,0.18)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild { background: light-dark(rgba(40,115,200,0.11), rgba(59,130,246,0.2)); color: light-dark(#2873c8, #60a5fa); }
+.zbf-wc-orphan-chip.is-unrec, .zbf-wc-orphan-tag.is-unrec { background: light-dark(#eef1f4, rgba(255,255,255,0.1)); color: var(--fill-secondary, light-dark(#64717d, #9ca3af)); }
+.zbf-wc-orphan-toggle { flex: none; background: none; border: 0; padding: 1px 4px; border-radius: 4px; font-size: 10px; color: light-dark(#2873c8, #60a5fa); cursor: pointer; }
+.zbf-wc-orphan-toggle:hover { text-decoration: underline; }
+.zbf-wc-orphan-list { box-sizing: border-box; display: grid; gap: 0; max-height: 184px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid light-dark(#eeeeee, #33363c); cursor: pointer; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row:last-child { border-bottom: 0; }
+.zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
+.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2873c8; }
+.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#94550f, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
-.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10.5px; opacity: 0.86; min-width: 0; }
+.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #e6e6e6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; }
 .zbf-wc-orphan-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.zbf-wc-orphan-btn { box-sizing: border-box; width: 100%; padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.5); background: rgba(217,119,6,0.17); color: #92400e; font-size: 11.5px; font-weight: 600; cursor: pointer; text-align: center; transition: background 120ms ease; }
-.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.26); }
-.zbf-wc-orphan-btn:disabled { opacity: 0.48; cursor: default; }
-.zbf-wc-receipt { order: 2; display: grid; gap: 5px; font-size: 11.5px; padding: 6px 8px; border-radius: 7px; line-height: 1.4; border: 1px solid transparent; }
-.zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.1); border-color: rgba(22,163,74,0.28); color: #15803d; }
-.zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.28); color: #b45309; }
-.zbf-wc-receipt.is-err { background: rgba(220,38,38,0.1); border-color: rgba(220,38,38,0.28); color: #b91c1c; }
+.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); }
+.zbf-wc-orphan-hint { font-size: 10px; color: light-dark(#737373, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-receipt { display: grid; gap: 5px; font-size: 11px; padding: 7px 9px; border-radius: 5px; line-height: 1.4; border: 1px solid transparent; }
+.zbf-wc-receipt.is-ok { background: light-dark(#edf8f2, rgba(24,121,78,0.16)); border-color: light-dark(#bce3ce, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-receipt.is-warn { background: light-dark(#fdf6e9, rgba(245,158,11,0.16)); border-color: light-dark(#ebd3a7, rgba(245,158,11,0.34)); color: light-dark(#9a5b13, #fbbf24); }
+.zbf-wc-receipt.is-err { background: light-dark(#fef1f1, rgba(220,38,38,0.16)); border-color: light-dark(#f5c2c2, rgba(248,113,113,0.34)); color: light-dark(#b91c1c, #f87171); }
 .zbf-wc-rcp-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; font-weight: 600; }
 .zbf-wc-rcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-rcp-close { flex: none; background: none; border: none; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.65; cursor: pointer; border-radius: 4px; }
-.zbf-wc-rcp-close:hover { opacity: 1; background: rgba(128,128,128,0.15); }
+.zbf-wc-rcp-close { flex: none; background: none; border: 0; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.7; cursor: pointer; border-radius: 4px; }
+.zbf-wc-rcp-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
 .zbf-wc-rcp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.zbf-wc-rcp-chip.is-ok { background: rgba(22,163,74,0.15); color: #15803d; }
-.zbf-wc-rcp-chip.is-info { background: rgba(37,99,235,0.12); color: #1d4ed8; }
-.zbf-wc-rcp-chip.is-warn { background: rgba(217,119,6,0.15); color: #b45309; }
-.zbf-wc-rcp-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; padding-top: 3px; border-top: 1px dashed rgba(128,128,128,0.2); }
-.zbf-wc-rcp-note { font-size: 10.5px; opacity: 0.85; min-width: 0; flex: 1 1 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-rcp-chip.is-ok { background: light-dark(rgba(24,121,78,0.14), rgba(34,197,94,0.2)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-rcp-chip.is-info { background: light-dark(rgba(40,115,200,0.12), rgba(59,130,246,0.22)); color: light-dark(#2873c8, #60a5fa); }
+.zbf-wc-rcp-chip.is-warn { background: light-dark(rgba(154,91,19,0.14), rgba(245,158,11,0.22)); color: light-dark(#9a5b13, #fbbf24); }
+.zbf-wc-rcp-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; padding-top: 3px; border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+.zbf-wc-rcp-note { font-size: 10px; opacity: 0.85; min-width: 0; flex: 1 1 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-rcp-actions { display: inline-flex; align-items: center; gap: 5px; margin-inline-start: auto; }
-.zbf-wc-rcp-btn { background: rgba(255,255,255,0.65); border: 1px solid currentColor; border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 600; color: inherit; cursor: pointer; white-space: nowrap; }
-.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.9); }
-@media (prefers-color-scheme: dark) {
-	.zbf-wc-orphan-title, .zbf-wc-orphan-toggle, .zbf-wc-orphan-ord, .zbf-wc-orphan-btn, .zbf-wc-rcp-chip.is-warn, .zbf-wc-receipt.is-warn { color: #fbbf24; }
-	.zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-receipt.is-err { color: #f87171; }
-	.zbf-wc-orphan-row { background: rgba(24,24,27,0.45); }
-	.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { color: #5eead4; background: rgba(20,184,166,0.18); }
-	.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild, .zbf-wc-rcp-chip.is-info { color: #93c5fd; background: rgba(59,130,246,0.2); }
-	.zbf-wc-rcp-chip.is-ok { color: #4ade80; background: rgba(34,197,94,0.18); }
-	.zbf-wc-rcp-btn { background: rgba(255,255,255,0.08); }
-	.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.16); }
-}`;
-  function renderOrphanCardDom(doc, box, headEl, titleEl, toggleBtn, chipsEl, listEl, actionBtn, model, disabled, cb) {
-    box.hidden = !model.visible;
+.zbf-wc-rcp-btn { background: light-dark(rgba(255,255,255,0.82), rgba(255,255,255,0.08)); border: 1px solid currentColor; border-radius: 4px; padding: 2px 7px; font-size: 10.5px; font-weight: 600; color: inherit; cursor: pointer; white-space: nowrap; }
+.zbf-wc-rcp-btn:hover { background: light-dark(#ffffff, rgba(255,255,255,0.16)); }
+`;
+  function createOrphanAccordionDom(doc) {
+    const box = createEl(doc, "section", "zbf-wc-acc zbf-wc-orphan-box");
+    box.hidden = true;
+    const accHeadBtn = createEl(doc, "button", "zbf-wc-acc-head");
+    accHeadBtn.type = "button";
+    const badgeEl = createEl(doc, "span", "zbf-wc-badge is-warn");
+    const titleEl = createEl(doc, "span", "zbf-wc-acc-title");
+    const arrowEl = createEl(doc, "span", "zbf-wc-acc-arrow");
+    arrowEl.textContent = "⌄";
+    accHeadBtn.append(badgeEl, titleEl, arrowEl);
+    const bodyEl = createEl(doc, "div", "zbf-wc-acc-body");
+    const chipsRow = createEl(doc, "div", "zbf-wc-orphan-top");
+    const chipsEl = createEl(doc, "div", "zbf-wc-orphan-chips");
+    const toggleBtn = createEl(doc, "button", "zbf-wc-orphan-toggle");
+    toggleBtn.type = "button";
+    chipsRow.append(chipsEl, toggleBtn);
+    const listEl = createEl(doc, "div", "zbf-wc-orphan-list");
+    const footEl = createEl(doc, "div", "zbf-wc-orphan-foot");
+    const footHintEl = createEl(doc, "span", "zbf-wc-orphan-hint");
+    const actionBtn = createEl(doc, "button", "zbf-wc-sec-btn zbf-wc-orphan-btn");
+    actionBtn.type = "button";
+    footEl.append(footHintEl, actionBtn);
+    bodyEl.append(chipsRow, listEl, footEl);
+    box.append(accHeadBtn, bodyEl);
+    return {
+      box,
+      accHeadBtn,
+      badgeEl,
+      titleEl,
+      arrowEl,
+      bodyEl,
+      chipsRow,
+      chipsEl,
+      toggleBtn,
+      listEl,
+      footEl,
+      footHintEl,
+      actionBtn
+    };
+  }
+  function renderOrphanCardDom(doc, refs, model, disabled, cb) {
+    refs.box.hidden = !model.visible;
     if (!model.visible) return;
-    titleEl.textContent = model.title;
-    titleEl.title = model.listText;
-    toggleBtn.hidden = !model.showToggle;
-    toggleBtn.textContent = model.toggleLabel;
-    headEl.hidden = false;
-    clearChildren(chipsEl);
-    chipsEl.hidden = model.summaryChips.length === 0;
+    refs.box.classList.toggle("is-closed", !model.accordionOpen);
+    refs.accHeadBtn.setAttribute("aria-expanded", String(model.accordionOpen));
+    refs.accHeadBtn.title = model.listText;
+    refs.badgeEl.textContent = model.countBadge;
+    refs.titleEl.textContent = model.shortTitle;
+    refs.bodyEl.hidden = !model.accordionOpen;
+    if (!model.accordionOpen) return;
+    clearChildren(refs.chipsEl);
     for (const chip of model.summaryChips) {
       const pill = createEl(doc, "span", `zbf-wc-orphan-chip is-${chip.variant}`);
       pill.textContent = chip.text;
-      chipsEl.appendChild(pill);
+      refs.chipsEl.appendChild(pill);
     }
-    clearChildren(listEl);
+    refs.toggleBtn.hidden = !model.showToggle;
+    refs.toggleBtn.textContent = model.toggleLabel;
+    refs.chipsRow.hidden = model.summaryChips.length === 0 && !model.showToggle;
+    clearChildren(refs.listEl);
     for (const rowVm of model.rows) {
       const row = createEl(doc, "div", `zbf-wc-orphan-row${rowVm.recoverable ? "" : " is-disabled"}`);
       row.title = rowVm.tooltip;
@@ -4400,11 +5209,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           cb.onToggleItem(rowVm.key);
         });
       }
-      listEl.appendChild(row);
+      refs.listEl.appendChild(row);
     }
-    actionBtn.textContent = model.buttonLabel;
-    actionBtn.title = model.buttonTooltip;
-    actionBtn.disabled = disabled || model.buttonDisabled;
+    refs.footHintEl.textContent = model.footHint;
+    refs.actionBtn.textContent = model.buttonLabel;
+    refs.actionBtn.title = model.buttonTooltip;
+    refs.actionBtn.disabled = disabled || model.buttonDisabled;
   }
   function renderReceiptDom(doc, receiptEl, receipt, cb) {
     const visible = receipt.tone !== "none" && Boolean(receipt.text);
@@ -4462,86 +5272,228 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
   }
 
-  // src/domains/inspector/word-cite-panel-ui.ts
-  function formatInsertReceipt(res, zh) {
-    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
-    if (res.status === "inserted") return { tone: "ok", text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到 ${doc}` : `✓ Inserted ${res.itemCount} citation(s) into ${doc}` };
-    if (res.status === "busy") return { tone: "warn", text: zh ? "⌛ Word 正在处理引文，请稍候再试" : "⌛ Word is busy updating citations, try again" };
-    if (res.status === "non-word") return { tone: "warn", text: zh ? "⚠ 当前激活文档不是受支持的 Word 文档" : "⚠ Active document is not a supported Word document" };
-    if (res.status === "cancelled") return { tone: "warn", text: zh ? "ⓘ 已取消插入引文" : "ⓘ Citation insertion cancelled" };
-    return { tone: "err", text: zh ? "✕ 插入失败：请先打开 Word 并确认插件连接正常" : "✕ Unable to insert: verify Word is open and connected" };
-  }
-  function formatRefreshReceipt(res, zh) {
-    const doc = res.documentName ? zh ? `「${res.documentName}」` : `"${res.documentName}"` : "Word";
-    if (res.ok) return { tone: "ok", text: zh ? `↻ 已刷新 ${doc}，并同步序号` : `↻ Refreshed ${doc} citations` };
-    return { tone: "warn", text: zh ? "⚠ 未检测到可刷新的活动 Word 文档" : "⚠ No active Word document to refresh" };
-  }
-  function formatPendingReceipt(kind, zh) {
-    const text2 = kind === "insert" ? zh ? "正在插入 Word 引文…" : "Inserting Word citations…" : kind === "recover" ? zh ? "正在单事务还原/重建引文并重连 Word…" : "Recovering & relinking citations…" : zh ? "正在刷新 Word 引文…" : "Refreshing Word citations…";
-    return { tone: "warn", text: text2 };
-  }
-  function buildWordCiteSectionSummary(zh, snap, ids) {
-    if (!snap?.activeSessionID) return "";
-    const total = snap.totalCitedCount;
-    const orphanSuffix = snap.orphans?.length ? zh ? ` · ⚠ ${snap.orphans.length} 缺失` : ` · ⚠ ${snap.orphans.length} missing` : "";
-    if (ids.length > 1) return (zh ? `已选 ${ids.length} 篇 · 共引 ${total} 篇` : `${ids.length} selected · ${total} cited`) + orphanSuffix;
-    const badge = ids.length === 1 ? snap.byItemID.get(ids[0]) : void 0;
-    if (badge) return (zh ? `序号 [${badge.ordinal}] · 共引 ${total} 篇` : `[${badge.ordinal}] · ${total} cited`) + orphanSuffix;
-    return (zh ? `未引用 · 共引 ${total} 篇` : `Uncited · ${total} cited`) + orphanSuffix;
-  }
-  function buildWordCiteStats(zh, snap, ids) {
-    if (!snap?.activeSessionID) {
-      return { text: zh ? "请先打开 Word" : "Open Word first", title: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected", state: "none" };
-    }
-    const total = snap.totalCitedCount;
-    const orphanCount = snap.orphans?.length ?? 0;
-    const orphanShort = orphanCount > 0 ? zh ? ` · ⚠${orphanCount}` : ` · ⚠${orphanCount}` : "";
-    const orphanTip = orphanCount > 0 ? zh ? `；另有 ${orphanCount} 篇缺失引文待找回` : `; ${orphanCount} broken citation(s)` : "";
-    if (ids.length === 1) {
-      const b = snap.byItemID.get(ids[0]);
-      if (b) {
-        const occ = b.occurrences ?? 1;
-        return {
-          text: (zh ? `序号 [${b.ordinal}] / 共 ${total} 篇` : `[${b.ordinal}] / ${total} cited`) + orphanShort,
-          title: (zh ? `在「${snap.activeDocumentName}」中出现 ${occ} 次${b.shortText ? ` · ${b.shortText}` : ""}` : `Cited ${occ} time(s) in "${snap.activeDocumentName}"`) + orphanTip,
-          state: "cited"
-        };
-      }
-      return {
-        text: (zh ? `未引 / 共 ${total} 篇` : `Uncited / ${total}`) + orphanShort,
-        title: (zh ? `尚未在「${snap.activeDocumentName}」中引用 (当前共引 ${total} 篇)` : `Not yet cited in "${snap.activeDocumentName}" (${total} total)`) + orphanTip,
-        state: orphanCount > 0 ? "warn" : "uncited"
-      };
-    }
-    if (ids.length > 1) {
-      const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
-      if (cited.length) {
-        const list = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
-        return {
-          text: (zh ? `已引 ${list} / 共 ${total} 篇` : `${cited.length}/${ids.length} cited · ${total} total`) + orphanShort,
-          title: (zh ? `所选 ${ids.length} 篇中有 ${cited.length} 篇已引用` : `${cited.length} of ${ids.length} selected items cited`) + orphanTip,
-          state: "cited"
-        };
-      }
-      return {
-        text: (zh ? `未引 (${ids.length} 篇) / 共 ${total} 篇` : `0/${ids.length} cited · ${total} total`) + orphanShort,
-        title: (zh ? "当前选中文献均尚未在 Word 中引用" : "None of the selected items are cited yet") + orphanTip,
-        state: orphanCount > 0 ? "warn" : "uncited"
-      };
-    }
-    return { text: (zh ? `共引 ${total} 篇` : `${total} cited`) + orphanShort, title: snap.activeDocumentName + orphanTip, state: orphanCount > 0 ? "warn" : "uncited" };
-  }
-  function buildWordCiteMetaText(zh, items) {
-    if (!items.length) return zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation";
-    const info = getCachedPrimaryItemFields(items[0]);
-    const first = [info.creatorYear, info.title].filter(Boolean).join(" · ") || info.title;
-    if (items.length === 1) return first;
-    return zh ? `已选 ${items.length} 篇：${first}` : `${items.length} items: ${first}`;
-  }
-  var STYLE_ID2 = "zbf-word-cite-styles";
+  // src/domains/inspector/word-cite-reminders-ui.ts
   var XHTML_NS3 = "http://www.w3.org/1999/xhtml";
+  function createEl2(doc, tag, cls) {
+    const node = typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS3, tag) : doc.createElement(tag);
+    if (cls) node.className = cls;
+    return node;
+  }
+  function clearChildren2(el) {
+    if (typeof el.replaceChildren === "function") {
+      el.replaceChildren();
+      return;
+    }
+    if (Array.isArray(el.children)) {
+      el.children.length = 0;
+    }
+    el.textContent = "";
+  }
+  var REMINDERS_CARD_CSS = `
+.zbf-wc-rem-filters { display: flex; align-items: center; gap: 5px; padding-top: 1px; min-width: 0; }
+.zbf-wc-rem-filter { appearance: none; border: 1px solid light-dark(#d6d9de, #454a52); border-radius: 999px; background: light-dark(#fafafa, rgba(255,255,255,0.03)); color: light-dark(#666666, #9ea4ad); padding: 2px 8px; font-size: 10px; cursor: pointer; }
+.zbf-wc-rem-filter:hover { color: light-dark(#262626, #ececec); background: light-dark(#f0f2f5, rgba(255,255,255,0.08)); }
+.zbf-wc-rem-filter.is-active { background: light-dark(#edf5fe, rgba(56,139,253,0.18)); border-color: light-dark(#accbf2, rgba(96,165,250,0.42)); color: light-dark(#1759aa, #7cc0ff); font-weight: 600; }
+.zbf-wc-rem-hint { font-size: 10px; line-height: 1.42; color: light-dark(#737373, #9ea4ad); border-inline-start: 2px solid light-dark(#9ec3ef, rgba(96,165,250,0.45)); padding-inline-start: 6px; min-width: 0; }
+.zbf-wc-rem-list { box-sizing: border-box; display: grid; gap: 0; max-height: 210px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
+.zbf-wc-rem-row { box-sizing: border-box; display: grid; gap: 4px; padding: 6px 4px; border-bottom: 1px solid light-dark(#eeeeee, #33363c); min-width: 0; max-width: 100%; }
+.zbf-wc-rem-row:last-child { border-bottom: 0; }
+.zbf-wc-rem-row.is-clickable { cursor: pointer; border-radius: 4px; }
+.zbf-wc-rem-row.is-clickable:hover { background: light-dark(#f4f7fb, rgba(56,139,253,0.08)); }
+.zbf-wc-rem-top { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
+.zbf-wc-rem-type { flex: none; padding: 1px 4px; border-radius: 3px; background: light-dark(#f0f2f4, rgba(255,255,255,0.09)); border: 1px solid light-dark(#e3e6ea, rgba(255,255,255,0.12)); color: light-dark(#595959, #cbd5e1); font-size: 9.5px; line-height: 1.35; }
+.zbf-wc-rem-title { flex: 1 1 0; min-width: 0; font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #ececec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-field-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.zbf-wc-field-tag { padding: 1px 5px; border-radius: 3px; font-size: 10px; line-height: 1.35; background: light-dark(#fff8eb, rgba(245,158,11,0.14)); border: 1px solid light-dark(#ead2a5, rgba(245,158,11,0.34)); color: light-dark(#94550f, #fbbf24); }
+.zbf-wc-field-tag.is-soft { background: light-dark(#f4f5f7, rgba(255,255,255,0.06)); border-color: light-dark(#dfe2e6, #454a52); color: light-dark(#666666, #9ea4ad); }
+.zbf-wc-rem-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10px; min-width: 0; }
+.zbf-wc-rem-src { color: light-dark(#737373, #9ea4ad); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.zbf-wc-rem-act { flex: none; appearance: none; border: 1px solid light-dark(#d0d5db, #484c54); border-radius: 4px; background: light-dark(#fafafa, #2c2f34); color: light-dark(#4d555e, #d0d5dd); padding: 1px 7px; font-size: 10px; cursor: pointer; }
+.zbf-wc-rem-act:hover { color: light-dark(#222222, #ffffff); background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); }
+.zbf-wc-rem-empty { padding: 12px 6px; text-align: center; font-size: 10.5px; color: light-dark(#737373, #9ea4ad); border: 1px dashed light-dark(#dcdcdc, #454a52); border-radius: 4px; }
+`;
+  function createReminderCardDom(doc, cb, signal) {
+    const root = createEl2(doc, "section", "zbf-wc-acc zbf-wc-rem-acc is-closed");
+    root.hidden = true;
+    const headBtn = createEl2(doc, "button", "zbf-wc-acc-head");
+    headBtn.type = "button";
+    headBtn.setAttribute("aria-expanded", "false");
+    const badgeEl = createEl2(doc, "span", "zbf-wc-badge");
+    const titleEl = createEl2(doc, "span", "zbf-wc-acc-title");
+    const subHintEl = createEl2(doc, "span", "zbf-wc-acc-sub");
+    const arrowEl = createEl2(doc, "span", "zbf-wc-acc-arrow");
+    arrowEl.textContent = "⌄";
+    headBtn.append(badgeEl, titleEl, subHintEl, arrowEl);
+    headBtn.addEventListener("click", () => cb.onToggleAccordion(), { signal });
+    const bodyEl = createEl2(doc, "div", "zbf-wc-acc-body");
+    bodyEl.hidden = true;
+    const filterBar = createEl2(doc, "div", "zbf-wc-rem-filters");
+    const activeFilterBtn = createEl2(doc, "button", "zbf-wc-rem-filter is-active");
+    activeFilterBtn.type = "button";
+    activeFilterBtn.addEventListener("click", () => cb.onSelectFilter("active"), { signal });
+    const ignoredFilterBtn = createEl2(doc, "button", "zbf-wc-rem-filter");
+    ignoredFilterBtn.type = "button";
+    ignoredFilterBtn.addEventListener("click", () => cb.onSelectFilter("ignored"), { signal });
+    filterBar.append(activeFilterBtn, ignoredFilterBtn);
+    const hintEl = createEl2(doc, "div", "zbf-wc-rem-hint");
+    const listEl = createEl2(doc, "div", "zbf-wc-rem-list");
+    bodyEl.append(filterBar, hintEl, listEl);
+    root.append(headBtn, bodyEl);
+    return {
+      root,
+      headBtn,
+      badgeEl,
+      titleEl,
+      subHintEl,
+      arrowEl,
+      bodyEl,
+      filterBar,
+      activeFilterBtn,
+      ignoredFilterBtn,
+      hintEl,
+      listEl
+    };
+  }
+  function renderReminderCardDom(doc, refs, model, zh, cb) {
+    refs.root.hidden = !model.visible;
+    if (!model.visible) return;
+    refs.root.classList.toggle("is-closed", !model.expanded);
+    refs.headBtn.setAttribute("aria-expanded", String(model.expanded));
+    refs.badgeEl.textContent = model.headerBadge;
+    refs.badgeEl.classList.toggle("is-warn", model.headerBadgeTone === "warn");
+    refs.badgeEl.classList.toggle("is-ok", model.headerBadgeTone === "ok");
+    refs.titleEl.textContent = model.headerTitle;
+    refs.subHintEl.hidden = !model.headerActionHint;
+    refs.subHintEl.textContent = model.headerActionHint;
+    refs.bodyEl.hidden = !model.expanded;
+    if (!model.expanded) return;
+    refs.activeFilterBtn.textContent = model.activeTabLabel;
+    refs.activeFilterBtn.classList.toggle("is-active", model.filter === "active");
+    refs.ignoredFilterBtn.textContent = model.ignoredTabLabel;
+    refs.ignoredFilterBtn.classList.toggle("is-active", model.filter === "ignored");
+    refs.hintEl.textContent = model.scopeHint;
+    clearChildren2(refs.listEl);
+    if (model.rows.length === 0) {
+      const empty = createEl2(doc, "div", "zbf-wc-rem-empty");
+      empty.textContent = model.emptyText;
+      refs.listEl.appendChild(empty);
+      return;
+    }
+    for (const rec of model.rows) {
+      const clickable = !rec.ignored;
+      const row = createEl2(doc, "div", `zbf-wc-rem-row${clickable ? " is-clickable" : ""}`);
+      if (clickable) {
+        row.tabIndex = 0;
+        row.title = zh ? `点击定位到「${rec.title}」，在「信息」页核对补全` : `Click to locate "${rec.title}" and complete metadata in Info`;
+      }
+      const top = createEl2(doc, "div", "zbf-wc-rem-top");
+      const typeTag = createEl2(doc, "span", "zbf-wc-rem-type");
+      typeTag.textContent = rec.itemTypeLabel;
+      const title = createEl2(doc, "span", "zbf-wc-rem-title");
+      title.textContent = rec.ordinal ? `[${rec.ordinal}] ${rec.title}` : rec.title;
+      top.append(typeTag, title);
+      const tags = createEl2(doc, "div", "zbf-wc-field-tags");
+      for (const f of rec.fields) {
+        const pill = createEl2(doc, "span", `zbf-wc-field-tag${f.kind === "suggested" ? " is-soft" : ""}`);
+        pill.textContent = f.text;
+        tags.appendChild(pill);
+      }
+      const foot = createEl2(doc, "div", "zbf-wc-rem-foot");
+      const src = createEl2(doc, "span", "zbf-wc-rem-src");
+      src.textContent = rec.creatorYear ? `${rec.creatorYear} · ${rec.sourceLabel}` : rec.sourceLabel;
+      const actBtn = createEl2(doc, "button", "zbf-wc-rem-act");
+      actBtn.type = "button";
+      actBtn.textContent = rec.ignored ? zh ? "恢复提醒" : "Restore" : zh ? "忽略提醒" : "Ignore";
+      actBtn.addEventListener("click", (ev) => {
+        ev.stopPropagation?.();
+        if (rec.ignored) cb.onRestoreItem(rec);
+        else cb.onIgnoreItem(rec);
+      });
+      foot.append(src, actBtn);
+      row.append(top, tags, foot);
+      if (clickable) {
+        row.addEventListener("click", (ev) => {
+          if (ev.target?.closest?.("button")) return;
+          cb.onLocateItem(rec.itemID);
+        });
+        row.addEventListener("keydown", (ev) => {
+          if (ev.target === row && (ev.key === "Enter" || ev.key === " ")) {
+            ev.preventDefault?.();
+            cb.onLocateItem(rec.itemID);
+          }
+        });
+      }
+      refs.listEl.appendChild(row);
+    }
+  }
+
+  // src/domains/inspector/word-cite-styles.ts
+  var WORD_CITE_SCHEME_C_CSS = `
+item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
+.zbf-word-cite-wrap { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden; padding: 4px 2px 8px; font-size: 12px; color: light-dark(#262626, #e6e6e6); }
+.zbf-word-cite-wrap [hidden] { display: none !important; }
+.zbf-wc-card { box-sizing: border-box; background: light-dark(#ffffff, #242629); border: 1px solid light-dark(#dedede, #3a3d42); border-radius: 6px; padding: 8px 10px; min-width: 0; max-width: 100%; box-shadow: 0 1px 1px light-dark(rgba(0,0,0,0.02), rgba(0,0,0,0.16)); }
+.zbf-wc-doc-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.zbf-wc-w { width: 22px; height: 22px; border-radius: 4px; background: light-dark(#f3f4f6, rgba(255,255,255,0.07)); border: 1px solid light-dark(#dcdcdc, #43474e); color: light-dark(#666666, #a3aab4); display: grid; place-items: center; font-size: 10.5px; font-weight: 600; flex: none; }
+.zbf-wc-w.is-live { color: light-dark(#1d63b8, #6cb2ff); background: light-dark(#eef5fd, rgba(56,139,253,0.14)); border-color: light-dark(#c5dcf6, rgba(96,165,250,0.34)); }
+.zbf-wc-doc-meta { min-width: 0; flex: 1 1 0; display: grid; gap: 1px; }
+.zbf-wc-docname { font-size: 12px; font-weight: 600; line-height: 1.35; color: light-dark(#262626, #ececec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-doc-sub { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: light-dark(#a3a3a3, #666c75); }
+.zbf-wc-dot.is-live { background: #1fa363; }
+.zbf-wc-doc-switch { appearance: none; width: 24px; height: 24px; border: 1px solid light-dark(#e0e0e0, #42464d); background: light-dark(#fafafa, #2c2f34); color: light-dark(#595959, #b0b6bf); border-radius: 4px; padding: 0; font-size: 12px; line-height: 1; cursor: pointer; flex: none; display: inline-flex; align-items: center; justify-content: center; }
+.zbf-wc-doc-switch:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#c8cdd3, #545962); color: light-dark(#262626, #ffffff); }
+.zbf-wc-doc-switch:disabled { opacity: 0.42; cursor: default; background: transparent; border-color: transparent; }
+.zbf-wc-stat-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 8px; padding-top: 7px; border-top: 1px solid light-dark(#ebebeb, #33363c); text-align: center; }
+.zbf-wc-stat-strip.is-solo { margin-top: 0; padding-top: 0; border-top: 0; }
+.zbf-wc-stat-cell { border-inline-end: 1px solid light-dark(#ebebeb, #33363c); padding-inline: 4px; min-width: 0; }
+.zbf-wc-stat-cell:last-child { border-inline-end: 0; }
+.zbf-wc-stat-val { display: block; font-size: 12.5px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; color: light-dark(#262626, #ececec); }
+.zbf-wc-stat-lbl { display: block; font-size: 10.5px; color: light-dark(#737373, #9ea4ad); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-stat-cell.is-warn .zbf-wc-stat-val, .zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl { color: light-dark(#a15c11, #f5b942); }
+.zbf-wc-cite-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10.5px; margin-bottom: 3px; min-width: 0; }
+.zbf-wc-cite-kicker { color: light-dark(#737373, #9ea4ad); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-ord-badge { flex: none; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: light-dark(#737373, #9ea4ad); }
+.zbf-wc-ord-badge.is-cited { color: light-dark(#1d63b8, #6cb2ff); background: light-dark(#eef5fd, rgba(56,139,253,0.16)); border: 1px solid light-dark(#cfe2f9, rgba(96,165,250,0.3)); padding: 0 5px; border-radius: 4px; }
+.zbf-wc-cite-title { font-size: 12px; font-weight: 500; line-height: 1.42; color: light-dark(#222222, #ececec); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.zbf-wc-cite-sub { font-size: 10.5px; color: light-dark(#6e6e6e, #9ea4ad); margin-top: 2px; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-actions { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; align-items: stretch; min-width: 0; margin-top: 7px; }
+.zbf-wc-cite-sub:not([hidden]) + .zbf-wc-actions { margin-top: 0; }
+.zbf-word-cite-action { box-sizing: border-box; height: 27px; min-width: 0; padding: 0 10px; border-radius: 5px; border: 1px solid light-dark(#9ec3ef, rgba(96,165,250,0.42)); background: light-dark(#edf5fe, rgba(56,139,253,0.16)); color: light-dark(#1759aa, #7cc0ff); font-size: 12px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; transition: background-color 120ms ease, border-color 120ms ease; }
+.zbf-word-cite-action:hover:not(:disabled) { background: light-dark(#dfeeff, rgba(56,139,253,0.25)); border-color: light-dark(#7ab0ec, rgba(96,165,250,0.58)); }
+.zbf-word-cite-action:active:not(:disabled) { background: light-dark(#d2e5fc, rgba(56,139,253,0.32)); }
+.zbf-word-cite-action:disabled { opacity: 0.48; cursor: default; }
+.zbf-word-refresh-action { box-sizing: border-box; height: 27px; width: 28px; padding: 0; border-radius: 5px; border: 1px solid light-dark(#d0d5db, #464b53); background: light-dark(#fafafa, #2c2f34); color: light-dark(#4d555e, #d0d5dd); font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background-color 120ms ease, border-color 120ms ease; }
+.zbf-word-refresh-action:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); color: light-dark(#222222, #ffffff); }
+.zbf-word-refresh-action:disabled { opacity: 0.45; cursor: default; }
+.zbf-wc-synergy { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px; margin-top: 7px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); min-width: 0; }
+.zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: 0; padding: 1px 0; font-size: 11px; color: light-dark(#1d63b8, #6cb2ff); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.zbf-wc-link:hover:not(:disabled) { text-decoration: underline; }
+.zbf-wc-link:disabled { opacity: 0.45; cursor: default; }
+.zbf-wc-col-link { flex: none; margin-inline-start: 0; }
+.zbf-word-group-action:not([hidden]) ~ .zbf-wc-col-link { margin-inline-start: auto; }
+.zbf-wc-acc { box-sizing: border-box; background: light-dark(#ffffff, #242629); border: 1px solid light-dark(#dedede, #3a3d42); border-radius: 6px; overflow: hidden; min-width: 0; max-width: 100%; }
+.zbf-wc-acc-head { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 0; background: light-dark(#fafafa, rgba(255,255,255,0.03)); color: light-dark(#262626, #e6e6e6); text-align: left; cursor: pointer; font-size: 11.5px; font-weight: 600; min-width: 0; }
+.zbf-wc-acc-head:hover { background: light-dark(#f2f3f5, rgba(255,255,255,0.07)); }
+.zbf-wc-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: light-dark(#eaecef, rgba(255,255,255,0.13)); color: light-dark(#555555, #cfd5dd); font-size: 10px; font-weight: 600; flex: none; font-variant-numeric: tabular-nums; }
+.zbf-wc-badge.is-warn { background: light-dark(#faecd4, rgba(245,158,11,0.22)); border: 1px solid light-dark(#ecd1a1, rgba(245,158,11,0.35)); color: light-dark(#94550f, #fbbf24); }
+.zbf-wc-badge.is-ok { background: light-dark(#e8f6ee, rgba(34,197,94,0.18)); border: 1px solid light-dark(#bde5cd, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-acc-title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-acc-sub { flex: none; font-size: 10.5px; font-weight: 400; color: light-dark(#737373, #9ea4ad); }
+.zbf-wc-acc-arrow { flex: none; font-size: 10px; color: light-dark(#737373, #9ea4ad); transition: transform 120ms ease; }
+.zbf-wc-acc.is-closed .zbf-wc-acc-arrow { transform: rotate(-90deg); }
+.zbf-wc-acc-body { box-sizing: border-box; padding: 6px 10px 9px; border-top: 1px solid light-dark(#ebebeb, #33363c); display: grid; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden; }
+.zbf-wc-sec-btn { box-sizing: border-box; height: 25px; padding: 0 9px; border-radius: 4px; border: 1px solid light-dark(#cdd2d7, #484c54); background: light-dark(#fafafa, #2c2f34); color: light-dark(#262626, #e6e6e6); font-size: 11px; font-weight: 500; cursor: pointer; white-space: nowrap; }
+.zbf-wc-sec-btn:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); }
+.zbf-wc-sec-btn:disabled { opacity: 0.45; cursor: default; }
+.zbf-wc-doc-switch:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-acc-head:focus-visible, .zbf-wc-sec-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible, .zbf-wc-rem-row:focus-visible { outline: 2px solid var(--accent-blue, #2873c8); outline-offset: 1px; }
+`;
+
+  // src/domains/inspector/word-cite-panel-ui.ts
+  var STYLE_ID2 = "zbf-word-cite-styles";
+  var XHTML_NS4 = "http://www.w3.org/1999/xhtml";
   function createXhtmlEl2(doc, tag) {
-    return typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS3, tag) : doc.createElement(tag);
+    return typeof doc.createElementNS === "function" ? doc.createElementNS(XHTML_NS4, tag) : doc.createElement(tag);
   }
   function ensureWordCitePanelStyles(doc) {
     if (!doc?.getElementById) return;
@@ -4551,43 +5503,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       style.id = STYLE_ID2;
       (doc.head || doc.documentElement)?.appendChild(style);
     }
-    const css = `
-item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
-.zbf-word-cite-wrap { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden; padding: 6px 2px 8px; font-size: 12px; }
-.zbf-word-cite-wrap [hidden] { display: none !important; }
-.zbf-wc-row1 { order: 0; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; min-height: 22px; }
-.zbf-wc-doc { box-sizing: border-box; display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; flex: 0 1 auto; padding: 2px 7px; border-radius: 999px; border: 1px solid rgba(128,128,128,0.24); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 11px; line-height: 1.4; cursor: default; appearance: none; }
-.zbf-wc-doc.is-multi { cursor: pointer; border-color: rgba(37,99,235,0.35); }
-.zbf-wc-doc.is-multi:hover { background: rgba(37,99,235,0.12); }
-.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #94a3b8; }
-.zbf-wc-dot.is-live { background: #16a34a; }
-.zbf-wc-docname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-swap { flex: none; opacity: 0.78; font-size: 10px; }
-.zbf-wc-stats { box-sizing: border-box; font-size: 11px; padding: 2px 7px; border-radius: 999px; max-width: 100%; min-width: 0; flex: 0 1 auto; margin-inline-start: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; background: rgba(128,128,128,0.1); color: inherit; opacity: 0.85; }
-.zbf-wc-stats.is-cited { background: rgba(22,163,74,0.14); color: #15803d; font-weight: 600; opacity: 1; }
-.zbf-wc-stats.is-warn { background: rgba(217,119,6,0.14); color: #b45309; font-weight: 600; opacity: 1; }
-.zbf-wc-meta { order: 3; min-width: 0; max-width: 100%; font-size: 12px; opacity: 0.88; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-inline: 2px; }
-.zbf-wc-actions { order: 4; display: flex; align-items: stretch; gap: 6px; min-width: 0; max-width: 100%; }
-.zbf-word-cite-action { box-sizing: border-box; flex: 1 1 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 8px; border-radius: 6px; border: 1px solid rgba(37,99,235,0.42); background: rgba(37,99,235,0.11); color: inherit; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.zbf-word-cite-action:hover:not(:disabled) { background: rgba(37,99,235,0.2); }
-.zbf-word-cite-action:disabled { opacity: 0.45; cursor: default; }
-.zbf-word-refresh-action { box-sizing: border-box; flex: 0 0 30px; width: 30px; border-radius: 6px; border: 1px solid rgba(128,128,128,0.28); background: var(--fill-quinary, rgba(128,128,128,0.08)); color: inherit; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
-.zbf-word-refresh-action:hover:not(:disabled) { background: var(--fill-quarternary, rgba(128,128,128,0.16)); }
-.zbf-wc-synergy { order: 5; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; min-width: 0; max-width: 100%; padding-top: 4px; border-top: 1px dashed rgba(128,128,128,0.2); }
-.zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: none; padding: 1px 2px; font-size: 11px; color: #2563eb; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.zbf-wc-link:hover { text-decoration: underline; }
-.zbf-wc-doc.is-multi:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-orphan-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible { outline: 2px solid var(--accent-blue, #2563eb); outline-offset: 1px; }
-.zbf-wc-col-link { flex: none; margin-inline-start: auto; }
+    const css = `${WORD_CITE_SCHEME_C_CSS}
 ${ORPHAN_AND_RECEIPT_CSS}
-@media (prefers-color-scheme: dark) {
-	.zbf-wc-stats.is-cited, .zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-stats.is-warn, .zbf-wc-receipt.is-warn { color: #fbbf24; }
-	.zbf-wc-receipt.is-err { color: #f87171; }
-	.zbf-wc-link { color: #60a5fa; }
-}`;
+${REMINDERS_CARD_CSS}`;
     if (style.textContent !== css) style.textContent = css;
   }
-  function createWordCiteBodyState(doc, body) {
+  function createWordCiteBodyState(doc, body, reminderHeadCb, signal) {
     ensureWordCitePanelStyles(doc);
     const el = (tag, cls) => {
       const node = createXhtmlEl2(doc, tag);
@@ -4595,18 +5516,41 @@ ${ORPHAN_AND_RECEIPT_CSS}
       return node;
     };
     const root = el("div", "zbf-word-cite-wrap");
-    const row1 = el("div", "zbf-wc-row1");
-    const docBtn = el("button", "zbf-wc-doc");
-    docBtn.type = "button";
+    const docCard = el("div", "zbf-wc-card zbf-wc-doc-card");
+    const docRow = el("div", "zbf-wc-doc-row");
+    const wBadge = el("span", "zbf-wc-w");
+    wBadge.textContent = "W";
+    const docMeta = el("div", "zbf-wc-doc-meta");
+    const docNameEl = el("strong", "zbf-wc-docname");
+    const docSub = el("span", "zbf-wc-doc-sub");
     const docDot = el("span", "zbf-wc-dot");
-    const docName = el("span", "zbf-wc-docname");
-    const docSwap = el("span", "zbf-wc-swap");
-    docSwap.textContent = "⇄";
-    docSwap.hidden = true;
-    docBtn.append(docDot, docName, docSwap);
-    const statsEl = el("span", "zbf-wc-stats");
-    row1.append(docBtn, statsEl);
-    const metaEl = el("div", "zbf-wc-meta");
+    const docStatusEl = el("span", "zbf-wc-doc-status");
+    docSub.append(docDot, docStatusEl);
+    docMeta.append(docNameEl, docSub);
+    const docSwitchBtn = el("button", "zbf-wc-doc-switch");
+    docSwitchBtn.type = "button";
+    docSwitchBtn.textContent = "⇄";
+    docRow.append(wBadge, docMeta, docSwitchBtn);
+    const statStrip = el("div", "zbf-wc-stat-strip");
+    const mkCell = () => {
+      const cell = el("div", "zbf-wc-stat-cell");
+      const val = el("b", "zbf-wc-stat-val");
+      const lbl = el("span", "zbf-wc-stat-lbl");
+      cell.append(val, lbl);
+      return { cell, val, lbl };
+    };
+    const c1 = mkCell();
+    const c2 = mkCell();
+    const c3 = mkCell();
+    statStrip.append(c1.cell, c2.cell, c3.cell);
+    docCard.append(docRow, statStrip);
+    const citeCard = el("div", "zbf-wc-card zbf-wc-cite-card");
+    const citeHead = el("div", "zbf-wc-cite-head");
+    const citeKickerEl = el("span", "zbf-wc-cite-kicker");
+    const ordBadgeEl = el("span", "zbf-wc-ord-badge");
+    citeHead.append(citeKickerEl, ordBadgeEl);
+    const citeTitleEl = el("div", "zbf-wc-cite-title");
+    const citeSubEl = el("div", "zbf-wc-cite-sub");
     const actions = el("div", "zbf-wc-actions");
     const insertBtn = el("button", "zbf-word-cite-action");
     insertBtn.type = "button";
@@ -4620,68 +5564,79 @@ ${ORPHAN_AND_RECEIPT_CSS}
     const colBtn = el("button", "zbf-wc-link zbf-wc-col-link zbf-word-col-action");
     colBtn.type = "button";
     synergyEl.append(groupBtn, colBtn);
-    const orphanBox = el("div", "zbf-wc-orphan-box");
-    orphanBox.hidden = true;
-    const orphanHead = el("div", "zbf-wc-orphan-head");
-    const orphanTitle = el("div", "zbf-wc-orphan-title");
-    const orphanToggleBtn = el("button", "zbf-wc-orphan-toggle");
-    orphanToggleBtn.type = "button";
-    orphanHead.append(orphanTitle, orphanToggleBtn);
-    const orphanChips = el("div", "zbf-wc-orphan-chips");
-    const orphanList = el("div", "zbf-wc-orphan-list");
-    const orphanBtn = el("button", "zbf-wc-orphan-btn");
-    orphanBtn.type = "button";
-    orphanBox.append(orphanHead, orphanChips, orphanList, orphanBtn);
+    citeCard.append(citeHead, citeTitleEl, citeSubEl, actions, synergyEl);
     const receiptEl = el("div", "zbf-wc-receipt");
     receiptEl.hidden = true;
     receiptEl.setAttribute("role", "status");
-    root.append(row1, metaEl, actions, synergyEl, receiptEl, orphanBox);
+    const orphanRefs = createOrphanAccordionDom(doc);
+    const reminderRefs = createReminderCardDom(doc, reminderHeadCb, signal);
+    root.append(docCard, citeCard, receiptEl, orphanRefs.box, reminderRefs.root);
     body.appendChild(root);
     return {
       root,
-      row1,
-      docBtn,
+      docCard,
+      docRow,
+      wBadge,
+      docNameEl,
       docDot,
-      docName,
-      docSwap,
-      statsEl,
-      metaEl,
+      docStatusEl,
+      docSwitchBtn,
+      statStrip,
+      citedValEl: c1.val,
+      citedLblEl: c1.lbl,
+      inTextValEl: c2.val,
+      inTextLblEl: c2.lbl,
+      orphanCell: c3.cell,
+      orphanValEl: c3.val,
+      orphanLblEl: c3.lbl,
+      citeCard,
+      citeKickerEl,
+      ordBadgeEl,
+      citeTitleEl,
+      citeSubEl,
       insertBtn,
       refreshBtn,
       synergyEl,
       groupBtn,
       colBtn,
-      orphanBox,
-      orphanHead,
-      orphanTitle,
-      orphanToggleBtn,
-      orphanChips,
-      orphanList,
-      orphanBtn,
       receiptEl,
+      orphanRefs,
+      reminderRefs,
       activeItem: null,
       lastItemIDs: [],
       lastGroup: null
     };
   }
-  function renderWordCitePanel(st, vm, cb) {
+  function renderWordCitePanel(st, vm, orphanCb, reminderCb) {
     const doc = st.root.ownerDocument;
-    st.docBtn.hidden = !vm.showDocSwitcher;
-    st.docBtn.classList.toggle("is-multi", vm.isMultiSession);
-    st.docBtn.disabled = !vm.isMultiSession;
-    st.docBtn.title = vm.docTitle;
+    st.docRow.hidden = !vm.showDocSwitcher;
+    st.wBadge.classList.toggle("is-live", vm.hasWordSession);
     st.docDot.classList.toggle("is-live", vm.hasWordSession);
-    st.docName.textContent = vm.docName;
-    st.docSwap.hidden = !vm.isMultiSession;
-    st.statsEl.hidden = !vm.showSummaryCounts;
-    st.statsEl.textContent = vm.statsText;
-    st.statsEl.title = vm.statsTitle;
-    st.statsEl.classList.toggle("is-cited", vm.statsState === "cited");
-    st.statsEl.classList.toggle("is-warn", vm.statsState === "warn");
-    st.statsEl.classList.toggle("is-uncited", vm.statsState === "uncited" || vm.statsState === "none");
-    st.row1.hidden = !vm.showDocSwitcher && !vm.showSummaryCounts;
-    st.metaEl.textContent = vm.metaText;
-    st.metaEl.title = vm.metaTitle;
+    st.docNameEl.textContent = vm.docName;
+    st.docNameEl.title = vm.docSwitchTitle;
+    st.docStatusEl.textContent = vm.docStatusText;
+    st.docSwitchBtn.hidden = !vm.isMultiSession && !vm.hasWordSession;
+    st.docSwitchBtn.disabled = !vm.isMultiSession;
+    st.docSwitchBtn.title = vm.docSwitchTitle;
+    st.statStrip.hidden = !vm.showSummaryCounts;
+    st.statStrip.classList.toggle("is-solo", !vm.showDocSwitcher);
+    st.statStrip.title = vm.statStrip.tooltip;
+    st.citedValEl.textContent = vm.statStrip.citedValue;
+    st.citedLblEl.textContent = vm.statStrip.citedLabel;
+    st.inTextValEl.textContent = vm.statStrip.inTextValue;
+    st.inTextLblEl.textContent = vm.statStrip.inTextLabel;
+    st.orphanValEl.textContent = vm.statStrip.orphanValue;
+    st.orphanLblEl.textContent = vm.statStrip.orphanLabel;
+    st.orphanCell.classList.toggle("is-warn", vm.statStrip.orphanWarn);
+    st.docCard.hidden = !vm.showDocSwitcher && !vm.showSummaryCounts;
+    st.citeKickerEl.textContent = vm.currentCite.kicker;
+    st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
+    st.ordBadgeEl.textContent = vm.currentCite.badgeText;
+    st.ordBadgeEl.classList.toggle("is-cited", vm.currentCite.badgeCited);
+    st.citeTitleEl.textContent = vm.currentCite.title;
+    st.citeTitleEl.title = vm.currentCite.tooltip;
+    st.citeSubEl.hidden = !vm.currentCite.submeta;
+    st.citeSubEl.textContent = vm.currentCite.submeta;
     st.insertBtn.textContent = vm.insertLabel;
     st.insertBtn.disabled = vm.insertDisabled;
     st.refreshBtn.disabled = vm.refreshDisabled;
@@ -4694,20 +5649,9 @@ ${ORPHAN_AND_RECEIPT_CSS}
     st.colBtn.textContent = vm.colButtonText;
     st.colBtn.title = vm.colButtonTitle;
     st.synergyEl.hidden = st.groupBtn.hidden && st.colBtn.hidden;
-    renderOrphanCardDom(
-      doc,
-      st.orphanBox,
-      st.orphanHead,
-      st.orphanTitle,
-      st.orphanToggleBtn,
-      st.orphanChips,
-      st.orphanList,
-      st.orphanBtn,
-      vm.orphanCard,
-      vm.orphanDisabled,
-      cb
-    );
-    renderReceiptDom(doc, st.receiptEl, vm.receipt, cb);
+    renderReceiptDom(doc, st.receiptEl, vm.receipt, orphanCb);
+    renderOrphanCardDom(doc, st.orphanRefs, vm.orphanCard, vm.orphanDisabled, orphanCb);
+    renderReminderCardDom(doc, st.reminderRefs, vm.reminders, vm.zh, reminderCb);
   }
 
   // src/domains/inspector/word-cite-section.ts
@@ -4720,6 +5664,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     buttonListeners = /* @__PURE__ */ new Map();
     docListeners = /* @__PURE__ */ new Map();
     orphanState = new OrphanSelectionState();
+    reminderState = new ReminderUiState();
     unregisterFn = null;
     snapshot = null;
     groups = [];
@@ -4737,17 +5682,22 @@ ${ORPHAN_AND_RECEIPT_CSS}
       this.disposables.reset();
       this.disposables.add(this.kernel.bus.on("citation:snapshot-updated", (snap) => {
         this.snapshot = snap;
-        if (this.orphanState.syncSnapshot(snap.activeSessionID, snap.orphans)) {
+        const autoExpand = Boolean(this.kernel.prefs.get("inspector.wordCite.orphanAutoExpand") && this.kernel.prefs.get("inspector.wordCite.showOrphanRecovery"));
+        if (this.orphanState.syncSnapshot(snap.activeSessionID, snap.orphans, autoExpand)) {
           for (const st of this.states.values()) {
             const col = st.root.closest?.("collapsible-section");
             if (col && !col.open) col.open = true;
           }
         }
         this.renderAllBodies();
+        this.hydrateUnloadedCitedItems(snap.citedItemIDs);
       }));
       this.disposables.add(this.kernel.bus.on("workspace:groups-updated", ({ groups }) => {
         this.groups = groups;
         this.renderAllBodies();
+      }));
+      this.disposables.add(this.kernel.bus.on("notifier:event", (ev) => {
+        if (ev.type === "item") this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => this.finishRequest(res.requestId, formatInsertReceipt(res, isChineseLocale()))));
       this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => this.finishRequest(res.requestId, formatRefreshReceipt(res, isChineseLocale()))));
@@ -4807,6 +5757,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
       this.unregisterFn = null;
       this.states.clear();
       this.orphanState.reset();
+      this.reminderState.reset();
       this.receiptOwner = void 0;
       this.pendingRequest = void 0;
       this.receipt = { text: "", tone: "none" };
@@ -4853,12 +5804,26 @@ ${ORPHAN_AND_RECEIPT_CSS}
     initBody(doc, body, item, setEnabled, setSectionSummary) {
       if (!doc) return;
       this.onDestroy(null, body);
-      const st = createWordCiteBodyState(doc, body);
-      st.setSectionSummary = setSectionSummary;
-      this.states.set(body, st);
       const win = body.ownerDocument.defaultView;
       const controller = new (win?.AbortController ?? AbortController)();
       this.buttonListeners.set(body, controller);
+      const st = createWordCiteBodyState(
+        doc,
+        body,
+        {
+          onToggleAccordion: () => {
+            this.reminderState.expanded = !this.reminderState.expanded;
+            this.renderAllBodies();
+          },
+          onSelectFilter: (f) => {
+            this.reminderState.filter = f;
+            this.renderAllBodies();
+          }
+        },
+        controller.signal
+      );
+      st.setSectionSummary = setSectionSummary;
+      this.states.set(body, st);
       const click = (button, action) => {
         button.addEventListener("click", () => {
           if (!button.disabled && !button.hidden) action();
@@ -4866,14 +5831,18 @@ ${ORPHAN_AND_RECEIPT_CSS}
       };
       click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? void 0, st));
       click(st.refreshBtn, () => this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
-      click(st.docBtn, () => this.cycleWordSession());
+      click(st.docSwitchBtn, () => this.cycleWordSession());
       click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
       click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", { sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
-      click(st.orphanToggleBtn, () => {
+      click(st.orphanRefs.accHeadBtn, () => {
+        this.orphanState.accordionOpen = !this.orphanState.accordionOpen;
+        this.renderAllBodies();
+      });
+      click(st.orphanRefs.toggleBtn, () => {
         this.orphanState.expanded = !this.orphanState.expanded;
         this.renderAllBodies();
       });
-      click(st.orphanBtn, () => {
+      click(st.orphanRefs.actionBtn, () => {
         const keys2 = this.orphanState.getSelectedRecoverableKeys(this.snapshot?.orphans);
         if (!keys2.length) return;
         this.kernel.bus.emit("word:recover-orphans-request", {
@@ -4886,9 +5855,16 @@ ${ORPHAN_AND_RECEIPT_CSS}
       });
       this.bindDocumentEvents(doc);
       this.updateState(body, item, setEnabled, setSectionSummary);
+      this.hydrateUnloadedCitedItems(this.snapshot?.citedItemIDs);
     }
     handleReceiptAction(act, st) {
       const win = st.root.ownerDocument?.defaultView ?? void 0;
+      if (act.kind === "undo-ignore-reminder" && act.reminderKey) {
+        this.services.reminders.setIgnored(act.reminderKey, false);
+        this.receipt = { text: "", tone: "none" };
+        this.renderAllBodies();
+        return;
+      }
       if (act.kind === "refresh-word") {
         if (this.pendingRequest) return;
         this.kernel.bus.emit("word:refresh-request", { requestId: this.beginRequest("refresh", st), sessionID: act.sessionID, win });
@@ -4908,6 +5884,27 @@ ${ORPHAN_AND_RECEIPT_CSS}
           void locateItemInZoteroLibrary(act.itemIDs[0], { win: win ?? null, switchCollection: true });
         }
       }
+    }
+    handleLocateReminder(itemID, st, zh) {
+      const win = st.root.ownerDocument?.defaultView ?? null;
+      void locateItemInZoteroLibrary(itemID, { win, switchCollection: false }).then((ok) => {
+        if (!ok) return locateItemInZoteroLibrary(itemID, { win, switchCollection: true });
+        return true;
+      });
+      this.receiptOwner = st;
+      this.receipt = {
+        tone: "ok",
+        text: zh ? "✓ 已定位到文献条目，可在「信息」页核对补全" : "✓ Located item; complete missing fields in Info pane",
+        stickyUntil: Date.now() + 4e3
+      };
+      this.renderAllBodies();
+    }
+    handleIgnoreReminder(rec, st, zh) {
+      const key = this.services.reminders.setIgnored(rec.cacheKey, true);
+      this.reminderState.lastUndoKey = key;
+      this.receiptOwner = st;
+      this.receipt = formatIgnoreReminderReceipt(key, zh);
+      this.renderAllBodies();
     }
     bindDocumentEvents(doc) {
       if (this.docListeners.has(doc)) return;
@@ -4950,32 +5947,46 @@ ${ORPHAN_AND_RECEIPT_CSS}
     renderAllBodies() {
       for (const st of this.states.values()) this.renderBodyState(st);
     }
+    hydrateUnloadedCitedItems(citedIDs) {
+      preloadUnloadedCitedItems(citedIDs, Boolean(this.kernel.prefs.get("inspector.wordCite.showMetadataReminders")), () => {
+        if (this.unregisterFn) this.renderAllBodies();
+      });
+    }
     updateState(body, item, setEnabled, setSectionSummary) {
       const st = this.states.get(body);
       if (!st) return;
       if (setSectionSummary) st.setSectionSummary = setSectionSummary;
       st.activeItem = item ?? null;
-      const items = this.resolveTargetItems(body.ownerDocument?.defaultView || null, item);
+      const items = resolveWordCiteTargetItems(body.ownerDocument?.defaultView || null, item);
       const enabled = this.isSectionEnabled() && items.length > 0;
       setEnabled?.(enabled);
       st.lastItemIDs = enabled ? items.map((it) => Number(it.id)) : [];
       this.renderBodyState(st, items);
     }
     renderBodyState(st, resolvedItems) {
-      const items = resolvedItems ?? this.resolveTargetItems(st.root.ownerDocument?.defaultView || null, st.activeItem);
+      const items = resolvedItems ?? resolveWordCiteTargetItems(st.root.ownerDocument?.defaultView || null, st.activeItem);
       const zh = isChineseLocale(st.root.ownerDocument);
-      const snap = this.snapshot;
-      const hasSession = Boolean(snap?.activeSessionID);
-      const sessionCount = snap?.sessions?.length ?? 0;
-      const idSet = new Set(st.lastItemIDs);
-      const matchedGroup = this.kernel.prefs.get("inspector.wordCite.showGroupSynergy") && idSet.size > 0 ? this.groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
+      const { vm, matchedGroup, summary } = assembleWordCiteViewModel({
+        zh,
+        snap: this.snapshot,
+        items,
+        itemIDs: st.lastItemIDs,
+        groups: this.groups,
+        getPref: (k) => this.kernel.prefs.get(k),
+        sectionEnabled: this.isSectionEnabled(),
+        pending: Boolean(this.pendingRequest),
+        orphanState: this.orphanState,
+        reminderState: this.reminderState,
+        isReminderIgnored: (it) => this.services.reminders.isIgnored(it),
+        receipt: st === this.receiptOwner ? this.receipt : { text: "", tone: "none" }
+      });
       st.lastGroup = matchedGroup;
-      const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
-      st.setSectionSummary?.(this.kernel.prefs.get("inspector.wordCite.showSummaryCounts") ? buildWordCiteSectionSummary(zh, snap, st.lastItemIDs) : "");
-      const stats = buildWordCiteStats(zh, snap, st.lastItemIDs);
-      const meta = buildWordCiteMetaText(zh, items);
-      const orphanCard = buildOrphanBannerModel(snap?.orphans, zh, { uncheckedKeys: this.orphanState.uncheckedKeys, expanded: this.orphanState.expanded });
-      const cb = {
+      st.setSectionSummary?.(summary);
+      const orphanCb = {
+        onToggleAccordion: () => {
+          this.orphanState.accordionOpen = !this.orphanState.accordionOpen;
+          this.renderAllBodies();
+        },
         onToggleItem: (key) => {
           this.orphanState.toggleKey(key);
           this.renderAllBodies();
@@ -4990,43 +6001,14 @@ ${ORPHAN_AND_RECEIPT_CSS}
           this.renderAllBodies();
         }
       };
-      const vm = {
-        showDocSwitcher: this.kernel.prefs.get("inspector.wordCite.showDocSwitcher"),
-        showSummaryCounts: this.kernel.prefs.get("inspector.wordCite.showSummaryCounts"),
-        docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
-        docTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Click to switch active Word doc (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
-        isMultiSession: sessionCount >= 2,
-        hasWordSession: hasSession,
-        statsText: stats.text,
-        statsTitle: stats.title,
-        statsState: stats.state,
-        metaText: meta,
-        metaTitle: meta,
-        insertLabel: st.lastItemIDs.length > 1 ? zh ? `合并插入 ${st.lastItemIDs.length} 篇引文到 Word` : `Insert ${st.lastItemIDs.length} Citations in Word` : zh ? "插入引文到 Word 光标处" : "Insert Citation at Word Cursor",
-        insertDisabled: Boolean(this.pendingRequest) || st.lastItemIDs.length === 0 || !this.isSectionEnabled(),
-        refreshDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
-        refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
-        groupButtonText: matchedGroup ? zh ? `引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
-        groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ""}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ""}` : "",
-        showCollectionButton: this.kernel.prefs.get("inspector.wordCite.showCollectionLink") && hasSession && Boolean(this.kernel.prefs.get("wordCite.collections.enable")),
-        colButtonText: zh ? "已引清单" : "Cited List",
-        colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
-        orphanCard,
-        orphanDisabled: Boolean(this.pendingRequest) || !this.isSectionEnabled(),
-        receipt: st === this.receiptOwner ? this.receipt : { text: "", tone: "none" }
-      };
-      renderWordCitePanel(st, vm, cb);
-    }
-    resolveTargetItems(win, item) {
-      if (!item) return [];
-      const reg = normalizeToRegularItem(item) || item;
-      const paneItems = win?.ZoteroPane?.getSelectedItems?.() || [];
-      const regId = Number(reg?.id || 0);
-      const itemId = Number(item?.id || 0);
-      if (paneItems.length > 1 && paneItems.some((p) => Number(p?.id || 0) === itemId || regId > 0 && Number(p?.id || 0) === regId)) {
-        return deduplicateRegularItems(paneItems).items;
-      }
-      return deduplicateRegularItems([reg]).items;
+      renderWordCitePanel(st, vm, orphanCb, {
+        onLocateItem: (itemID) => this.handleLocateReminder(itemID, st, zh),
+        onIgnoreItem: (rec) => this.handleIgnoreReminder(rec, st, zh),
+        onRestoreItem: (rec) => {
+          this.services.reminders.setIgnored(rec.cacheKey, false);
+          this.renderAllBodies();
+        }
+      });
     }
   };
 
@@ -5082,7 +6064,18 @@ ${ORPHAN_AND_RECEIPT_CSS}
             "inspector.wordCite.showSummaryCounts",
             "inspector.wordCite.showGroupSynergy",
             "inspector.wordCite.showCollectionLink",
-            "wordCite.collections.enable"
+            "inspector.wordCite.showOrphanRecovery",
+            "inspector.wordCite.orphanAutoExpand",
+            "inspector.wordCite.showMetadataReminders",
+            "inspector.wordCite.reminderScope",
+            "inspector.wordCite.reminderAutoExpand",
+            "inspector.wordCite.reminderCheckCreatorsYear",
+            "inspector.wordCite.reminderCheckVenue",
+            "inspector.wordCite.reminderCheckPagination",
+            "inspector.wordCite.reminderShowSuggested",
+            "inspector.wordCite.reminderStrictOnlineFirst",
+            "wordCite.collections.enable",
+            "wordCite.citationTags.text"
           ],
           () => this.wordCiteSection.refreshAll()
         )
@@ -5509,137 +6502,8 @@ ${ORPHAN_AND_RECEIPT_CSS}
     return close;
   }
 
-  // src/services/cache-directory.ts
-  function cacheDirectory(custom) {
-    if (typeof custom === "string" && custom.trim()) return custom.trim();
-    const host2 = globalThis;
-    const data = host2.Zotero?.DataDirectory?.dir;
-    return data ? cacheFile(data, "bridgeflow-cache") : "bridgeflow-cache";
-  }
-  function cacheFile(directory, name) {
-    return globalThis.PathUtils?.join(directory, name) ?? directory + "/" + name;
-  }
-  function cacheSection(section, custom) {
-    return cacheFile(cacheDirectory(custom), section);
-  }
-  function cacheReadPaths(section, file, backup2, custom) {
-    const roots = /* @__PURE__ */ new Set([cacheDirectory(custom), cacheDirectory()]);
-    return [...roots].flatMap((root) => {
-      const folder = cacheFile(root, section);
-      return [cacheFile(folder, file), cacheFile(folder, backup2), cacheFile(root, file), cacheFile(root, backup2)];
-    });
-  }
-
-  // src/services/safe-io.ts
-  async function readTextOutcome(path) {
-    const ioUtils = globalThis.IOUtils;
-    if (!ioUtils?.exists || !ioUtils?.readUTF8) return { status: "missing" };
-    try {
-      if (!await ioUtils.exists(path)) return { status: "missing" };
-    } catch (error) {
-      return { status: "error", error };
-    }
-    try {
-      return { status: "ok", text: String(await ioUtils.readUTF8(path)) };
-    } catch (error) {
-      return { status: "error", error };
-    }
-  }
-  async function quarantineFile(path) {
-    const ioUtils = globalThis.IOUtils;
-    if (typeof ioUtils?.copy !== "function") return false;
-    try {
-      await ioUtils.copy(path, `${path}.corrupt-${Date.now()}`);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // src/services/durable-cache-file.ts
-  var DurableCacheFile = class {
-    writes = Promise.resolve(true);
-    previous = "";
-    backedUpAt;
-    writeBlocked = false;
-    loading;
-    directory;
-    path;
-    backup;
-    paths;
-    needsMigration = false;
-    lastError = "";
-    constructor(section, name, root) {
-      const file = `${name}.json`, backup2 = `${name}.bak.json`;
-      this.directory = cacheSection(section, root);
-      this.path = cacheFile(this.directory, file);
-      this.backup = cacheFile(this.directory, backup2);
-      this.paths = cacheReadPaths(section, file, backup2, root);
-    }
-    load(parse2, legacyPaths = []) {
-      const reading = this.read(parse2, legacyPaths);
-      this.loading = reading;
-      return reading;
-    }
-    async read(parse2, legacyPaths) {
-      this.writeBlocked = false;
-      this.needsMigration = false;
-      this.previous = "";
-      this.backedUpAt = void 0;
-      for (const path of /* @__PURE__ */ new Set([...this.paths, ...legacyPaths])) {
-        const outcome = await readTextOutcome(path);
-        if (outcome.status === "missing") continue;
-        if (outcome.status === "error") {
-          this.writeBlocked = true;
-          this.lastError = "Cache could not be read";
-          continue;
-        }
-        try {
-          const value = parse2(outcome.text, path);
-          if (path === this.path) this.previous = outcome.text;
-          this.needsMigration = path !== this.path;
-          if (!this.writeBlocked) this.lastError = "";
-          return value;
-        } catch {
-          if (path === this.path && !await quarantineFile(path)) {
-            this.writeBlocked = true;
-            this.lastError = "Damaged cache could not be preserved";
-          }
-        }
-      }
-      return null;
-    }
-    write(serialize, backupInterval = 0, replaceBackup = false) {
-      const run = async () => {
-        await this.loading;
-        const io = globalThis.IOUtils;
-        if (!io?.writeUTF8) return true;
-        if (this.writeBlocked) return false;
-        try {
-          const text2 = serialize();
-          if (text2 === this.previous && !replaceBackup) return true;
-          await io.makeDirectory?.(this.directory, { ignoreExisting: true, createAncestors: true });
-          if (replaceBackup || this.previous && (this.backedUpAt === void 0 || Date.now() - this.backedUpAt >= backupInterval)) {
-            await io.writeUTF8(this.backup, replaceBackup ? text2 : this.previous, { tmpPath: this.backup + ".tmp" });
-            this.backedUpAt = Date.now();
-          }
-          await io.writeUTF8(this.path, text2, { tmpPath: this.path + ".tmp" });
-          this.previous = text2;
-          this.needsMigration = false;
-          this.lastError = "";
-          return true;
-        } catch (err) {
-          this.lastError = String(err);
-          return false;
-        }
-      };
-      this.writes = this.writes.then(run, run);
-      return this.writes;
-    }
-  };
-
   // src/services/item-ratings-cache.ts
-  var FORMAT_ID = "zotero-bridgeflow-item-ratings";
+  var FORMAT_ID2 = "zotero-bridgeflow-item-ratings";
   var MAX_RATING = 5;
   function buildRatingCacheKeys(item) {
     const libId = Number(item?.libraryID || 1);
@@ -5653,7 +6517,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     try {
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-      const src = parsed.format === FORMAT_ID && parsed.ratings && typeof parsed.ratings === "object" ? parsed.ratings : parsed.ratings && typeof parsed.ratings === "object" ? parsed.ratings : null;
+      const src = parsed.format === FORMAT_ID2 && parsed.ratings && typeof parsed.ratings === "object" ? parsed.ratings : parsed.ratings && typeof parsed.ratings === "object" ? parsed.ratings : null;
       if (!src || Array.isArray(src)) return null;
       const clean = {};
       for (const [k, v] of Object.entries(src)) {
@@ -5751,7 +6615,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
     }
     exportJson() {
       const payload = {
-        format: FORMAT_ID,
+        format: FORMAT_ID2,
         version: 1,
         ratings: { ...this.ratings }
       };
@@ -6476,7 +7340,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
 
   // src/domains/visual-notes/gallery-icons.ts
   var SVG_NS2 = "http://www.w3.org/2000/svg";
-  var XHTML_NS4 = "http://www.w3.org/1999/xhtml";
+  var XHTML_NS5 = "http://www.w3.org/1999/xhtml";
   function createToolbarArt(doc, kind) {
     const svg = doc.createElementNS(SVG_NS2, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -6605,10 +7469,10 @@ ${ORPHAN_AND_RECEIPT_CSS}
       const normTag = rawTag === "em" ? "i" : rawTag === "strong" ? "b" : rawTag;
       if (!isClose) {
         if (normTag === "span") {
-          stack.push(doc.createElementNS(XHTML_NS4, "span"));
+          stack.push(doc.createElementNS(XHTML_NS5, "span"));
           stack[stack.length - 2].appendChild(stack[stack.length - 1]);
         } else {
-          const node = doc.createElementNS(XHTML_NS4, normTag);
+          const node = doc.createElementNS(XHTML_NS5, normTag);
           stack[stack.length - 1].appendChild(node);
           stack.push(node);
         }
@@ -10403,10 +11267,10 @@ ${ORPHAN_AND_RECEIPT_CSS}
     }
   }
   function isBridgeFlowCoverFile(name) {
-    return /^(?:cover-v\d+-\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
+    return /^(?:cover-(?:v\d+-)?\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
   }
-  function triggerCoverCacheSweep() {
-    if (clearing || sweepingPromise || Date.now() - lastSweepAt < 36e5) return;
+  function triggerCoverCacheSweep(force = false) {
+    if (clearing || sweepingPromise || !force && Date.now() - lastSweepAt < 36e5) return;
     const dir = getCoversDir();
     const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
     if (!dir || typeof ioUtils?.getChildren !== "function") return;
@@ -10417,7 +11281,7 @@ ${ORPHAN_AND_RECEIPT_CSS}
       for (const p of children) {
         if (writingPaths.has(p)) continue;
         const name = String(p.split(/[\\/]/).pop() || "");
-        const isLegacyTxt = /^cover-v\d+-\d+\.txt$/i.test(name);
+        const isLegacyTxt = /^cover-(?:v\d+-)?\d+\.txt$/i.test(name);
         if (!isBridgeFlowCoverFile(name)) continue;
         try {
           const st = await ioUtils.stat(p);
@@ -10469,7 +11333,8 @@ ${ORPHAN_AND_RECEIPT_CSS}
     writingPaths.add(tmpPath);
     try {
       await ioUtils.makeDirectory?.(dir, { ignoreExisting: true, createAncestors: true });
-      await ioUtils.writeUTF8(filePath, JSON.stringify({ version: 2, ...payload }), { tmpPath });
+      await ioUtils.writeUTF8(filePath, `${JSON.stringify({ version: 2, ...payload }, null, 2)}
+`, { tmpPath });
     } catch {
     } finally {
       writingPaths.delete(filePath);
@@ -16389,7 +17254,7 @@ ${summary}` : summary;
             const changed = result.restoredCount > 0 || result.importedCount > 0 || (result.existingCount ?? 0) > 0 || (result.relinkedCount ?? 0) > 0;
             let refreshed = false;
             if (changed) {
-              if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
+              if (this.kernel.prefs.get("wordCite.orphans.autoRefreshWord") && this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
                 refreshed = await refreshActiveWordDocument(this.kernel, targetSession.sessionID).catch((err) => {
                   this.kernel.logger.error("word-cite:recover-refresh", err);
                   return false;
@@ -16488,7 +17353,7 @@ ${summary}` : summary;
       }, Math.max(0, delay));
     }
     notifyOrphansIfNeeded(snap) {
-      if (!this.active || this.recoveringOrphans) return;
+      if (!this.active || this.recoveringOrphans || !this.kernel.prefs.get("wordCite.orphans.toastEnable")) return;
       const sessions = snap.sessions || [];
       const openIDs = new Set(sessions.map((s) => s.sessionID));
       for (const sid of this.notifiedOrphanSigs.keys()) {
@@ -17394,11 +18259,22 @@ ${summary}` : summary;
       }, 320);
     }
     flushNow(state, _serialized) {
-      return this.file.write(() => JSON.stringify({
+      let cleanState = state;
+      if (state && Array.isArray(state.groups)) {
+        const activeGroupKeys = new Set(state.groups.flatMap((g) => g.memberKeys || []));
+        const activeGroupIds = new Set(state.groups.map((g) => g.id));
+        cleanState = {
+          ...state,
+          ...Array.isArray(state.collapsed) ? { collapsed: state.collapsed.filter((id) => activeGroupIds.has(id)) } : {},
+          ...state.virtualMembers && typeof state.virtualMembers === "object" ? { virtualMembers: Object.fromEntries(Object.entries(state.virtualMembers).filter(([k]) => activeGroupKeys.has(k))) } : {}
+        };
+      }
+      return this.file.write(() => `${JSON.stringify({
         format: "zotero-bridgeflow-workspace",
         version: 2,
-        state
-      }));
+        state: cleanState
+      }, null, 2)}
+`);
     }
     loadFromDisk() {
       return this.file.load((text2) => {
@@ -17442,8 +18318,9 @@ ${summary}` : summary;
       };
       mergeSessions(current.sessions, disk.sessions, 30);
       mergeSessions(current.rollingSessions, disk.rollingSessions, 5);
+      const diskGroupKeys = new Set([...current.groups, ...disk.groups].flatMap((g) => g.memberKeys));
       for (const [k, meta] of Object.entries(disk.virtualMembers)) {
-        if (!current.virtualMembers[k]) {
+        if (diskGroupKeys.has(k) && !current.virtualMembers[k]) {
           current.virtualMembers[k] = meta;
           changed = true;
         }
@@ -17547,11 +18424,12 @@ ${summary}` : summary;
       }, 320);
     }
     flushNow(state) {
-      return this.file.write(() => JSON.stringify({
+      return this.file.write(() => `${JSON.stringify({
         format: "zotero-bridgeflow-reading-progress",
         version: 1,
         state: pickReadingProgressState(state)
-      }), 6e5);
+      }, null, 2)}
+`, 6e5);
     }
     loadFromDisk() {
       const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
@@ -17647,11 +18525,12 @@ ${summary}` : summary;
       }, 240);
     }
     flushNow(state) {
-      return this.file.write(() => JSON.stringify({
+      return this.file.write(() => `${JSON.stringify({
         format: "zotero-bridgeflow-brief-notes",
         version: 1,
         state: pickBriefNotesState(state)
-      }));
+      }, null, 2)}
+`);
     }
     loadFromDisk() {
       const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
@@ -17680,6 +18559,80 @@ ${summary}` : summary;
       }
     }
   };
+
+  // src/services/cache-hygiene.ts
+  var LEGACY_ROOT_MIGRATION_PAIRS = [
+    ["citation-history.json", "citations", "citation-history.json"],
+    ["citation-history.bak.json", "citations", "citation-history.json"],
+    ["item-ratings.json", "ratings", "item-ratings.json"],
+    ["item-ratings.bak.json", "ratings", "item-ratings.json"],
+    ["brief-notes.json", "reading", "brief-notes.json"],
+    ["brief-notes.bak.json", "reading", "brief-notes.json"],
+    ["reading-progress.json", "reading", "reading-progress.json"],
+    ["reading-progress.bak.json", "reading", "reading-progress.json"],
+    ["reading-notes.json", "reading", "reading-progress.json"],
+    ["reading-notes.bak.json", "reading", "reading-progress.json"],
+    ["workspace-snapshots.json", "workspace", "workspace-snapshots.json"],
+    ["workspace-snapshots.bak.json", "workspace", "workspace-snapshots.json"]
+  ];
+  var CACHE_SECTIONS = ["citations", "covers", "ratings", "reading", "workspace"];
+  var STALE_TMP_AGE_MS = 36e5;
+  async function hasValidJsonTarget(ioUtils, targetPath) {
+    try {
+      if (!await ioUtils.exists(targetPath)) return false;
+      const raw = await ioUtils.readUTF8(targetPath);
+      const parsed = JSON.parse(String(raw));
+      return Boolean(parsed && typeof parsed === "object");
+    } catch {
+      return false;
+    }
+  }
+  async function sweepBridgeFlowCacheDirectory(customDir = "") {
+    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+    if (!ioUtils?.exists || !ioUtils?.readUTF8 || typeof ioUtils.remove !== "function") return 0;
+    let removedCount = 0;
+    const roots = [...new Set([cacheDirectory(customDir), cacheDirectory()].filter(Boolean))];
+    const verifiedTargets = /* @__PURE__ */ new Map();
+    for (const root of roots) {
+      for (const [legacyName, sec, targetName] of LEGACY_ROOT_MIGRATION_PAIRS) {
+        const legacyPath = cacheFile(root, legacyName);
+        try {
+          if (!await ioUtils.exists(legacyPath)) continue;
+          const targetPath = cacheFile(cacheFile(root, sec), targetName);
+          let valid = verifiedTargets.get(targetPath);
+          if (valid === void 0) {
+            valid = await hasValidJsonTarget(ioUtils, targetPath);
+            verifiedTargets.set(targetPath, valid);
+          }
+          if (valid) {
+            await ioUtils.remove(legacyPath, { ignoreAbsent: true });
+            removedCount += 1;
+          }
+        } catch {
+        }
+      }
+      if (typeof ioUtils.getChildren === "function" && typeof ioUtils.stat === "function") {
+        const now = Date.now();
+        const dirs = [root, ...CACHE_SECTIONS.map((s) => cacheFile(root, s))];
+        for (const dir of dirs) {
+          const children = await ioUtils.getChildren(dir).catch(() => []);
+          for (const childPath of children) {
+            if (!childPath.endsWith(".tmp")) continue;
+            try {
+              const st = await ioUtils.stat(childPath);
+              if (st?.type === "regular" && now - (st.lastModified || 0) > STALE_TMP_AGE_MS) {
+                await ioUtils.remove(childPath, { ignoreAbsent: true });
+                removedCount += 1;
+              }
+            } catch {
+            }
+          }
+        }
+      }
+    }
+    triggerCoverCacheSweep(true);
+    return removedCount;
+  }
 
   // src/domains/workspace/types.ts
   var GROUP_PALETTE = [
@@ -17733,6 +18686,7 @@ ${summary}` : summary;
     if (notesChanged || store.notesCache.loadedFromLegacy || !diskNotes && Object.keys(store.state.remarks).length) {
       await store.notesCache.flushNow(store.state);
     }
+    void sweepBridgeFlowCacheDirectory();
     return layoutChanged || readingChanged || notesChanged;
   }
   function groupOfStateKey(state, key) {
@@ -23070,11 +24024,26 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     "inspector.wordCite.showSummaryCounts": { defaultValue: true },
     "inspector.wordCite.showGroupSynergy": { defaultValue: true },
     "inspector.wordCite.showCollectionLink": { defaultValue: true },
+    "inspector.wordCite.showOrphanRecovery": { defaultValue: true },
+    "inspector.wordCite.orphanAutoExpand": { defaultValue: true },
+    "inspector.wordCite.showMetadataReminders": { defaultValue: true },
+    "inspector.wordCite.reminderScope": {
+      defaultValue: "both",
+      enumValues: ["both", "wordOnly", "selectionOnly"]
+    },
+    "inspector.wordCite.reminderAutoExpand": { defaultValue: false },
+    "inspector.wordCite.reminderCheckCreatorsYear": { defaultValue: true },
+    "inspector.wordCite.reminderCheckVenue": { defaultValue: true },
+    "inspector.wordCite.reminderCheckPagination": { defaultValue: true },
+    "inspector.wordCite.reminderShowSuggested": { defaultValue: true },
+    "inspector.wordCite.reminderStrictOnlineFirst": { defaultValue: false },
     // === Domain C: Word Citation Tracking & Governance ===
     "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
     "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
+    "wordCite.orphans.toastEnable": { defaultValue: true },
+    "wordCite.orphans.autoRefreshWord": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },
     "wordCite.citationTags.text": { defaultValue: "/Citations" },
     "wordCite.citationTagDebounceMs": { defaultValue: 150, min: 0, max: 2e3 },
@@ -23629,7 +24598,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.dirty = false;
       const revision = this.clearRevision;
       const ok = await this.disk.write(
-        () => JSON.stringify({ version: 1, records: [...this.records.values()] }),
+        () => `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}
+`,
         6e5,
         revision !== this.savedClearRevision
       );
@@ -24138,6 +25108,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     clipboard;
     history;
     ratings;
+    reminders;
     itemPanes;
     panePositions;
     win32;
@@ -24150,13 +25121,15 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.history = new CitationHistoryStore();
       this.ratings = new ItemRatingsDiskCache();
       setActiveRatingsCache(this.ratings);
+      this.reminders = new MetadataRemindersDiskCache();
       this.itemPanes = new ItemPaneRegistryService();
       this.panePositions = new ItemPanePositionCoordinator();
       this.win32 = new Win32BridgeService();
     }
     async init() {
       this.syncHistoryConfig();
-      await Promise.all([this.history.init(), this.ratings.init()]);
+      await Promise.all([this.history.init(), this.ratings.init(), this.reminders.init()]);
+      void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get("inspector.lookup.cacheDirectory"));
       this.kernel.disposables.add(
         this.kernel.notifier.subscribe(["item"], (ev) => {
           const ids = ev.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
@@ -24189,6 +25162,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (!this.cacheRootApplied) {
         this.cacheRootApplied = true;
         this.ratings.configure(customDir);
+        this.reminders.configure(customDir);
         configurePdfCoverCacheDirectory(customDir);
       }
     }
@@ -24197,6 +25171,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.itemPanes.unregisterAll();
       this.history.dispose();
       this.ratings.dispose();
+      this.reminders.dispose();
       this.csl.clearCache();
       this.win32.dispose();
     }

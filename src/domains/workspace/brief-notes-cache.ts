@@ -45,9 +45,9 @@ export class BriefNotesDiskCache {
 	}
 
 	flushNow(state: Pick<WorkspaceState, 'remarks' | 'remarkModes'>): Promise<boolean> {
-		return this.file.write(() => JSON.stringify({
+		return this.file.write(() => `${JSON.stringify({
 			format: 'zotero-bridgeflow-brief-notes', version: 1, state: pickBriefNotesState(state),
-		}));
+		}, null, 2)}\n`);
 	}
 
 	loadFromDisk(): Promise<BriefNotesState | null> {

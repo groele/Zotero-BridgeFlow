@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" src="chrome://zotero-bridgeflow/content/assets/bridgeflow.svg" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.6.7"}'>v0.6.7</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.7.0"}'>v0.7.0</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -529,6 +529,8 @@
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.dragCite.enable" native="true" data-l10n-id="zbf-pref-wc-drag"/>
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.tabContextMenu.enable" native="true" data-l10n-id="zbf-pref-wc-tab-menu"/>
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.collections.enable" native="true" data-l10n-id="zbf-pref-wc-collections"/>
+						<checkbox preference="extensions.zotero.bridgeflow.wordCite.orphans.toastEnable" native="true" data-l10n-id="zbf-pref-wc-orphan-toast"/>
+						<checkbox preference="extensions.zotero.bridgeflow.wordCite.orphans.autoRefreshWord" native="true" data-l10n-id="zbf-pref-wc-orphan-autorefresh"/>
 					</html:div>
 				</html:div>
 				<html:div id="zbf-sub-word-panel-card" class="zbf-card">
@@ -554,6 +556,37 @@
 								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showSummaryCounts" native="true" data-l10n-id="zbf-pref-wc-panel-counts"/>
 								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showGroupSynergy" native="true" data-l10n-id="zbf-pref-wc-panel-group"/>
 								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showCollectionLink" native="true" data-l10n-id="zbf-pref-wc-panel-col"/>
+								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showOrphanRecovery" native="true" data-l10n-id="zbf-pref-wc-orphan-card"/>
+								<checkbox id="zbf-chk-orphan-expand" preference="extensions.zotero.bridgeflow.inspector.wordCite.orphanAutoExpand" native="true" data-l10n-id="zbf-pref-wc-orphan-expand"/>
+							</html:div>
+						</html:div>
+					</html:div>
+				</html:div>
+				<html:div id="zbf-card-word-reminders" class="zbf-card">
+					<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-reminders"/>
+					<html:div class="zbf-item-group">
+						<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.showMetadataReminders" native="true" data-l10n-id="zbf-pref-wc-rem-enable"/>
+						<html:div id="zbf-sub-word-reminders" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-wc-rem-scope" control="zbf-sel-rem-scope"/>
+								<menulist id="zbf-sel-rem-scope" native="true" preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderScope">
+									<menupopup>
+										<menuitem value="both" data-l10n-id="zbf-opt-rem-scope-both"/>
+										<menuitem value="wordOnly" data-l10n-id="zbf-opt-rem-scope-word"/>
+										<menuitem value="selectionOnly" data-l10n-id="zbf-opt-rem-scope-sel"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderAutoExpand" native="true" data-l10n-id="zbf-pref-wc-rem-expand"/>
+							<html:div class="zbf-check-grid-2">
+								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckCreatorsYear" native="true" data-l10n-id="zbf-pref-wc-rem-creators"/>
+								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckVenue" native="true" data-l10n-id="zbf-pref-wc-rem-venue"/>
+								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckPagination" native="true" data-l10n-id="zbf-pref-wc-rem-pages"/>
+								<checkbox preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderShowSuggested" native="true" data-l10n-id="zbf-pref-wc-rem-suggested"/>
+							</html:div>
+							<checkbox id="zbf-chk-rem-strict-online" preference="extensions.zotero.bridgeflow.inspector.wordCite.reminderStrictOnlineFirst" native="true" data-l10n-id="zbf-pref-wc-rem-strict-online"/>
+							<html:div class="zbf-actions">
+								<button id="zbf-btn-restore-reminders" native="true" data-l10n-id="zbf-btn-restore-reminders"/>
 							</html:div>
 						</html:div>
 					</html:div>
@@ -690,6 +723,18 @@
 							</html:div>
 							<html:div class="zbf-maint-btns">
 								<button id="zbf-clear-cache" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-cache"/>
+							</html:div>
+						</html:div>
+						<html:div class="zbf-maint-row">
+							<html:div class="zbf-maint-info">
+								<html:div class="zbf-maint-head">
+									<html:span class="zbf-maint-name" data-l10n-id="zbf-maint-reminders-title"/>
+									<html:code class="zbf-maint-file">citations/ignored-reminders.json</html:code>
+								</html:div>
+								<html:div class="zbf-maint-desc" data-l10n-id="zbf-maint-reminders-desc"/>
+							</html:div>
+							<html:div class="zbf-maint-btns">
+								<button id="zbf-clear-ignored-reminders" class="zbf-btn-danger" native="true" data-l10n-id="zbf-btn-clear-reminders"/>
 							</html:div>
 						</html:div>
 						<html:div class="zbf-maint-row">

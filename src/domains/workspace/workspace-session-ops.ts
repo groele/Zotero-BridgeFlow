@@ -3,6 +3,7 @@ import {
 	pickReadingNotesState,
 	pickWorkspaceLayoutState,
 } from './workspace-schema.ts';
+import { sweepBridgeFlowCacheDirectory } from '../../services/cache-hygiene.ts';
 import type { WorkspaceDiskCache } from './workspace-disk-cache.ts';
 import type { ReadingProgressDiskCache } from './reading-progress-cache.ts';
 import type { BriefNotesDiskCache } from './brief-notes-cache.ts';
@@ -58,6 +59,7 @@ export async function hydrateWorkspaceDiskCaches(store: {
 	if (notesChanged || store.notesCache.loadedFromLegacy || (!diskNotes && Object.keys(store.state.remarks).length)) {
 		await store.notesCache.flushNow(store.state);
 	}
+	void sweepBridgeFlowCacheDirectory();
 	return layoutChanged || readingChanged || notesChanged;
 }
 

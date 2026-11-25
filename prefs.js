@@ -102,12 +102,24 @@ pref("extensions.zotero.bridgeflow.inspector.wordCite.showDocSwitcher", true);
 pref("extensions.zotero.bridgeflow.inspector.wordCite.showSummaryCounts", true);
 pref("extensions.zotero.bridgeflow.inspector.wordCite.showGroupSynergy", true);
 pref("extensions.zotero.bridgeflow.inspector.wordCite.showCollectionLink", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.showOrphanRecovery", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.orphanAutoExpand", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.showMetadataReminders", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderScope", "both");
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderAutoExpand", false);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckCreatorsYear", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckVenue", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderCheckPagination", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderShowSuggested", true);
+pref("extensions.zotero.bridgeflow.inspector.wordCite.reminderStrictOnlineFirst", false);
 
 // Domain C: Word Citation Tracking & Governance
 pref("extensions.zotero.bridgeflow.wordCite.column.enable", true);
 pref("extensions.zotero.bridgeflow.wordCite.dragCite.enable", true);
 pref("extensions.zotero.bridgeflow.wordCite.tabContextMenu.enable", true);
 pref("extensions.zotero.bridgeflow.wordCite.collections.enable", true);
+pref("extensions.zotero.bridgeflow.wordCite.orphans.toastEnable", true);
+pref("extensions.zotero.bridgeflow.wordCite.orphans.autoRefreshWord", true);
 pref("extensions.zotero.bridgeflow.wordCite.citationTags.enable", true);
 pref("extensions.zotero.bridgeflow.wordCite.citationTags.text", "/Citations");
 pref("extensions.zotero.bridgeflow.wordCite.citationTagDebounceMs", 150);

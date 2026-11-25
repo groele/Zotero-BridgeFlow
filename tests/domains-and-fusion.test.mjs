@@ -477,15 +477,25 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 
 	assert.equal(latestSummary, '序号 [3] · 共引 14 篇');
 	const wrap = body.children[0];
-	const [row1, , actions, synergy, receipt] = wrap.children;
-	const [docBtn, statsEl] = row1.children;
+	const [docCard, citeCard, receipt] = wrap.children;
+	const [docRow, statStrip] = docCard.children;
+	const [, docMeta, docSwitchBtn] = docRow.children;
+	const [docNameEl] = docMeta.children;
+	const [citedCell, inTextCell, orphanCell] = statStrip.children;
+	const [citeHead, citeTitleEl, , actions, synergy] = citeCard.children;
+	const [, ordBadgeEl] = citeHead.children;
 	const [insertBtn, refreshBtn] = actions.children;
 	const [groupBtn, colBtn] = synergy.children;
 
-	assert.equal(docBtn.children[1].textContent, 'de.docx');
-	assert.equal(statsEl.textContent, '序号 [3] / 共 14 篇');
-	assert.equal(groupBtn.textContent, '引用所在分组「核心基底」(3)');
+	assert.equal(docNameEl.textContent, 'de.docx');
+	assert.equal(citedCell.children[0].textContent, '14');
+	assert.equal(inTextCell.children[0].textContent, '2');
+	assert.equal(orphanCell.children[0].textContent, '0');
+	assert.equal(ordBadgeEl.textContent, '[3] · 2次');
+	assert.equal(citeTitleEl.textContent, 'Optical Microcavity');
+	assert.equal(groupBtn.textContent, '↗ 引用所在分组「核心基底」(3)');
 	assert.equal(colBtn.hidden, false);
+	assert.equal(colBtn.textContent, '文集：/Citations');
 
 	// Critical UX rule: clicking sidenav W+ icon ONLY opens section and NEVER cites
 	sidenavBtn.click();
@@ -495,7 +505,7 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	const otherDoc = createMockDocument({ ZoteroPane: { getSelectedItems: () => [item201] } });
 	const otherBody = otherDoc.createElement('div');
 	registered.onInit({ doc: otherDoc, body: otherBody, item: item201 });
-	const otherReceipt = otherBody.children[0].children[4];
+	const otherReceipt = otherBody.children[0].children[2];
 
 	// The host may isolate panel events from document-level delegation.
 	doc.dispatchEvent = () => true;
@@ -524,7 +534,7 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	refreshBtn.click();
 	assert.equal(refreshes.length, 1);
 
-	docBtn.click();
+	docSwitchBtn.click();
 	assert.equal(switches.at(-1)?.sessionID, 'doc-b');
 
 	colBtn.click();
@@ -539,9 +549,9 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	app.kernel.prefs.set('inspector.wordCite.showGroupSynergy', false);
 	app.kernel.prefs.set('inspector.wordCite.showCollectionLink', false);
 	app.inspector.wordCiteSection.refreshAll();
-	assert.equal(docBtn.hidden, true);
-	assert.equal(statsEl.hidden, true);
-	assert.equal(row1.hidden, true);
+	assert.equal(docRow.hidden, true);
+	assert.equal(statStrip.hidden, true);
+	assert.equal(docCard.hidden, true);
 	assert.equal(groupBtn.hidden, true);
 	assert.equal(colBtn.hidden, true);
 	assert.equal(synergy.hidden, true);

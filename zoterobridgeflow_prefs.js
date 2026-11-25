@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.6.7 - Preferences controller. */
+/* Zotero BridgeFlow v0.7.0 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -166,11 +166,26 @@
     "inspector.wordCite.showSummaryCounts": { defaultValue: true },
     "inspector.wordCite.showGroupSynergy": { defaultValue: true },
     "inspector.wordCite.showCollectionLink": { defaultValue: true },
+    "inspector.wordCite.showOrphanRecovery": { defaultValue: true },
+    "inspector.wordCite.orphanAutoExpand": { defaultValue: true },
+    "inspector.wordCite.showMetadataReminders": { defaultValue: true },
+    "inspector.wordCite.reminderScope": {
+      defaultValue: "both",
+      enumValues: ["both", "wordOnly", "selectionOnly"]
+    },
+    "inspector.wordCite.reminderAutoExpand": { defaultValue: false },
+    "inspector.wordCite.reminderCheckCreatorsYear": { defaultValue: true },
+    "inspector.wordCite.reminderCheckVenue": { defaultValue: true },
+    "inspector.wordCite.reminderCheckPagination": { defaultValue: true },
+    "inspector.wordCite.reminderShowSuggested": { defaultValue: true },
+    "inspector.wordCite.reminderStrictOnlineFirst": { defaultValue: false },
     // === Domain C: Word Citation Tracking & Governance ===
     "wordCite.column.enable": { defaultValue: true },
     "wordCite.dragCite.enable": { defaultValue: true },
     "wordCite.tabContextMenu.enable": { defaultValue: true },
     "wordCite.collections.enable": { defaultValue: true },
+    "wordCite.orphans.toastEnable": { defaultValue: true },
+    "wordCite.orphans.autoRefreshWord": { defaultValue: true },
     "wordCite.citationTags.enable": { defaultValue: true },
     "wordCite.citationTags.text": { defaultValue: "/Citations" },
     "wordCite.citationTagDebounceMs": { defaultValue: 150, min: 0, max: 2e3 },
@@ -669,6 +684,114 @@
     }
   }
 
+  // src/prefs-dependencies.ts
+  function setSubtreeDisabled(el, disabled) {
+    if (!el) return;
+    el.setAttribute("data-disabled", disabled ? "true" : "false");
+    el.querySelectorAll("checkbox, menulist, input, button").forEach((ctrl) => {
+      try {
+        ctrl.disabled = disabled;
+      } catch {
+      }
+      if (disabled) ctrl.setAttribute("disabled", "true");
+      else ctrl.removeAttribute("disabled");
+    });
+  }
+  function setControlDisabled(el, disabled) {
+    if (!el) return;
+    try {
+      el.disabled = disabled;
+    } catch {
+    }
+    if (disabled) el.setAttribute("disabled", "true");
+    else el.removeAttribute("disabled");
+  }
+  function syncMenulistLabels(doc) {
+    doc.querySelectorAll("#zotero-prefpane-zotero-bridgeflow menulist").forEach((ml) => {
+      const hostMl = ml;
+      const val = String(hostMl.value ?? ml.getAttribute("value") ?? "");
+      const items = Array.from(ml.querySelectorAll("menuitem"));
+      const matched = items.find((it) => it.getAttribute("value") === val) || hostMl.selectedItem || items[0];
+      if (matched) {
+        try {
+          hostMl.selectedItem = matched;
+        } catch {
+        }
+        const lbl = matched.getAttribute("label") || (matched.textContent || "").trim();
+        if (lbl) ml.setAttribute("label", lbl);
+      }
+    });
+  }
+  function setStatusFeedback(doc, l10nId, fallbackText) {
+    const statusEl = doc.getElementById("zbf-prefs-status");
+    if (!statusEl) return;
+    statusEl.setAttribute("data-l10n-id", l10nId);
+    statusEl.textContent = fallbackText;
+  }
+  function updatePreferenceDependencies(doc, prefs) {
+    prefs.invalidate();
+    const wsOn = Boolean(prefs.get("modules.workspace.enable"));
+    const insOn = Boolean(prefs.get("modules.inspector.enable"));
+    const wcOn = Boolean(prefs.get("modules.wordCite.enable"));
+    const vnOn = Boolean(prefs.get("modules.visualNotes.enable"));
+    const vSideOn = wsOn && Boolean(prefs.get("workspace.enableVerticalSidebar"));
+    const modMap = [
+      ["workspace", wsOn],
+      ["visualnotes", vnOn],
+      ["inspector", insOn],
+      ["wordcite", wcOn]
+    ];
+    for (const [slug, enabled] of modMap) {
+      const offBanner = doc.getElementById(`zbf-off-${slug}`);
+      if (offBanner) offBanner.hidden = enabled;
+    }
+    setSubtreeDisabled(doc.getElementById("zbf-group-workspace"), !wsOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-visualnotes"), !vnOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-reading-heatmap"), !vnOn || !prefs.get("workspace.readingTitleHeatmap.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-rating-cfg"), !vnOn || !prefs.get("visualNotes.ratingColumn.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-gallery-cfg"), !vnOn || !prefs.get("visualNotes.gallery.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-hub-cfg"), !vnOn || !prefs.get("visualNotes.collectionHub.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-status-cfg"), !vnOn || !prefs.get("visualNotes.statusColumn.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
+    setSubtreeDisabled(doc.getElementById("zbf-group-word-perf"), !wcOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-hcompact"), !wsOn || !prefs.get("workspace.enableHorizontalGroups"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-compactTop"), !vSideOn || !prefs.get("workspace.enableHorizontalGroups"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-cfg"), !vSideOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-typo"), !vSideOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pinnedIcon"), !wsOn || !prefs.get("workspace.enablePinnedTabs"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-multicol"), !wsOn || prefs.get("workspace.newTabMode") !== "collection");
+    setSubtreeDisabled(doc.getElementById("zbf-session-actions"), !wsOn || !prefs.get("workspace.enableSessions"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-rolling"), !wsOn || !prefs.get("workspace.enableSessions"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-sleep-cfg"), !wsOn || !prefs.get("workspace.enableTabSleep"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-stale-days"), !wsOn || !prefs.get("workspace.enableStaleSuggestions"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-remark-cfg"), !wsOn || !prefs.get("workspace.enableTabRemarks"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-tabmenu"), !wsOn || !prefs.get("workspace.enableTabContextMenu"));
+    setControlDisabled(doc.getElementById("zbf-btn-open-matrix"), !vnOn || !prefs.get("workspace.enableAnnotationMatrix"));
+    setControlDisabled(doc.getElementById("zbf-btn-open-collection-hub"), !vnOn || !prefs.get("visualNotes.collectionHub.enable"));
+    const cslOn = insOn && Boolean(prefs.get("inspector.cslPreview.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-csl"), !cslOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-csl-layout"), !cslOn);
+    const lookupOn = insOn && Boolean(prefs.get("inspector.lookup.enable"));
+    const historyOn = lookupOn && Boolean(prefs.get("inspector.lookup.historyEnable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-history"), !lookupOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-quota"), !historyOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-preview"), !insOn || !prefs.get("inspector.pdfPreview.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-card-annotations"), !vnOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-folder"), !insOn || !prefs.get("inspector.pdfFolder.enable"));
+    const wordPanelOn = wcOn && insOn && Boolean(prefs.get("inspector.wordCite.enable"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-word-panel-card"), !wcOn || !insOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-word-panel"), !wordPanelOn);
+    setControlDisabled(doc.getElementById("zbf-chk-orphan-expand"), !wordPanelOn || !prefs.get("inspector.wordCite.showOrphanRecovery"));
+    const remCardOn = wordPanelOn && Boolean(prefs.get("inspector.wordCite.showMetadataReminders"));
+    setSubtreeDisabled(doc.getElementById("zbf-card-word-reminders"), !wordPanelOn);
+    setSubtreeDisabled(doc.getElementById("zbf-sub-word-reminders"), !remCardOn);
+    setControlDisabled(doc.getElementById("zbf-chk-rem-strict-online"), !remCardOn || !prefs.get("inspector.wordCite.reminderCheckPagination"));
+    setSubtreeDisabled(doc.getElementById("zbf-sub-wc-tag-text"), !wcOn || !prefs.get("wordCite.citationTags.enable"));
+    syncMenulistLabels(doc);
+  }
+
   // src/services/pdf-cover-queue.ts
   function makeAbortController(win) {
     const Ctor = globalThis.AbortController || win?.AbortController || globalThis.Zotero?.getMainWindow?.()?.AbortController;
@@ -862,7 +985,7 @@
     }
   }
   function isBridgeFlowCoverFile(name) {
-    return /^(?:cover-v\d+-\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
+    return /^(?:cover-(?:v\d+-)?\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
   }
   var defaultScrollIdle = createGalleryScrollIdle(100);
   var renderQueue = createGalleryWorkQueue((sig) => defaultScrollIdle.wait(sig), 2);
@@ -894,116 +1017,6 @@
   }
 
   // src/prefs-helpers.ts
-  function setSubtreeDisabled(el, disabled) {
-    if (!el) return;
-    el.setAttribute("data-disabled", disabled ? "true" : "false");
-    el.querySelectorAll("checkbox, menulist, input, button").forEach((ctrl) => {
-      try {
-        ctrl.disabled = disabled;
-      } catch {
-      }
-      if (disabled) ctrl.setAttribute("disabled", "true");
-      else ctrl.removeAttribute("disabled");
-    });
-  }
-  function syncMenulistLabels(doc) {
-    doc.querySelectorAll("#zotero-prefpane-zotero-bridgeflow menulist").forEach((ml) => {
-      const hostMl = ml;
-      const val = String(hostMl.value ?? ml.getAttribute("value") ?? "");
-      const items = Array.from(ml.querySelectorAll("menuitem"));
-      const matched = items.find((it) => it.getAttribute("value") === val) || hostMl.selectedItem || items[0];
-      if (matched) {
-        try {
-          hostMl.selectedItem = matched;
-        } catch {
-        }
-        const lbl = matched.getAttribute("label") || (matched.textContent || "").trim();
-        if (lbl) ml.setAttribute("label", lbl);
-      }
-    });
-  }
-  function setStatusFeedback(doc, l10nId, fallbackText) {
-    const statusEl = doc.getElementById("zbf-prefs-status");
-    if (!statusEl) return;
-    statusEl.setAttribute("data-l10n-id", l10nId);
-    statusEl.textContent = fallbackText;
-  }
-  function updatePreferenceDependencies(doc, prefs) {
-    prefs.invalidate();
-    const wsOn = Boolean(prefs.get("modules.workspace.enable"));
-    const insOn = Boolean(prefs.get("modules.inspector.enable"));
-    const wcOn = Boolean(prefs.get("modules.wordCite.enable"));
-    const vnOn = Boolean(prefs.get("modules.visualNotes.enable"));
-    const vSideOn = wsOn && Boolean(prefs.get("workspace.enableVerticalSidebar"));
-    const modMap = [
-      ["workspace", wsOn],
-      ["visualnotes", vnOn],
-      ["inspector", insOn],
-      ["wordcite", wcOn]
-    ];
-    for (const [slug, enabled] of modMap) {
-      const offBanner = doc.getElementById(`zbf-off-${slug}`);
-      if (offBanner) offBanner.hidden = enabled;
-    }
-    setSubtreeDisabled(doc.getElementById("zbf-group-workspace"), !wsOn);
-    setSubtreeDisabled(doc.getElementById("zbf-group-visualnotes"), !vnOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-reading-heatmap"), !vnOn || !prefs.get("workspace.readingTitleHeatmap.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-rating-cfg"), !vnOn || !prefs.get("visualNotes.ratingColumn.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-gallery-cfg"), !vnOn || !prefs.get("visualNotes.gallery.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-hub-cfg"), !vnOn || !prefs.get("visualNotes.collectionHub.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-status-cfg"), !vnOn || !prefs.get("visualNotes.statusColumn.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-group-inspector"), !insOn);
-    setSubtreeDisabled(doc.getElementById("zbf-group-pdf"), !insOn);
-    setSubtreeDisabled(doc.getElementById("zbf-group-wordcite"), !wcOn);
-    setSubtreeDisabled(doc.getElementById("zbf-group-word-perf"), !wcOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-hcompact"), !wsOn || !prefs.get("workspace.enableHorizontalGroups"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-compactTop"), !vSideOn || !prefs.get("workspace.enableHorizontalGroups"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-cfg"), !vSideOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-vsidebar-typo"), !vSideOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-pinnedIcon"), !wsOn || !prefs.get("workspace.enablePinnedTabs"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-multicol"), !wsOn || prefs.get("workspace.newTabMode") !== "collection");
-    setSubtreeDisabled(doc.getElementById("zbf-session-actions"), !wsOn || !prefs.get("workspace.enableSessions"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-rolling"), !wsOn || !prefs.get("workspace.enableSessions"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-sleep-cfg"), !wsOn || !prefs.get("workspace.enableTabSleep"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-stale-days"), !wsOn || !prefs.get("workspace.enableStaleSuggestions"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-remark-cfg"), !wsOn || !prefs.get("workspace.enableTabRemarks"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-tabmenu"), !wsOn || !prefs.get("workspace.enableTabContextMenu"));
-    const matrixBtn = doc.getElementById("zbf-btn-open-matrix");
-    if (matrixBtn) {
-      const dis = !vnOn || !prefs.get("workspace.enableAnnotationMatrix");
-      try {
-        matrixBtn.disabled = dis;
-      } catch {
-      }
-      if (dis) matrixBtn.setAttribute("disabled", "true");
-      else matrixBtn.removeAttribute("disabled");
-    }
-    const hubBtn = doc.getElementById("zbf-btn-open-collection-hub");
-    if (hubBtn) {
-      const dis = !vnOn || !prefs.get("visualNotes.collectionHub.enable");
-      try {
-        hubBtn.disabled = dis;
-      } catch {
-      }
-      if (dis) hubBtn.setAttribute("disabled", "true");
-      else hubBtn.removeAttribute("disabled");
-    }
-    const cslOn = insOn && Boolean(prefs.get("inspector.cslPreview.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-csl"), !cslOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-csl-layout"), !cslOn);
-    const lookupOn = insOn && Boolean(prefs.get("inspector.lookup.enable"));
-    const historyOn = lookupOn && Boolean(prefs.get("inspector.lookup.historyEnable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-history"), !lookupOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-lookup-quota"), !historyOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-preview"), !insOn || !prefs.get("inspector.pdfPreview.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-card-annotations"), !vnOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-pdf-folder"), !insOn || !prefs.get("inspector.pdfFolder.enable"));
-    const wordPanelCard = doc.getElementById("zbf-sub-word-panel-card");
-    setSubtreeDisabled(wordPanelCard, !wcOn || !insOn);
-    setSubtreeDisabled(doc.getElementById("zbf-sub-word-panel"), !wcOn || !insOn || !prefs.get("inspector.wordCite.enable"));
-    setSubtreeDisabled(doc.getElementById("zbf-sub-wc-tag-text"), !wcOn || !prefs.get("wordCite.citationTags.enable"));
-    syncMenulistLabels(doc);
-  }
   function bindActionBtn(el, handler) {
     if (!el) return;
     let lastAt = 0;
@@ -1023,6 +1036,14 @@
       getApp()?.kernel?.bus?.emit("inspector:clear-cache", { target: "all" });
       setStatusFeedback(doc, "zbf-prefs-status-cache-cleared", "✓ 已清空全部引文与反查缓存");
     });
+    const clearIgnoredReminders = () => {
+      const app = getApp();
+      app?.services?.reminders?.clearAll?.(true);
+      app?.inspector?.wordCiteSection?.refreshAll?.();
+      setStatusFeedback(doc, "zbf-prefs-status-reminders-restored", "✓ 已恢复全部已忽略的文献信息提醒");
+    };
+    bindActionBtn(doc.getElementById("zbf-btn-restore-reminders"), clearIgnoredReminders);
+    bindActionBtn(doc.getElementById("zbf-clear-ignored-reminders"), clearIgnoredReminders);
     bindActionBtn(doc.getElementById("zbf-clear-workspace-state"), () => {
       const app = getApp();
       if (app?.workspace?.store?.clearWorkspaceLayout) {
@@ -1278,8 +1299,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.6.7" }));
-        versionEl.textContent = `v${"0.6.7"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.7.0" }));
+        versionEl.textContent = `v${"0.7.0"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

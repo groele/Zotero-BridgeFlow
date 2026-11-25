@@ -106,11 +106,11 @@ async function locateAttachmentPdf(attID: number, width: number): Promise<{ key:
 }
 
 function isBridgeFlowCoverFile(name: string): boolean {
-	return /^(?:cover-v\d+-\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
+	return /^(?:cover-(?:v\d+-)?\d+\.txt|\d+-[a-z0-9_%]+-\d+\.json(?:\.[a-z0-9]+\.tmp)?)$/i.test(name);
 }
 
-function triggerCoverCacheSweep(): void {
-	if (clearing || sweepingPromise || Date.now() - lastSweepAt < 3600_000) return;
+export function triggerCoverCacheSweep(force = false): void {
+	if (clearing || sweepingPromise || (!force && Date.now() - lastSweepAt < 3600_000)) return;
 	const dir = getCoversDir();
 	const ioUtils = (globalThis as any).IOUtils || (globalThis as any).Zotero?.getMainWindow?.()?.IOUtils;
 	if (!dir || typeof ioUtils?.getChildren !== 'function') return;
@@ -121,7 +121,7 @@ function triggerCoverCacheSweep(): void {
 		for (const p of children) {
 			if (writingPaths.has(p)) continue;
 			const name = String(p.split(/[\\/]/).pop() || '');
-			const isLegacyTxt = /^cover-v\d+-\d+\.txt$/i.test(name);
+			const isLegacyTxt = /^cover-(?:v\d+-)?\d+\.txt$/i.test(name);
 			if (!isBridgeFlowCoverFile(name)) continue;
 			try {
 				const st = await ioUtils.stat(p);
@@ -168,7 +168,7 @@ async function writeDiskEnvelope(key: string, payload: { revision: string; stamp
 	writingPaths.add(tmpPath);
 	try {
 		await ioUtils.makeDirectory?.(dir, { ignoreExisting: true, createAncestors: true });
-		await ioUtils.writeUTF8(filePath, JSON.stringify({ version: 2, ...payload }), { tmpPath });
+		await ioUtils.writeUTF8(filePath, `${JSON.stringify({ version: 2, ...payload }, null, 2)}\n`, { tmpPath });
 	} catch { /* ignore */ } finally {
 		writingPaths.delete(filePath);
 		writingPaths.delete(tmpPath);

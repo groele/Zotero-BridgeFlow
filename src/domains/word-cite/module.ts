@@ -194,7 +194,7 @@ export class WordCiteDomainModule implements DomainModule {
 						|| (result.relinkedCount ?? 0) > 0;
 					let refreshed = false;
 					if (changed) {
-						if (this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
+						if (this.kernel.prefs.get('wordCite.orphans.autoRefreshWord') && this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
 							refreshed = await refreshActiveWordDocument(this.kernel, targetSession.sessionID).catch((err) => {
 								this.kernel.logger.error('word-cite:recover-refresh', err);
 								return false;
@@ -301,7 +301,7 @@ export class WordCiteDomainModule implements DomainModule {
 	}
 
 	private notifyOrphansIfNeeded(snap: CitationSnapshotPayload): void {
-		if (!this.active || this.recoveringOrphans) return;
+		if (!this.active || this.recoveringOrphans || !this.kernel.prefs.get('wordCite.orphans.toastEnable')) return;
 		const sessions = snap.sessions || [];
 		const openIDs = new Set(sessions.map((s) => s.sessionID));
 		for (const sid of this.notifiedOrphanSigs.keys()) {

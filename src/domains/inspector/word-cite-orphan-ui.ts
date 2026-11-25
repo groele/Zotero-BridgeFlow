@@ -3,10 +3,27 @@ import type { OrphanCardViewModel, ReceiptAction, ReceiptState } from './word-ci
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 
 export interface OrphanDomCallbacks {
+	onToggleAccordion(): void;
 	onToggleItem(key: string): void;
 	onToggleExpand(): void;
 	onReceiptAction(action: ReceiptAction): void;
 	onDismissReceipt(): void;
+}
+
+export interface OrphanAccordionDomRefs {
+	readonly box: HTMLElement;
+	readonly accHeadBtn: HTMLButtonElement;
+	readonly badgeEl: HTMLSpanElement;
+	readonly titleEl: HTMLSpanElement;
+	readonly arrowEl: HTMLSpanElement;
+	readonly bodyEl: HTMLElement;
+	readonly chipsRow: HTMLElement;
+	readonly chipsEl: HTMLElement;
+	readonly toggleBtn: HTMLButtonElement;
+	readonly listEl: HTMLElement;
+	readonly footEl: HTMLElement;
+	readonly footHintEl: HTMLSpanElement;
+	readonly actionBtn: HTMLButtonElement;
 }
 
 function createEl<T extends keyof HTMLElementTagNameMap>(doc: Document, tag: T, cls?: string): HTMLElementTagNameMap[T] {
@@ -29,89 +46,107 @@ function clearChildren(el: HTMLElement): void {
 }
 
 export const ORPHAN_AND_RECEIPT_CSS = `
-.zbf-wc-orphan-box { order: 1; display: grid; gap: 6px; padding: 8px 9px; border-radius: 8px; border: 1px solid rgba(217,119,6,0.36); background: linear-gradient(180deg, rgba(245,158,11,0.11), rgba(245,158,11,0.05)); font-size: 11.5px; }
-.zbf-wc-orphan-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
-.zbf-wc-orphan-title { font-weight: 600; color: #b45309; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-toggle { flex: none; background: none; border: none; padding: 1px 4px; border-radius: 4px; font-size: 11px; color: #b45309; cursor: pointer; opacity: 0.88; }
-.zbf-wc-orphan-toggle:hover { background: rgba(217,119,6,0.14); opacity: 1; }
-.zbf-wc-orphan-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.zbf-wc-orphan-chip, .zbf-wc-orphan-tag, .zbf-wc-rcp-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10.5px; line-height: 1.45; white-space: nowrap; font-weight: 500; }
-.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { background: rgba(13,148,136,0.14); color: #0f766e; }
-.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild { background: rgba(37,99,235,0.12); color: #1d4ed8; }
-.zbf-wc-orphan-chip.is-unrec, .zbf-wc-orphan-tag.is-unrec { background: rgba(128,128,128,0.15); color: inherit; opacity: 0.75; }
-.zbf-wc-orphan-list { display: grid; gap: 4px; max-height: 184px; overflow-y: auto; padding-right: 1px; }
-.zbf-wc-orphan-row { display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px; border-radius: 6px; background: var(--fill-primary, rgba(255,255,255,0.58)); border: 1px solid rgba(128,128,128,0.15); cursor: pointer; min-width: 0; }
-.zbf-wc-orphan-row:hover { border-color: rgba(217,119,6,0.4); }
-.zbf-wc-orphan-row.is-disabled { opacity: 0.62; cursor: default; }
-.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; }
-.zbf-wc-orphan-ord { flex: none; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; color: #b45309; font-variant-numeric: tabular-nums; line-height: 1.45; }
+.zbf-wc-orphan-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.zbf-wc-orphan-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.zbf-wc-orphan-chip, .zbf-wc-orphan-tag, .zbf-wc-rcp-chip { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10px; line-height: 1.4; white-space: nowrap; font-weight: 500; }
+.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { background: light-dark(rgba(24,121,78,0.12), rgba(34,197,94,0.18)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild { background: light-dark(rgba(40,115,200,0.11), rgba(59,130,246,0.2)); color: light-dark(#2873c8, #60a5fa); }
+.zbf-wc-orphan-chip.is-unrec, .zbf-wc-orphan-tag.is-unrec { background: light-dark(#eef1f4, rgba(255,255,255,0.1)); color: var(--fill-secondary, light-dark(#64717d, #9ca3af)); }
+.zbf-wc-orphan-toggle { flex: none; background: none; border: 0; padding: 1px 4px; border-radius: 4px; font-size: 10px; color: light-dark(#2873c8, #60a5fa); cursor: pointer; }
+.zbf-wc-orphan-toggle:hover { text-decoration: underline; }
+.zbf-wc-orphan-list { box-sizing: border-box; display: grid; gap: 0; max-height: 184px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid light-dark(#eeeeee, #33363c); cursor: pointer; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row:last-child { border-bottom: 0; }
+.zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
+.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2873c8; }
+.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#94550f, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
-.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10.5px; opacity: 0.86; min-width: 0; }
+.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #e6e6e6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; }
 .zbf-wc-orphan-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.zbf-wc-orphan-btn { box-sizing: border-box; width: 100%; padding: 5px 10px; border-radius: 6px; border: 1px solid rgba(217,119,6,0.5); background: rgba(217,119,6,0.17); color: #92400e; font-size: 11.5px; font-weight: 600; cursor: pointer; text-align: center; transition: background 120ms ease; }
-.zbf-wc-orphan-btn:hover:not(:disabled) { background: rgba(217,119,6,0.26); }
-.zbf-wc-orphan-btn:disabled { opacity: 0.48; cursor: default; }
-.zbf-wc-receipt { order: 2; display: grid; gap: 5px; font-size: 11.5px; padding: 6px 8px; border-radius: 7px; line-height: 1.4; border: 1px solid transparent; }
-.zbf-wc-receipt.is-ok { background: rgba(22,163,74,0.1); border-color: rgba(22,163,74,0.28); color: #15803d; }
-.zbf-wc-receipt.is-warn { background: rgba(217,119,6,0.1); border-color: rgba(217,119,6,0.28); color: #b45309; }
-.zbf-wc-receipt.is-err { background: rgba(220,38,38,0.1); border-color: rgba(220,38,38,0.28); color: #b91c1c; }
+.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); }
+.zbf-wc-orphan-hint { font-size: 10px; color: light-dark(#737373, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-receipt { display: grid; gap: 5px; font-size: 11px; padding: 7px 9px; border-radius: 5px; line-height: 1.4; border: 1px solid transparent; }
+.zbf-wc-receipt.is-ok { background: light-dark(#edf8f2, rgba(24,121,78,0.16)); border-color: light-dark(#bce3ce, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-receipt.is-warn { background: light-dark(#fdf6e9, rgba(245,158,11,0.16)); border-color: light-dark(#ebd3a7, rgba(245,158,11,0.34)); color: light-dark(#9a5b13, #fbbf24); }
+.zbf-wc-receipt.is-err { background: light-dark(#fef1f1, rgba(220,38,38,0.16)); border-color: light-dark(#f5c2c2, rgba(248,113,113,0.34)); color: light-dark(#b91c1c, #f87171); }
 .zbf-wc-rcp-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; font-weight: 600; }
 .zbf-wc-rcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-rcp-close { flex: none; background: none; border: none; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.65; cursor: pointer; border-radius: 4px; }
-.zbf-wc-rcp-close:hover { opacity: 1; background: rgba(128,128,128,0.15); }
+.zbf-wc-rcp-close { flex: none; background: none; border: 0; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.7; cursor: pointer; border-radius: 4px; }
+.zbf-wc-rcp-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
 .zbf-wc-rcp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.zbf-wc-rcp-chip.is-ok { background: rgba(22,163,74,0.15); color: #15803d; }
-.zbf-wc-rcp-chip.is-info { background: rgba(37,99,235,0.12); color: #1d4ed8; }
-.zbf-wc-rcp-chip.is-warn { background: rgba(217,119,6,0.15); color: #b45309; }
-.zbf-wc-rcp-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; padding-top: 3px; border-top: 1px dashed rgba(128,128,128,0.2); }
-.zbf-wc-rcp-note { font-size: 10.5px; opacity: 0.85; min-width: 0; flex: 1 1 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-rcp-chip.is-ok { background: light-dark(rgba(24,121,78,0.14), rgba(34,197,94,0.2)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-rcp-chip.is-info { background: light-dark(rgba(40,115,200,0.12), rgba(59,130,246,0.22)); color: light-dark(#2873c8, #60a5fa); }
+.zbf-wc-rcp-chip.is-warn { background: light-dark(rgba(154,91,19,0.14), rgba(245,158,11,0.22)); color: light-dark(#9a5b13, #fbbf24); }
+.zbf-wc-rcp-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; min-width: 0; padding-top: 3px; border-top: 1px solid color-mix(in srgb, currentColor 18%, transparent); }
+.zbf-wc-rcp-note { font-size: 10px; opacity: 0.85; min-width: 0; flex: 1 1 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-rcp-actions { display: inline-flex; align-items: center; gap: 5px; margin-inline-start: auto; }
-.zbf-wc-rcp-btn { background: rgba(255,255,255,0.65); border: 1px solid currentColor; border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 600; color: inherit; cursor: pointer; white-space: nowrap; }
-.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.9); }
-@media (prefers-color-scheme: dark) {
-	.zbf-wc-orphan-title, .zbf-wc-orphan-toggle, .zbf-wc-orphan-ord, .zbf-wc-orphan-btn, .zbf-wc-rcp-chip.is-warn, .zbf-wc-receipt.is-warn { color: #fbbf24; }
-	.zbf-wc-receipt.is-ok { color: #4ade80; }
-	.zbf-wc-receipt.is-err { color: #f87171; }
-	.zbf-wc-orphan-row { background: rgba(24,24,27,0.45); }
-	.zbf-wc-orphan-chip.is-trash, .zbf-wc-orphan-tag.is-trash { color: #5eead4; background: rgba(20,184,166,0.18); }
-	.zbf-wc-orphan-chip.is-rebuild, .zbf-wc-orphan-tag.is-rebuild, .zbf-wc-rcp-chip.is-info { color: #93c5fd; background: rgba(59,130,246,0.2); }
-	.zbf-wc-rcp-chip.is-ok { color: #4ade80; background: rgba(34,197,94,0.18); }
-	.zbf-wc-rcp-btn { background: rgba(255,255,255,0.08); }
-	.zbf-wc-rcp-btn:hover { background: rgba(255,255,255,0.16); }
-}`;
+.zbf-wc-rcp-btn { background: light-dark(rgba(255,255,255,0.82), rgba(255,255,255,0.08)); border: 1px solid currentColor; border-radius: 4px; padding: 2px 7px; font-size: 10.5px; font-weight: 600; color: inherit; cursor: pointer; white-space: nowrap; }
+.zbf-wc-rcp-btn:hover { background: light-dark(#ffffff, rgba(255,255,255,0.16)); }
+`;
+
+export function createOrphanAccordionDom(doc: Document): OrphanAccordionDomRefs {
+	const box = createEl(doc, 'section', 'zbf-wc-acc zbf-wc-orphan-box');
+	box.hidden = true;
+	const accHeadBtn = createEl(doc, 'button', 'zbf-wc-acc-head');
+	accHeadBtn.type = 'button';
+	const badgeEl = createEl(doc, 'span', 'zbf-wc-badge is-warn');
+	const titleEl = createEl(doc, 'span', 'zbf-wc-acc-title');
+	const arrowEl = createEl(doc, 'span', 'zbf-wc-acc-arrow');
+	arrowEl.textContent = '⌄';
+	accHeadBtn.append(badgeEl, titleEl, arrowEl);
+
+	const bodyEl = createEl(doc, 'div', 'zbf-wc-acc-body');
+	const chipsRow = createEl(doc, 'div', 'zbf-wc-orphan-top');
+	const chipsEl = createEl(doc, 'div', 'zbf-wc-orphan-chips');
+	const toggleBtn = createEl(doc, 'button', 'zbf-wc-orphan-toggle');
+	toggleBtn.type = 'button';
+	chipsRow.append(chipsEl, toggleBtn);
+
+	const listEl = createEl(doc, 'div', 'zbf-wc-orphan-list');
+	const footEl = createEl(doc, 'div', 'zbf-wc-orphan-foot');
+	const footHintEl = createEl(doc, 'span', 'zbf-wc-orphan-hint');
+	const actionBtn = createEl(doc, 'button', 'zbf-wc-sec-btn zbf-wc-orphan-btn');
+	actionBtn.type = 'button';
+	footEl.append(footHintEl, actionBtn);
+
+	bodyEl.append(chipsRow, listEl, footEl);
+	box.append(accHeadBtn, bodyEl);
+	return {
+		box, accHeadBtn, badgeEl, titleEl, arrowEl, bodyEl,
+		chipsRow, chipsEl, toggleBtn, listEl, footEl, footHintEl, actionBtn,
+	};
+}
 
 export function renderOrphanCardDom(
 	doc: Document,
-	box: HTMLElement,
-	headEl: HTMLElement,
-	titleEl: HTMLElement,
-	toggleBtn: HTMLButtonElement,
-	chipsEl: HTMLElement,
-	listEl: HTMLElement,
-	actionBtn: HTMLButtonElement,
+	refs: OrphanAccordionDomRefs,
 	model: OrphanCardViewModel,
 	disabled: boolean,
 	cb: Pick<OrphanDomCallbacks, 'onToggleItem'>,
 ): void {
-	box.hidden = !model.visible;
+	refs.box.hidden = !model.visible;
 	if (!model.visible) return;
 
-	titleEl.textContent = model.title;
-	titleEl.title = model.listText;
-	toggleBtn.hidden = !model.showToggle;
-	toggleBtn.textContent = model.toggleLabel;
-	headEl.hidden = false;
+	refs.box.classList.toggle('is-closed', !model.accordionOpen);
+	refs.accHeadBtn.setAttribute('aria-expanded', String(model.accordionOpen));
+	refs.accHeadBtn.title = model.listText;
+	refs.badgeEl.textContent = model.countBadge;
+	refs.titleEl.textContent = model.shortTitle;
+	refs.bodyEl.hidden = !model.accordionOpen;
+	if (!model.accordionOpen) return;
 
-	clearChildren(chipsEl);
-	chipsEl.hidden = model.summaryChips.length === 0;
+	clearChildren(refs.chipsEl);
 	for (const chip of model.summaryChips) {
 		const pill = createEl(doc, 'span', `zbf-wc-orphan-chip is-${chip.variant}`);
 		pill.textContent = chip.text;
-		chipsEl.appendChild(pill);
+		refs.chipsEl.appendChild(pill);
 	}
+	refs.toggleBtn.hidden = !model.showToggle;
+	refs.toggleBtn.textContent = model.toggleLabel;
+	refs.chipsRow.hidden = model.summaryChips.length === 0 && !model.showToggle;
 
-	clearChildren(listEl);
+	clearChildren(refs.listEl);
 	for (const rowVm of model.rows) {
 		const row = createEl(doc, 'div', `zbf-wc-orphan-row${rowVm.recoverable ? '' : ' is-disabled'}`);
 		row.title = rowVm.tooltip;
@@ -145,12 +180,13 @@ export function renderOrphanCardDom(
 				cb.onToggleItem(rowVm.key);
 			});
 		}
-		listEl.appendChild(row);
+		refs.listEl.appendChild(row);
 	}
 
-	actionBtn.textContent = model.buttonLabel;
-	actionBtn.title = model.buttonTooltip;
-	actionBtn.disabled = disabled || model.buttonDisabled;
+	refs.footHintEl.textContent = model.footHint;
+	refs.actionBtn.textContent = model.buttonLabel;
+	refs.actionBtn.title = model.buttonTooltip;
+	refs.actionBtn.disabled = disabled || model.buttonDisabled;
 }
 
 export function renderReceiptDom(

@@ -1,114 +1,14 @@
 import { UnifiedPrefService } from './kernel/pref-service.ts';
 import { initAnnotationColorEditor, syncAnnotationColorInputs } from './prefs-color-editor.ts';
+import {
+	setStatusFeedback,
+	setSubtreeDisabled,
+	syncMenulistLabels,
+	updatePreferenceDependencies,
+} from './prefs-dependencies.ts';
 import { clearPdfCoverCache } from './services/pdf-cover-service.ts';
 
-export function setSubtreeDisabled(el: Element | null, disabled: boolean): void {
-	if (!el) return;
-	el.setAttribute('data-disabled', disabled ? 'true' : 'false');
-	el.querySelectorAll('checkbox, menulist, input, button').forEach((ctrl: Element) => {
-		try { (ctrl as any).disabled = disabled; } catch { /* ignore */ }
-		if (disabled) ctrl.setAttribute('disabled', 'true');
-		else ctrl.removeAttribute('disabled');
-	});
-}
-
-export function syncMenulistLabels(doc: Document): void {
-	doc.querySelectorAll('#zotero-prefpane-zotero-bridgeflow menulist').forEach((ml: Element) => {
-		const hostMl = ml as any;
-		const val = String(hostMl.value ?? ml.getAttribute('value') ?? '');
-		const items = Array.from(ml.querySelectorAll('menuitem')) as Element[];
-		const matched = items.find((it) => it.getAttribute('value') === val) || hostMl.selectedItem || items[0];
-		if (matched) {
-			try { hostMl.selectedItem = matched; } catch { /* ignore */ }
-			const lbl = matched.getAttribute('label') || (matched.textContent || '').trim();
-			if (lbl) ml.setAttribute('label', lbl);
-		}
-	});
-}
-
-export function setStatusFeedback(doc: Document, l10nId: string, fallbackText: string): void {
-	const statusEl = doc.getElementById('zbf-prefs-status');
-	if (!statusEl) return;
-	statusEl.setAttribute('data-l10n-id', l10nId);
-	statusEl.textContent = fallbackText;
-}
-
-export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefService): void {
-	prefs.invalidate();
-	const wsOn = Boolean(prefs.get('modules.workspace.enable'));
-	const insOn = Boolean(prefs.get('modules.inspector.enable'));
-	const wcOn = Boolean(prefs.get('modules.wordCite.enable'));
-	const vnOn = Boolean(prefs.get('modules.visualNotes.enable'));
-	const vSideOn = wsOn && Boolean(prefs.get('workspace.enableVerticalSidebar'));
-
-	const modMap: Array<[string, boolean]> = [
-		['workspace', wsOn],
-		['visualnotes', vnOn],
-		['inspector', insOn],
-		['wordcite', wcOn],
-	];
-	for (const [slug, enabled] of modMap) {
-		const offBanner = doc.getElementById(`zbf-off-${slug}`) as HTMLElement | null;
-		if (offBanner) offBanner.hidden = enabled;
-	}
-
-	setSubtreeDisabled(doc.getElementById('zbf-group-workspace'), !wsOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-visualnotes'), !vnOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-reading-heatmap'), !vnOn || !prefs.get('workspace.readingTitleHeatmap.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-rating-cfg'), !vnOn || !prefs.get('visualNotes.ratingColumn.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-gallery-cfg'), !vnOn || !prefs.get('visualNotes.gallery.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-hub-cfg'), !vnOn || !prefs.get('visualNotes.collectionHub.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-status-cfg'), !vnOn || !prefs.get('visualNotes.statusColumn.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-group-inspector'), !insOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-pdf'), !insOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-wordcite'), !wcOn);
-	setSubtreeDisabled(doc.getElementById('zbf-group-word-perf'), !wcOn);
-
-	setSubtreeDisabled(doc.getElementById('zbf-sub-hcompact'), !wsOn || !prefs.get('workspace.enableHorizontalGroups'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-compactTop'), !vSideOn || !prefs.get('workspace.enableHorizontalGroups'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-vsidebar-cfg'), !vSideOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-vsidebar-typo'), !vSideOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pinnedIcon'), !wsOn || !prefs.get('workspace.enablePinnedTabs'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-multicol'), !wsOn || prefs.get('workspace.newTabMode') !== 'collection');
-	setSubtreeDisabled(doc.getElementById('zbf-session-actions'), !wsOn || !prefs.get('workspace.enableSessions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-rolling'), !wsOn || !prefs.get('workspace.enableSessions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-sleep-cfg'), !wsOn || !prefs.get('workspace.enableTabSleep'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-stale-days'), !wsOn || !prefs.get('workspace.enableStaleSuggestions'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-remark-cfg'), !wsOn || !prefs.get('workspace.enableTabRemarks'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-tabmenu'), !wsOn || !prefs.get('workspace.enableTabContextMenu'));
-	const matrixBtn = doc.getElementById('zbf-btn-open-matrix');
-	if (matrixBtn) {
-		const dis = !vnOn || !prefs.get('workspace.enableAnnotationMatrix');
-		try { (matrixBtn as any).disabled = dis; } catch { /* ignore */ }
-		if (dis) matrixBtn.setAttribute('disabled', 'true');
-		else matrixBtn.removeAttribute('disabled');
-	}
-	const hubBtn = doc.getElementById('zbf-btn-open-collection-hub');
-	if (hubBtn) {
-		const dis = !vnOn || !prefs.get('visualNotes.collectionHub.enable');
-		try { (hubBtn as any).disabled = dis; } catch { /* ignore */ }
-		if (dis) hubBtn.setAttribute('disabled', 'true');
-		else hubBtn.removeAttribute('disabled');
-	}
-
-	const cslOn = insOn && Boolean(prefs.get('inspector.cslPreview.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-csl'), !cslOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-csl-layout'), !cslOn);
-	const lookupOn = insOn && Boolean(prefs.get('inspector.lookup.enable'));
-	const historyOn = lookupOn && Boolean(prefs.get('inspector.lookup.historyEnable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-history'), !lookupOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-lookup-quota'), !historyOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-preview'), !insOn || !prefs.get('inspector.pdfPreview.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-card-annotations'), !vnOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-folder'), !insOn || !prefs.get('inspector.pdfFolder.enable'));
-
-	const wordPanelCard = doc.getElementById('zbf-sub-word-panel-card');
-	setSubtreeDisabled(wordPanelCard, !wcOn || !insOn);
-	setSubtreeDisabled(doc.getElementById('zbf-sub-word-panel'), !wcOn || !insOn || !prefs.get('inspector.wordCite.enable'));
-	setSubtreeDisabled(doc.getElementById('zbf-sub-wc-tag-text'), !wcOn || !prefs.get('wordCite.citationTags.enable'));
-
-	syncMenulistLabels(doc);
-}
+export { setStatusFeedback, setSubtreeDisabled, syncMenulistLabels, updatePreferenceDependencies };
 
 export function bindActionBtn(el: Element | null, handler: () => void): void {
 	if (!el) return;
@@ -136,6 +36,15 @@ export function bindPreferenceActions(
 		getApp()?.kernel?.bus?.emit('inspector:clear-cache', { target: 'all' });
 		setStatusFeedback(doc, 'zbf-prefs-status-cache-cleared', '✓ 已清空全部引文与反查缓存');
 	});
+
+	const clearIgnoredReminders = () => {
+		const app = getApp();
+		app?.services?.reminders?.clearAll?.(true);
+		app?.inspector?.wordCiteSection?.refreshAll?.();
+		setStatusFeedback(doc, 'zbf-prefs-status-reminders-restored', '✓ 已恢复全部已忽略的文献信息提醒');
+	};
+	bindActionBtn(doc.getElementById('zbf-btn-restore-reminders'), clearIgnoredReminders);
+	bindActionBtn(doc.getElementById('zbf-clear-ignored-reminders'), clearIgnoredReminders);
 
 	bindActionBtn(doc.getElementById('zbf-clear-workspace-state'), () => {
 		const app = getApp();

@@ -273,8 +273,11 @@ export class CitationHistoryStore {
 		if (!this.dirty) return true;
 		this.dirty = false;
 		const revision = this.clearRevision;
-		const ok = await this.disk.write(() => JSON.stringify({ version: 1, records: [...this.records.values()] }),
-			600_000, revision !== this.savedClearRevision);
+		const ok = await this.disk.write(
+			() => `${JSON.stringify({ version: 1, records: [...this.records.values()] }, null, 2)}\n`,
+			600_000,
+			revision !== this.savedClearRevision,
+		);
 		if (!ok) this.dirty = true;
 		else this.savedClearRevision = revision;
 		if (this.saveFailed === ok) {

@@ -37,9 +37,21 @@ export class WorkspaceDiskCache {
 	}
 
 	flushNow(state: WorkspaceState, _serialized?: string): Promise<boolean> {
-		return this.file.write(() => JSON.stringify({
-			format: 'zotero-bridgeflow-workspace', version: 2, state: state,
-		}));
+		let cleanState = state;
+		if (state && Array.isArray(state.groups)) {
+			const activeGroupKeys = new Set(state.groups.flatMap((g) => g.memberKeys || []));
+			const activeGroupIds = new Set(state.groups.map((g) => g.id));
+			cleanState = {
+				...state,
+				...(Array.isArray(state.collapsed) ? { collapsed: state.collapsed.filter((id) => activeGroupIds.has(id)) } : {}),
+				...(state.virtualMembers && typeof state.virtualMembers === 'object'
+					? { virtualMembers: Object.fromEntries(Object.entries(state.virtualMembers).filter(([k]) => activeGroupKeys.has(k))) }
+					: {}),
+			};
+		}
+		return this.file.write(() => `${JSON.stringify({
+			format: 'zotero-bridgeflow-workspace', version: 2, state: cleanState,
+		}, null, 2)}\n`);
 	}
 
 	loadFromDisk(): Promise<WorkspaceState | null> {
@@ -84,8 +96,9 @@ export class WorkspaceDiskCache {
 		mergeSessions(current.sessions, disk.sessions, 30);
 		mergeSessions(current.rollingSessions, disk.rollingSessions, 5);
 
+		const diskGroupKeys = new Set([...current.groups, ...disk.groups].flatMap((g) => g.memberKeys));
 		for (const [k, meta] of Object.entries(disk.virtualMembers)) {
-			if (!current.virtualMembers[k]) {
+			if (diskGroupKeys.has(k) && !current.virtualMembers[k]) {
 				current.virtualMembers[k] = meta;
 				changed = true;
 			}
