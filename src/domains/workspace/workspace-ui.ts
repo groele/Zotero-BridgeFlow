@@ -91,6 +91,7 @@ export class WorkspaceWindowUI {
 		this.sidebar = new WorkspaceVerticalSidebar(win, prefs, store, tabs, this.tabMenu, this.hoverCard, this.popover, (btn) => this.spotlightPanel?.toggle(btn), refresh);
 
 		this.attachObservers();
+		this.bindNativeTabContextMenu();
 		this.doc.addEventListener('keydown', this.onKeydown, { capture: true, signal: this.lifetime.signal });
 		this.doc.addEventListener('pointerdown', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
 		this.doc.addEventListener('keydown', this.onInputActivity, { capture: true, passive: true, signal: this.lifetime.signal });
@@ -172,6 +173,25 @@ export class WorkspaceWindowUI {
 		this.styleEl = style;
 	}
 
+	private bindNativeTabContextMenu(): void {
+		if (!this.doc || !this.lifetime) return;
+		const tabBar = this.doc.getElementById('tab-bar-container');
+		if (!tabBar) return;
+		tabBar.addEventListener('contextmenu', (ev: Event) => {
+			if (this.destroyed || !this.prefs.get('workspace.enableTabContextMenu')) return;
+			const target = ev.target as Element | null;
+			if (!target || typeof target.closest !== 'function') return;
+			if (target.closest('#zbf-inline, #zbf-toolbar-actions')) return;
+			const nativeTabEl = target.closest('.tabs-wrapper .tab, .pinned-tabs .tab') as HTMLElement | null;
+			if (!nativeTabEl) return;
+			const tracked = resolveNativeTabFromElement(this.win, nativeTabEl, this.tabs.buildTrackedTabs(this.win));
+			if (!tracked) return;
+			ev.preventDefault();
+			ev.stopPropagation();
+			this.tabMenu?.openTabMenu(nativeTabEl, tracked, ev as MouseEvent);
+		}, { signal: this.lifetime.signal });
+	}
+
 	private attachObservers(): void {
 		if (!this.doc) return;
 		const tabBar = this.doc.getElementById('tab-bar-container');
@@ -204,4 +224,60 @@ export class WorkspaceWindowUI {
 			this.render();
 		}, delayMs);
 	}
+}
+
+export function resolveNativeTabFromElement(
+	win: Window,
+	tabEl: Element,
+	trackedTabs: TrackedTab[],
+): TrackedTab | null {
+	const liveTabs = trackedTabs.filter((t) => !t.virtual && Boolean(t.tabID));
+	if (!liveTabs.length) return null;
+
+	const rawId = tabEl.getAttribute?.('data-tab-id')
+		|| tabEl.getAttribute?.('tab-id')
+		|| tabEl.getAttribute?.('data-id')
+		|| '';
+	if (rawId) {
+		const byAttr = liveTabs.find((t) => t.tabID === rawId);
+		if (byAttr) return byAttr;
+	}
+
+	const elId = tabEl.id || '';
+	if (elId) {
+		const stripped = elId.startsWith('tab-') ? elId.slice(4) : elId;
+		const byId = liveTabs.find((t) => t.tabID === elId || t.tabID === stripped);
+		if (byId) return byId;
+	}
+
+	const doc = win.document;
+	const nativeTabs: Array<{ id?: string; title?: string; pinned?: boolean }> =
+		Array.isArray((win as any).Zotero_Tabs?._tabs) ? (win as any).Zotero_Tabs._tabs : [];
+	const isPinnedEl = Boolean(tabEl.closest?.('.pinned-tabs'));
+	const containerSel = isPinnedEl ? '#tab-bar-container .pinned-tabs .tab' : '#tab-bar-container .tabs-wrapper .tab';
+	const siblingTabs = doc?.querySelectorAll ? Array.from(doc.querySelectorAll(containerSel)) : [];
+	const domIdx = siblingTabs.indexOf(tabEl);
+	if (domIdx >= 0 && nativeTabs.length > 0) {
+		const pool = isPinnedEl
+			? nativeTabs.filter((nt) => Boolean(nt?.pinned))
+			: nativeTabs.filter((nt) => !nt?.pinned);
+		const candidate = pool[domIdx] || (isPinnedEl ? null : nativeTabs[domIdx]);
+		if (candidate?.id) {
+			const byIndex = liveTabs.find((t) => t.tabID === candidate.id);
+			if (byIndex) return byIndex;
+		}
+	}
+
+	const labelText = (
+		tabEl.querySelector?.('.tab-name')?.textContent
+		|| tabEl.getAttribute?.('title')
+		|| tabEl.textContent
+		|| ''
+	).trim();
+	if (labelText) {
+		const byTitle = liveTabs.find((t) => t.title === labelText || t.shortTitle === labelText || t.filename === labelText);
+		if (byTitle) return byTitle;
+	}
+
+	return null;
 }

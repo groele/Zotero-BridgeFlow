@@ -55,7 +55,9 @@ export class HorizontalPinnedStrip {
 			}
 			chip.addEventListener('click', () => this.tabs.selectTab(this.win, tab.tabID));
 			chip.addEventListener('contextmenu', (e) => {
+				if (!this.prefs.get('workspace.enableTabContextMenu')) return;
 				e.preventDefault();
+				e.stopPropagation();
 				this.menus.openTabMenu(chip, tab, e as MouseEvent);
 			});
 			this.hover.attach(chip, tab);

@@ -166,6 +166,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	row.addEventListener('contextmenu', (e) => {
 		if (!prefs.get('workspace.enableTabContextMenu')) return;
 		e.preventDefault();
+		e.stopPropagation();
 		menus.openTabMenu(row, tab, e as MouseEvent);
 	});
 	hover.attach(row, tab);

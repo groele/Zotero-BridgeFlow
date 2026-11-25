@@ -256,6 +256,7 @@ export class WorkspaceVerticalSidebar {
 				});
 				head.addEventListener('contextmenu', (e) => {
 					e.preventDefault();
+					e.stopPropagation();
 					this.menus.openGroupMenu(head, grp, e as MouseEvent);
 				});
 				bindSidebarGroupDrop(head, grp.id, this.win, this.store, this.tabs, this.onRefresh);

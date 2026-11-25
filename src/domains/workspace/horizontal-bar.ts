@@ -115,6 +115,7 @@ export class WorkspaceHorizontalBar {
 		});
 		addBtn.addEventListener('contextmenu', (e) => {
 			e.preventDefault();
+			e.stopPropagation();
 			this.menus.openAddGroupMenu(addBtn, e as MouseEvent);
 		});
 		this.bindDropToNewGroup(addBtn);
@@ -173,6 +174,7 @@ export class WorkspaceHorizontalBar {
 		});
 		head.addEventListener('contextmenu', (e) => {
 			e.preventDefault();
+			e.stopPropagation();
 			this.menus.openGroupMenu(head, group, e as MouseEvent);
 		});
 		this.bindDropToGroup(head, group.id);
@@ -233,6 +235,7 @@ export class WorkspaceHorizontalBar {
 		chip.addEventListener('contextmenu', (e) => {
 			if (!this.prefs.get('workspace.enableTabContextMenu')) return;
 			e.preventDefault();
+			e.stopPropagation();
 			this.menus.openTabMenu(chip, tab, e as MouseEvent);
 		});
 		this.bindDropToChip(chip, tab);
