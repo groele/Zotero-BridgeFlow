@@ -126,6 +126,13 @@ function checkVersionAlignment() {
 	if (!feedEntry || feedEntry.version !== ver) {
 		throw new Error(`update.json (${feedEntry?.version}) != package.json (${ver})`);
 	}
+	const feedApp = feedEntry.applications?.zotero;
+	if (feedApp?.strict_min_version !== zApp.strict_min_version || feedApp?.strict_max_version !== zApp.strict_max_version) {
+		throw new Error('Update feed compatibility differs from manifest');
+	}
+	if (feedEntry.update_link !== `${pkg.homepage}/releases/download/v${ver}/Zotero-BridgeFlow-${ver}.xpi`) {
+		throw new Error('Update feed download URL differs from the current release asset');
+	}
 	if (baseline.lastReleasedVersion !== ver) {
 		throw new Error(`architecture-baseline.json (${baseline.lastReleasedVersion}) != package.json (${ver})`);
 	}

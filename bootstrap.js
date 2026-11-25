@@ -29,7 +29,7 @@ async function startup({ id, version, rootURI }) {
 		});
 		await bridgeflow.start();
 	} catch (error) {
-		shutdown();
+		if (generation === startupGeneration) shutdown();
 		throw error;
 	}
 }

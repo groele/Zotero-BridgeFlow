@@ -40,6 +40,7 @@ export class ServiceContainer {
 	async init(): Promise<void> {
 		this.syncHistoryConfig();
 		await Promise.all([this.history.init(), this.ratings.init(), this.reminders.init()]);
+		if (this.kernel.isDisposed) return;
 		void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get('inspector.lookup.cacheDirectory'));
 
 		this.kernel.disposables.add(

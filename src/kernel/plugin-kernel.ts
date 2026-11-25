@@ -8,7 +8,7 @@ import { UnifiedPrefService, type HostPrefsAdapter } from './pref-service.ts';
 import type { BridgeModule, DomainModule, PluginInfo } from './types.ts';
 
 export class PluginKernel {
-	public info: PluginInfo = { id: 'bridgeflow@groele', version: '0.0.1', rootURI: '' };
+	public info: PluginInfo = { id: 'bridgeflow@groele', version: typeof __BRIDGEFLOW_VERSION__ === 'string' ? __BRIDGEFLOW_VERSION__ : '', rootURI: '' };
 	public readonly logger = new KernelLogger();
 	public readonly bus: TypedEventBus;
 	public readonly prefs: UnifiedPrefService;
@@ -22,6 +22,8 @@ export class PluginKernel {
 	private readonly openWindows = new Set<Window>();
 	private initialized = false;
 	private started = false;
+	private disposed = false;
+	get isDisposed(): boolean { return this.disposed; }
 	private syncQueue: Promise<void> = Promise.resolve();
 
 	constructor(options: { prefAdapter?: HostPrefsAdapter } = {}) {
@@ -46,7 +48,7 @@ export class PluginKernel {
 	}
 
 	async start(): Promise<void> {
-		if (this.started) return;
+		if (this.started || this.disposed) return;
 		this.started = true;
 		this.prefs.seedDefaults();
 		this.syncLoggerConfig();
@@ -71,6 +73,7 @@ export class PluginKernel {
 		);
 
 		await this.syncDomainStates();
+		if (this.disposed) return;
 		for (const bridge of this.bridges) {
 			try {
 				bridge.start();
@@ -98,11 +101,16 @@ export class PluginKernel {
 
 	private async runSyncDomainStates(): Promise<void> {
 		for (const domain of this.domains.values()) {
+			if (this.disposed) return;
 			const shouldEnable = Boolean(this.prefs.get(domain.enabledPref as PrefKey));
 			const currentlyActive = domain.isActive();
 			if (shouldEnable && !currentlyActive) {
 				try {
 					await domain.start();
+					if (this.disposed) {
+						if (domain.isActive()) domain.stop();
+						return;
+					}
 					for (const win of this.openWindows) {
 						try { domain.onMainWindowLoad?.(win); } catch (err) { this.logger.error(`windowLoad:${domain.id}`, err); }
 					}
@@ -123,7 +131,7 @@ export class PluginKernel {
 	}
 
 	onMainWindowLoad(win: Window): void {
-		if (!win || this.openWindows.has(win)) return;
+		if (this.disposed || !win || this.openWindows.has(win)) return;
 		this.openWindows.add(win);
 		for (const domain of this.domains.values()) {
 			if (!domain.isActive()) continue;
@@ -149,6 +157,8 @@ export class PluginKernel {
 	}
 
 	shutdown(): void {
+		if (this.disposed) return;
+		this.disposed = true;
 		for (const bridge of [...this.bridges].reverse()) {
 			try { bridge.stop(); } catch (err) { this.logger.error(`bridge:stop:${bridge.id}`, err); }
 		}

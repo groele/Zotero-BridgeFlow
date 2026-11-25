@@ -47,6 +47,7 @@ export class BridgeFlowApp {
 	}
 
 	async start(): Promise<void> {
+		if (this.kernel.isDisposed) return;
 		await this.services.init();
 		await this.kernel.start();
 	}

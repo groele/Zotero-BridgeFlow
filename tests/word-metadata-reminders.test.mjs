@@ -170,10 +170,10 @@ test('inspectItemMetadataFields & CSS guards: granular switches, itemTypeID look
 			{ kind: 'missing', text: '缺少卷期页码' },
 		]);
 
-		// CSS regression guards: Concept A distinct soft cards (#fafafa) + academic blue primary CTA (#255fb3)
+		// CSS regression guards: B4 borderless cornflower-blue CTA (#3a76d2/#2d5fb8) + harmonized palette
 		assert.equal(/background\s*:\s*var\(--fill-primary/.test(WORD_CITE_SCHEME_C_CSS), false);
 		assert.equal(/var\(--material-border/.test(WORD_CITE_SCHEME_C_CSS), false);
-		assert.equal(/#fafafa/.test(WORD_CITE_SCHEME_C_CSS) && /#255fb3/.test(WORD_CITE_SCHEME_C_CSS), true);
+		assert.equal(/#3a76d2/.test(WORD_CITE_SCHEME_C_CSS) && /#c9323f/.test(WORD_CITE_SCHEME_C_CSS) && /#eff4fd/.test(WORD_CITE_SCHEME_C_CSS), true);
 		assert.equal(/overflow-x\s*:\s*hidden/.test(REMINDERS_CARD_CSS), true);
 	} finally {
 		globalThis.Zotero = prevZotero;
@@ -376,6 +376,10 @@ test('sweepBridgeFlowCacheDirectory removes migrated legacy root files & cover-*
 	const files = new Map([
 		['D:/CacheTest/bridgeflow-cache/citations/citation-history.json', '{\n  "version": 1,\n  "records": []\n}\n'],
 		['D:/CacheTest/bridgeflow-cache/citation-history.json', '{"version":1,"records":[]}'],
+		['D:/CacheTest/bridgeflow-cache/citation-history.bak.json', '{"records":[{"text":"keep my citation"}]}'],
+		['D:/CacheTest/bridgeflow-cache/citations/citation-history.bak.json', '{"records":[]}'],
+		['D:/CacheTest/bridgeflow-cache/shared.tmp', 'other application'],
+		['D:/CacheTest/bridgeflow-cache/ratings/item-ratings.json.tmp', 'old temporary file'],
 		['D:/CacheTest/bridgeflow-cache/brief-notes.json', '{"format":"zotero-bridgeflow-brief-notes","version":1,"state":{"remarks":{"1":"keep"},"remarkModes":{}}}'],
 		['D:/CacheTest/bridgeflow-cache/covers/cover-13586.txt', 'legacy-base64'],
 		['D:/CacheTest/bridgeflow-cache/covers/1-VALID-480.json', '{\n  "version": 2\n}\n'],
@@ -395,6 +399,9 @@ test('sweepBridgeFlowCacheDirectory removes migrated legacy root files & cover-*
 		await new Promise((r) => setTimeout(r, 20));
 		assert.ok(removed >= 1);
 		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/citation-history.json'), false);
+		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/citation-history.bak.json'), true);
+		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/shared.tmp'), true);
+		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/ratings/item-ratings.json.tmp'), false);
 		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/brief-notes.json'), true);
 		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/covers/cover-13586.txt'), false);
 		assert.equal(files.has('D:/CacheTest/bridgeflow-cache/covers/1-VALID-480.json'), true);

@@ -57,6 +57,14 @@ if (-not $VerifyOnly) {
 }
 $hash = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA256).Hash
 $hash512 = (Get-FileHash -LiteralPath $resolvedOutput -Algorithm SHA512).Hash
+if ($VerifyOnly) {
+    if ($UpdateFeed) { throw 'VerifyOnly cannot be combined with UpdateFeed' }
+    $feed = Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'update.json') | ConvertFrom-Json
+    $entry = $feed.addons.($manifest.applications.zotero.id).updates[0]
+    if ($entry.version -ne $manifest.version -or $entry.update_hash -ne ('sha512:' + $hash512)) {
+        throw 'Installer version or checksum differs from the maintained feed'
+    }
+}
 if ($UpdateFeed) {
     $feedPath = Join-Path $projectRoot 'update.json'
     $feed = Get-Content -LiteralPath $feedPath -Raw | ConvertFrom-Json

@@ -98,6 +98,30 @@ test('PluginKernel hot-toggles domain modules cleanly on pref change', async () 
 	kernel.shutdown();
 });
 
+test('shutdown cancels in-flight domain startup and queued preference changes', async () => {
+	const kernel = new PluginKernel({ prefAdapter: createMemoryPrefs().adapter });
+	const entered = Promise.withResolvers();
+	const resume = Promise.withResolvers();
+	let active = false;
+	let starts = 0;
+	let bridges = 0;
+	kernel.registerDomain({
+		id: 'workspace', enabledPref: 'modules.workspace.enable',
+		async start() { starts++; entered.resolve(); await resume.promise; active = true; },
+		stop() { active = false; }, isActive() { return active; },
+	});
+	kernel.registerBridge({ id: 'probe', start() { bridges++; }, stop() {} });
+	const starting = kernel.start();
+	await entered.promise;
+	const queued = kernel.syncDomainStates();
+	kernel.shutdown();
+	resume.resolve();
+	await Promise.all([starting, queued]);
+	assert.equal(active, false);
+	assert.equal(starts, 1);
+	assert.equal(bridges, 0);
+});
+
 test('ItemResolution guards against cycles and trashed items', () => {
 	const parent = { id: 10, itemType: 'journalArticle', isRegularItem: () => true };
 	const child = { id: 11, itemType: 'attachment', isRegularItem: () => false, parentItem: parent };
