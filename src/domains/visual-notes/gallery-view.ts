@@ -45,7 +45,6 @@ export class GalleryBoardController {
 	setDataSource(source?: VisualNotesDataSource): void { this.dataSource = source; }
 	private isZh(): boolean { return Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh')); }
 	private defaultMode(): GalleryMode { return this.kernel.prefs.get('visualNotes.gallery.defaultMode') === 'board' ? 'board' : 'gallery'; }
-
 	private defaultGroupBy(): GalleryGroupBy {
 		const v = String(this.kernel.prefs.get('visualNotes.gallery.groupBy') || 'status');
 		if (v === 'rating' || v === 'readState' || v === 'year' || v === 'publication' || v === 'itemType') return v;
@@ -113,7 +112,6 @@ export class GalleryBoardController {
 		const st = this.states.get(win);
 		if (!st) return;
 		if (st.queryTimer !== null) { clearTimeout(st.queryTimer); st.queryTimer = null; }
-		this.disposeViewport(st);
 		this.setGalleryOpen(st, false);
 		st.visibilityGuard?.destroy();
 		st.visibilityGuard = null;
@@ -185,7 +183,7 @@ export class GalleryBoardController {
 		}
 
 		const itemsPane = doc.getElementById('zotero-items-pane') as HTMLElement | null;
-		if (!itemsPane) return;
+		if (!itemsPane) { this.setGalleryOpen(st, false); return; }
 		this.bindGallery(st);
 		if (!st.panel || !st.panel.isConnected) {
 			doc.getElementById('zbf-gallery-panel')?.remove();
@@ -202,7 +200,10 @@ export class GalleryBoardController {
 		st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
 		st.anchorItemID = [...st.selectedIDs].at(-1) || 0;
 		st.visibilityGuard?.setEnabled(true);
-		this.renderPanel(st);
+		try { this.renderPanel(st); } catch (error) {
+			this.setGalleryOpen(st, false);
+			this.kernel.logger.error('gallery:open', error);
+		}
 	}
 
 	private renderPanel(st: WindowGalleryState, keepTopBar = false): void {

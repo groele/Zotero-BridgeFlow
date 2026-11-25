@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.9 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.7.10 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -12665,11 +12665,9 @@ ${REMINDERS_CARD_CSS}`;
           out.add(child);
         }
       }
-      for (const sel of ["#zotero-items-tree", "#item-tree-main-default", "#item-tree-main", '[id^="item-tree-main-"]', "#zotero-items-pane .virtualized-table"]) {
-        itemsPane.querySelectorAll(sel).forEach((n) => {
-          if (n !== galleryPanel && !galleryPanel.contains(n) && !n.contains(galleryPanel)) out.add(n);
-        });
-      }
+      itemsPane.querySelectorAll('#zotero-items-tree, #item-tree-main-default, #item-tree-main, [id^="item-tree-main-"], .virtualized-table').forEach((node) => {
+        if (node !== galleryPanel && !galleryPanel.contains(node) && !node.contains(galleryPanel)) out.add(node);
+      });
       return [...out];
     };
     const restoreNode = (node) => {
@@ -12720,7 +12718,7 @@ ${REMINDERS_CARD_CSS}`;
       if (!active) return;
       const external = records.filter((r) => r.target !== galleryPanel && !galleryPanel.contains(r.target));
       if (!external.length) return;
-      if (enabled) refresh();
+      if (enabled && external.some((r) => r.type === "childList" || saved.has(r.target) || r.attributeName === "id")) refresh();
       if (external.some((r) => r.type === "childList")) onChildListChanged?.();
     }) : null;
     return {
@@ -13157,10 +13155,11 @@ ${REMINDERS_CARD_CSS}`;
       for (const [tok, card] of [...mounted.entries()]) forgetCard(tok, card);
       entries.clear();
       content.replaceChildren();
-      const src = options.items || [];
+      const buckets = Array.from({ length: colCount }, () => []);
+      (options.items || []).forEach((item, index) => buckets[index % colCount].push(item));
       const specs = Array.from({ length: colCount }, (_, idx) => ({
         value: String(idx),
-        items: src.filter((_2, i) => i % colCount === idx),
+        items: buckets[idx],
         createShell: () => {
           const colNode = galEl(doc, "div");
           colNode.className = "zbf-gal-masonry-col";
@@ -13664,7 +13663,6 @@ ${REMINDERS_CARD_CSS}`;
         clearTimeout(st.queryTimer);
         st.queryTimer = null;
       }
-      this.disposeViewport(st);
       this.setGalleryOpen(st, false);
       st.visibilityGuard?.destroy();
       st.visibilityGuard = null;
@@ -13733,7 +13731,10 @@ ${REMINDERS_CARD_CSS}`;
         return;
       }
       const itemsPane = doc.getElementById("zotero-items-pane");
-      if (!itemsPane) return;
+      if (!itemsPane) {
+        this.setGalleryOpen(st, false);
+        return;
+      }
       this.bindGallery(st);
       if (!st.panel || !st.panel.isConnected) {
         doc.getElementById("zbf-gallery-panel")?.remove();
@@ -13750,7 +13751,12 @@ ${REMINDERS_CARD_CSS}`;
       st.selectedIDs = new Set(st.paneAdapter?.getSelectedIDs() || []);
       st.anchorItemID = [...st.selectedIDs].at(-1) || 0;
       st.visibilityGuard?.setEnabled(true);
-      this.renderPanel(st);
+      try {
+        this.renderPanel(st);
+      } catch (error) {
+        this.setGalleryOpen(st, false);
+        this.kernel.logger.error("gallery:open", error);
+      }
     }
     renderPanel(st, keepTopBar = false) {
       const doc = st.win.document;
@@ -19718,6 +19724,9 @@ ${summary}` : summary;
     }
     return session2;
   }
+  function childAttachmentIDs(item) {
+    return isRegularValidItem(item) ? item.getAttachments?.() || [] : [];
+  }
   function getNormalizedItemRemark(state, itemID) {
     if (!Number.isInteger(itemID) || itemID <= 0) return "";
     const direct = state.remarks[`item:${itemID}`];
@@ -19728,7 +19737,7 @@ ${summary}` : summary;
       const parentRemark = state.remarks[`item:${item.parentItemID}`];
       if (parentRemark) return parentRemark;
     }
-    const attIDs = typeof item?.getAttachments === "function" ? item.getAttachments() || [] : [];
+    const attIDs = childAttachmentIDs(item);
     for (const attID of attIDs) {
       const childRemark = state.remarks[`item:${attID}`];
       if (childRemark) return childRemark;
@@ -19748,7 +19757,7 @@ ${summary}` : summary;
     const relatedKeys = /* @__PURE__ */ new Set();
     if (canonicalID !== itemID) relatedKeys.add(`item:${itemID}`);
     const parentObj = canonicalID === itemID ? item : hostItems?.get?.(canonicalID);
-    const attIDs = typeof parentObj?.getAttachments === "function" ? parentObj.getAttachments() || [] : [];
+    const attIDs = childAttachmentIDs(parentObj);
     for (const attID of attIDs) {
       if (Number(attID) > 0 && Number(attID) !== canonicalID) relatedKeys.add(`item:${attID}`);
     }
@@ -25346,7 +25355,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.7.9" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.7.10" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;

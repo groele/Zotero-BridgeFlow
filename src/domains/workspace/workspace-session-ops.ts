@@ -1,3 +1,4 @@
+import { isRegularValidItem } from '../../services/item-resolution.ts';
 import {
 	hasLegacyReadingNotes,
 	pickReadingNotesState,
@@ -168,6 +169,10 @@ export function saveWorkspaceSessionRecord(
 	return session;
 }
 
+function childAttachmentIDs(item: any): number[] {
+	return isRegularValidItem(item) ? item.getAttachments?.() || [] : [];
+}
+
 export function getNormalizedItemRemark(state: WorkspaceState, itemID: number): string {
 	if (!Number.isInteger(itemID) || itemID <= 0) return '';
 	const direct = state.remarks[`item:${itemID}`];
@@ -178,7 +183,7 @@ export function getNormalizedItemRemark(state: WorkspaceState, itemID: number): 
 		const parentRemark = state.remarks[`item:${item.parentItemID}`];
 		if (parentRemark) return parentRemark;
 	}
-	const attIDs: number[] = typeof item?.getAttachments === 'function' ? item.getAttachments() || [] : [];
+	const attIDs: number[] = childAttachmentIDs(item);
 	for (const attID of attIDs) {
 		const childRemark = state.remarks[`item:${attID}`];
 		if (childRemark) return childRemark;
@@ -206,7 +211,7 @@ export function setNormalizedItemRemark(
 	const relatedKeys = new Set<string>();
 	if (canonicalID !== itemID) relatedKeys.add(`item:${itemID}`);
 	const parentObj = canonicalID === itemID ? item : hostItems?.get?.(canonicalID);
-	const attIDs: number[] = typeof parentObj?.getAttachments === 'function' ? parentObj.getAttachments() || [] : [];
+	const attIDs: number[] = childAttachmentIDs(parentObj);
 	for (const attID of attIDs) {
 		if (Number(attID) > 0 && Number(attID) !== canonicalID) relatedKeys.add(`item:${attID}`);
 	}

@@ -166,10 +166,11 @@ export function createGalleryVirtualLayout<T>(options: {
 		for (const [tok, card] of [...mounted.entries()]) forgetCard(tok, card);
 		entries.clear();
 		content.replaceChildren();
-		const src = options.items || [];
+		const buckets = Array.from({ length: colCount }, () => [] as VirtualItemSpec<T>[]);
+		(options.items || []).forEach((item, index) => buckets[index % colCount].push(item));
 		const specs: VirtualColumnSpec<T>[] = Array.from({ length: colCount }, (_, idx) => ({
 			value: String(idx),
-			items: src.filter((_, i) => i % colCount === idx),
+			items: buckets[idx],
 			createShell: () => {
 				const colNode = galEl(doc, 'div');
 				colNode.className = 'zbf-gal-masonry-col';

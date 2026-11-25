@@ -196,11 +196,9 @@ export function createGalleryVisibilityGuard(
 				out.add(child as HTMLElement);
 			}
 		}
-		for (const sel of ['#zotero-items-tree', '#item-tree-main-default', '#item-tree-main', '[id^="item-tree-main-"]', '#zotero-items-pane .virtualized-table']) {
-			itemsPane.querySelectorAll(sel).forEach((n) => {
-				if (n !== galleryPanel && !galleryPanel.contains(n) && !n.contains(galleryPanel)) out.add(n as HTMLElement);
-			});
-		}
+		itemsPane.querySelectorAll('#zotero-items-tree, #item-tree-main-default, #item-tree-main, [id^="item-tree-main-"], .virtualized-table').forEach((node) => {
+			if (node !== galleryPanel && !galleryPanel.contains(node) && !node.contains(galleryPanel)) out.add(node as HTMLElement);
+		});
 		return [...out];
 	};
 
@@ -255,7 +253,7 @@ export function createGalleryVisibilityGuard(
 		if (!active) return;
 		const external = records.filter((r) => r.target !== galleryPanel && !galleryPanel.contains(r.target as Node));
 		if (!external.length) return;
-		if (enabled) refresh();
+		if (enabled && external.some(r => r.type === 'childList' || saved.has(r.target as HTMLElement) || r.attributeName === 'id')) refresh();
 		if (external.some((r) => r.type === 'childList')) onChildListChanged?.();
 	}) : null;
 
