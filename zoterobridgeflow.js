@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.6 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.7.8 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -405,6 +405,7 @@
       this.visualNotes.setDataSource({
         getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
         getRemark: (itemID) => this.workspace.store.state.remarks[`item:${itemID}`] || "",
+        persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
         setRemark: (itemID, remark) => {
           this.workspace.store.setRemark(`item:${itemID}`, remark);
           this.workspace.refreshAllWindows();
@@ -416,7 +417,8 @@
           this.visualNotes.refreshLibraryViews(void 0, true);
           return;
         }
-        this.syncChangedRemarksToExtra();
+        if (change === "notes-local-clear") this.seedRemarks();
+        else this.syncChangedRemarksToExtra();
         this.visualNotes.refreshLibraryViews();
       });
     }
@@ -4348,11 +4350,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 
   // src/services/durable-cache-file.ts
   var DurableCacheFile = class {
-    writes = Promise.resolve(true);
+    operations = Promise.resolve();
     previous = "";
     backedUpAt;
     writeBlocked = false;
-    loading;
+    replaceBackupPending = false;
     directory;
     path;
     backup;
@@ -4367,14 +4369,16 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       this.paths = cacheReadPaths(section, file, backup2, root);
     }
     load(parse2, legacyPaths = []) {
-      const reading = this.read(parse2, legacyPaths);
-      this.loading = reading;
+      const reading = this.operations.then(() => this.read(parse2, legacyPaths));
+      this.operations = reading.catch(() => {
+      });
       return reading;
     }
     async read(parse2, legacyPaths) {
       this.writeBlocked = false;
       this.needsMigration = false;
       this.previous = "";
+      this.lastError = "";
       this.backedUpAt = void 0;
       for (const path of /* @__PURE__ */ new Set([...this.paths, ...legacyPaths])) {
         const outcome = await readTextOutcome(path);
@@ -4402,20 +4406,32 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     write(serialize, backupInterval = 0, replaceBackup = false) {
       const run = async () => {
-        await this.loading;
+        this.replaceBackupPending ||= replaceBackup;
+        const replaceRecoveryCopy = this.replaceBackupPending;
         const io = globalThis.IOUtils;
-        if (!io?.writeUTF8) return true;
+        if (!io?.writeUTF8) {
+          this.lastError = "Cache storage is unavailable";
+          return false;
+        }
         if (this.writeBlocked) return false;
         try {
           const text2 = serialize();
-          if (text2 === this.previous && !replaceBackup) return true;
+          if (text2 === this.previous && !replaceRecoveryCopy) {
+            this.lastError = "";
+            return true;
+          }
           await io.makeDirectory?.(this.directory, { ignoreExisting: true, createAncestors: true });
-          if (replaceBackup || this.previous && (this.backedUpAt === void 0 || Date.now() - this.backedUpAt >= backupInterval)) {
-            await io.writeUTF8(this.backup, replaceBackup ? text2 : this.previous, { tmpPath: this.backup + ".tmp" });
+          if (!replaceRecoveryCopy && this.previous && (this.backedUpAt === void 0 || Date.now() - this.backedUpAt >= backupInterval)) {
+            await io.writeUTF8(this.backup, this.previous, { tmpPath: this.backup + ".tmp" });
             this.backedUpAt = Date.now();
           }
           await io.writeUTF8(this.path, text2, { tmpPath: this.path + ".tmp" });
           this.previous = text2;
+          if (replaceRecoveryCopy) {
+            await io.writeUTF8(this.backup, text2, { tmpPath: this.backup + ".tmp" });
+            this.replaceBackupPending = false;
+            this.backedUpAt = Date.now();
+          }
           this.needsMigration = false;
           this.lastError = "";
           return true;
@@ -4424,8 +4440,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           return false;
         }
       };
-      this.writes = this.writes.then(run, run);
-      return this.writes;
+      const writing = this.operations.then(run);
+      this.operations = writing.catch(() => {
+      });
+      return writing;
     }
   };
 
@@ -4478,6 +4496,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         this.root = customDir;
         this.file = new DurableCacheFile("citations", "ignored-reminders", customDir);
       }
+    }
+    getFilePath() {
+      return this.file.path;
+    }
+    getBackupFilePath() {
+      return this.file.backup;
     }
     async init() {
       this.initialized = true;
@@ -10305,12 +10329,13 @@ ${REMINDERS_CARD_CSS}`;
       briefInput.value = entry.briefNote;
       briefInput.placeholder = zh ? "添加简记…" : "Add a brief note…";
       briefInput.setAttribute("aria-label", briefLbl.textContent);
-      const commitBrief = () => {
+      const commitBrief = async () => {
         const nextVal = briefInput.value.trim();
         if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
         writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
         opts.onRemarkMutated?.();
-        opts.onStatus(zh ? "✓ 简记已保存至 brief-notes.json" : "✓ Brief note saved");
+        const saved = await dataSource?.persistRemarks?.();
+        opts.onStatus(saved ? zh ? "✓ 简记已保存至 brief-notes.json" : "✓ Brief note saved" : zh ? "简记未能确认写入磁盘。" : "Brief note could not be confirmed on disk.");
       };
       briefInput.addEventListener("blur", commitBrief);
       briefInput.addEventListener("keydown", (e) => {
@@ -18852,13 +18877,14 @@ ${summary}` : summary;
         void this.flushNow(state);
       }, 240);
     }
-    flushNow(state) {
+    flushNow(state, replaceBackup = false) {
+      this.dispose();
       return this.file.write(() => `${JSON.stringify({
         format: "zotero-bridgeflow-brief-notes",
         version: 1,
         state: pickBriefNotesState(state)
       }, null, 2)}
-`);
+`, 0, replaceBackup);
     }
     loadFromDisk() {
       const legacy = [.../* @__PURE__ */ new Set([cacheDirectory(this.root), cacheDirectory()])].flatMap((root) => ["reading-notes.json", "reading-notes.bak.json"].map((name) => cacheFile(root, name)));
@@ -18880,6 +18906,9 @@ ${summary}` : summary;
       }
       return changed;
     }
+    flushPending(state) {
+      if (this.flushTimer !== null || this.lastError) void this.flushNow(state);
+    }
     dispose() {
       if (this.flushTimer !== null) {
         clearTimeout(this.flushTimer);
@@ -18887,81 +18916,6 @@ ${summary}` : summary;
       }
     }
   };
-
-  // src/services/cache-hygiene.ts
-  var LEGACY_ROOT_MIGRATION_PAIRS = [
-    ["citation-history.json", "citations", "citation-history.json"],
-    ["citation-history.bak.json", "citations", "citation-history.bak.json"],
-    ["item-ratings.json", "ratings", "item-ratings.json"],
-    ["item-ratings.bak.json", "ratings", "item-ratings.bak.json"],
-    ["brief-notes.json", "reading", "brief-notes.json"],
-    ["brief-notes.bak.json", "reading", "brief-notes.bak.json"],
-    ["reading-progress.json", "reading", "reading-progress.json"],
-    ["reading-progress.bak.json", "reading", "reading-progress.bak.json"],
-    ["reading-notes.json", "reading", "reading-progress.json"],
-    ["reading-notes.bak.json", "reading", "reading-progress.bak.json"],
-    ["workspace-snapshots.json", "workspace", "workspace-snapshots.json"],
-    ["workspace-snapshots.bak.json", "workspace", "workspace-snapshots.bak.json"]
-  ];
-  var STALE_TMP_AGE_MS = 36e5;
-  function jsonContents(text2) {
-    const value = JSON.parse(text2);
-    if (value === null || typeof value !== "object") throw new Error("Invalid cache document");
-    return text2.replace(/"(?:\\.|[^"\\])*"|[\t\r\n ]+/g, (token) => token.startsWith('"') ? token : "");
-  }
-  async function sweepBridgeFlowCacheDirectory(customDir = "") {
-    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
-    if (!ioUtils?.exists || !ioUtils?.readUTF8 || typeof ioUtils.remove !== "function") return 0;
-    let removedCount = 0;
-    const roots = [...new Set([cacheDirectory(customDir), cacheDirectory()].filter(Boolean))];
-    const temporaryFiles = /* @__PURE__ */ new Set();
-    const sections = /* @__PURE__ */ new Set(["citations", "ratings", "reading", "workspace"]);
-    for (const root of roots) {
-      for (const [legacyName, section, targetName] of LEGACY_ROOT_MIGRATION_PAIRS) {
-        temporaryFiles.add(cacheFile(root, legacyName + ".tmp"));
-        temporaryFiles.add(cacheFile(cacheFile(root, section), targetName + ".tmp"));
-      }
-      for (const name of ["ignored-reminders.json.tmp", "ignored-reminders.bak.json.tmp"]) {
-        temporaryFiles.add(cacheFile(cacheFile(root, "citations"), name));
-      }
-    }
-    for (const root of roots) {
-      for (const [legacyName, sec, targetName] of LEGACY_ROOT_MIGRATION_PAIRS) {
-        const legacyPath = cacheFile(root, legacyName);
-        try {
-          if (!await ioUtils.exists(legacyPath)) continue;
-          const targetPath = cacheFile(cacheFile(root, sec), targetName);
-          if (!await ioUtils.exists(targetPath)) continue;
-          const target = jsonContents(await ioUtils.readUTF8(targetPath));
-          if (target === jsonContents(await ioUtils.readUTF8(legacyPath))) {
-            await ioUtils.remove(legacyPath, { ignoreAbsent: true });
-            removedCount += 1;
-          }
-        } catch {
-        }
-      }
-      if (typeof ioUtils.getChildren === "function" && typeof ioUtils.stat === "function") {
-        const now = Date.now();
-        const dirs = [root, ...[...sections].map((s) => cacheFile(root, s))];
-        for (const dir of dirs) {
-          const children = await ioUtils.getChildren(dir).catch(() => []);
-          for (const childPath of children) {
-            if (!temporaryFiles.has(childPath)) continue;
-            try {
-              const st = await ioUtils.stat(childPath);
-              if (st?.type === "regular" && st.lastModified > 0 && now - st.lastModified > STALE_TMP_AGE_MS) {
-                await ioUtils.remove(childPath, { ignoreAbsent: true });
-                removedCount += 1;
-              }
-            } catch {
-            }
-          }
-        }
-      }
-    }
-    triggerCoverCacheSweep(true);
-    return removedCount;
-  }
 
   // src/domains/workspace/types.ts
   var GROUP_PALETTE = [
@@ -18990,7 +18944,10 @@ ${summary}` : summary;
     let readingChanged = false;
     let notesChanged = false;
     if (store.readOnlyGuard && diskLayout) {
-      store.state = { ...diskLayout, ...pickReadingNotesState(store.state) };
+      const memoryNotes = pickReadingNotesState(store.state);
+      store.state = diskLayout;
+      store.readingCache.mergeDurableState(store.state, memoryNotes);
+      store.notesCache.mergeDurableState(store.state, memoryNotes);
       store.readOnlyGuard = false;
       layoutChanged = true;
     } else if (diskLayout && store.diskCache.mergeDurableState(store.state, diskLayout)) {
@@ -18999,12 +18956,13 @@ ${summary}` : summary;
     if (diskReading && store.readingCache.mergeDurableState(store.state, diskReading)) readingChanged = true;
     if (diskNotes && store.notesCache.mergeDurableState(store.state, diskNotes)) notesChanged = true;
     if (hadLegacy) {
-      await Promise.all([
+      const saved = await Promise.all([
         store.readingCache.flushNow(store.state),
         store.notesCache.flushNow(store.state)
       ]);
-      store.save(false);
-      await store.diskCache.flushNow(pickWorkspaceLayoutState(store.state));
+      store.legacyMigrationPending = !saved.every(Boolean);
+      store.save(true);
+      if (!store.legacyMigrationPending) await store.flushLayoutToDisk();
       return true;
     }
     if (layoutChanged || store.diskCache.loadedFromLegacy) store.save(true);
@@ -19015,7 +18973,6 @@ ${summary}` : summary;
     if (notesChanged || store.notesCache.loadedFromLegacy || !diskNotes && Object.keys(store.state.remarks).length) {
       await store.notesCache.flushNow(store.state);
     }
-    void sweepBridgeFlowCacheDirectory();
     return layoutChanged || readingChanged || notesChanged;
   }
   function groupOfStateKey(state, key) {
@@ -19110,6 +19067,7 @@ ${summary}` : summary;
     readingCache;
     notesCache;
     readOnlyGuard = false;
+    legacyMigrationPending = false;
     prefs;
     listeners = /* @__PURE__ */ new Set();
     constructor(prefs) {
@@ -19143,15 +19101,19 @@ ${summary}` : summary;
     }
     save(immediateDisk = false, change = "data") {
       if (!this.readOnlyGuard) {
-        const layoutOnly = pickWorkspaceLayoutState(this.state);
-        const serialized = JSON.stringify(layoutOnly);
+        const layout = this.legacyMigrationPending ? this.state : pickWorkspaceLayoutState(this.state);
+        const serialized = JSON.stringify(layout);
         try {
           this.prefs.set("workspace.document", serialized);
         } catch {
         }
-        this.diskCache.scheduleSave(layoutOnly, immediateDisk, serialized);
+        if (!this.legacyMigrationPending) this.diskCache.scheduleSave(layout, immediateDisk, serialized);
       }
       this.emitChange(change);
+    }
+    flushLayoutToDisk() {
+      if (this.readOnlyGuard || this.legacyMigrationPending) return Promise.resolve(false);
+      return this.diskCache.flushNow(pickWorkspaceLayoutState(this.state));
     }
     saveReadingProgress(immediateDisk = false) {
       this.readingCache.scheduleSave(this.state, immediateDisk);
@@ -19185,9 +19147,12 @@ ${summary}` : summary;
       this.saveReadingProgress(true);
     }
     clearBriefNotes() {
+      if (this.legacyMigrationPending) return Promise.resolve(false);
       this.state.remarks = {};
       this.state.remarkModes = {};
-      this.saveBriefNotes(true);
+      const saved = this.notesCache.flushNow(this.state, true);
+      this.emitChange("notes-local-clear");
+      return saved;
     }
     createGroup(name, color) {
       const trimmed = name.trim() || tLocale("新分组", "New Group");
@@ -23720,13 +23685,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       if (this.active) return;
       this.active = true;
       this.disposables.reset();
-      this.store.load();
-      void this.store.initDiskCache().then((merged) => {
-        if (merged && this.active) {
-          this.kernel.bus.emit("visual-notes:reading-updated", {});
-          this.refreshAllWindows();
-        }
-      });
       this.disposables.add(this.store.onChange(() => {
         this.queueRefresh();
       }));
@@ -23795,10 +23753,8 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.windows.clear();
       this.pendingAutoGroup.clear();
       this.readingDirty = false;
-      void this.store.diskCache.flushNow(this.store.state);
+      void this.store.flushLayoutToDisk();
       void this.store.readingCache.flushNow(this.store.state);
-      void this.store.notesCache.flushNow(this.store.state);
-      this.store.notesCache.dispose();
       this.store.readingCache.dispose();
       this.store.diskCache.dispose();
       this.neighbors.reset();
@@ -24524,7 +24480,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.7.6" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.7.8" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;
@@ -24704,6 +24660,81 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       });
     }
   };
+
+  // src/services/cache-hygiene.ts
+  var LEGACY_ROOT_MIGRATION_PAIRS = [
+    ["citation-history.json", "citations", "citation-history.json"],
+    ["citation-history.bak.json", "citations", "citation-history.bak.json"],
+    ["item-ratings.json", "ratings", "item-ratings.json"],
+    ["item-ratings.bak.json", "ratings", "item-ratings.bak.json"],
+    ["brief-notes.json", "reading", "brief-notes.json"],
+    ["brief-notes.bak.json", "reading", "brief-notes.bak.json"],
+    ["reading-progress.json", "reading", "reading-progress.json"],
+    ["reading-progress.bak.json", "reading", "reading-progress.bak.json"],
+    ["reading-notes.json", "reading", "reading-progress.json"],
+    ["reading-notes.bak.json", "reading", "reading-progress.bak.json"],
+    ["workspace-snapshots.json", "workspace", "workspace-snapshots.json"],
+    ["workspace-snapshots.bak.json", "workspace", "workspace-snapshots.bak.json"]
+  ];
+  var STALE_TMP_AGE_MS = 36e5;
+  function jsonContents(text2) {
+    const value = JSON.parse(text2);
+    if (value === null || typeof value !== "object") throw new Error("Invalid cache document");
+    return text2.replace(/"(?:\\.|[^"\\])*"|[\t\r\n ]+/g, (token) => token.startsWith('"') ? token : "");
+  }
+  async function sweepBridgeFlowCacheDirectory(customDir = "") {
+    const ioUtils = globalThis.IOUtils || globalThis.Zotero?.getMainWindow?.()?.IOUtils;
+    if (!ioUtils?.exists || !ioUtils?.readUTF8 || typeof ioUtils.remove !== "function") return 0;
+    let removedCount = 0;
+    const roots = [...new Set([cacheDirectory(customDir), cacheDirectory()].filter(Boolean))];
+    const temporaryFiles = /* @__PURE__ */ new Set();
+    const sections = /* @__PURE__ */ new Set(["citations", "ratings", "reading", "workspace"]);
+    for (const root of roots) {
+      for (const [legacyName, section, targetName] of LEGACY_ROOT_MIGRATION_PAIRS) {
+        temporaryFiles.add(cacheFile(root, legacyName + ".tmp"));
+        temporaryFiles.add(cacheFile(cacheFile(root, section), targetName + ".tmp"));
+      }
+      for (const name of ["ignored-reminders.json.tmp", "ignored-reminders.bak.json.tmp"]) {
+        temporaryFiles.add(cacheFile(cacheFile(root, "citations"), name));
+      }
+    }
+    for (const root of roots) {
+      for (const [legacyName, sec, targetName] of LEGACY_ROOT_MIGRATION_PAIRS) {
+        const legacyPath = cacheFile(root, legacyName);
+        try {
+          if (!await ioUtils.exists(legacyPath)) continue;
+          const targetPath = cacheFile(cacheFile(root, sec), targetName);
+          if (!await ioUtils.exists(targetPath)) continue;
+          const target = jsonContents(await ioUtils.readUTF8(targetPath));
+          if (target === jsonContents(await ioUtils.readUTF8(legacyPath))) {
+            await ioUtils.remove(legacyPath, { ignoreAbsent: true });
+            removedCount += 1;
+          }
+        } catch {
+        }
+      }
+      if (typeof ioUtils.getChildren === "function" && typeof ioUtils.stat === "function") {
+        const now = Date.now();
+        const dirs = [root, ...[...sections].map((s) => cacheFile(root, s))];
+        for (const dir of dirs) {
+          const children = await ioUtils.getChildren(dir).catch(() => []);
+          for (const childPath of children) {
+            if (!temporaryFiles.has(childPath)) continue;
+            try {
+              const st = await ioUtils.stat(childPath);
+              if (st?.type === "regular" && st.lastModified > 0 && now - st.lastModified > STALE_TMP_AGE_MS) {
+                await ioUtils.remove(childPath, { ignoreAbsent: true });
+                removedCount += 1;
+              }
+            } catch {
+            }
+          }
+        }
+      }
+    }
+    triggerCoverCacheSweep(true);
+    return removedCount;
+  }
 
   // src/services/citation-history-store.ts
   function normalizeCitationKey(text2) {
@@ -25471,7 +25502,6 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       this.syncHistoryConfig();
       await Promise.all([this.history.init(), this.ratings.init(), this.reminders.init()]);
       if (this.kernel.isDisposed) return;
-      void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get("inspector.lookup.cacheDirectory"));
       this.kernel.disposables.add(
         this.kernel.notifier.subscribe(["item"], (ev) => {
           const ids = ev.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
@@ -25550,7 +25580,9 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     async start() {
       if (this.kernel.isDisposed) return;
-      await this.services.init();
+      await Promise.all([this.services.init(), this.workspace.store.initDiskCache()]);
+      if (this.kernel.isDisposed) return;
+      void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get("inspector.lookup.cacheDirectory"));
       await this.kernel.start();
     }
     onMainWindowLoad(win) {
@@ -25561,6 +25593,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     shutdown() {
       this.kernel.shutdown();
+      this.workspace.store.notesCache.flushPending(this.workspace.store.state);
       this.services.dispose();
     }
   };

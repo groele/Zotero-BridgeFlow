@@ -3,7 +3,6 @@ import {
 	pickReadingNotesState,
 	pickWorkspaceLayoutState,
 } from './workspace-schema.ts';
-import { sweepBridgeFlowCacheDirectory } from '../../services/cache-hygiene.ts';
 import type { WorkspaceDiskCache } from './workspace-disk-cache.ts';
 import type { ReadingProgressDiskCache } from './reading-progress-cache.ts';
 import type { BriefNotesDiskCache } from './brief-notes-cache.ts';
@@ -17,6 +16,8 @@ import {
 export async function hydrateWorkspaceDiskCaches(store: {
 	state: WorkspaceState;
 	readOnlyGuard: boolean;
+	legacyMigrationPending: boolean;
+	flushLayoutToDisk(): Promise<boolean>;
 	diskCache: WorkspaceDiskCache;
 	readingCache: ReadingProgressDiskCache;
 	notesCache: BriefNotesDiskCache;
@@ -33,7 +34,10 @@ export async function hydrateWorkspaceDiskCaches(store: {
 	let notesChanged = false;
 
 	if (store.readOnlyGuard && diskLayout) {
-		store.state = { ...diskLayout, ...pickReadingNotesState(store.state) };
+		const memoryNotes = pickReadingNotesState(store.state);
+		store.state = diskLayout;
+		store.readingCache.mergeDurableState(store.state, memoryNotes);
+		store.notesCache.mergeDurableState(store.state, memoryNotes);
 		store.readOnlyGuard = false;
 		layoutChanged = true;
 	} else if (diskLayout && store.diskCache.mergeDurableState(store.state, diskLayout)) {
@@ -43,12 +47,13 @@ export async function hydrateWorkspaceDiskCaches(store: {
 	if (diskNotes && store.notesCache.mergeDurableState(store.state, diskNotes)) notesChanged = true;
 
 	if (hadLegacy) {
-		await Promise.all([
+		const saved = await Promise.all([
 			store.readingCache.flushNow(store.state),
 			store.notesCache.flushNow(store.state),
 		]);
-		store.save(false);
-		await store.diskCache.flushNow(pickWorkspaceLayoutState(store.state));
+		store.legacyMigrationPending = !saved.every(Boolean);
+		store.save(true);
+		if (!store.legacyMigrationPending) await store.flushLayoutToDisk();
 		return true;
 	}
 	if (layoutChanged || store.diskCache.loadedFromLegacy) store.save(true);
@@ -59,7 +64,6 @@ export async function hydrateWorkspaceDiskCaches(store: {
 	if (notesChanged || store.notesCache.loadedFromLegacy || (!diskNotes && Object.keys(store.state.remarks).length)) {
 		await store.notesCache.flushNow(store.state);
 	}
-	void sweepBridgeFlowCacheDirectory();
 	return layoutChanged || readingChanged || notesChanged;
 }
 

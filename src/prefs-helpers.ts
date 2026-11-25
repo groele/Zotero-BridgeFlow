@@ -107,12 +107,16 @@ export function bindPreferenceActions(
 		);
 	});
 
-	bindActionBtn(doc.getElementById('zbf-clear-brief-notes'), () => {
+	bindActionBtn(doc.getElementById('zbf-clear-brief-notes'), async () => {
 		if (targetWin?.confirm && !targetWin.confirm('确定要清空本地独立缓存 brief-notes.json 中的条目简记吗？（不影响工作区、阅读时长及已同步到 Zotero Extra 的内容）')) {
 			return;
 		}
 		const app = getApp();
-		app?.workspace?.store?.clearBriefNotes?.();
+		const saved = await app?.workspace?.store?.clearBriefNotes?.();
+		if (!saved) {
+			setStatusFeedback(doc, 'zbf-prefs-status-notes-clear-failed', 'The local brief notes cache could not be fully cleared.');
+			return;
+		}
 		app?.workspace?.refreshAllWindows?.();
 		app?.visualNotes?.refreshLibraryViews?.();
 		setStatusFeedback(doc, 'zbf-prefs-status-notes-cleared', '✓ 已清空本地简记缓存文件');
@@ -142,7 +146,11 @@ export function bindPreferenceActions(
 		if (targetWin?.confirm && !targetWin.confirm('确定要清空画廊 PDF 首页封面缩略图缓存（covers/）吗？下次打开画廊时会自动重新生成，不影响原 PDF 文件。')) {
 			return;
 		}
-		void clearPdfCoverCache().then(() => {
+		void clearPdfCoverCache().then((cleared) => {
+			if (!cleared) {
+				setStatusFeedback(doc, 'zbf-prefs-status-covers-clear-failed', 'PDF cover cache could not be fully cleared.');
+				return;
+			}
 			getApp()?.visualNotes?.galleryBoard?.refreshWindows?.();
 			setStatusFeedback(doc, 'zbf-prefs-status-covers-cleared', '✓ 已清空画廊 PDF 封面缩略图缓存');
 		});

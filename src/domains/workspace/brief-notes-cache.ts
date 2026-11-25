@@ -44,10 +44,11 @@ export class BriefNotesDiskCache {
 		}, 240);
 	}
 
-	flushNow(state: Pick<WorkspaceState, 'remarks' | 'remarkModes'>): Promise<boolean> {
+	flushNow(state: BriefNotesState, replaceBackup = false): Promise<boolean> {
+		this.dispose();
 		return this.file.write(() => `${JSON.stringify({
 			format: 'zotero-bridgeflow-brief-notes', version: 1, state: pickBriefNotesState(state),
-		}, null, 2)}\n`);
+		}, null, 2)}\n`, 0, replaceBackup);
 	}
 
 	loadFromDisk(): Promise<BriefNotesState | null> {
@@ -78,7 +79,11 @@ export class BriefNotesDiskCache {
 		return changed;
 	}
 
-	dispose(): void {
+	flushPending(state: BriefNotesState): void {
+		if (this.flushTimer !== null || this.lastError) void this.flushNow(state);
+	}
+
+	private dispose(): void {
 		if (this.flushTimer !== null) {
 			clearTimeout(this.flushTimer);
 			this.flushTimer = null;

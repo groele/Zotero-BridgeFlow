@@ -31,6 +31,7 @@ export class VisualNotesBridge implements BridgeModule {
 		this.visualNotes.setDataSource({
 			getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
 			getRemark: (itemID) => this.workspace.store.state.remarks[`item:${itemID}`] || '',
+			persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
 			setRemark: (itemID, remark) => {
 				this.workspace.store.setRemark(`item:${itemID}`, remark);
 				this.workspace.refreshAllWindows();
@@ -43,7 +44,8 @@ export class VisualNotesBridge implements BridgeModule {
 				this.visualNotes.refreshLibraryViews(undefined, true);
 				return;
 			}
-			this.syncChangedRemarksToExtra();
+			if (change === 'notes-local-clear') this.seedRemarks();
+			else this.syncChangedRemarksToExtra();
 			this.visualNotes.refreshLibraryViews();
 		});
 	}

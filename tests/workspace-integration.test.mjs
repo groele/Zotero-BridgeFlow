@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { BridgeFlowApp } from '../src/index.ts';
 import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
 import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
 
@@ -204,4 +205,95 @@ test('cross-domain fusion: shared primary item field cache, multi-item copy hist
 	assert.ok(snapPaperHits.some((h) => h.id.startsWith('session:') && h.title === 'Archived CVD Group'));
 
 	delete globalThis.Zotero;
+});
+
+test('legacy workspace data survives a failed split write and migrates on retry', async () => {
+	const previousIO = globalThis.IOUtils;
+	const { store } = setup('{bad pref JSON');
+	const legacy = setup().store;
+	legacy.setRemark('item:11', 'Keep the legacy note');
+	legacy.updateReadingProgress('item:11', 40, 2, 5);
+	const original = legacy.exportJson();
+	const layoutPath = store.diskCache.getFilePath();
+	const notesPath = store.notesCache.getFilePath();
+	const files = new Map([[layoutPath, original]]);
+	let rejectNotes = true;
+	globalThis.IOUtils = {
+		exists: async path => files.has(path),
+		readUTF8: async path => files.get(path),
+		writeUTF8: async (path, text) => {
+			if (rejectNotes && path === notesPath) throw new Error('disk full');
+			files.set(path, text);
+		},
+	};
+	try {
+		await store.initDiskCache();
+		assert.equal(store.state.remarks['item:11'], 'Keep the legacy note');
+		assert.equal(store.state.readingProgress['item:11'].readSeconds, 40);
+		assert.equal(store.legacyMigrationPending, true);
+		store.createGroup('New group while migration is pending');
+		assert.equal(await store.flushLayoutToDisk(), false);
+		assert.equal(files.get(layoutPath), original);
+		rejectNotes = false;
+		await store.initDiskCache();
+		assert.equal(store.legacyMigrationPending, false);
+		assert.deepEqual(JSON.parse(files.get(layoutPath)).state.remarks, {});
+		assert.equal(JSON.parse(files.get(notesPath)).state.remarks['item:11'], 'Keep the legacy note');
+		assert.equal(JSON.parse(files.get(layoutPath)).state.groups[0].name, 'New group while migration is pending');
+	} finally {
+		globalThis.IOUtils = previousIO;
+	}
+});
+
+test('clearing brief notes preserves other caches and never removes the Zotero Extra copy', async () => {
+	const oldIO = globalThis.IOUtils;
+	const oldHost = globalThis.Zotero;
+	const files = new Map();
+	let extra = 'BridgeFlow-Remark: Zotero copy';
+	let failPrimary = false;
+	const item = {
+		isRegularItem: () => true, getField: () => extra,
+		setField: (_, value) => { extra = value; }, saveTx: async () => {},
+	};
+	globalThis.Zotero = { Items: { get: () => item }, DataDirectory: { dir: '/test-brief-isolation' } };
+	const app = new BridgeFlowApp();
+	const store = app.workspace.store;
+	globalThis.IOUtils = {
+		exists: async path => files.has(path),
+		readUTF8: async path => files.get(path),
+		writeUTF8: async (path, text) => {
+			if (failPrimary && path === store.notesCache.getFilePath()) throw Error('locked');
+			files.set(path, text);
+		},
+	};
+	try {
+		store.setRemark('item:11', 'Previous note');
+		assert.equal(await store.notesCache.flushNow(store.state), true);
+		store.setRemark('item:11', 'Local note');
+		assert.equal(await store.notesCache.flushNow(store.state), true);
+		store.updateReadingProgress('item:11', 40, 2, 5);
+		assert.equal(await store.readingCache.flushNow(store.state), true);
+		const progressPath = store.readingCache.getFilePath();
+		const progress = files.get(progressPath);
+		const backupPath = store.notesCache.getBackupFilePath();
+		const backup = files.get(backupPath);
+		const caches = [store.diskCache, store.readingCache, store.notesCache, app.services.ratings, app.services.reminders, app.services.history];
+		const paths = caches.flatMap(cache => [cache.getFilePath(), cache.getBackupFilePath()]);
+		assert.equal(new Set(paths).size, paths.length);
+		app.kernel.prefs.set('workspace.syncRemarkToExtra', true);
+		await app.start();
+		failPrimary = true;
+		assert.equal(await store.clearBriefNotes(), false);
+		assert.equal(files.get(backupPath), backup);
+		failPrimary = false;
+		assert.equal(await store.clearBriefNotes(), true);
+		assert.deepEqual(JSON.parse(files.get(backupPath)).state.remarks, {});
+		assert.deepEqual(JSON.parse(files.get(store.notesCache.getFilePath())).state.remarks, {});
+		assert.equal(files.get(progressPath), progress);
+		assert.equal(extra, 'BridgeFlow-Remark: Zotero copy');
+	} finally {
+		app.shutdown();
+		globalThis.IOUtils = oldIO;
+		globalThis.Zotero = oldHost;
+	}
 });

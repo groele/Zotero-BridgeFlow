@@ -67,6 +67,9 @@ export class MetadataRemindersDiskCache {
 		}
 	}
 
+	getFilePath(): string { return this.file.path; }
+	getBackupFilePath(): string { return this.file.backup; }
+
 	async init(): Promise<boolean> {
 		this.initialized = true;
 		const disk = await this.file.load((text) => {

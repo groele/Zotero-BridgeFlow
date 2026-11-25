@@ -6,6 +6,7 @@ export interface VisualNotesDataSource {
 	getReadingProgress(itemID: number): TabReadingProgress | undefined;
 	getRemark(itemID: number): string;
 	setRemark(itemID: number, remark: string): void;
+	persistRemarks?(): Promise<boolean>;
 }
 
 export function resolveParentItemID(item: any): number {

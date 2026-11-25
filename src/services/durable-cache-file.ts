@@ -3,11 +3,11 @@ import { quarantineFile, readTextOutcome } from './safe-io.ts';
 
 /** Serialized atomic writes with a validated recovery baseline. */
 export class DurableCacheFile {
-	private writes = Promise.resolve(true);
+	private operations: Promise<unknown> = Promise.resolve();
 	private previous = '';
 	private backedUpAt: number | undefined;
 	private writeBlocked = false;
-	private loading: Promise<unknown> | undefined;
+	private replaceBackupPending = false;
 	readonly directory: string;
 	readonly path: string;
 	readonly backup: string;
@@ -24,8 +24,8 @@ export class DurableCacheFile {
 	}
 
 	load<T>(parse: (text: string, path: string) => T, legacyPaths: readonly string[] = []): Promise<T | null> {
-		const reading = this.read(parse, legacyPaths);
-		this.loading = reading;
+		const reading = this.operations.then(() => this.read(parse, legacyPaths));
+		this.operations = reading.catch(() => {});
 		return reading;
 	}
 
@@ -33,6 +33,7 @@ export class DurableCacheFile {
 		this.writeBlocked = false;
 		this.needsMigration = false;
 		this.previous = '';
+		this.lastError = '';
 		this.backedUpAt = undefined;
 		for (const path of new Set([...this.paths, ...legacyPaths])) {
 			const outcome = await readTextOutcome(path);
@@ -61,20 +62,32 @@ export class DurableCacheFile {
 
 	write(serialize: () => string, backupInterval = 0, replaceBackup = false): Promise<boolean> {
 		const run = async () => {
-			await this.loading;
+			this.replaceBackupPending ||= replaceBackup;
+			const replaceRecoveryCopy = this.replaceBackupPending;
 			const io = (globalThis as any).IOUtils;
-			if (!io?.writeUTF8) return true;
+			if (!io?.writeUTF8) {
+				this.lastError = 'Cache storage is unavailable';
+				return false;
+			}
 			if (this.writeBlocked) return false;
 			try {
 				const text = serialize();
-				if (text === this.previous && !replaceBackup) return true;
+				if (text === this.previous && !replaceRecoveryCopy) {
+					this.lastError = '';
+					return true;
+				}
 				await io.makeDirectory?.(this.directory, { ignoreExisting: true, createAncestors: true });
-				if (replaceBackup || (this.previous && (this.backedUpAt === undefined || Date.now() - this.backedUpAt >= backupInterval))) {
-					await io.writeUTF8(this.backup, replaceBackup ? text : this.previous, { tmpPath: this.backup + '.tmp' });
+				if (!replaceRecoveryCopy && this.previous && (this.backedUpAt === undefined || Date.now() - this.backedUpAt >= backupInterval)) {
+					await io.writeUTF8(this.backup, this.previous, { tmpPath: this.backup + '.tmp' });
 					this.backedUpAt = Date.now();
 				}
 				await io.writeUTF8(this.path, text, { tmpPath: this.path + '.tmp' });
 				this.previous = text;
+				if (replaceRecoveryCopy) {
+					await io.writeUTF8(this.backup, text, { tmpPath: this.backup + '.tmp' });
+					this.replaceBackupPending = false;
+					this.backedUpAt = Date.now();
+				}
 				this.needsMigration = false;
 				this.lastError = '';
 				return true;
@@ -83,7 +96,8 @@ export class DurableCacheFile {
 				return false;
 			}
 		};
-		this.writes = this.writes.then(run, run);
-		return this.writes;
+		const writing = this.operations.then(run);
+		this.operations = writing.catch(() => {});
+		return writing;
 	}
 }

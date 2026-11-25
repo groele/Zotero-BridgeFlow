@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.7.6** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.7.8** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -74,17 +74,19 @@
 
 ---
 
-## 五路独立持久化缓存设计 (`bridgeflow-cache/`)
+## 六类独立持久化缓存 (`bridgeflow-cache/`)
 
 插件数据默认保存于 `<Zotero数据目录>/bridgeflow-cache/`（可在设置「存储维护」页指定自定义目录，重启生效），分为 `citations/`、`workspace/`、`reading/`、`ratings/` 和 `covers/` 子目录。工作区与历史等耐久数据使用独立 JSON 文件，均采用 `.tmp` 临时文件原子替换、`.bak.json` 上一版备份与串行写入队列。升级后从旧位置读取并写入新目录，旧文件保留。
 
 | 独立文件 | 存放数据 | 安全隔离与性能原则 |
 |---|---|---|
-| `reading/brief-notes.json` | 条目 **简记** (`remarks`) 与标签备注模式 (`remarkModes`) | **人工内容最高安全级**：仅用户编辑简记时 240ms 防抖写入，绝不被 15 秒阅读遥测覆盖，也不受清空工作区或清空阅读时长影响；开启 `syncRemarkToExtra` 时双写 Zotero `Extra` 实现跨端原生同步。 |
+| `reading/brief-notes.json` | 条目简记与标签备注模式 | 缓存单独写入，笔记中心等待落盘后再确认保存。清空本地简记会更新其主文件和恢复备份，保留 Zotero Extra 中的同步副本。 |
 | `ratings/item-ratings.json` | 文献 **星级评价** (`1–5 ★`，按 `libraryID:itemKey` 索引) | **零污染默认存储**：默认将星级评价写入本独立缓存，不修改 Zotero 原生 `Extra` 或标签；兼容读取旧版 `Extra`/星标评级，支持独立 JSON 导出与清空。 |
 | `reading/reading-progress.json` | 累计阅读时长 (`readSeconds`)、热力图逐页停留 (`pageSeconds`)、`lastViewedAt` | 彻底脱离 `prefs.js`，避免大库配置膨胀；多端合并同一页按 `Math.max` 取大值安全融合。 |
 | `workspace/workspace-snapshots.json` | 工作区标签分组、折叠/固定/休眠状态、虚拟成员、快照（同步镜像至 `workspace.document`） | 仅在布局与会话变化时写入；设置页清空工作区仅重置此文件，不伤及阅读时长、简记与星级评价。 |
 | `citations/citation-history.json` | 复制与反向逆查引文历史 | 受独立的容量上限与保留天数 TTL 管理，按 `清空全部引文缓存` 独立清理。 |
+
+| `citations/ignored-reminders.json` | Word 引用中用户已忽略的文献信息提醒 | 与反查历史分开保存和恢复。 |
 
 - `covers/` 保存可重新生成的 PDF 首页缩略图。清理只移除插件识别的封面文件。
 - **无缝自动迁移**：首次升级启动时，`initDiskCache()` 会自动将旧版混合在 `workspace-snapshots.json` / `workspace.document`（`<= v0.4.0`）以及 `reading-notes.json`（`v0.4.1`）中的历史数据无损迁移至 `reading-progress.json` 与 `brief-notes.json`。

@@ -83,14 +83,6 @@ export class WorkspaceDomainModule implements DomainModule {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
-		this.store.load();
-		void this.store.initDiskCache().then((merged) => {
-			if (merged && this.active) {
-				this.kernel.bus.emit('visual-notes:reading-updated', {});
-				this.refreshAllWindows();
-			}
-		});
-
 		this.disposables.add(this.store.onChange(() => {
 			this.queueRefresh();
 		}));
@@ -155,10 +147,8 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.windows.clear();
 		this.pendingAutoGroup.clear();
 		this.readingDirty = false;
-		void this.store.diskCache.flushNow(this.store.state);
+		void this.store.flushLayoutToDisk();
 		void this.store.readingCache.flushNow(this.store.state);
-		void this.store.notesCache.flushNow(this.store.state);
-		this.store.notesCache.dispose();
 		this.store.readingCache.dispose();
 		this.store.diskCache.dispose();
 		this.neighbors.reset();

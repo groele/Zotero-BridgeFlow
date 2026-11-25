@@ -7,7 +7,6 @@ import { ItemRatingsDiskCache, setActiveRatingsCache } from './item-ratings-cach
 import { MetadataRemindersDiskCache } from './metadata-reminders-cache.ts';
 import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
-import { sweepBridgeFlowCacheDirectory } from './cache-hygiene.ts';
 import { configurePdfCoverCacheDirectory } from './pdf-cover-service.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
 
@@ -41,7 +40,6 @@ export class ServiceContainer {
 		this.syncHistoryConfig();
 		await Promise.all([this.history.init(), this.ratings.init(), this.reminders.init()]);
 		if (this.kernel.isDisposed) return;
-		void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get('inspector.lookup.cacheDirectory'));
 
 		this.kernel.disposables.add(
 			this.kernel.notifier.subscribe(['item'], (ev) => {

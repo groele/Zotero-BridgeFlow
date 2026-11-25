@@ -10,6 +10,7 @@ import { WorkspaceDomainModule } from './domains/workspace/module.ts';
 import { PluginKernel } from './kernel/plugin-kernel.ts';
 import type { HostPrefsAdapter } from './kernel/pref-service.ts';
 import type { PluginInfo } from './kernel/types.ts';
+import { sweepBridgeFlowCacheDirectory } from './services/cache-hygiene.ts';
 import { ServiceContainer } from './services/service-container.ts';
 
 export class BridgeFlowApp {
@@ -48,7 +49,9 @@ export class BridgeFlowApp {
 
 	async start(): Promise<void> {
 		if (this.kernel.isDisposed) return;
-		await this.services.init();
+		await Promise.all([this.services.init(), this.workspace.store.initDiskCache()]);
+		if (this.kernel.isDisposed) return;
+		void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get('inspector.lookup.cacheDirectory'));
 		await this.kernel.start();
 	}
 
@@ -62,6 +65,7 @@ export class BridgeFlowApp {
 
 	shutdown(): void {
 		this.kernel.shutdown();
+		this.workspace.store.notesCache.flushPending(this.workspace.store.state);
 		this.services.dispose();
 	}
 }

@@ -26,7 +26,7 @@ import {
 	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
-type StoreChange = 'data' | 'session' | 'reading';
+type StoreChange = 'data' | 'session' | 'reading' | 'notes-local-clear';
 
 const createEmptyState = (): WorkspaceState => ({
 	version: 2, groups: [], collapsed: [], pinnedKeys: [], sleepingKeys: [],
@@ -40,6 +40,7 @@ export class WorkspaceStateStore {
 	public readonly readingCache: ReadingProgressDiskCache;
 	public readonly notesCache: BriefNotesDiskCache;
 	public readOnlyGuard = false;
+	legacyMigrationPending = false;
 	private readonly prefs: UnifiedPrefService;
 	private readonly listeners = new Set<(change: StoreChange) => void>();
 
@@ -78,12 +79,17 @@ export class WorkspaceStateStore {
 
 	save(immediateDisk = false, change: StoreChange = 'data'): void {
 		if (!this.readOnlyGuard) {
-			const layoutOnly = pickWorkspaceLayoutState(this.state);
-			const serialized = JSON.stringify(layoutOnly);
+			const layout = this.legacyMigrationPending ? this.state : pickWorkspaceLayoutState(this.state);
+			const serialized = JSON.stringify(layout);
 			try { this.prefs.set('workspace.document', serialized); } catch { /* ignore */ }
-			this.diskCache.scheduleSave(layoutOnly, immediateDisk, serialized);
+			if (!this.legacyMigrationPending) this.diskCache.scheduleSave(layout, immediateDisk, serialized);
 		}
 		this.emitChange(change);
+	}
+
+	flushLayoutToDisk(): Promise<boolean> {
+		if (this.readOnlyGuard || this.legacyMigrationPending) return Promise.resolve(false);
+		return this.diskCache.flushNow(pickWorkspaceLayoutState(this.state));
 	}
 
 	saveReadingProgress(immediateDisk = false): void {
@@ -120,10 +126,13 @@ export class WorkspaceStateStore {
 		this.saveReadingProgress(true);
 	}
 
-	clearBriefNotes(): void {
+	clearBriefNotes(): Promise<boolean> {
+		if (this.legacyMigrationPending) return Promise.resolve(false);
 		this.state.remarks = {};
 		this.state.remarkModes = {};
-		this.saveBriefNotes(true);
+		const saved = this.notesCache.flushNow(this.state, true);
+		this.emitChange('notes-local-clear');
+		return saved;
 	}
 
 	createGroup(name: string, color?: string): TabGroup {

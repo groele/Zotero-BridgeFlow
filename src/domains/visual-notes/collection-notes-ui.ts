@@ -291,12 +291,15 @@ export function renderHubNotesList(opts: {
 		briefInput.value = entry.briefNote;
 		briefInput.placeholder = zh ? '添加简记…' : 'Add a brief note…';
 		briefInput.setAttribute('aria-label', briefLbl.textContent);
-		const commitBrief = () => {
+		const commitBrief = async () => {
 			const nextVal = briefInput.value.trim();
 			if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
 			writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
 			opts.onRemarkMutated?.();
-			opts.onStatus(zh ? '✓ 简记已保存至 brief-notes.json' : '✓ Brief note saved');
+			const saved = await dataSource?.persistRemarks?.();
+			opts.onStatus(saved
+				? (zh ? '✓ 简记已保存至 brief-notes.json' : '✓ Brief note saved')
+				: (zh ? '简记未能确认写入磁盘。' : 'Brief note could not be confirmed on disk.'));
 		};
 		briefInput.addEventListener('blur', commitBrief);
 		briefInput.addEventListener('keydown', (e) => {
