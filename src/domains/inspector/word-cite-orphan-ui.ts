@@ -1,4 +1,5 @@
 import type { OrphanCardViewModel, ReceiptAction, ReceiptState } from './word-cite-orphan-model.ts';
+import { createWordCiteSvgIcon } from './word-cite-styles.ts';
 
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
 
@@ -55,21 +56,21 @@ export const ORPHAN_AND_RECEIPT_CSS = `
 .zbf-wc-orphan-toggle { flex: none; background: none; border: 0; padding: 1px 4px; border-radius: 4px; font-size: 10px; color: light-dark(#2873c8, #60a5fa); cursor: pointer; }
 .zbf-wc-orphan-toggle:hover { text-decoration: underline; }
 .zbf-wc-orphan-list { box-sizing: border-box; display: grid; gap: 0; max-height: 184px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
-.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid light-dark(#eeeeee, #33363c); cursor: pointer; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid var(--zbf-wc-divider, light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.07))); cursor: pointer; min-width: 0; max-width: 100%; }
 .zbf-wc-orphan-row:last-child { border-bottom: 0; }
 .zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
-.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2873c8; }
-.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#94550f, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
+.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2d6cdf; }
+.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
-.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #e6e6e6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; }
+.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg, light-dark(#1f2328, #e6e8eb)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; }
 .zbf-wc-orphan-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); }
-.zbf-wc-orphan-hint { font-size: 10px; color: light-dark(#737373, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-receipt { display: grid; gap: 5px; font-size: 11px; padding: 7px 9px; border-radius: 5px; line-height: 1.4; border: 1px solid transparent; }
-.zbf-wc-receipt.is-ok { background: light-dark(#edf8f2, rgba(24,121,78,0.16)); border-color: light-dark(#bce3ce, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
-.zbf-wc-receipt.is-warn { background: light-dark(#fdf6e9, rgba(245,158,11,0.16)); border-color: light-dark(#ebd3a7, rgba(245,158,11,0.34)); color: light-dark(#9a5b13, #fbbf24); }
-.zbf-wc-receipt.is-err { background: light-dark(#fef1f1, rgba(220,38,38,0.16)); border-color: light-dark(#f5c2c2, rgba(248,113,113,0.34)); color: light-dark(#b91c1c, #f87171); }
+.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid var(--zbf-wc-divider, light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.07))); }
+.zbf-wc-orphan-hint { font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-receipt { margin: 0; display: grid; gap: 5px; font-size: 11px; padding: 6px 9px; border-radius: 6px; line-height: 1.4; border: 1px solid transparent; }
+.zbf-wc-receipt.is-ok { background: light-dark(rgba(24, 121, 78, 0.08), rgba(24, 121, 78, 0.16)); border-color: light-dark(rgba(24, 121, 78, 0.2), rgba(34, 197, 94, 0.3)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-receipt.is-warn { background: light-dark(rgba(217, 119, 6, 0.09), rgba(245, 158, 11, 0.16)); border-color: light-dark(rgba(217, 119, 6, 0.22), rgba(245, 158, 11, 0.32)); color: light-dark(#9a5209, #fbbf24); }
+.zbf-wc-receipt.is-err { background: light-dark(rgba(220, 38, 38, 0.08), rgba(220, 38, 38, 0.16)); border-color: light-dark(rgba(220, 38, 38, 0.2), rgba(248, 113, 113, 0.32)); color: light-dark(#b91c1c, #f87171); }
 .zbf-wc-rcp-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; font-weight: 600; }
 .zbf-wc-rcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-rcp-close { flex: none; background: none; border: 0; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.7; cursor: pointer; border-radius: 4px; }
@@ -93,7 +94,7 @@ export function createOrphanAccordionDom(doc: Document): OrphanAccordionDomRefs 
 	const badgeEl = createEl(doc, 'span', 'zbf-wc-badge is-warn');
 	const titleEl = createEl(doc, 'span', 'zbf-wc-acc-title');
 	const arrowEl = createEl(doc, 'span', 'zbf-wc-acc-arrow');
-	arrowEl.textContent = '⌄';
+	arrowEl.appendChild(createWordCiteSvgIcon(doc, 'chevron'));
 	accHeadBtn.append(badgeEl, titleEl, arrowEl);
 
 	const bodyEl = createEl(doc, 'div', 'zbf-wc-acc-body');

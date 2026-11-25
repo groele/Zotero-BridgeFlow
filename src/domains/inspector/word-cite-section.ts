@@ -183,15 +183,10 @@ export class WordCiteSectionController {
 		const controller = new (win?.AbortController ?? AbortController)();
 		this.buttonListeners.set(body, controller);
 
-		const st = createWordCiteBodyState(
-			doc,
-			body,
-			{
-				onToggleAccordion: () => { this.reminderState.expanded = !this.reminderState.expanded; this.renderAllBodies(); },
-				onSelectFilter: (f) => { this.reminderState.filter = f; this.renderAllBodies(); },
-			},
-			controller.signal,
-		);
+		const st = createWordCiteBodyState(doc, body, {
+			onToggleAccordion: () => { this.reminderState.expanded = !this.reminderState.expanded; this.renderAllBodies(); },
+			onSelectFilter: (f) => { this.reminderState.filter = f; this.renderAllBodies(); },
+		}, controller.signal);
 		st.setSectionSummary = setSectionSummary;
 		this.states.set(body, st);
 
@@ -203,6 +198,8 @@ export class WordCiteSectionController {
 		click(st.docSwitchBtn, () => this.cycleWordSession());
 		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
 		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', { sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
+		st.citedCell.addEventListener('click', () => { if (!st.colBtn.hidden) st.colBtn.click(); }, { signal: controller.signal });
+		st.orphanCell.addEventListener('click', () => { if (!st.orphanRefs.box.hidden) { this.orphanState.accordionOpen = true; this.renderAllBodies(); } }, { signal: controller.signal });
 		click(st.orphanRefs.accHeadBtn, () => { this.orphanState.accordionOpen = !this.orphanState.accordionOpen; this.renderAllBodies(); });
 		click(st.orphanRefs.toggleBtn, () => { this.orphanState.expanded = !this.orphanState.expanded; this.renderAllBodies(); });
 		click(st.orphanRefs.actionBtn, () => {

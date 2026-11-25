@@ -477,15 +477,17 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 
 	assert.equal(latestSummary, '序号 [3] · 共引 14 篇');
 	const wrap = body.children[0];
-	const [docCard, citeCard, receipt] = wrap.children;
-	const [docRow, statStrip] = docCard.children;
+	const [mainView, receipt] = wrap.children;
+	const [docCard, statStrip, citeCard, actions] = mainView.children;
+	const [docRow] = docCard.children;
 	const [, docMeta, docSwitchBtn] = docRow.children;
-	const [docNameEl] = docMeta.children;
+	const [docNameEl, docSub] = docMeta.children;
+	const [, , , colBtn] = docSub.children;
 	const [citedCell, inTextCell, orphanCell] = statStrip.children;
-	const [citeHead, citeTitleEl, , actions, synergy] = citeCard.children;
-	const [, ordBadgeEl] = citeHead.children;
+	const [, citeTitleRow, , synergy] = citeCard.children;
+	const [ordBadgeEl, citeTitleEl] = citeTitleRow.children;
+	const [groupBtn] = synergy.children;
 	const [insertBtn, refreshBtn] = actions.children;
-	const [groupBtn, colBtn] = synergy.children;
 
 	assert.equal(docNameEl.textContent, 'de.docx');
 	assert.equal(citedCell.children[0].textContent, '14');
@@ -495,7 +497,7 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	assert.equal(citeTitleEl.textContent, 'Optical Microcavity');
 	assert.equal(groupBtn.textContent, '↗ 引用所在分组「核心基底」(3)');
 	assert.equal(colBtn.hidden, false);
-	assert.equal(colBtn.textContent, '文集：/Citations');
+	assert.equal(colBtn.textContent, '文集 /Citations');
 
 	// Critical UX rule: clicking sidenav W+ icon ONLY opens section and NEVER cites
 	sidenavBtn.click();
@@ -505,7 +507,7 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	const otherDoc = createMockDocument({ ZoteroPane: { getSelectedItems: () => [item201] } });
 	const otherBody = otherDoc.createElement('div');
 	registered.onInit({ doc: otherDoc, body: otherBody, item: item201 });
-	const otherReceipt = otherBody.children[0].children[2];
+	const otherReceipt = otherBody.children[0].children[1];
 
 	// The host may isolate panel events from document-level delegation.
 	doc.dispatchEvent = () => true;

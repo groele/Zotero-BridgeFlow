@@ -170,9 +170,10 @@ test('inspectItemMetadataFields & CSS guards: granular switches, itemTypeID look
 			{ kind: 'missing', text: '缺少卷期页码' },
 		]);
 
-		// CSS regression guards: never use --fill-primary as background, never rely on invisible --material-border
+		// CSS regression guards: Concept A distinct soft cards (#fafafa) + academic blue primary CTA (#255fb3)
 		assert.equal(/background\s*:\s*var\(--fill-primary/.test(WORD_CITE_SCHEME_C_CSS), false);
 		assert.equal(/var\(--material-border/.test(WORD_CITE_SCHEME_C_CSS), false);
+		assert.equal(/#fafafa/.test(WORD_CITE_SCHEME_C_CSS) && /#255fb3/.test(WORD_CITE_SCHEME_C_CSS), true);
 		assert.equal(/overflow-x\s*:\s*hidden/.test(REMINDERS_CARD_CSS), true);
 	} finally {
 		globalThis.Zotero = prevZotero;
@@ -269,13 +270,17 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 		registered.onInit({ doc, body, item: itemClean });
 
 		const wrap = body.children[0];
-		const [, , receiptEl, orphanBox, reminderBox] = wrap.children;
+		const [mainView, receiptEl] = wrap.children;
+		const [, , , , orphanBox, reminderBox] = mainView.children;
 		const [remHeadBtn, remBodyEl] = reminderBox.children;
+		const [toolbar, listEl] = remBodyEl.children;
+		const [filterBar] = toolbar.children;
 
 		// Even BEFORE Word connects and when selected item is 100% complete, reminder card stays visible with green ✓!
 		assert.equal(reminderBox.hidden, false, 'Reminder card must remain visible in UI even with 0 missing items');
+		assert.equal(remBodyEl.hidden, true, 'In-place accordion body starts collapsed');
 		assert.equal(remHeadBtn.children[0].textContent, '✓');
-		assert.match(remHeadBtn.children[1].textContent, /当前条目完整/);
+		assert.match(remHeadBtn.children[1].textContent, /当前所选文献著录完整/);
 
 		// Emit Word snapshot including unloaded item 302
 		app.kernel.bus.emit('citation:snapshot-updated', {
@@ -295,11 +300,18 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 
 		// Wait for async hydration of item 302
 		await new Promise((r) => setTimeout(r, 15));
-		assert.equal(remHeadBtn.children[0].textContent, '2', 'Both sync itemA and async-hydrated itemLazy counted');
-		assert.equal(remHeadBtn.children[1].textContent, '2 篇引用文献的信息不完整');
+		assert.equal(remHeadBtn.children[0].textContent, '!');
+		assert.equal(remHeadBtn.children[1].textContent, '2 篇引用文献信息待补全');
+		assert.equal(remHeadBtn.children[2].textContent, '查看');
 
-		// Test reminderAutoExpand switch dynamically expanding the card
+		// In-place toggle expand / collapse without hiding mainView
+		remHeadBtn.click();
+		assert.equal(mainView.hidden, false, 'Main view remains visible when reminder accordion expands');
+		assert.equal(remBodyEl.hidden, false);
+		remHeadBtn.click();
 		assert.equal(remBodyEl.hidden, true);
+
+		// Test reminderAutoExpand switch dynamically expanding in-place
 		app.kernel.prefs.set('inspector.wordCite.reminderAutoExpand', true);
 		app.inspector.wordCiteSection.refreshAll();
 		assert.equal(remBodyEl.hidden, false);
@@ -310,7 +322,7 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 		assert.equal(remHeadBtn.children[0].textContent, '✓');
 		app.kernel.prefs.set('inspector.wordCite.reminderScope', 'both');
 		app.inspector.wordCiteSection.refreshAll();
-		assert.equal(remHeadBtn.children[0].textContent, '2');
+		assert.equal(remHeadBtn.children[1].textContent, '2 篇引用文献信息待补全');
 
 		// Test showOrphanRecovery = false hides orphan card
 		app.kernel.prefs.set('inspector.wordCite.showOrphanRecovery', false);
@@ -320,8 +332,7 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 		app.inspector.wordCiteSection.refreshAll();
 		assert.equal(orphanBox.hidden, false);
 
-		// Locate & Ignore/Undo/Restore workflow
-		const [filterBar, , listEl] = remBodyEl.children;
+		// Locate & Ignore/Undo/Restore workflow directly inside expanded accordion
 		listEl.children[0].click();
 		await new Promise((r) => setTimeout(r, 10));
 		assert.deepEqual(selectedCalls, [301]);
@@ -329,10 +340,10 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 
 		listEl.children[0].children[2].children[1].click();
 		await app.services.reminders.flushNow();
-		assert.equal(remHeadBtn.children[0].textContent, '1');
+		assert.equal(remHeadBtn.children[1].textContent, '1 篇引用文献信息待补全');
 		const undoBtn = receiptEl.children[1].children[1].children[0];
 		undoBtn.click();
-		assert.equal(remHeadBtn.children[0].textContent, '2');
+		assert.equal(remHeadBtn.children[1].textContent, '2 篇引用文献信息待补全');
 
 		listEl.children[0].children[2].children[1].click();
 		await app.services.reminders.flushNow();

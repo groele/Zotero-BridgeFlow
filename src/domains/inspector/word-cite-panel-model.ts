@@ -185,6 +185,7 @@ export interface WordCiteViewModel {
 	docName: string;
 	docStatusText: string;
 	docSwitchTitle: string;
+	sessionBadgeText: string;
 	isMultiSession: boolean;
 	hasWordSession: boolean;
 	statStrip: WordStatStripModel;
@@ -225,6 +226,9 @@ export function assembleWordCiteViewModel(params: {
 	} = params;
 	const hasSession = Boolean(snap?.activeSessionID);
 	const sessionCount = snap?.sessions?.length ?? 0;
+	const activeSessionIdx = sessionCount >= 2
+		? Math.max(0, (snap?.sessions ?? []).findIndex((s) => s.sessionID === snap?.activeSessionID)) + 1
+		: 0;
 	const idSet = new Set(itemIDs);
 	const matchedGroup = getPref('inspector.wordCite.showGroupSynergy') && idSet.size > 0
 		? groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null
@@ -266,11 +270,12 @@ export function assembleWordCiteViewModel(params: {
 		showSummaryCounts,
 		docName: hasSession ? (snap!.activeDocumentName || 'Word') : (zh ? '未连接 Word' : 'No Word session'),
 		docStatusText: hasSession
-			? (sessionCount >= 2 ? (zh ? `已连接 · 共 ${sessionCount} 个文档` : `Connected · ${sessionCount} docs`) : (zh ? '已连接 · 实时同步' : 'Connected · Live sync'))
+			? (sessionCount >= 2 ? (zh ? `共 ${sessionCount} 个文档` : `${sessionCount} docs`) : (zh ? '实时同步' : 'Live sync'))
 			: (zh ? '请先打开 Word 文档' : 'Open a Word document'),
 		docSwitchTitle: sessionCount >= 2
 			? (zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Switch active Word document (${sessionCount} open)`)
 			: (hasSession ? snap!.activeDocumentName : (zh ? '请打开 Word 文档' : 'Open a Word document')),
+		sessionBadgeText: sessionCount >= 2 ? `${activeSessionIdx}/${sessionCount}` : '',
 		isMultiSession: sessionCount >= 2,
 		hasWordSession: hasSession,
 		statStrip: buildWordStatStrip(zh, snap),
@@ -282,7 +287,7 @@ export function assembleWordCiteViewModel(params: {
 		groupButtonText: matchedGroup ? (zh ? `↗ 引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `↗ Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})`) : '',
 		groupButtonTitle: matchedGroup ? (zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ''}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ''}`) : '',
 		showCollectionButton: Boolean(getPref('inspector.wordCite.showCollectionLink') && hasSession && getPref('wordCite.collections.enable')),
-		colButtonText: zh ? `文集：${tagLabel}` : `Cited: ${tagLabel}`,
+		colButtonText: zh ? `文集 ${tagLabel}` : `Cited ${tagLabel}`,
 		colButtonTitle: zh ? '在左侧目录树定位当前文档的已引用文献合集' : 'Reveal temporary Word collection in library tree',
 		orphanCard: buildOrphanBannerModel(showOrphanCard ? snap?.orphans : undefined, zh, {
 			uncheckedKeys: orphanState.uncheckedKeys,

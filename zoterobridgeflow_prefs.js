@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.0 - Preferences controller. */
+/* Zotero BridgeFlow v0.7.3 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -1299,8 +1299,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.7.0" }));
-        versionEl.textContent = `v${"0.7.0"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.7.3" }));
+        versionEl.textContent = `v${"0.7.3"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

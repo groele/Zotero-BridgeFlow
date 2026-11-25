@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.7.0 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.7.3 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -4762,7 +4762,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const cacheKey = primary || `item:${itemID}`;
       const rawType = resolveZoteroItemType(cand.item);
       const title = safeGetItemField(cand.item, "title").trim() || (zh ? `未命名条目 #${itemID}` : `Untitled #${itemID}`);
-      const sourceLabel = cand.sourceKind === "word" && cand.ordinal ? zh ? `Word 引用 [${cand.ordinal}] · 当前文档` : `Word [${cand.ordinal}] · Active doc` : zh ? "来源：当前选择" : "Source: Selection";
+      const sourceLabel = cand.sourceKind === "word" ? zh ? "当前文档" : "Active doc" : zh ? "当前选择" : "Selected";
       allRecords.push({
         itemID,
         cacheKey,
@@ -4787,19 +4787,20 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const activeSig = activeRows.map((r) => r.cacheKey).join("|");
     const hasWordSession = Boolean(snap?.activeSessionID);
     const hasWordActive = activeRows.some((r) => r.sourceKind === "word");
-    let headerBadge = String(activeCount);
+    let headerBadge = "!";
     let headerBadgeTone = "neutral";
     let headerTitle;
     if (activeCount > 0) {
+      headerBadge = "!";
       headerBadgeTone = "warn";
-      headerTitle = hasWordActive || hasWordSession ? zh ? `${activeCount} 篇引用文献的信息不完整` : `${activeCount} cited item(s) incomplete` : zh ? `${activeCount} 篇所选文献的信息不完整` : `${activeCount} selected item(s) incomplete`;
+      headerTitle = hasWordActive || hasWordSession ? zh ? `${activeCount} 篇引用文献信息待补全` : `${activeCount} cited item(s) incomplete` : zh ? `${activeCount} 篇所选文献信息待补全` : `${activeCount} selected item(s) incomplete`;
     } else if (ignoredCount > 0) {
       headerBadge = String(ignoredCount);
       headerTitle = zh ? `文献信息提醒 · 已忽略 ${ignoredCount} 篇` : `Metadata reminders · ${ignoredCount} ignored`;
     } else if (checkedCount > 0) {
       headerBadge = "✓";
       headerBadgeTone = "ok";
-      headerTitle = hasWordSession && includeWord ? zh ? `引用文献信息提醒 · ${checkedCount} 篇均完整` : `Citation metadata · All ${checkedCount} complete` : zh ? "文献信息提醒 · 当前条目完整" : "Metadata check · Item complete";
+      headerTitle = hasWordSession && includeWord ? zh ? `${checkedCount} 篇引用文献著录均完整` : `All ${checkedCount} cited items complete` : zh ? "当前所选文献著录完整" : "Selected item metadata complete";
     } else {
       headerBadge = "0";
       headerTitle = zh ? "引用文献信息提醒" : "Citation metadata reminders";
@@ -4983,6 +4984,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     } = params;
     const hasSession = Boolean(snap?.activeSessionID);
     const sessionCount = snap?.sessions?.length ?? 0;
+    const activeSessionIdx = sessionCount >= 2 ? Math.max(0, (snap?.sessions ?? []).findIndex((s) => s.sessionID === snap?.activeSessionID)) + 1 : 0;
     const idSet = new Set(itemIDs);
     const matchedGroup = getPref("inspector.wordCite.showGroupSynergy") && idSet.size > 0 ? groups.find((g) => g.itemIDs.length >= 2 && g.itemIDs.some((id) => idSet.has(id))) ?? null : null;
     const uncitedInGroup = matchedGroup && hasSession ? matchedGroup.itemIDs.filter((id) => !snap.byItemID.has(id)).length : 0;
@@ -5017,8 +5019,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       showDocSwitcher: Boolean(getPref("inspector.wordCite.showDocSwitcher")),
       showSummaryCounts,
       docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
-      docStatusText: hasSession ? sessionCount >= 2 ? zh ? `已连接 · 共 ${sessionCount} 个文档` : `Connected · ${sessionCount} docs` : zh ? "已连接 · 实时同步" : "Connected · Live sync" : zh ? "请先打开 Word 文档" : "Open a Word document",
+      docStatusText: hasSession ? sessionCount >= 2 ? zh ? `共 ${sessionCount} 个文档` : `${sessionCount} docs` : zh ? "实时同步" : "Live sync" : zh ? "请先打开 Word 文档" : "Open a Word document",
       docSwitchTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Switch active Word document (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
+      sessionBadgeText: sessionCount >= 2 ? `${activeSessionIdx}/${sessionCount}` : "",
       isMultiSession: sessionCount >= 2,
       hasWordSession: hasSession,
       statStrip: buildWordStatStrip(zh, snap),
@@ -5030,7 +5033,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       groupButtonText: matchedGroup ? zh ? `↗ 引用所在分组「${matchedGroup.groupName}」(${matchedGroup.itemIDs.length})` : `↗ Cite Group "${matchedGroup.groupName}" (${matchedGroup.itemIDs.length})` : "",
       groupButtonTitle: matchedGroup ? zh ? `将工作区分组「${matchedGroup.groupName}」中的 ${matchedGroup.itemIDs.length} 篇文献合并插入 Word${hasSession ? `（其中 ${uncitedInGroup} 篇尚未引用）` : ""}` : `Insert all ${matchedGroup.itemIDs.length} papers from "${matchedGroup.groupName}"${hasSession ? ` (${uncitedInGroup} uncited)` : ""}` : "",
       showCollectionButton: Boolean(getPref("inspector.wordCite.showCollectionLink") && hasSession && getPref("wordCite.collections.enable")),
-      colButtonText: zh ? `文集：${tagLabel}` : `Cited: ${tagLabel}`,
+      colButtonText: zh ? `文集 ${tagLabel}` : `Cited ${tagLabel}`,
       colButtonTitle: zh ? "在左侧目录树定位当前文档的已引用文献合集" : "Reveal temporary Word collection in library tree",
       orphanCard: buildOrphanBannerModel(showOrphanCard ? snap?.orphans : void 0, zh, {
         uncheckedKeys: orphanState.uncheckedKeys,
@@ -5064,6 +5067,247 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     });
   }
 
+  // src/domains/inspector/word-cite-styles.ts
+  var SVG_NS2 = "http://www.w3.org/2000/svg";
+  var ICON_PATHS = {
+    refresh: {
+      viewBox: "0 0 14 14",
+      paths: [
+        "M11.4 7a4.4 4.4 0 1 1-1.12-2.95",
+        "M11.5 2.1v2.2H9.3"
+      ]
+    },
+    switch: {
+      viewBox: "0 0 14 14",
+      paths: [
+        "M2.5 4.7h8.5M8.8 2.5L11 4.7 8.8 7",
+        "M11.5 9.3H3M5.2 7L3 9.3l2.2 2.2"
+      ]
+    },
+    chevron: {
+      viewBox: "0 0 12 12",
+      paths: ["M2.6 4.5L6 7.9 9.4 4.5"]
+    }
+  };
+  function createWordCiteSvgIcon(doc, name, cls = "zbf-wc-svg") {
+    const spec = ICON_PATHS[name];
+    const svg = typeof doc.createElementNS === "function" ? doc.createElementNS(SVG_NS2, "svg") : doc.createElement("span");
+    svg.setAttribute("class", cls);
+    svg.setAttribute("viewBox", spec.viewBox);
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    for (const d of spec.paths) {
+      const path = typeof doc.createElementNS === "function" ? doc.createElementNS(SVG_NS2, "path") : doc.createElement("span");
+      path.setAttribute("d", d);
+      path.setAttribute("stroke", "currentColor");
+      path.setAttribute("stroke-width", "1.4");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(path);
+    }
+    return svg;
+  }
+  var WORD_CITE_SCHEME_C_CSS = `
+item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
+.zbf-word-cite-wrap {
+	--zbf-wc-fg: var(--fill-primary, light-dark(#1f2328, #e6e8ec));
+	--zbf-wc-fg-sec: light-dark(#57606a, #a0a8b4);
+	--zbf-wc-fg-muted: light-dark(#6e7781, #858d99);
+	--zbf-wc-card: light-dark(#fafafa, #2d2f34);
+	--zbf-wc-card-hi: light-dark(#ffffff, #34373e);
+	--zbf-wc-well: light-dark(#ebebee, #1f2023);
+	--zbf-wc-well-soft: light-dark(rgba(0, 0, 0, 0.042), rgba(255, 255, 255, 0.06));
+	--zbf-wc-line: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.095));
+	--zbf-wc-line-strong: light-dark(rgba(0, 0, 0, 0.13), rgba(255, 255, 255, 0.15));
+	--zbf-wc-blue: light-dark(#255fb3, #316dca);
+	--zbf-wc-blue-hover: light-dark(#1f529d, #3977d6);
+	--zbf-wc-blue-active: light-dark(#1a4687, #2b60b5);
+	--zbf-wc-pill-bg: light-dark(rgba(37, 95, 179, 0.10), rgba(75, 148, 255, 0.16));
+	--zbf-wc-pill-fg: light-dark(#1f57a8, #7ec0ff);
+	--zbf-wc-warn-bg: light-dark(rgba(217, 119, 6, 0.12), rgba(245, 158, 11, 0.18));
+	--zbf-wc-warn-bd: light-dark(rgba(217, 119, 6, 0.25), rgba(245, 158, 11, 0.34));
+	--zbf-wc-warn-fg: light-dark(#944f08, #fbbf24);
+	--zbf-wc-ok-bg: light-dark(rgba(22, 128, 67, 0.11), rgba(34, 197, 94, 0.18));
+	--zbf-wc-ok-fg: light-dark(#16794b, #4ade80);
+	box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+	inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden;
+	padding: 3px 5px 6px 3px; background: transparent;
+	font: 12px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	color: var(--zbf-wc-fg);
+}
+.zbf-word-cite-wrap [hidden] { display: none !important; }
+.zbf-wc-main-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
+.zbf-wc-svg { width: 12px; height: 12px; flex: none; display: block; pointer-events: none; }
+
+/* Distinct Soft Native Cards (Concept A) */
+.zbf-wc-card {
+	box-sizing: border-box; background: var(--zbf-wc-card);
+	border: 1px solid var(--zbf-wc-line); border-radius: 6px;
+	padding: 6px 8px; min-width: 0; max-width: 100%;
+}
+
+/* 1. Document Card */
+.zbf-wc-doc-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.zbf-wc-w {
+	width: 20px; height: 22px; border-radius: 4px; flex: none;
+	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
+	display: grid; place-items: center; font-size: 10px; font-weight: 700;
+}
+.zbf-wc-w.is-live { background: var(--zbf-wc-pill-bg); color: var(--zbf-wc-pill-fg); }
+.zbf-wc-doc-meta { min-width: 0; flex: 1 1 0; display: grid; gap: 1px; }
+.zbf-wc-docname {
+	font-size: 11.5px; font-weight: 500; line-height: 1.32; color: var(--zbf-wc-fg);
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zbf-wc-doc-sub {
+	display: flex; align-items: center; gap: 4px; font-size: 9.5px; color: var(--zbf-wc-fg-muted);
+	min-width: 0; overflow: hidden; white-space: nowrap;
+}
+.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: light-dark(#adb5bd, #636b75); }
+.zbf-wc-dot.is-live { background: #1fa363; }
+.zbf-wc-doc-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-inline-sep { opacity: 0.55; flex: none; }
+.zbf-wc-col-inline {
+	appearance: none; border: 0; background: transparent; padding: 0 2px; border-radius: 3px;
+	font: inherit; color: var(--zbf-wc-pill-fg); cursor: pointer;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.zbf-wc-col-inline:hover { text-decoration: underline; background: var(--zbf-wc-pill-bg); }
+.zbf-wc-doc-switch {
+	appearance: none; height: 21px; padding: 0 6px; gap: 3px; border-radius: 4px;
+	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card-hi);
+	color: var(--zbf-wc-fg-sec); font: 500 10px/1 inherit; font-variant-numeric: tabular-nums;
+	cursor: pointer; flex: none; display: inline-flex; align-items: center; justify-content: center;
+	transition: border-color 120ms ease, color 120ms ease;
+}
+.zbf-wc-doc-switch .zbf-wc-svg { width: 11px; height: 11px; }
+.zbf-wc-doc-switch:hover:not(:disabled) { border-color: var(--zbf-wc-blue); color: var(--zbf-wc-pill-fg); }
+
+/* 2. Three Independent Stat Tiles */
+.zbf-wc-stat-strip {
+	display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; min-width: 0;
+}
+.zbf-wc-stat-cell {
+	box-sizing: border-box; padding: 5px 7px; border-radius: 6px;
+	background: var(--zbf-wc-card); border: 1px solid var(--zbf-wc-line);
+	text-align: left; min-width: 0; transition: border-color 120ms ease, background-color 120ms ease;
+}
+.zbf-wc-stat-cell.is-interactive { cursor: pointer; }
+.zbf-wc-stat-cell.is-interactive:hover { background: var(--zbf-wc-card-hi); border-color: var(--zbf-wc-line-strong); }
+.zbf-wc-stat-val {
+	display: block; font-size: 14px; font-weight: 600; line-height: 1.12;
+	font-variant-numeric: tabular-nums; color: var(--zbf-wc-fg);
+}
+.zbf-wc-stat-lbl {
+	display: block; font-size: 9.5px; color: var(--zbf-wc-fg-muted); margin-top: 2px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zbf-wc-stat-cell.is-warn { border-color: var(--zbf-wc-warn-bd); background: var(--zbf-wc-warn-bg); }
+.zbf-wc-stat-cell.is-warn .zbf-wc-stat-val,
+.zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl { color: var(--zbf-wc-warn-fg); }
+
+/* 3. Selected Item Card */
+.zbf-wc-cite-kicker {
+	display: block; font-size: 9.5px; color: var(--zbf-wc-fg-muted); margin-bottom: 2px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zbf-wc-cite-title-row {
+	font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg);
+	display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+.zbf-wc-ord-badge {
+	display: inline-block; margin-inline-end: 4px; padding: 0.5px 5px; border-radius: 3.5px;
+	font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; vertical-align: baseline;
+	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
+}
+.zbf-wc-ord-badge.is-cited {
+	background: var(--zbf-wc-pill-bg); color: var(--zbf-wc-pill-fg); font-weight: 600;
+}
+.zbf-wc-cite-sub {
+	font-size: 10px; color: var(--zbf-wc-fg-muted); margin-top: 2.5px;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zbf-wc-synergy {
+	display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;
+	margin-top: 5px; padding-top: 4px; border-top: 1px solid var(--zbf-wc-line); min-width: 0;
+}
+.zbf-wc-link {
+	appearance: none; min-width: 0; max-width: 100%; background: transparent; border: 0; padding: 1px 0;
+	font: 400 10.5px/1.3 inherit; color: var(--zbf-wc-pill-fg); cursor: pointer;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+}
+.zbf-wc-link:hover:not(:disabled) { text-decoration: underline; }
+.zbf-wc-link:disabled { opacity: 0.45; cursor: default; }
+
+/* 4. Standalone Action Bar (Academic Deep Blue Primary Button + Square Refresh) */
+.zbf-wc-actions {
+	display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 5px; align-items: stretch; min-width: 0;
+}
+.zbf-word-cite-action {
+	appearance: none; box-sizing: border-box; height: 28px; min-width: 0; padding: 0 10px; gap: 5.5px;
+	border-radius: 6px; border: 1px solid var(--zbf-wc-blue);
+	background: var(--zbf-wc-blue); color: #ffffff;
+	font: 500 11.5px/1 inherit; cursor: pointer;
+	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	display: inline-flex; align-items: center; justify-content: center;
+	transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+.zbf-word-cite-action::before {
+	content: ""; width: 12px; height: 12px; flex: none; background-color: currentColor;
+	mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3 4.2h8M3 7h5.2M9.5 6.8v4.4M7.3 9h4.4' stroke='%23000' stroke-width='1.45' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.zbf-word-cite-action:hover:not(:disabled) { background: var(--zbf-wc-blue-hover); border-color: var(--zbf-wc-blue-hover); }
+.zbf-word-cite-action:active:not(:disabled) { background: var(--zbf-wc-blue-active); }
+.zbf-word-cite-action:disabled { opacity: 0.48; cursor: default; }
+.zbf-word-refresh-action {
+	appearance: none; box-sizing: border-box; height: 28px; width: 28px; padding: 0; border-radius: 6px;
+	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
+	color: var(--zbf-wc-fg-sec); cursor: pointer;
+	display: inline-flex; align-items: center; justify-content: center;
+	transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.zbf-word-refresh-action .zbf-wc-svg { width: 12.5px; height: 12.5px; }
+.zbf-word-refresh-action:hover:not(:disabled) {
+	background: var(--zbf-wc-card-hi); border-color: var(--zbf-wc-line-strong); color: var(--zbf-wc-fg);
+}
+.zbf-word-refresh-action:disabled { opacity: 0.45; cursor: default; }
+
+/* Orphan Recovery Accordion (when broken citations exist) */
+.zbf-wc-acc {
+	box-sizing: border-box; background: var(--zbf-wc-card);
+	border: 1px solid var(--zbf-wc-warn-bd); border-radius: 6px;
+	overflow: hidden; min-width: 0; max-width: 100%;
+}
+.zbf-wc-acc-head {
+	appearance: none; width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 6px;
+	padding: 6px 9px; border: 0; background: var(--zbf-wc-warn-bg); color: var(--zbf-wc-fg);
+	text-align: left; cursor: pointer; font: 500 11px/1.35 inherit; min-width: 0;
+}
+.zbf-wc-badge {
+	display: inline-flex; align-items: center; justify-content: center;
+	min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
+	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-sec);
+	font-size: 9.5px; font-weight: 700; flex: none; font-variant-numeric: tabular-nums;
+}
+.zbf-wc-badge.is-warn { background: rgba(217, 119, 6, 0.2); color: var(--zbf-wc-warn-fg); }
+.zbf-wc-badge.is-ok { background: var(--zbf-wc-ok-bg); color: var(--zbf-wc-ok-fg); }
+.zbf-wc-acc-title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-acc-arrow { flex: none; color: var(--zbf-wc-fg-muted); display: inline-flex; align-items: center; justify-content: center; transition: transform 140ms ease; }
+.zbf-wc-acc.is-closed .zbf-wc-acc-arrow { transform: rotate(-90deg); }
+.zbf-wc-acc-body {
+	box-sizing: border-box; padding: 6px 8px 8px; border-top: 1px solid var(--zbf-wc-line);
+	display: grid; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden;
+}
+.zbf-wc-sec-btn {
+	appearance: none; box-sizing: border-box; height: 24px; padding: 0 9px; border-radius: 5px;
+	border: 1px solid var(--zbf-wc-warn-bd); background: var(--zbf-wc-warn-bg);
+	color: var(--zbf-wc-warn-fg); font: 500 10.5px/1 inherit; cursor: pointer; white-space: nowrap;
+}
+.zbf-wc-sec-btn:hover:not(:disabled) { filter: brightness(0.97); }
+.zbf-wc-sec-btn:disabled { opacity: 0.45; cursor: default; }
+.zbf-wc-doc-switch:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-col-inline:focus-visible, .zbf-wc-acc-head:focus-visible, .zbf-wc-rem-entry:focus-visible, .zbf-wc-sub-back:focus-visible, .zbf-wc-sec-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible, .zbf-wc-rem-row:focus-visible { outline: 2px solid var(--accent-blue, #255fb3); outline-offset: 1px; }
+`;
+
   // src/domains/inspector/word-cite-orphan-ui.ts
   var XHTML_NS2 = "http://www.w3.org/1999/xhtml";
   function createEl(doc, tag, cls) {
@@ -5091,21 +5335,21 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
 .zbf-wc-orphan-toggle { flex: none; background: none; border: 0; padding: 1px 4px; border-radius: 4px; font-size: 10px; color: light-dark(#2873c8, #60a5fa); cursor: pointer; }
 .zbf-wc-orphan-toggle:hover { text-decoration: underline; }
 .zbf-wc-orphan-list { box-sizing: border-box; display: grid; gap: 0; max-height: 184px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
-.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid light-dark(#eeeeee, #33363c); cursor: pointer; min-width: 0; max-width: 100%; }
+.zbf-wc-orphan-row { box-sizing: border-box; display: flex; align-items: flex-start; gap: 7px; padding: 6px 0; border-bottom: 1px solid var(--zbf-wc-divider, light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.07))); cursor: pointer; min-width: 0; max-width: 100%; }
 .zbf-wc-orphan-row:last-child { border-bottom: 0; }
 .zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
-.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2873c8; }
-.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#94550f, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
+.zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2d6cdf; }
+.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
-.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #e6e6e6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; }
+.zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg, light-dark(#1f2328, #e6e8eb)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; }
 .zbf-wc-orphan-author { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
-.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); }
-.zbf-wc-orphan-hint { font-size: 10px; color: light-dark(#737373, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-receipt { display: grid; gap: 5px; font-size: 11px; padding: 7px 9px; border-radius: 5px; line-height: 1.4; border: 1px solid transparent; }
-.zbf-wc-receipt.is-ok { background: light-dark(#edf8f2, rgba(24,121,78,0.16)); border-color: light-dark(#bce3ce, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
-.zbf-wc-receipt.is-warn { background: light-dark(#fdf6e9, rgba(245,158,11,0.16)); border-color: light-dark(#ebd3a7, rgba(245,158,11,0.34)); color: light-dark(#9a5b13, #fbbf24); }
-.zbf-wc-receipt.is-err { background: light-dark(#fef1f1, rgba(220,38,38,0.16)); border-color: light-dark(#f5c2c2, rgba(248,113,113,0.34)); color: light-dark(#b91c1c, #f87171); }
+.zbf-wc-orphan-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 6px; border-top: 1px solid var(--zbf-wc-divider, light-dark(rgba(0,0,0,0.06), rgba(255,255,255,0.07))); }
+.zbf-wc-orphan-hint { font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-receipt { margin: 0; display: grid; gap: 5px; font-size: 11px; padding: 6px 9px; border-radius: 6px; line-height: 1.4; border: 1px solid transparent; }
+.zbf-wc-receipt.is-ok { background: light-dark(rgba(24, 121, 78, 0.08), rgba(24, 121, 78, 0.16)); border-color: light-dark(rgba(24, 121, 78, 0.2), rgba(34, 197, 94, 0.3)); color: light-dark(#18794e, #4ade80); }
+.zbf-wc-receipt.is-warn { background: light-dark(rgba(217, 119, 6, 0.09), rgba(245, 158, 11, 0.16)); border-color: light-dark(rgba(217, 119, 6, 0.22), rgba(245, 158, 11, 0.32)); color: light-dark(#9a5209, #fbbf24); }
+.zbf-wc-receipt.is-err { background: light-dark(rgba(220, 38, 38, 0.08), rgba(220, 38, 38, 0.16)); border-color: light-dark(rgba(220, 38, 38, 0.2), rgba(248, 113, 113, 0.32)); color: light-dark(#b91c1c, #f87171); }
 .zbf-wc-rcp-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; font-weight: 600; }
 .zbf-wc-rcp-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-rcp-close { flex: none; background: none; border: 0; padding: 0 3px; font-size: 13px; line-height: 1; color: inherit; opacity: 0.7; cursor: pointer; border-radius: 4px; }
@@ -5128,7 +5372,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const badgeEl = createEl(doc, "span", "zbf-wc-badge is-warn");
     const titleEl = createEl(doc, "span", "zbf-wc-acc-title");
     const arrowEl = createEl(doc, "span", "zbf-wc-acc-arrow");
-    arrowEl.textContent = "⌄";
+    arrowEl.appendChild(createWordCiteSvgIcon(doc, "chevron"));
     accHeadBtn.append(badgeEl, titleEl, arrowEl);
     const bodyEl = createEl(doc, "div", "zbf-wc-acc-body");
     const chipsRow = createEl(doc, "div", "zbf-wc-orphan-top");
@@ -5290,43 +5534,130 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     el.textContent = "";
   }
   var REMINDERS_CARD_CSS = `
-.zbf-wc-rem-filters { display: flex; align-items: center; gap: 5px; padding-top: 1px; min-width: 0; }
-.zbf-wc-rem-filter { appearance: none; border: 1px solid light-dark(#d6d9de, #454a52); border-radius: 999px; background: light-dark(#fafafa, rgba(255,255,255,0.03)); color: light-dark(#666666, #9ea4ad); padding: 2px 8px; font-size: 10px; cursor: pointer; }
-.zbf-wc-rem-filter:hover { color: light-dark(#262626, #ececec); background: light-dark(#f0f2f5, rgba(255,255,255,0.08)); }
-.zbf-wc-rem-filter.is-active { background: light-dark(#edf5fe, rgba(56,139,253,0.18)); border-color: light-dark(#accbf2, rgba(96,165,250,0.42)); color: light-dark(#1759aa, #7cc0ff); font-weight: 600; }
-.zbf-wc-rem-hint { font-size: 10px; line-height: 1.42; color: light-dark(#737373, #9ea4ad); border-inline-start: 2px solid light-dark(#9ec3ef, rgba(96,165,250,0.45)); padding-inline-start: 6px; min-width: 0; }
-.zbf-wc-rem-list { box-sizing: border-box; display: grid; gap: 0; max-height: 210px; overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%; }
-.zbf-wc-rem-row { box-sizing: border-box; display: grid; gap: 4px; padding: 6px 4px; border-bottom: 1px solid light-dark(#eeeeee, #33363c); min-width: 0; max-width: 100%; }
-.zbf-wc-rem-row:last-child { border-bottom: 0; }
-.zbf-wc-rem-row.is-clickable { cursor: pointer; border-radius: 4px; }
-.zbf-wc-rem-row.is-clickable:hover { background: light-dark(#f4f7fb, rgba(56,139,253,0.08)); }
-.zbf-wc-rem-top { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
-.zbf-wc-rem-type { flex: none; padding: 1px 4px; border-radius: 3px; background: light-dark(#f0f2f4, rgba(255,255,255,0.09)); border: 1px solid light-dark(#e3e6ea, rgba(255,255,255,0.12)); color: light-dark(#595959, #cbd5e1); font-size: 9.5px; line-height: 1.35; }
-.zbf-wc-rem-title { flex: 1 1 0; min-width: 0; font-size: 11.5px; font-weight: 500; line-height: 1.38; color: light-dark(#262626, #ececec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 5. In-place Collapsible Reminder Card (Concept A Visuals, Zero Extra Sub-page) */
+.zbf-wc-rem-card {
+	box-sizing: border-box; border-radius: 6px;
+	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
+	overflow: hidden; min-width: 0; max-width: 100%;
+	transition: border-color 120ms ease, background-color 120ms ease;
+}
+.zbf-wc-rem-card.is-warn.is-closed {
+	background: var(--zbf-wc-warn-bg); border-color: var(--zbf-wc-warn-bd);
+}
+.zbf-wc-rem-card.is-warn:not(.is-closed) {
+	border-color: var(--zbf-wc-warn-bd);
+}
+.zbf-wc-rem-entry {
+	appearance: none; box-sizing: border-box; width: 100%;
+	display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+	border: 0; background: transparent; color: var(--zbf-wc-fg-sec);
+	text-align: left; cursor: pointer; font: 400 11px/1.35 inherit; min-width: 0;
+	transition: background-color 120ms ease;
+}
+.zbf-wc-rem-entry:hover { background: light-dark(rgba(0, 0, 0, 0.025), rgba(255, 255, 255, 0.04)); }
+.zbf-wc-rem-card.is-warn .zbf-wc-rem-entry {
+	background: var(--zbf-wc-warn-bg); color: var(--zbf-wc-warn-fg);
+}
+.zbf-wc-rem-card.is-warn .zbf-wc-rem-entry:hover { filter: brightness(0.98); }
+.zbf-wc-rem-card.is-warn .zbf-wc-rem-entry-title { font-weight: 500; color: var(--zbf-wc-warn-fg); }
+.zbf-wc-rem-card.is-warn .zbf-wc-rem-entry-act,
+.zbf-wc-rem-card.is-warn .zbf-wc-rem-arrow { color: var(--zbf-wc-warn-fg); }
+.zbf-wc-rem-entry-title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-rem-entry-act { flex: none; font-size: 10px; color: var(--zbf-wc-fg-muted); white-space: nowrap; }
+.zbf-wc-rem-arrow {
+	flex: none; color: var(--zbf-wc-fg-muted); display: inline-flex; align-items: center; justify-content: center;
+	transition: transform 140ms ease;
+}
+.zbf-wc-rem-arrow .zbf-wc-svg { width: 11px; height: 11px; }
+.zbf-wc-rem-card.is-closed .zbf-wc-rem-arrow { transform: rotate(-90deg); }
+
+.zbf-wc-rem-body {
+	box-sizing: border-box; padding: 7px 8px 8px;
+	border-top: 1px solid var(--zbf-wc-line);
+	display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+	min-width: 0; max-width: 100%; overflow: hidden;
+}
+.zbf-wc-rem-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.zbf-wc-rem-filters {
+	display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+	border-radius: 5px; background: var(--zbf-wc-well); flex: none;
+}
+.zbf-wc-rem-filter {
+	appearance: none; border: 0; border-radius: 3.5px; background: transparent;
+	color: var(--zbf-wc-fg-muted); padding: 1.5px 7px; font: 400 10px/1.3 inherit;
+	cursor: pointer; transition: background-color 120ms ease, color 120ms ease;
+}
+.zbf-wc-rem-filter:hover { color: var(--zbf-wc-fg); }
+.zbf-wc-rem-filter.is-active {
+	background: var(--zbf-wc-card-hi);
+	box-shadow: 0 1px 2px light-dark(rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.22));
+	color: var(--zbf-wc-fg); font-weight: 500;
+}
+.zbf-wc-rem-hint {
+	font-size: 10px; line-height: 1.35; color: var(--zbf-wc-fg-muted);
+	min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.zbf-wc-rem-list {
+	box-sizing: border-box; display: grid; gap: 5px; max-height: 215px;
+	overflow-x: hidden; overflow-y: auto; min-width: 0; max-width: 100%;
+}
+.zbf-wc-rem-row {
+	box-sizing: border-box; display: grid; gap: 4.5px; padding: 6px 7px;
+	border-radius: 5px; background: var(--zbf-wc-card-hi); border: 1px solid var(--zbf-wc-line);
+	min-width: 0; max-width: 100%; transition: background-color 120ms ease, border-color 120ms ease;
+}
+.zbf-wc-rem-row.is-clickable { cursor: pointer; }
+.zbf-wc-rem-row.is-clickable:hover {
+	border-color: light-dark(rgba(37, 95, 179, 0.36), rgba(105, 170, 255, 0.44));
+}
+.zbf-wc-rem-top { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.zbf-wc-rem-type {
+	flex: none; padding: 0.5px 4.5px; border-radius: 3px;
+	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-sec); font-size: 9.5px; line-height: 1.35;
+}
+.zbf-wc-rem-title {
+	flex: 1 1 0; min-width: 0; font-size: 11px; font-weight: 500; line-height: 1.36;
+	color: var(--zbf-wc-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .zbf-wc-field-tags { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.zbf-wc-field-tag { padding: 1px 5px; border-radius: 3px; font-size: 10px; line-height: 1.35; background: light-dark(#fff8eb, rgba(245,158,11,0.14)); border: 1px solid light-dark(#ead2a5, rgba(245,158,11,0.34)); color: light-dark(#94550f, #fbbf24); }
-.zbf-wc-field-tag.is-soft { background: light-dark(#f4f5f7, rgba(255,255,255,0.06)); border-color: light-dark(#dfe2e6, #454a52); color: light-dark(#666666, #9ea4ad); }
-.zbf-wc-rem-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10px; min-width: 0; }
-.zbf-wc-rem-src { color: light-dark(#737373, #9ea4ad); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.zbf-wc-rem-act { flex: none; appearance: none; border: 1px solid light-dark(#d0d5db, #484c54); border-radius: 4px; background: light-dark(#fafafa, #2c2f34); color: light-dark(#4d555e, #d0d5dd); padding: 1px 7px; font-size: 10px; cursor: pointer; }
-.zbf-wc-rem-act:hover { color: light-dark(#222222, #ffffff); background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); }
-.zbf-wc-rem-empty { padding: 12px 6px; text-align: center; font-size: 10.5px; color: light-dark(#737373, #9ea4ad); border: 1px dashed light-dark(#dcdcdc, #454a52); border-radius: 4px; }
+.zbf-wc-field-tag {
+	padding: 1px 5px; border-radius: 3.5px; font-size: 9.5px; line-height: 1.35;
+	background: var(--zbf-wc-warn-bg); border: 1px solid var(--zbf-wc-warn-bd); color: var(--zbf-wc-warn-fg);
+}
+.zbf-wc-field-tag.is-soft {
+	background: var(--zbf-wc-well-soft); border-color: var(--zbf-wc-line); color: var(--zbf-wc-fg-muted);
+}
+.zbf-wc-rem-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 9.5px; min-width: 0; }
+.zbf-wc-rem-src { color: var(--zbf-wc-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.zbf-wc-rem-act {
+	flex: none; appearance: none; height: 20px; padding: 0 7px; border-radius: 4px;
+	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
+	color: var(--zbf-wc-fg-sec); font: 400 9.5px/1 inherit; cursor: pointer;
+	transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+}
+.zbf-wc-rem-act:hover { color: var(--zbf-wc-fg); background: var(--zbf-wc-card-hi); border-color: var(--zbf-wc-line-strong); }
+.zbf-wc-rem-empty {
+	padding: 10px 8px; text-align: center; font-size: 10.5px; color: var(--zbf-wc-fg-muted);
+	background: var(--zbf-wc-well-soft); border-radius: 5px;
+}
+.zbf-wc-rem-empty.is-ok { background: var(--zbf-wc-ok-bg); color: var(--zbf-wc-ok-fg); }
 `;
   function createReminderCardDom(doc, cb, signal) {
-    const root = createEl2(doc, "section", "zbf-wc-acc zbf-wc-rem-acc is-closed");
+    const root = createEl2(doc, "section", "zbf-wc-rem-card is-closed");
     root.hidden = true;
-    const headBtn = createEl2(doc, "button", "zbf-wc-acc-head");
+    const headBtn = createEl2(doc, "button", "zbf-wc-rem-entry");
     headBtn.type = "button";
     headBtn.setAttribute("aria-expanded", "false");
     const badgeEl = createEl2(doc, "span", "zbf-wc-badge");
-    const titleEl = createEl2(doc, "span", "zbf-wc-acc-title");
-    const subHintEl = createEl2(doc, "span", "zbf-wc-acc-sub");
-    const arrowEl = createEl2(doc, "span", "zbf-wc-acc-arrow");
-    arrowEl.textContent = "⌄";
+    const titleEl = createEl2(doc, "span", "zbf-wc-rem-entry-title");
+    const subHintEl = createEl2(doc, "span", "zbf-wc-rem-entry-act");
+    const arrowEl = createEl2(doc, "span", "zbf-wc-rem-arrow");
+    arrowEl.appendChild(createWordCiteSvgIcon(doc, "chevron"));
     headBtn.append(badgeEl, titleEl, subHintEl, arrowEl);
     headBtn.addEventListener("click", () => cb.onToggleAccordion(), { signal });
-    const bodyEl = createEl2(doc, "div", "zbf-wc-acc-body");
+    const bodyEl = createEl2(doc, "div", "zbf-wc-rem-body");
     bodyEl.hidden = true;
+    const toolbar = createEl2(doc, "div", "zbf-wc-rem-toolbar");
     const filterBar = createEl2(doc, "div", "zbf-wc-rem-filters");
     const activeFilterBtn = createEl2(doc, "button", "zbf-wc-rem-filter is-active");
     activeFilterBtn.type = "button";
@@ -5335,9 +5666,10 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     ignoredFilterBtn.type = "button";
     ignoredFilterBtn.addEventListener("click", () => cb.onSelectFilter("ignored"), { signal });
     filterBar.append(activeFilterBtn, ignoredFilterBtn);
-    const hintEl = createEl2(doc, "div", "zbf-wc-rem-hint");
+    const hintEl = createEl2(doc, "span", "zbf-wc-rem-hint");
+    toolbar.append(filterBar, hintEl);
     const listEl = createEl2(doc, "div", "zbf-wc-rem-list");
-    bodyEl.append(filterBar, hintEl, listEl);
+    bodyEl.append(toolbar, listEl);
     root.append(headBtn, bodyEl);
     return {
       root,
@@ -5358,6 +5690,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     refs.root.hidden = !model.visible;
     if (!model.visible) return;
     refs.root.classList.toggle("is-closed", !model.expanded);
+    refs.root.classList.toggle("is-warn", model.headerBadgeTone === "warn");
     refs.headBtn.setAttribute("aria-expanded", String(model.expanded));
     refs.badgeEl.textContent = model.headerBadge;
     refs.badgeEl.classList.toggle("is-warn", model.headerBadgeTone === "warn");
@@ -5371,10 +5704,12 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     refs.activeFilterBtn.classList.toggle("is-active", model.filter === "active");
     refs.ignoredFilterBtn.textContent = model.ignoredTabLabel;
     refs.ignoredFilterBtn.classList.toggle("is-active", model.filter === "ignored");
-    refs.hintEl.textContent = model.scopeHint;
+    refs.hintEl.textContent = zh ? "点击条目定位" : "Click to locate";
+    refs.hintEl.title = model.scopeHint;
     clearChildren2(refs.listEl);
     if (model.rows.length === 0) {
-      const empty = createEl2(doc, "div", "zbf-wc-rem-empty");
+      const isCleanOk = model.filter === "active" && model.ignoredCount === 0 && model.checkedCount > 0;
+      const empty = createEl2(doc, "div", `zbf-wc-rem-empty${isCleanOk ? " is-ok" : ""}`);
       empty.textContent = model.emptyText;
       refs.listEl.appendChild(empty);
       return;
@@ -5403,7 +5738,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       src.textContent = rec.creatorYear ? `${rec.creatorYear} · ${rec.sourceLabel}` : rec.sourceLabel;
       const actBtn = createEl2(doc, "button", "zbf-wc-rem-act");
       actBtn.type = "button";
-      actBtn.textContent = rec.ignored ? zh ? "恢复提醒" : "Restore" : zh ? "忽略提醒" : "Ignore";
+      actBtn.textContent = rec.ignored ? zh ? "恢复" : "Restore" : zh ? "忽略" : "Ignore";
+      actBtn.title = rec.ignored ? zh ? "恢复该条文献的信息完整性提醒" : "Restore metadata reminder for this item" : zh ? "忽略该条提醒（不修改条目与 Word 引文）" : "Ignore this reminder without modifying item or Word citation";
       actBtn.addEventListener("click", (ev) => {
         ev.stopPropagation?.();
         if (rec.ignored) cb.onRestoreItem(rec);
@@ -5426,68 +5762,6 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       refs.listEl.appendChild(row);
     }
   }
-
-  // src/domains/inspector/word-cite-styles.ts
-  var WORD_CITE_SCHEME_C_CSS = `
-item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
-.zbf-word-cite-wrap { box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden; padding: 4px 2px 8px; font-size: 12px; color: light-dark(#262626, #e6e6e6); }
-.zbf-word-cite-wrap [hidden] { display: none !important; }
-.zbf-wc-card { box-sizing: border-box; background: light-dark(#ffffff, #242629); border: 1px solid light-dark(#dedede, #3a3d42); border-radius: 6px; padding: 8px 10px; min-width: 0; max-width: 100%; box-shadow: 0 1px 1px light-dark(rgba(0,0,0,0.02), rgba(0,0,0,0.16)); }
-.zbf-wc-doc-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.zbf-wc-w { width: 22px; height: 22px; border-radius: 4px; background: light-dark(#f3f4f6, rgba(255,255,255,0.07)); border: 1px solid light-dark(#dcdcdc, #43474e); color: light-dark(#666666, #a3aab4); display: grid; place-items: center; font-size: 10.5px; font-weight: 600; flex: none; }
-.zbf-wc-w.is-live { color: light-dark(#1d63b8, #6cb2ff); background: light-dark(#eef5fd, rgba(56,139,253,0.14)); border-color: light-dark(#c5dcf6, rgba(96,165,250,0.34)); }
-.zbf-wc-doc-meta { min-width: 0; flex: 1 1 0; display: grid; gap: 1px; }
-.zbf-wc-docname { font-size: 12px; font-weight: 600; line-height: 1.35; color: light-dark(#262626, #ececec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-doc-sub { display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: light-dark(#6e6e6e, #9ea4ad); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: light-dark(#a3a3a3, #666c75); }
-.zbf-wc-dot.is-live { background: #1fa363; }
-.zbf-wc-doc-switch { appearance: none; width: 24px; height: 24px; border: 1px solid light-dark(#e0e0e0, #42464d); background: light-dark(#fafafa, #2c2f34); color: light-dark(#595959, #b0b6bf); border-radius: 4px; padding: 0; font-size: 12px; line-height: 1; cursor: pointer; flex: none; display: inline-flex; align-items: center; justify-content: center; }
-.zbf-wc-doc-switch:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#c8cdd3, #545962); color: light-dark(#262626, #ffffff); }
-.zbf-wc-doc-switch:disabled { opacity: 0.42; cursor: default; background: transparent; border-color: transparent; }
-.zbf-wc-stat-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 8px; padding-top: 7px; border-top: 1px solid light-dark(#ebebeb, #33363c); text-align: center; }
-.zbf-wc-stat-strip.is-solo { margin-top: 0; padding-top: 0; border-top: 0; }
-.zbf-wc-stat-cell { border-inline-end: 1px solid light-dark(#ebebeb, #33363c); padding-inline: 4px; min-width: 0; }
-.zbf-wc-stat-cell:last-child { border-inline-end: 0; }
-.zbf-wc-stat-val { display: block; font-size: 12.5px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; color: light-dark(#262626, #ececec); }
-.zbf-wc-stat-lbl { display: block; font-size: 10.5px; color: light-dark(#737373, #9ea4ad); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-stat-cell.is-warn .zbf-wc-stat-val, .zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl { color: light-dark(#a15c11, #f5b942); }
-.zbf-wc-cite-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10.5px; margin-bottom: 3px; min-width: 0; }
-.zbf-wc-cite-kicker { color: light-dark(#737373, #9ea4ad); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-ord-badge { flex: none; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: light-dark(#737373, #9ea4ad); }
-.zbf-wc-ord-badge.is-cited { color: light-dark(#1d63b8, #6cb2ff); background: light-dark(#eef5fd, rgba(56,139,253,0.16)); border: 1px solid light-dark(#cfe2f9, rgba(96,165,250,0.3)); padding: 0 5px; border-radius: 4px; }
-.zbf-wc-cite-title { font-size: 12px; font-weight: 500; line-height: 1.42; color: light-dark(#222222, #ececec); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-.zbf-wc-cite-sub { font-size: 10.5px; color: light-dark(#6e6e6e, #9ea4ad); margin-top: 2px; margin-bottom: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-actions { display: grid; grid-template-columns: minmax(0, 1fr) 28px; gap: 6px; align-items: stretch; min-width: 0; margin-top: 7px; }
-.zbf-wc-cite-sub:not([hidden]) + .zbf-wc-actions { margin-top: 0; }
-.zbf-word-cite-action { box-sizing: border-box; height: 27px; min-width: 0; padding: 0 10px; border-radius: 5px; border: 1px solid light-dark(#9ec3ef, rgba(96,165,250,0.42)); background: light-dark(#edf5fe, rgba(56,139,253,0.16)); color: light-dark(#1759aa, #7cc0ff); font-size: 12px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-flex; align-items: center; justify-content: center; transition: background-color 120ms ease, border-color 120ms ease; }
-.zbf-word-cite-action:hover:not(:disabled) { background: light-dark(#dfeeff, rgba(56,139,253,0.25)); border-color: light-dark(#7ab0ec, rgba(96,165,250,0.58)); }
-.zbf-word-cite-action:active:not(:disabled) { background: light-dark(#d2e5fc, rgba(56,139,253,0.32)); }
-.zbf-word-cite-action:disabled { opacity: 0.48; cursor: default; }
-.zbf-word-refresh-action { box-sizing: border-box; height: 27px; width: 28px; padding: 0; border-radius: 5px; border: 1px solid light-dark(#d0d5db, #464b53); background: light-dark(#fafafa, #2c2f34); color: light-dark(#4d555e, #d0d5dd); font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; transition: background-color 120ms ease, border-color 120ms ease; }
-.zbf-word-refresh-action:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); color: light-dark(#222222, #ffffff); }
-.zbf-word-refresh-action:disabled { opacity: 0.45; cursor: default; }
-.zbf-wc-synergy { display: flex; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 8px; margin-top: 7px; padding-top: 6px; border-top: 1px solid light-dark(#ebebeb, #33363c); min-width: 0; }
-.zbf-wc-link { min-width: 0; max-width: 100%; background: none; border: 0; padding: 1px 0; font-size: 11px; color: light-dark(#1d63b8, #6cb2ff); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
-.zbf-wc-link:hover:not(:disabled) { text-decoration: underline; }
-.zbf-wc-link:disabled { opacity: 0.45; cursor: default; }
-.zbf-wc-col-link { flex: none; margin-inline-start: 0; }
-.zbf-word-group-action:not([hidden]) ~ .zbf-wc-col-link { margin-inline-start: auto; }
-.zbf-wc-acc { box-sizing: border-box; background: light-dark(#ffffff, #242629); border: 1px solid light-dark(#dedede, #3a3d42); border-radius: 6px; overflow: hidden; min-width: 0; max-width: 100%; }
-.zbf-wc-acc-head { width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 7px 10px; border: 0; background: light-dark(#fafafa, rgba(255,255,255,0.03)); color: light-dark(#262626, #e6e6e6); text-align: left; cursor: pointer; font-size: 11.5px; font-weight: 600; min-width: 0; }
-.zbf-wc-acc-head:hover { background: light-dark(#f2f3f5, rgba(255,255,255,0.07)); }
-.zbf-wc-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: light-dark(#eaecef, rgba(255,255,255,0.13)); color: light-dark(#555555, #cfd5dd); font-size: 10px; font-weight: 600; flex: none; font-variant-numeric: tabular-nums; }
-.zbf-wc-badge.is-warn { background: light-dark(#faecd4, rgba(245,158,11,0.22)); border: 1px solid light-dark(#ecd1a1, rgba(245,158,11,0.35)); color: light-dark(#94550f, #fbbf24); }
-.zbf-wc-badge.is-ok { background: light-dark(#e8f6ee, rgba(34,197,94,0.18)); border: 1px solid light-dark(#bde5cd, rgba(34,197,94,0.32)); color: light-dark(#18794e, #4ade80); }
-.zbf-wc-acc-title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-acc-sub { flex: none; font-size: 10.5px; font-weight: 400; color: light-dark(#737373, #9ea4ad); }
-.zbf-wc-acc-arrow { flex: none; font-size: 10px; color: light-dark(#737373, #9ea4ad); transition: transform 120ms ease; }
-.zbf-wc-acc.is-closed .zbf-wc-acc-arrow { transform: rotate(-90deg); }
-.zbf-wc-acc-body { box-sizing: border-box; padding: 6px 10px 9px; border-top: 1px solid light-dark(#ebebeb, #33363c); display: grid; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden; }
-.zbf-wc-sec-btn { box-sizing: border-box; height: 25px; padding: 0 9px; border-radius: 4px; border: 1px solid light-dark(#cdd2d7, #484c54); background: light-dark(#fafafa, #2c2f34); color: light-dark(#262626, #e6e6e6); font-size: 11px; font-weight: 500; cursor: pointer; white-space: nowrap; }
-.zbf-wc-sec-btn:hover:not(:disabled) { background: light-dark(#f0f2f5, #363a40); border-color: light-dark(#b8bfc7, #575d66); }
-.zbf-wc-sec-btn:disabled { opacity: 0.45; cursor: default; }
-.zbf-wc-doc-switch:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-acc-head:focus-visible, .zbf-wc-sec-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible, .zbf-wc-rem-row:focus-visible { outline: 2px solid var(--accent-blue, #2873c8); outline-offset: 1px; }
-`;
 
   // src/domains/inspector/word-cite-panel-ui.ts
   var STYLE_ID2 = "zbf-word-cite-styles";
@@ -5516,21 +5790,28 @@ ${REMINDERS_CARD_CSS}`;
       return node;
     };
     const root = el("div", "zbf-word-cite-wrap");
+    const mainView = el("div", "zbf-wc-main-view");
     const docCard = el("div", "zbf-wc-card zbf-wc-doc-card");
     const docRow = el("div", "zbf-wc-doc-row");
     const wBadge = el("span", "zbf-wc-w");
     wBadge.textContent = "W";
     const docMeta = el("div", "zbf-wc-doc-meta");
     const docNameEl = el("strong", "zbf-wc-docname");
-    const docSub = el("span", "zbf-wc-doc-sub");
+    const docSub = el("div", "zbf-wc-doc-sub");
     const docDot = el("span", "zbf-wc-dot");
     const docStatusEl = el("span", "zbf-wc-doc-status");
-    docSub.append(docDot, docStatusEl);
+    const colSepEl = el("span", "zbf-wc-inline-sep");
+    colSepEl.textContent = "·";
+    const colBtn = el("button", "zbf-wc-col-inline zbf-word-col-action");
+    colBtn.type = "button";
+    docSub.append(docDot, docStatusEl, colSepEl, colBtn);
     docMeta.append(docNameEl, docSub);
     const docSwitchBtn = el("button", "zbf-wc-doc-switch");
     docSwitchBtn.type = "button";
-    docSwitchBtn.textContent = "⇄";
+    const docSwitchLbl = el("span", "zbf-wc-switch-lbl");
+    docSwitchBtn.append(createWordCiteSvgIcon(doc, "switch"), docSwitchLbl);
     docRow.append(wBadge, docMeta, docSwitchBtn);
+    docCard.appendChild(docRow);
     const statStrip = el("div", "zbf-wc-stat-strip");
     const mkCell = () => {
       const cell = el("div", "zbf-wc-stat-cell");
@@ -5543,45 +5824,48 @@ ${REMINDERS_CARD_CSS}`;
     const c2 = mkCell();
     const c3 = mkCell();
     statStrip.append(c1.cell, c2.cell, c3.cell);
-    docCard.append(docRow, statStrip);
     const citeCard = el("div", "zbf-wc-card zbf-wc-cite-card");
-    const citeHead = el("div", "zbf-wc-cite-head");
     const citeKickerEl = el("span", "zbf-wc-cite-kicker");
+    const citeTitleRow = el("div", "zbf-wc-cite-title-row");
     const ordBadgeEl = el("span", "zbf-wc-ord-badge");
-    citeHead.append(citeKickerEl, ordBadgeEl);
-    const citeTitleEl = el("div", "zbf-wc-cite-title");
+    const citeTitleEl = el("span", "zbf-wc-cite-title");
+    citeTitleRow.append(ordBadgeEl, citeTitleEl);
     const citeSubEl = el("div", "zbf-wc-cite-sub");
-    const actions = el("div", "zbf-wc-actions");
+    const synergyEl = el("div", "zbf-wc-synergy");
+    const groupBtn = el("button", "zbf-wc-link zbf-word-group-action");
+    groupBtn.type = "button";
+    synergyEl.appendChild(groupBtn);
+    citeCard.append(citeKickerEl, citeTitleRow, citeSubEl, synergyEl);
+    const actionsEl = el("div", "zbf-wc-actions");
     const insertBtn = el("button", "zbf-word-cite-action");
     insertBtn.type = "button";
     const refreshBtn = el("button", "zbf-word-refresh-action");
     refreshBtn.type = "button";
-    refreshBtn.textContent = "↻";
-    actions.append(insertBtn, refreshBtn);
-    const synergyEl = el("div", "zbf-wc-synergy");
-    const groupBtn = el("button", "zbf-wc-link zbf-word-group-action");
-    groupBtn.type = "button";
-    const colBtn = el("button", "zbf-wc-link zbf-wc-col-link zbf-word-col-action");
-    colBtn.type = "button";
-    synergyEl.append(groupBtn, colBtn);
-    citeCard.append(citeHead, citeTitleEl, citeSubEl, actions, synergyEl);
+    refreshBtn.appendChild(createWordCiteSvgIcon(doc, "refresh"));
+    actionsEl.append(insertBtn, refreshBtn);
+    const orphanRefs = createOrphanAccordionDom(doc);
+    const reminderRefs = createReminderCardDom(doc, reminderHeadCb, signal);
+    mainView.append(docCard, statStrip, citeCard, actionsEl, orphanRefs.box, reminderRefs.root);
     const receiptEl = el("div", "zbf-wc-receipt");
     receiptEl.hidden = true;
     receiptEl.setAttribute("role", "status");
-    const orphanRefs = createOrphanAccordionDom(doc);
-    const reminderRefs = createReminderCardDom(doc, reminderHeadCb, signal);
-    root.append(docCard, citeCard, receiptEl, orphanRefs.box, reminderRefs.root);
+    root.append(mainView, receiptEl);
     body.appendChild(root);
     return {
       root,
+      mainView,
       docCard,
       docRow,
       wBadge,
       docNameEl,
       docDot,
       docStatusEl,
+      colSepEl,
+      colBtn,
       docSwitchBtn,
+      docSwitchLbl,
       statStrip,
+      citedCell: c1.cell,
       citedValEl: c1.val,
       citedLblEl: c1.lbl,
       inTextValEl: c2.val,
@@ -5594,11 +5878,11 @@ ${REMINDERS_CARD_CSS}`;
       ordBadgeEl,
       citeTitleEl,
       citeSubEl,
-      insertBtn,
-      refreshBtn,
       synergyEl,
       groupBtn,
-      colBtn,
+      actionsEl,
+      insertBtn,
+      refreshBtn,
       receiptEl,
       orphanRefs,
       reminderRefs,
@@ -5610,25 +5894,32 @@ ${REMINDERS_CARD_CSS}`;
   function renderWordCitePanel(st, vm, orphanCb, reminderCb) {
     const doc = st.root.ownerDocument;
     st.docRow.hidden = !vm.showDocSwitcher;
+    st.docCard.hidden = !vm.showDocSwitcher;
     st.wBadge.classList.toggle("is-live", vm.hasWordSession);
     st.docDot.classList.toggle("is-live", vm.hasWordSession);
     st.docNameEl.textContent = vm.docName;
     st.docNameEl.title = vm.docSwitchTitle;
     st.docStatusEl.textContent = vm.docStatusText;
-    st.docSwitchBtn.hidden = !vm.isMultiSession && !vm.hasWordSession;
+    st.colSepEl.hidden = !vm.showCollectionButton;
+    st.colBtn.hidden = !vm.showCollectionButton;
+    st.colBtn.textContent = vm.colButtonText;
+    st.colBtn.title = vm.colButtonTitle;
+    st.docSwitchBtn.hidden = !vm.isMultiSession;
     st.docSwitchBtn.disabled = !vm.isMultiSession;
     st.docSwitchBtn.title = vm.docSwitchTitle;
+    st.docSwitchLbl.textContent = vm.sessionBadgeText;
     st.statStrip.hidden = !vm.showSummaryCounts;
-    st.statStrip.classList.toggle("is-solo", !vm.showDocSwitcher);
     st.statStrip.title = vm.statStrip.tooltip;
     st.citedValEl.textContent = vm.statStrip.citedValue;
     st.citedLblEl.textContent = vm.statStrip.citedLabel;
+    st.citedCell.classList.toggle("is-interactive", vm.showCollectionButton);
+    st.citedCell.title = vm.showCollectionButton ? vm.colButtonTitle : vm.statStrip.tooltip;
     st.inTextValEl.textContent = vm.statStrip.inTextValue;
     st.inTextLblEl.textContent = vm.statStrip.inTextLabel;
     st.orphanValEl.textContent = vm.statStrip.orphanValue;
     st.orphanLblEl.textContent = vm.statStrip.orphanLabel;
     st.orphanCell.classList.toggle("is-warn", vm.statStrip.orphanWarn);
-    st.docCard.hidden = !vm.showDocSwitcher && !vm.showSummaryCounts;
+    st.orphanCell.classList.toggle("is-interactive", vm.statStrip.orphanWarn && vm.orphanCard.visible);
     st.citeKickerEl.textContent = vm.currentCite.kicker;
     st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
     st.ordBadgeEl.textContent = vm.currentCite.badgeText;
@@ -5637,18 +5928,16 @@ ${REMINDERS_CARD_CSS}`;
     st.citeTitleEl.title = vm.currentCite.tooltip;
     st.citeSubEl.hidden = !vm.currentCite.submeta;
     st.citeSubEl.textContent = vm.currentCite.submeta;
-    st.insertBtn.textContent = vm.insertLabel;
-    st.insertBtn.disabled = vm.insertDisabled;
-    st.refreshBtn.disabled = vm.refreshDisabled;
-    st.refreshBtn.title = vm.refreshTitle;
     st.groupBtn.hidden = !vm.groupButtonText;
     st.groupBtn.disabled = vm.refreshDisabled;
     st.groupBtn.textContent = vm.groupButtonText;
     st.groupBtn.title = vm.groupButtonTitle;
-    st.colBtn.hidden = !vm.showCollectionButton;
-    st.colBtn.textContent = vm.colButtonText;
-    st.colBtn.title = vm.colButtonTitle;
-    st.synergyEl.hidden = st.groupBtn.hidden && st.colBtn.hidden;
+    st.synergyEl.hidden = st.groupBtn.hidden;
+    st.insertBtn.textContent = vm.insertLabel;
+    st.insertBtn.disabled = vm.insertDisabled;
+    st.refreshBtn.disabled = vm.refreshDisabled;
+    st.refreshBtn.title = vm.refreshTitle;
+    st.refreshBtn.setAttribute("aria-label", vm.refreshTitle);
     renderReceiptDom(doc, st.receiptEl, vm.receipt, orphanCb);
     renderOrphanCardDom(doc, st.orphanRefs, vm.orphanCard, vm.orphanDisabled, orphanCb);
     renderReminderCardDom(doc, st.reminderRefs, vm.reminders, vm.zh, reminderCb);
@@ -5807,21 +6096,16 @@ ${REMINDERS_CARD_CSS}`;
       const win = body.ownerDocument.defaultView;
       const controller = new (win?.AbortController ?? AbortController)();
       this.buttonListeners.set(body, controller);
-      const st = createWordCiteBodyState(
-        doc,
-        body,
-        {
-          onToggleAccordion: () => {
-            this.reminderState.expanded = !this.reminderState.expanded;
-            this.renderAllBodies();
-          },
-          onSelectFilter: (f) => {
-            this.reminderState.filter = f;
-            this.renderAllBodies();
-          }
+      const st = createWordCiteBodyState(doc, body, {
+        onToggleAccordion: () => {
+          this.reminderState.expanded = !this.reminderState.expanded;
+          this.renderAllBodies();
         },
-        controller.signal
-      );
+        onSelectFilter: (f) => {
+          this.reminderState.filter = f;
+          this.renderAllBodies();
+        }
+      }, controller.signal);
       st.setSectionSummary = setSectionSummary;
       this.states.set(body, st);
       const click = (button, action) => {
@@ -5834,6 +6118,15 @@ ${REMINDERS_CARD_CSS}`;
       click(st.docSwitchBtn, () => this.cycleWordSession());
       click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
       click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", { sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
+      st.citedCell.addEventListener("click", () => {
+        if (!st.colBtn.hidden) st.colBtn.click();
+      }, { signal: controller.signal });
+      st.orphanCell.addEventListener("click", () => {
+        if (!st.orphanRefs.box.hidden) {
+          this.orphanState.accordionOpen = true;
+          this.renderAllBodies();
+        }
+      }, { signal: controller.signal });
       click(st.orphanRefs.accHeadBtn, () => {
         this.orphanState.accordionOpen = !this.orphanState.accordionOpen;
         this.renderAllBodies();
@@ -7339,16 +7632,16 @@ ${REMINDERS_CARD_CSS}`;
   }
 
   // src/domains/visual-notes/gallery-icons.ts
-  var SVG_NS2 = "http://www.w3.org/2000/svg";
+  var SVG_NS3 = "http://www.w3.org/2000/svg";
   var XHTML_NS5 = "http://www.w3.org/1999/xhtml";
   function createToolbarArt(doc, kind) {
-    const svg = doc.createElementNS(SVG_NS2, "svg");
+    const svg = doc.createElementNS(SVG_NS3, "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("width", "20");
     svg.setAttribute("height", "20");
     svg.setAttribute("aria-hidden", "true");
     const shape = (fill, d) => {
-      const path = doc.createElementNS(SVG_NS2, "path");
+      const path = doc.createElementNS(SVG_NS3, "path");
       path.setAttribute("fill", fill);
       path.setAttribute("d", d);
       svg.appendChild(path);
@@ -7366,7 +7659,7 @@ ${REMINDERS_CARD_CSS}`;
     }
     return svg;
   }
-  var ICON_PATHS = {
+  var ICON_PATHS2 = {
     grid: [
       "M3.5 3.5h4.2v4.2H3.5z",
       "M10.3 3.5h4.2v4.2h-4.2z",
@@ -7431,7 +7724,7 @@ ${REMINDERS_CARD_CSS}`;
     ]
   };
   function createGallerySvgIcon(doc, name, size = 14) {
-    const svg = doc.createElementNS(SVG_NS2, "svg");
+    const svg = doc.createElementNS(SVG_NS3, "svg");
     svg.setAttribute("width", String(size));
     svg.setAttribute("height", String(size));
     svg.setAttribute("viewBox", "0 0 18 18");
@@ -7442,8 +7735,8 @@ ${REMINDERS_CARD_CSS}`;
     svg.setAttribute("stroke-linejoin", "round");
     svg.setAttribute("aria-hidden", "true");
     svg.style.flex = "none";
-    for (const d of ICON_PATHS[name] || []) {
-      const path = doc.createElementNS(SVG_NS2, "path");
+    for (const d of ICON_PATHS2[name] || []) {
+      const path = doc.createElementNS(SVG_NS3, "path");
       path.setAttribute("d", d);
       svg.appendChild(path);
     }
@@ -19844,7 +20137,7 @@ ${summary}` : summary;
   }
 
   // src/domains/workspace/workspace-icons.ts
-  var SVG_NS3 = "http://www.w3.org/2000/svg";
+  var SVG_NS4 = "http://www.w3.org/2000/svg";
   var ICONS = {
     more: [
       { tag: "circle", attrs: { cx: "3.5", cy: "8", r: "1.1", fill: "currentColor", stroke: "none" } },
@@ -19957,7 +20250,7 @@ ${summary}` : summary;
     ]
   };
   function createWorkspaceIcon(doc, name, size = 13) {
-    const svg = doc.createElementNS(SVG_NS3, "svg");
+    const svg = doc.createElementNS(SVG_NS4, "svg");
     svg.setAttribute("viewBox", "0 0 16 16");
     svg.setAttribute("width", String(size));
     svg.setAttribute("height", String(size));
@@ -19969,7 +20262,7 @@ ${summary}` : summary;
     svg.setAttribute("aria-hidden", "true");
     svg.setAttribute("class", "zbf-tb-icon");
     for (const def of ICONS[name] || ICONS.layers) {
-      const el = doc.createElementNS(SVG_NS3, def.tag);
+      const el = doc.createElementNS(SVG_NS4, def.tag);
       for (const [k, v] of Object.entries(def.attrs)) {
         el.setAttribute(k, v);
       }

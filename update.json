@@ -3,15 +3,15 @@
     "bridgeflow@groele": {
       "updates": [
         {
-          "version": "0.7.0",
-          "update_link": "https://github.com/groele/Zotero-BridgeFlow/releases/download/v0.7.0/Zotero-BridgeFlow-0.7.0.xpi",
+          "version": "0.7.3",
+          "update_link": "https://github.com/groele/Zotero-BridgeFlow/releases/download/v0.7.3/Zotero-BridgeFlow-0.7.3.xpi",
           "applications": {
             "zotero": {
               "strict_min_version": "10.0",
               "strict_max_version": "12.*"
             }
           },
-          "update_hash": "sha512:b752315ad87945e396025aff4b57359d1c61c32b8c03d90b93ab9d4738831e8ed688579de6abe00d99480ee3038998811303c7984675c1c8135d36b05b43cbd2"
+          "update_hash": "sha512:246c32cb2b5bee345ef28d2eb3e888de1dfb7b54ac31fb8aa84f74a59aa9740b12099205a966305ecfedcea8d776993d0331f4abf43009864b285319080ad3e3"
         }
       ]
     }

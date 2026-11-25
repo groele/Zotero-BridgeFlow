@@ -117,9 +117,9 @@ export function buildMetadataRemindersModel(options: {
 		const cacheKey = primary || `item:${itemID}`;
 		const rawType = resolveZoteroItemType(cand.item);
 		const title = safeGetItemField(cand.item, 'title').trim() || (zh ? `未命名条目 #${itemID}` : `Untitled #${itemID}`);
-		const sourceLabel = cand.sourceKind === 'word' && cand.ordinal
-			? (zh ? `Word 引用 [${cand.ordinal}] · 当前文档` : `Word [${cand.ordinal}] · Active doc`)
-			: (zh ? '来源：当前选择' : 'Source: Selection');
+		const sourceLabel = cand.sourceKind === 'word'
+			? (zh ? '当前文档' : 'Active doc')
+			: (zh ? '当前选择' : 'Selected');
 		allRecords.push({
 			itemID, cacheKey, itemType: rawType, itemTypeLabel: formatReminderItemType(rawType, zh),
 			title, creatorYear: formatCreatorYear(cand.item), sourceKind: cand.sourceKind,
@@ -138,14 +138,15 @@ export function buildMetadataRemindersModel(options: {
 	const hasWordSession = Boolean(snap?.activeSessionID);
 	const hasWordActive = activeRows.some((r) => r.sourceKind === 'word');
 
-	let headerBadge = String(activeCount);
+	let headerBadge = '!';
 	let headerBadgeTone: 'warn' | 'ok' | 'neutral' = 'neutral';
 	let headerTitle: string;
 	if (activeCount > 0) {
+		headerBadge = '!';
 		headerBadgeTone = 'warn';
 		headerTitle = hasWordActive || hasWordSession
-			? (zh ? `${activeCount} 篇引用文献的信息不完整` : `${activeCount} cited item(s) incomplete`)
-			: (zh ? `${activeCount} 篇所选文献的信息不完整` : `${activeCount} selected item(s) incomplete`);
+			? (zh ? `${activeCount} 篇引用文献信息待补全` : `${activeCount} cited item(s) incomplete`)
+			: (zh ? `${activeCount} 篇所选文献信息待补全` : `${activeCount} selected item(s) incomplete`);
 	} else if (ignoredCount > 0) {
 		headerBadge = String(ignoredCount);
 		headerTitle = zh ? `文献信息提醒 · 已忽略 ${ignoredCount} 篇` : `Metadata reminders · ${ignoredCount} ignored`;
@@ -153,8 +154,8 @@ export function buildMetadataRemindersModel(options: {
 		headerBadge = '✓';
 		headerBadgeTone = 'ok';
 		headerTitle = hasWordSession && includeWord
-			? (zh ? `引用文献信息提醒 · ${checkedCount} 篇均完整` : `Citation metadata · All ${checkedCount} complete`)
-			: (zh ? '文献信息提醒 · 当前条目完整' : 'Metadata check · Item complete');
+			? (zh ? `${checkedCount} 篇引用文献著录均完整` : `All ${checkedCount} cited items complete`)
+			: (zh ? '当前所选文献著录完整' : 'Selected item metadata complete');
 	} else {
 		headerBadge = '0';
 		headerTitle = zh ? '引用文献信息提醒' : 'Citation metadata reminders';
