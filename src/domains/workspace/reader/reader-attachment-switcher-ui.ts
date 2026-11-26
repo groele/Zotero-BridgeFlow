@@ -30,8 +30,7 @@ export interface AttachmentMenuOptions {
 	openAttIDs: ReadonlySet<number>;
 	zh: boolean;
 	useFilename?: boolean;
-	openMode?: 'new-tab' | 'replace-tab' | 'background-tab';
-	onSelect: (entry: SiblingAttachmentEntry, ev: MouseEvent | KeyboardEvent, forceBackground?: boolean) => void;
+	onSelect: (entry: SiblingAttachmentEntry) => void;
 	onClose: () => void;
 }
 
@@ -100,11 +99,7 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 		});
 	};
 
-	const hint = opts.openMode === 'replace-tab'
-		? (zh ? '点击替换当前标签 · Alt+点击新开 · Ctrl/中键后台打开' : 'Click to replace tab · Alt+Click open in new tab · Ctrl/Middle-click background')
-		: opts.openMode === 'background-tab'
-			? (zh ? '点击后台新开 · Alt+点击替换当前标签' : 'Click to open in background · Alt+Click replace tab')
-			: (zh ? '点击切换 · Alt+点击替换当前标签 · Ctrl/中键后台打开' : 'Click to switch · Alt+Click replace tab · Ctrl/Middle-click open in background');
+	const hint = zh ? '在当前标签页内切换' : 'Switch in the current tab';
 
 	items.forEach((entry, idx) => {
 		const row = createReaderHtmlEl(doc, 'button');
@@ -143,14 +138,7 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 			ev.preventDefault();
 			ev.stopPropagation();
 			close();
-			onSelect(entry, ev);
-		});
-		row.addEventListener('auxclick', (ev: MouseEvent) => {
-			if (ev.button !== 1) return;
-			ev.preventDefault();
-			ev.stopPropagation();
-			close();
-			onSelect(entry, ev, true);
+			onSelect(entry);
 		});
 		row.addEventListener('mouseenter', () => {
 			focusIdx = idx;
@@ -212,7 +200,7 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 		if (ev.key === 'Escape') { ev.preventDefault(); close(); anchorBtn.focus?.(); }
 		else if (ev.key === 'ArrowDown' && rowEls.length) { ev.preventDefault(); updateFocus(focusIdx + 1); }
 		else if (ev.key === 'ArrowUp' && rowEls.length) { ev.preventDefault(); updateFocus(focusIdx - 1); }
-		else if (ev.key === 'Enter' && rowEls[focusIdx]) { ev.preventDefault(); const e = items[focusIdx]; close(); onSelect(e, ev); }
+		else if (ev.key === 'Enter' && rowEls[focusIdx]) { ev.preventDefault(); const e = items[focusIdx]; close(); onSelect(e); }
 	};
 	const hostDoc = hostWin?.document && hostWin.document !== doc ? hostWin.document : null;
 	const close = () => {

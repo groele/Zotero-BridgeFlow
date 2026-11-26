@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.9.8"}'>v0.9.8</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"1.0.0"}'>v1.0.0</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -247,16 +247,6 @@
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableReaderAttachmentSwitcher" native="true" data-l10n-id="zbf-pref-ws-reader-att-switcher"/>
 						<html:div id="zbf-sub-reader-switcher-cfg" class="zbf-sub-stack">
-							<html:div class="zbf-inline-field">
-								<label data-l10n-id="zbf-pref-ws-att-openmode" control="zbf-sel-att-openmode"/>
-								<menulist id="zbf-sel-att-openmode" native="true" preference="extensions.zotero.bridgeflow.workspace.readerSwitcherOpenMode">
-									<menupopup>
-										<menuitem value="new-tab" data-l10n-id="zbf-opt-att-new-tab"/>
-										<menuitem value="replace-tab" data-l10n-id="zbf-opt-att-replace-tab"/>
-										<menuitem value="background-tab" data-l10n-id="zbf-opt-att-background-tab"/>
-									</menupopup>
-								</menulist>
-							</html:div>
 							<checkbox preference="extensions.zotero.bridgeflow.workspace.readerSwitcherIncludeSnapshots" native="true" data-l10n-id="zbf-pref-ws-att-snapshots"/>
 							<checkbox id="zbf-chk-ws-att-filename" preference="extensions.zotero.bridgeflow.workspace.readerSwitcherUseFilename" native="true" data-l10n-id="zbf-pref-ws-att-filename"/>
 						</html:div>

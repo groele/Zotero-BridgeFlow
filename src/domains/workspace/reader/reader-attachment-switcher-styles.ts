@@ -201,7 +201,7 @@ export function resolveSiblingAttachments(
 		const child = hostItems.get(id);
 		if (!child || child.deleted || child.isTrashed?.() || child.isNote?.() === true) return;
 		const { kind, kindLabel, readerCapable } = classifyAttachment(child);
-		if (!includeSnapshots && id !== currentAttID && kind !== 'pdf' && kind !== 'epub') return;
+		if (!readerCapable || (!includeSnapshots && id !== currentAttID && kind === 'snapshot')) return;
 		const rawTitle = stripItemTitleMarkup(String(child.getField?.('title') || '')).trim();
 		const filename = String(child.attachmentFilename || '').trim();
 		const fallback = kind === 'snapshot' ? 'Snapshot' : (filename || kindLabel);

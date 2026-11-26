@@ -68,7 +68,6 @@ pref("extensions.zotero.bridgeflow.workspace.hoverPreviewShowRemark", true);
 pref("extensions.zotero.bridgeflow.workspace.hoverPreviewShowReadingStats", true);
 pref("extensions.zotero.bridgeflow.workspace.hoverPreviewShowHeatmap", true);
 pref("extensions.zotero.bridgeflow.workspace.enableReaderAttachmentSwitcher", true);
-pref("extensions.zotero.bridgeflow.workspace.readerSwitcherOpenMode", "new-tab");
 pref("extensions.zotero.bridgeflow.workspace.readerSwitcherIncludeSnapshots", true);
 pref("extensions.zotero.bridgeflow.workspace.readerSwitcherUseFilename", false);
 pref("extensions.zotero.bridgeflow.workspace.enableSpotlight", true);

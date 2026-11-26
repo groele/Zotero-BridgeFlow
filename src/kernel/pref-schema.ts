@@ -115,10 +115,6 @@ export const PREF_SCHEMA = {
 	'workspace.hoverPreviewShowReadingStats': { defaultValue: true },
 	'workspace.hoverPreviewShowHeatmap': { defaultValue: true },
 	'workspace.enableReaderAttachmentSwitcher': { defaultValue: true },
-	'workspace.readerSwitcherOpenMode': {
-		defaultValue: 'new-tab',
-		enumValues: ['new-tab', 'replace-tab', 'background-tab'],
-	},
 	'workspace.readerSwitcherIncludeSnapshots': { defaultValue: true },
 	'workspace.readerSwitcherUseFilename': { defaultValue: false },
 	'workspace.enableSpotlight': { defaultValue: true },

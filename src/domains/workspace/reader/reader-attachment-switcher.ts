@@ -1,3 +1,4 @@
+import { showAttachmentInReaderTab } from '../../../services/reader-tab-navigation.ts';
 import { collectOpenAttIDs, resolveOwnerWindow } from './reader-owner-window.ts';
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
@@ -212,7 +213,7 @@ export class ReaderAttachmentSwitcher {
 		const { parentID, items } = resolveSiblingAttachments(attID, includeSnapshots);
 		slot.parentID = parentID;
 		slot.items = items;
-		if (items.length < 2) { this.syncSlotVisibility(slot, true); return; }
+		if (!slot.reader.tabID || items.length < 2) { this.syncSlotVisibility(slot, true); return; }
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 		slot.labelEl.textContent = zh ? `共 ${items.length} 个版本` : `${items.length} versions`;
 		slot.btn.title = zh
@@ -230,8 +231,6 @@ export class ReaderAttachmentSwitcher {
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 		const curAttID = Number(slot.reader?.itemID || 0);
 		const readerFrame = slot.reader?._iframe || (slot.doc.defaultView as any)?.frameElement || null;
-		const rawMode = String(this.kernel.prefs.get('workspace.readerSwitcherOpenMode') || 'new-tab');
-		const openMode = rawMode === 'replace-tab' || rawMode === 'background-tab' ? rawMode : 'new-tab';
 		this.closeActiveMenu = openSiblingAttachmentMenu({
 			doc: slot.doc,
 			hostWin: resolveOwnerWindow(slot.reader),
@@ -242,9 +241,8 @@ export class ReaderAttachmentSwitcher {
 			useFilename: this.kernel.prefs.get('workspace.readerSwitcherUseFilename'),
 			openAttIDs: collectOpenAttIDs(slot.reader),
 			zh,
-			openMode,
-			onSelect: (entry, ev, forceBackground) => {
-				void this.switchToAttachment(slot.reader, slot.parentID, entry, ev, forceBackground);
+			onSelect: (entry) => {
+				void this.switchToAttachment(slot.reader, slot.parentID, entry);
 			},
 			onClose: () => { this.closeActiveMenu = null; },
 		});
@@ -254,70 +252,40 @@ export class ReaderAttachmentSwitcher {
 		reader: any,
 		parentID: number,
 		target: SiblingAttachmentEntry,
-		ev?: MouseEvent | KeyboardEvent,
-		forceBackground = false,
 	): Promise<boolean> {
 		const currentAttID = Number(reader?.itemID || 0);
-		if (!target?.id || target.id === currentAttID) return false;
-		const win = resolveOwnerWindow(reader) as any;
-		const zotero = (globalThis as any).Zotero;
-		const tabsApi = win?.Zotero_Tabs;
-		const nativeTabs: any[] = Array.isArray(tabsApi?._tabs) ? tabsApi._tabs : [];
-		const curTabID = String(reader?.tabID || '');
-		const curIdx = curTabID ? nativeTabs.findIndex((t) => t?.id === curTabID) : -1;
-		const openMode = String(this.kernel.prefs.get('workspace.readerSwitcherOpenMode') || 'new-tab');
-		const bg = Boolean(forceBackground || (ev && (ev.ctrlKey || ev.metaKey)) || (!ev?.altKey && openMode === 'background-tab'));
-		const replaceCur = Boolean(!bg && curTabID && (ev?.altKey ? openMode !== 'replace-tab' : openMode === 'replace-tab'));
-		const groupId = this.store.groupOfKey(`item:${currentAttID}`)
-			|| (parentID > 0 ? this.store.groupOfKey(`item:${parentID}`) : '')
-			|| '';
-
-		this.store.setSleeping(`item:${target.id}`, false);
-		const existing = nativeTabs.find((t) => Number(t?.data?.itemID || 0) === target.id);
-		if (existing) {
-			if (!bg) {
-				if (target.readerCapable && typeof zotero?.Reader?.open === 'function' && typeof zotero?.Reader?.getByTabID === 'function' && !zotero.Reader.getByTabID(existing.id)) {
-					try { await zotero.Reader.open(target.id); } catch { tabsApi?.select?.(existing.id); }
+		if (!target?.readerCapable || target.id === currentAttID || !reader?.tabID) return false;
+		const owner = resolveOwnerWindow(reader);
+		const currentKey = `item:${currentAttID}`;
+		const targetKey = `item:${target.id}`;
+		const currentGroupId = this.store.groupOfKey(currentKey);
+		const groupId = currentGroupId || (parentID > 0 ? this.store.groupOfKey(`item:${parentID}`) : '');
+		const wasPinned = this.store.isPinned(currentKey);
+		let handoffDone = false;
+		const applyStoreHandoff = () => {
+			if (handoffDone) return;
+			handoffDone = true;
+			const openTabs: any[] = Array.isArray((owner as any)?.Zotero_Tabs?._tabs) ? (owner as any).Zotero_Tabs._tabs : [];
+			const currentStillOpen = openTabs.some((t) => Number(t?.data?.itemID || 0) === currentAttID);
+			this.store.setSleeping(targetKey, false);
+			this.store.removeVirtualMember(targetKey);
+			if (groupId && !this.store.groupOfKey(targetKey)) {
+				if (currentGroupId === groupId && !currentStillOpen) {
+					this.store.assignKeyRelative(targetKey, groupId, currentKey, true);
+					this.store.assignToGroup(currentKey, null);
+					this.store.removeVirtualMember(currentKey);
 				} else {
-					tabsApi?.select?.(existing.id);
+					this.store.assignToGroup(targetKey, groupId);
 				}
 			}
-			this.store.removeVirtualMember(`item:${target.id}`);
-			if (groupId && !this.store.groupOfKey(`item:${target.id}`)) this.store.assignToGroup(`item:${target.id}`, groupId);
-			if (replaceCur && existing.id !== curTabID) tabsApi?.close?.(curTabID);
-			return true;
-		}
-
-		let opened = false;
-		const openInWindow = Boolean(!curTabID && !tabsApi);
-		if (target.readerCapable && typeof zotero?.Reader?.open === 'function') {
-			try {
-				await zotero.Reader.open(target.id, undefined, {
-					tabIndex: curIdx >= 0 ? curIdx + 1 : undefined,
-					openInBackground: bg,
-					openInWindow,
-				});
-				opened = true;
-			} catch { /* fall back */ }
-		}
-		if (!opened && target.kind === 'link') {
-			const url = zotero?.Items?.get?.(target.id)?.getField?.('url');
-			if (url && typeof zotero?.launchURL === 'function') {
-				zotero.launchURL(url);
-				opened = true;
+			if (wasPinned && !currentStillOpen) {
+				this.store.setPinned(targetKey, true);
+				this.store.setPinned(currentKey, false);
 			}
-		}
-		if (!opened && typeof win?.ZoteroPane?.viewAttachment === 'function') {
-			try {
-				await win.ZoteroPane.viewAttachment(target.id);
-				opened = true;
-			} catch { /* ignore */ }
-		}
-		if (!opened) return false;
-
-		this.store.removeVirtualMember(`item:${target.id}`);
-		if (groupId) this.store.assignToGroup(`item:${target.id}`, groupId);
-		if (replaceCur && curTabID) tabsApi?.close?.(curTabID);
+		};
+		if (!await showAttachmentInReaderTab(owner, target.id, reader.tabID, undefined, applyStoreHandoff)) return false;
+		applyStoreHandoff();
+		this.pruneClosedSlots();
 		return true;
 	}
 

@@ -55,7 +55,7 @@ export function bindPreviewToolbar(
 	zoomInBtn.addEventListener('click', () => setPreviewZoom(state, state.zoom + ZOOM_STEP, actions.onRenderError), opts);
 	state.zoomLabel.addEventListener('click', () => setPreviewZoom(state, 1, actions.onRenderError), opts);
 	modeBtn.addEventListener('click', () => actions.onToggleFullMode(state), opts);
-	state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1), opts);
+	state.openBtn.addEventListener('click', () => state.attachment && void openPdfInReader(state.attachment, state.win, state.currentPage || 1, state.compare.tabType === 'reader'), opts);
 
 	const selectAttachmentById = (attId: number) => {
 		const chosen = state.attachments.find((entry) => entry.id === attId);
@@ -85,7 +85,7 @@ export function bindPreviewToolbar(
 		event.preventDefault?.();
 		event.stopPropagation?.();
 		const card = (event.target as Element | null)?.closest?.('[data-page-number]');
-		void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.('data-page-number')) || state.currentPage || 1);
+		void openPdfInReader(state.attachment, state.win, Number(card?.getAttribute?.('data-page-number')) || state.currentPage || 1, state.compare.tabType === 'reader');
 	}, opts);
 	state.viewportEl.addEventListener('keydown', (event: KeyboardEvent) => {
 		if (!state.numPages) return;

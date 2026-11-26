@@ -203,7 +203,7 @@ test('v0.9.2 ReaderAttachmentSwitcher menu survives host <browser class="reader"
 			get: (id) => ({ 100: parent, 101: attPdf1, 102: attPdf2, 103: attSnap }[id] || null),
 		},
 		Reader: {
-			open: async (id, _loc, opts) => { openCalls.push({ id, opts }); },
+			open: async (id, _loc, opts) => { openCalls.push({ id, opts }); return { tabID: opts?.tabID || ('opened-' + id) }; },
 			getByTabID: () => null,
 		},
 		getMainWindows: () => [{ document: hostWin.doc, Zotero_Tabs: { _tabs: nativeTabs, close: (id) => closedTabIDs.push(id), select: () => {} } }],
@@ -225,7 +225,6 @@ test('v0.9.2 ReaderAttachmentSwitcher menu survives host <browser class="reader"
 		currentAttID: 101,
 		openAttIDs: new Set([101]),
 		zh: true,
-		openMode: 'replace-tab',
 		onSelect: (entry, ev) => { selected = { entry, ev }; },
 		onClose: () => {},
 	});
@@ -247,18 +246,21 @@ test('v0.9.2 ReaderAttachmentSwitcher menu survives host <browser class="reader"
 	closeFn();
 
 	// Verify replace-tab openMode closes current tab and preserves group
-	const mem = createMemoryPrefs({ 'workspace.readerSwitcherOpenMode': 'replace-tab' });
+	const mem = createMemoryPrefs();
 	const kernel = new PluginKernel({ prefAdapter: mem.adapter });
 	const store = new WorkspaceStateStore(kernel.prefs);
 	const grp = store.createGroup('My Group');
 	store.assignToGroup('item:101', grp.id);
 	const switcher = new ReaderAttachmentSwitcher(kernel, store);
 	const readerObj = { itemID: 101, tabID: 'tab-101', _window: { Zotero_Tabs: { _tabs: nativeTabs, close: (id) => closedTabIDs.push(id), select: () => {} } } };
-	const ok = await switcher.switchToAttachment(readerObj, 100, withSnap.items[1], {});
+	const ok = await switcher.switchToAttachment(readerObj, 100, withSnap.items[1]);
 	assert.equal(ok, true);
 	assert.equal(openCalls[0]?.id, 102);
-	assert.deepEqual(closedTabIDs, ['tab-101']);
+	assert.equal(openCalls[0]?.opts?.tabID, 'tab-101');
+	assert.deepEqual(closedTabIDs, []);
+	assert.equal(nativeTabs[0].data.itemID, 102);
 	assert.equal(store.groupOfKey('item:102'), grp.id);
+	assert.equal(store.groupOfKey('item:101'), '');
 	kernel.shutdown();
 	delete globalThis.Zotero;
 });

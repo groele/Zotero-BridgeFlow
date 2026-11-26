@@ -149,7 +149,7 @@ test('v0.9.0 ReaderAttachmentSwitcher strips HTML title markup, hides empty .sec
 				_readers: [],
 				registerEventListener: () => {},
 				unregisterEventListener: () => {},
-				open: async (id, _loc, opts) => { openedCalls.push({ id, opts }); },
+				open: async (id, _loc, opts) => { openedCalls.push({ id, opts }); return { tabID: opts?.tabID || ('opened-' + id) }; },
 			},
 			Notifier: { registerObserver: () => 1, unregisterObserver: () => {} },
 			Prefs: { get: () => undefined, set: () => {}, clear: () => {}, registerObserver: () => Symbol('o'), unregisterObserver: () => {} },
@@ -195,22 +195,22 @@ test('v0.9.0 ReaderAttachmentSwitcher strips HTML title markup, hides empty .sec
 		assert.equal(doc.getElementById(READER_ATT_MENU_ID), null);
 		assert.equal(doc.getElementById(READER_ATT_BACKDROP_ID), null);
 
-		// Middle-click (auxclick button=1) opens sibling in background without closing current tab
+		// Middle-click keeps the current reader tab
 		btn.dispatch('click');
 		const rows = doc.querySelectorAll('.zbf-reader-att-item');
 		rows[1].dispatch('auxclick', { button: 1 });
 		await new Promise((r) => setTimeout(r, 20));
-		assert.equal(openedCalls.length, 1);
-		assert.equal(openedCalls[0].opts.openInBackground, true);
+		assert.equal(openedCalls.length, 0);
 		assert.deepEqual(closedTabs, []);
 
-		// Alt+click switches and closes current tab
-		btn.dispatch('click');
-		doc.querySelectorAll('.zbf-reader-att-item')[1].dispatch('click', { altKey: true });
+		// Selecting an attachment switches in-place inside the current tab without opening or closing tabs.
+		doc.querySelectorAll('.zbf-reader-att-item')[1].dispatch('click');
 		await new Promise((r) => setTimeout(r, 20));
-		assert.equal(openedCalls.length, 2);
-		assert.equal(openedCalls[1].opts.openInBackground, false);
-		assert.deepEqual(closedTabs, ['tab-21']);
+		assert.equal(openedCalls.length, 1);
+		assert.equal(openedCalls[0].opts.openInWindow, false);
+		assert.equal(openedCalls[0].opts.tabID, 'tab-21');
+		assert.deepEqual(closedTabs, []);
+		assert.equal(tabs[0].data.itemID, 22);
 
 		switcher.stop();
 		kernel.notifier.stop();

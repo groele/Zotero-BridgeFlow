@@ -71,7 +71,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.disposables.reset();
 		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
 		this.disposables.add(this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()));
-		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher', 'workspace.readerSwitcherOpenMode', 'workspace.readerSwitcherIncludeSnapshots'], () => this.attachmentSwitcher.syncPref()));
+		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher', 'workspace.readerSwitcherIncludeSnapshots'], () => this.attachmentSwitcher.syncPref()));
 		this.disposables.add(this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
 			const targetWin = win || this.getTargetWindow();
 			if (targetWin && this.active) this.windows.get(targetWin)?.openSpotlightWithQuery('');

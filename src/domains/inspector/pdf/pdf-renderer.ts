@@ -1,3 +1,4 @@
+import { showAttachmentInReaderTab } from '../../../services/reader-tab-navigation.ts';
 import {
 	formatCompactPdfOptionLabel,
 	formatPdfAttachmentDisplayTitle,
@@ -285,26 +286,12 @@ export async function renderPageToCanvas(
 	return { width: Math.floor(cssViewport.width), height: Math.floor(cssViewport.height) };
 }
 
-export async function openPdfInReader(att: any, win?: Window | null, pageNumber?: number): Promise<boolean> {
+export async function openPdfInReader(att: any, win?: Window | null, pageNumber?: number, fromReader = false): Promise<boolean> {
 	if (!att?.id) return false;
-	const zotero = (globalThis as any).Zotero;
+	const owner = win ?? (globalThis as any).Zotero?.getMainWindow?.();
+	const tabs = (owner as any)?.Zotero_Tabs;
+	const tabID = fromReader ? tabs?.selectedID : undefined;
+	if (fromReader && (!tabID || tabID === 'zotero-pane')) return false;
 	const location = typeof pageNumber === 'number' && pageNumber >= 1 ? { pageIndex: pageNumber - 1 } : undefined;
-	try {
-		if (zotero?.Reader?.open) {
-			try {
-				await zotero.Reader.open(att.id, location, { openInWindow: false });
-			} catch {
-				await zotero.Reader.open(att.id, undefined, { openInWindow: false });
-			}
-			return true;
-		}
-		const targetWin = (win as any)?.ZoteroPane ? win : zotero?.getMainWindow?.();
-		if ((targetWin as any)?.ZoteroPane?.viewAttachment) {
-			await (targetWin as any).ZoteroPane.viewAttachment([att.id]);
-			return true;
-		}
-	} catch (error) {
-		zotero?.logError?.(error instanceof Error ? error : new Error(String(error)));
-	}
-	return false;
+	return showAttachmentInReaderTab(owner, att.id, tabID, location);
 }

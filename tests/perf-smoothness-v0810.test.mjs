@@ -379,7 +379,7 @@ test('v0.8.10 ReaderAttachmentSwitcher hides for single attachment, lists siblin
 				_readers: [],
 				registerEventListener: (type, fn) => registeredListeners.push({ type, fn }),
 				unregisterEventListener: () => {},
-				open: async (id, _loc, opts) => { openedCalls.push({ id, opts }); },
+				open: async (id, _loc, opts) => { openedCalls.push({ id, opts }); return { tabID: opts?.tabID || ('opened-' + id) }; },
 			},
 			Notifier: { registerObserver: (o) => { observers.push(o); return 1; }, unregisterObserver: () => {} },
 			Prefs: { get: () => undefined, set: () => {}, clear: () => {}, registerObserver: () => Symbol('o'), unregisterObserver: () => {} },
@@ -422,16 +422,20 @@ test('v0.8.10 ReaderAttachmentSwitcher hides for single attachment, lists siblin
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(openedCalls.length, 1);
 		assert.equal(openedCalls[0].id, 12);
-		assert.equal(openedCalls[0].opts.tabIndex, 1, 'should insert sibling tab adjacent to current tab (curIdx + 1)');
-		assert.equal(store.groupOfKey('item:12'), grp.id, 'switched attachment should join the current workspace group');
+		assert.equal(openedCalls[0].opts.tabID, 'tab-1', 'should swap attachment in-place inside the current tab without creating a new tab');
+		assert.equal(tabs[0].data.itemID, 12, 'current tab data.itemID should update in-place');
+		assert.equal(store.groupOfKey('item:12'), grp.id, 'switched attachment should inherit the current workspace group');
+		assert.equal(store.groupOfKey('item:11'), '', 'replaced attachment should hand off group membership cleanly');
 
-		// When target attachment is already open in a tab, switch selects it without calling Zotero.Reader.open again
+		// When target attachment is already open in another tab, switch selects it without calling Zotero.Reader.open again
+		tabs[0].data.itemID = 11;
 		tabs.push({ id: 'tab-12', type: 'reader', data: { itemID: 12 } });
 		btn.dispatch('click');
 		doc.querySelectorAll('.zbf-reader-att-item')[1].dispatch('click');
 		await new Promise((r) => setTimeout(r, 20));
 		assert.equal(openedCalls.length, 1, 'should not re-open when sibling attachment tab is already open');
 		assert.deepEqual(selectedTabs, ['tab-12']);
+		assert.equal(openedCalls[0].opts.openInBackground, true);
 
 		kernel.prefs.set('workspace.enableReaderAttachmentSwitcher', false);
 		switcher.syncPref();
