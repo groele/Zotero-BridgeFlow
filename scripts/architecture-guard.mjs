@@ -139,9 +139,18 @@ function checkVersionAlignment() {
 	const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
 	if (lock.version !== ver || lock.packages[''].version !== ver) throw Error('Lockfile version mismatch');
 	if (!fs.readFileSync(path.join(root, 'prefs.xhtml'), 'utf8').includes(`"version":"${ver}"`)) throw Error('Preferences badge drift');
-	if (!fs.readFileSync(path.join(root, 'README.md'), 'utf8').includes(`**${ver}**`)) throw Error('README version drift');
+	const readme = fs.readFileSync(path.join(root, 'README.md'), 'utf8');
+	if (!readme.includes(`**${ver}**`) || !readme.includes(`(\`v${ver}\`)`) || !readme.includes(`Zotero-BridgeFlow-${ver}.xpi`)) {
+		throw Error('README version or installer table drift');
+	}
 }
 check('Version alignment & Zotero 10.0-12.* scope', checkVersionAlignment);
+
+check('Valid CSS font shorthands in word-cite UI', () => {
+	for (const f of srcFiles.filter((file) => path.basename(file).startsWith('word-cite-'))) {
+		if (/font:\s*[^;]*\binherit\b/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+	}
+});
 
 
 // 7. Fluent symmetry (en-US vs zh-CN) & zero duplicates

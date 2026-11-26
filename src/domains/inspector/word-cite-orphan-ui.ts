@@ -60,7 +60,7 @@ export const ORPHAN_AND_RECEIPT_CSS = `
 .zbf-wc-orphan-row:last-child { border-bottom: 0; }
 .zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
 .zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2d6cdf; }
-.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
+.zbf-wc-orphan-ord { flex: none; font-family: var(--zbf-num-font, inherit); font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
 .zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg, light-dark(#1f2328, #e6e8eb)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; }

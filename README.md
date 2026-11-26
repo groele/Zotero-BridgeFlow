@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.8.4** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.8.5** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -106,7 +106,7 @@
 
 - **五层微内核结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（4 个独立子域禁止直接横向导入）➔ `src/bridges/`。
 - **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minify: false` 保持源码可审计）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **13 项静态守卫**与 **102 项单元测试**。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **14 项静态守卫**与 **109 项单元测试**。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -118,11 +118,11 @@ npm run build:xpi
 
 ---
 
-## 安装包完整性校验 (`v0.8.4`)
+## 安装包完整性校验 (`v0.8.5`)
 
-- 文件名：`Zotero-BridgeFlow-0.8.4.xpi`（`316,942` 字节，19 个条目，确定性构建）
-- SHA-256：`BB558059538909C3D32C9B21C7C2C3FF367B3CBEE28C248C284B520AAA052E3D`
-- SHA-512：`0B4D1B4D056B85AEAB1ED989A3408921052D430CF7C32A452AC0A5E33907A2AADEFD42B85ACAEEC4894B0F3D1FCA090AD2556B4E0D065FA6C2D5781C0A80040C`
+- 文件名：`Zotero-BridgeFlow-0.8.5.xpi`（`318,616` 字节，19 个条目，确定性构建）
+- SHA-256：`CC77FB57C90644FFC5E340B19940FD00AE8D68A6E6FCEEF7679219AF39D55C55`
+- SHA-512：`6724CFBD7B255E003E4C8F2AD0CBF23C4F228F3EB5220D8F776434DD2F734ADF0D95F81A462777B746D8F6A7675C4E7194E996A86E4A0B5D8BDD8358702D97D4`
 
 ---
 

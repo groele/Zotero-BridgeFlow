@@ -1,24 +1,8 @@
 import type { PrefKey, PrefValue } from '../../kernel/pref-schema.ts';
-import type {
-	CitationSnapshotPayload,
-	WordInsertResultPayload,
-	WordRefreshResultPayload,
-	WorkspaceGroupSummary,
-} from '../../kernel/types.ts';
+import type { CitationSnapshotPayload, WordInsertResultPayload, WordRefreshResultPayload, WorkspaceGroupSummary } from '../../kernel/types.ts';
 import { deduplicateRegularItems, getCachedPrimaryItemFields, normalizeToRegularItem } from '../../services/item-resolution.ts';
-import {
-	buildOrphanBannerModel,
-	type OrphanCardViewModel,
-	type OrphanSelectionState,
-	type ReceiptState,
-} from './word-cite-orphan-model.ts';
-import {
-	buildMetadataRemindersModel,
-	type ReminderCheckScope,
-	type ReminderRuleConfig,
-	type ReminderSectionViewModel,
-	type ReminderUiState,
-} from './word-cite-reminders-model.ts';
+import { buildOrphanBannerModel, type OrphanCardViewModel, type OrphanSelectionState, type ReceiptState } from './word-cite-orphan-model.ts';
+import { buildMetadataRemindersModel, type ReminderCheckScope, type ReminderRuleConfig, type ReminderSectionViewModel, type ReminderUiState } from './word-cite-reminders-model.ts';
 
 export function formatInsertReceipt(res: WordInsertResultPayload, zh: boolean): ReceiptState {
 	const doc = res.documentName ? (zh ? `「${res.documentName}」` : `"${res.documentName}"`) : 'Word';
@@ -88,7 +72,7 @@ export function buildWordStatStrip(zh: boolean, snap: CitationSnapshotPayload | 
 			citedLabel: zh ? '已引用文献' : 'Cited Items',
 			inTextValue: '—',
 			inTextLabel: zh ? '文内引用' : 'In-Text',
-			orphanValue: '0',
+			orphanValue: '—',
 			orphanLabel: zh ? '待找回' : 'Broken',
 			orphanWarn: false,
 			tooltip: zh ? '暂未检测到活动 Word 文档会话' : 'No active Word session detected',
@@ -116,6 +100,8 @@ export function buildWordStatStrip(zh: boolean, snap: CitationSnapshotPayload | 
 
 export interface CurrentCiteCardDisplay {
 	readonly kicker: string;
+	readonly freqText: string;
+	readonly freqUncited: boolean;
 	readonly badgeText: string;
 	readonly badgeCited: boolean;
 	readonly title: string;
@@ -132,6 +118,8 @@ export function buildCurrentCiteDisplay(
 	if (!items.length) {
 		return {
 			kicker: zh ? '当前选中文献' : 'Selected Item',
+			freqText: '',
+			freqUncited: false,
 			badgeText: '',
 			badgeCited: false,
 			title: zh ? '请选择文献条目以插入 Word 引文' : 'Select an item to insert a Word citation',
@@ -148,29 +136,37 @@ export function buildCurrentCiteDisplay(
 
 	let badgeText = '';
 	let badgeCited = false;
+	let freqText = '';
+	let freqUncited = false;
 	if (snap?.activeSessionID) {
 		if (ids.length === 1) {
 			const b = snap.byItemID.get(ids[0]);
 			if (b) {
-				const occ = b.occurrences ?? 1;
-				badgeText = occ > 1 ? (zh ? `[${b.ordinal}] · ${occ}次` : `[${b.ordinal}] · ${occ}×`) : `[${b.ordinal}]`;
+				const occ = Math.max(1, Number(b.occurrences ?? 1));
+				badgeText = `[${b.ordinal}]`;
 				badgeCited = true;
+				freqText = zh ? `文内已引 ${occ} 处` : `Cited ${occ}×`;
 			} else {
-				badgeText = zh ? '未引用' : 'Uncited';
+				freqUncited = true;
+				freqText = zh ? '尚未引用' : 'Uncited';
 			}
 		} else if (ids.length > 1) {
 			const cited = ids.map((id) => snap.byItemID.get(id)).filter((b): b is NonNullable<typeof b> => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
 			if (cited.length) {
 				badgeText = `[${cited.slice(0, 3).map((b) => b.ordinal).join(', ')}${cited.length > 3 ? '…' : ''}]`;
 				badgeCited = true;
+				freqText = zh ? `已引 ${cited.length}/${ids.length} 篇` : `${cited.length}/${ids.length} cited`;
 			} else {
-				badgeText = zh ? `0/${ids.length} 已引` : `0/${ids.length} cited`;
+				freqUncited = true;
+				freqText = zh ? `0/${ids.length} 已引` : `0/${ids.length} cited`;
 			}
 		}
 	}
 
 	return {
 		kicker: items.length > 1 ? (zh ? `当前已选 ${items.length} 篇文献` : `${items.length} Items Selected`) : (zh ? '当前选中文献' : 'Selected Item'),
+		freqText,
+		freqUncited,
 		badgeText,
 		badgeCited,
 		title,
@@ -183,6 +179,8 @@ export interface WordCiteViewModel {
 	showDocSwitcher: boolean;
 	showSummaryCounts: boolean;
 	docName: string;
+	docStem: string;
+	docExt: string;
 	docStatusText: string;
 	docSwitchTitle: string;
 	sessionBadgeText: string;
@@ -204,6 +202,11 @@ export interface WordCiteViewModel {
 	reminders: ReminderSectionViewModel;
 	receipt: ReceiptState;
 	zh: boolean;
+}
+
+function splitWordDocName(name: string): { stem: string; ext: string } {
+	const m = name.match(/^(.+?)(\.(?:docx?|docm|dotx?|dotm|rtf|odt))$/i);
+	return m ? { stem: m[1], ext: m[2] } : { stem: name, ext: '' };
 }
 
 export function assembleWordCiteViewModel(params: {
@@ -251,27 +254,31 @@ export function assembleWordCiteViewModel(params: {
 		strictOnlineFirst: Boolean(getPref('inspector.wordCite.reminderStrictOnlineFirst')),
 	};
 	const preReminders = buildMetadataRemindersModel({
-		zh,
-		snap,
-		selectedItems: items,
-		isIgnored: isReminderIgnored,
-		expanded: reminderState.expanded,
-		filter: reminderState.filter,
-		rules: reminderRules,
+		zh, snap, selectedItems: items, isIgnored: isReminderIgnored,
+		expanded: reminderState.expanded, filter: reminderState.filter, rules: reminderRules,
 	});
 	reminderState.syncAutoExpand(Boolean(getPref('inspector.wordCite.reminderAutoExpand')), preReminders.activeSig);
 	const reminders = preReminders.expanded === reminderState.expanded
 		? preReminders
 		: { ...preReminders, expanded: reminderState.expanded };
 
+	const docName = hasSession ? (snap!.activeDocumentName || 'Word') : (zh ? '未连接 Word' : 'No Word session');
+	const { stem: docStem, ext: docExt } = hasSession ? splitWordDocName(docName) : { stem: docName, ext: '' };
+	const singleBadge = hasSession && itemIDs.length === 1 ? snap!.byItemID.get(itemIDs[0]) : undefined;
+	const insertLabel = itemIDs.length > 1
+		? (zh ? `合并插入 ${itemIDs.length} 篇引文到 Word` : `Insert ${itemIDs.length} Citations in Word`)
+		: singleBadge
+			? (zh ? `插入到 Word 光标处 · [${singleBadge.ordinal}]` : `Insert at Word Cursor · [${singleBadge.ordinal}]`)
+			: (zh ? '插入到 Word 光标处' : 'Insert at Word Cursor');
+
 	const vm: WordCiteViewModel = {
 		zh,
 		showDocSwitcher: Boolean(getPref('inspector.wordCite.showDocSwitcher')),
 		showSummaryCounts,
-		docName: hasSession ? (snap!.activeDocumentName || 'Word') : (zh ? '未连接 Word' : 'No Word session'),
+		docName, docStem, docExt,
 		docStatusText: hasSession
 			? (sessionCount >= 2 ? (zh ? `共 ${sessionCount} 个文档` : `${sessionCount} docs`) : (zh ? '实时同步' : 'Live sync'))
-			: (zh ? '请先打开 Word 文档' : 'Open a Word document'),
+			: (zh ? '打开 Word 文档后可插入引文' : 'Open a Word document to cite'),
 		docSwitchTitle: sessionCount >= 2
 			? (zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Switch active Word document (${sessionCount} open)`)
 			: (hasSession ? snap!.activeDocumentName : (zh ? '请打开 Word 文档' : 'Open a Word document')),
@@ -280,7 +287,7 @@ export function assembleWordCiteViewModel(params: {
 		hasWordSession: hasSession,
 		statStrip: buildWordStatStrip(zh, snap),
 		currentCite: buildCurrentCiteDisplay(zh, snap, items, itemIDs),
-		insertLabel: itemIDs.length > 1 ? (zh ? `合并插入 ${itemIDs.length} 篇引文到 Word` : `Insert ${itemIDs.length} Citations in Word`) : (zh ? '插入到 Word 光标处' : 'Insert at Word Cursor'),
+		insertLabel,
 		insertDisabled: pending || itemIDs.length === 0 || !sectionEnabled,
 		refreshDisabled: pending || !sectionEnabled,
 		refreshTitle: zh ? '刷新当前 Word 文档引文与编号' : 'Refresh Word document & sync ordinals',
@@ -313,11 +320,7 @@ export function resolveWordCiteTargetItems(win: Window | null, item: any): any[]
 	return deduplicateRegularItems([reg]).items;
 }
 
-export function preloadUnloadedCitedItems(
-	citedIDs: readonly number[] | undefined,
-	enabled: boolean,
-	onLoaded: () => void,
-): void {
+export function preloadUnloadedCitedItems(citedIDs: readonly number[] | undefined, enabled: boolean, onLoaded: () => void): void {
 	if (!citedIDs?.length || !enabled) return;
 	const hostItems = (globalThis as any).Zotero?.Items;
 	if (typeof hostItems?.get !== 'function' || typeof hostItems?.getAsync !== 'function') return;

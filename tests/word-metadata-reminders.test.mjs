@@ -170,10 +170,12 @@ test('inspectItemMetadataFields & CSS guards: granular switches, itemTypeID look
 			{ kind: 'missing', text: '缺少卷期页码' },
 		]);
 
-		// CSS regression guards: B4 borderless cornflower-blue CTA (#3a76d2/#2d5fb8) + harmonized palette
+		// CSS regression guards: B4 borderless cornflower-blue CTA (#3a76d2/#2d5fb8) + harmonized palette + 18px coordinated stats
 		assert.equal(/background\s*:\s*var\(--fill-primary/.test(WORD_CITE_SCHEME_C_CSS), false);
 		assert.equal(/var\(--material-border/.test(WORD_CITE_SCHEME_C_CSS), false);
 		assert.equal(/#3a76d2/.test(WORD_CITE_SCHEME_C_CSS) && /#c9323f/.test(WORD_CITE_SCHEME_C_CSS) && /#eff4fd/.test(WORD_CITE_SCHEME_C_CSS), true);
+		assert.equal(/font-size:\s*18px;\s*font-weight:\s*500/.test(WORD_CITE_SCHEME_C_CSS), true);
+		assert.equal(/--zbf-w-b1/.test(WORD_CITE_SCHEME_C_CSS), true);
 		assert.equal(/overflow-x\s*:\s*hidden/.test(REMINDERS_CARD_CSS), true);
 	} finally {
 		globalThis.Zotero = prevZotero;
@@ -271,10 +273,26 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 
 		const wrap = body.children[0];
 		const [mainView, receiptEl] = wrap.children;
-		const [, , , , orphanBox, reminderBox] = mainView.children;
+		const [docCard, statStrip, citeCard, actionsEl, orphanBox, reminderBox] = mainView.children;
+		const [docRow] = docCard.children;
+		const [wBadge, docMeta] = docRow.children;
+		const [docNameEl] = docMeta.children;
+		const [citedCell, inTextCell, orphanCell] = statStrip.children;
+		const [citeHeadEl, citeTitleRow] = citeCard.children;
 		const [remHeadBtn, remBodyEl] = reminderBox.children;
 		const [toolbar, listEl] = remBodyEl.children;
 		const [filterBar] = toolbar.children;
+
+		// Before Word connects: amber card (no .is-live), Fluent SVG Word icon, unified '—' tiles, governance cards below actionsEl
+		assert.equal(docCard.classList.contains('is-live'), false);
+		assert.equal(statStrip.classList.contains('is-live'), false);
+		assert.equal(wBadge.children[0].localName, 'svg');
+		assert.equal(wBadge.children[0].children.length, 7);
+		assert.equal(citedCell.children[0].textContent, '—');
+		assert.equal(inTextCell.children[0].textContent, '—');
+		assert.equal(orphanCell.children[0].textContent, '—');
+		assert.equal(mainView.children.indexOf(actionsEl) < mainView.children.indexOf(orphanBox), true);
+		assert.equal(mainView.children.indexOf(orphanBox) < mainView.children.indexOf(reminderBox), true);
 
 		// Even BEFORE Word connects and when selected item is 100% complete, reminder card stays visible with green ✓!
 		assert.equal(reminderBox.hidden, false, 'Reminder card must remain visible in UI even with 0 missing items');
@@ -297,6 +315,25 @@ test('Scheme C Word Citation Workspace: always-visible reminder card, async item
 				{ key: 'orph-1', kind: 'missing', ordinal: 12, shortText: '[12]', title: 'Broken Ref', itemData: { title: 'Broken Ref', DOI: '10.1000/b' } },
 			],
 		});
+
+		// Live session updates: .is-live classes, split docStem/docExt, [5] badge & frequency pill
+		assert.equal(docCard.classList.contains('is-live'), true);
+		assert.equal(statStrip.classList.contains('is-live'), true);
+		assert.equal(docNameEl.children[0].textContent, 'Manuscript');
+		assert.equal(docNameEl.children[1].textContent, '.docx');
+		assert.equal(citeTitleRow.children[0].textContent, '[5]');
+		assert.equal(citeHeadEl.children[1].textContent, '文内已引 2 处');
+		assert.match(actionsEl.children[0].textContent, /\[5\]/);
+
+		// Uncited item keeps clean title (hidden ordinal badge), concise '尚未引用', and clean insert label
+		const itemUncited = makeItem(399, { key: 'UNCITED', fields: { title: 'Uncited Paper' } });
+		win.ZoteroPane.getSelectedItems = () => [itemUncited];
+		registered.onItemChange({ body, item: itemUncited });
+		assert.equal(citeTitleRow.children[0].hidden, true);
+		assert.equal(citeHeadEl.children[1].textContent, '尚未引用');
+		assert.equal(actionsEl.children[0].textContent, '插入到 Word 光标处');
+		win.ZoteroPane.getSelectedItems = () => [itemClean];
+		registered.onItemChange({ body, item: itemClean });
 
 		// Wait for async hydration of item 302
 		await new Promise((r) => setTimeout(r, 15));

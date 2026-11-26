@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.5 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -5258,7 +5258,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         citedLabel: zh ? "已引用文献" : "Cited Items",
         inTextValue: "—",
         inTextLabel: zh ? "文内引用" : "In-Text",
-        orphanValue: "0",
+        orphanValue: "—",
         orphanLabel: zh ? "待找回" : "Broken",
         orphanWarn: false,
         tooltip: zh ? "暂未检测到活动 Word 文档会话" : "No active Word session detected"
@@ -5285,6 +5285,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     if (!items.length) {
       return {
         kicker: zh ? "当前选中文献" : "Selected Item",
+        freqText: "",
+        freqUncited: false,
         badgeText: "",
         badgeCited: false,
         title: zh ? "请选择文献条目以插入 Word 引文" : "Select an item to insert a Word citation",
@@ -5298,34 +5300,46 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     const title = first.title || (zh ? "未命名文献" : "Untitled item");
     let badgeText = "";
     let badgeCited = false;
+    let freqText = "";
+    let freqUncited = false;
     if (snap?.activeSessionID) {
       if (ids.length === 1) {
         const b = snap.byItemID.get(ids[0]);
         if (b) {
-          const occ = b.occurrences ?? 1;
-          badgeText = occ > 1 ? zh ? `[${b.ordinal}] · ${occ}次` : `[${b.ordinal}] · ${occ}×` : `[${b.ordinal}]`;
+          const occ = Math.max(1, Number(b.occurrences ?? 1));
+          badgeText = `[${b.ordinal}]`;
           badgeCited = true;
+          freqText = zh ? `文内已引 ${occ} 处` : `Cited ${occ}×`;
         } else {
-          badgeText = zh ? "未引用" : "Uncited";
+          freqUncited = true;
+          freqText = zh ? "尚未引用" : "Uncited";
         }
       } else if (ids.length > 1) {
         const cited = ids.map((id) => snap.byItemID.get(id)).filter((b) => Boolean(b)).sort((a, b) => a.ordinal - b.ordinal);
         if (cited.length) {
           badgeText = `[${cited.slice(0, 3).map((b) => b.ordinal).join(", ")}${cited.length > 3 ? "…" : ""}]`;
           badgeCited = true;
+          freqText = zh ? `已引 ${cited.length}/${ids.length} 篇` : `${cited.length}/${ids.length} cited`;
         } else {
-          badgeText = zh ? `0/${ids.length} 已引` : `0/${ids.length} cited`;
+          freqUncited = true;
+          freqText = zh ? `0/${ids.length} 已引` : `0/${ids.length} cited`;
         }
       }
     }
     return {
       kicker: items.length > 1 ? zh ? `当前已选 ${items.length} 篇文献` : `${items.length} Items Selected` : zh ? "当前选中文献" : "Selected Item",
+      freqText,
+      freqUncited,
       badgeText,
       badgeCited,
       title,
       submeta,
       tooltip: [title, submeta].filter(Boolean).join("\n")
     };
+  }
+  function splitWordDocName(name) {
+    const m = name.match(/^(.+?)(\.(?:docx?|docm|dotx?|dotm|rtf|odt))$/i);
+    return m ? { stem: m[1], ext: m[2] } : { stem: name, ext: "" };
   }
   function assembleWordCiteViewModel(params) {
     const {
@@ -5374,19 +5388,25 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     });
     reminderState.syncAutoExpand(Boolean(getPref("inspector.wordCite.reminderAutoExpand")), preReminders.activeSig);
     const reminders = preReminders.expanded === reminderState.expanded ? preReminders : { ...preReminders, expanded: reminderState.expanded };
+    const docName = hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session";
+    const { stem: docStem, ext: docExt } = hasSession ? splitWordDocName(docName) : { stem: docName, ext: "" };
+    const singleBadge = hasSession && itemIDs.length === 1 ? snap.byItemID.get(itemIDs[0]) : void 0;
+    const insertLabel = itemIDs.length > 1 ? zh ? `合并插入 ${itemIDs.length} 篇引文到 Word` : `Insert ${itemIDs.length} Citations in Word` : singleBadge ? zh ? `插入到 Word 光标处 · [${singleBadge.ordinal}]` : `Insert at Word Cursor · [${singleBadge.ordinal}]` : zh ? "插入到 Word 光标处" : "Insert at Word Cursor";
     const vm = {
       zh,
       showDocSwitcher: Boolean(getPref("inspector.wordCite.showDocSwitcher")),
       showSummaryCounts,
-      docName: hasSession ? snap.activeDocumentName || "Word" : zh ? "未连接 Word" : "No Word session",
-      docStatusText: hasSession ? sessionCount >= 2 ? zh ? `共 ${sessionCount} 个文档` : `${sessionCount} docs` : zh ? "实时同步" : "Live sync" : zh ? "请先打开 Word 文档" : "Open a Word document",
+      docName,
+      docStem,
+      docExt,
+      docStatusText: hasSession ? sessionCount >= 2 ? zh ? `共 ${sessionCount} 个文档` : `${sessionCount} docs` : zh ? "实时同步" : "Live sync" : zh ? "打开 Word 文档后可插入引文" : "Open a Word document to cite",
       docSwitchTitle: sessionCount >= 2 ? zh ? `点击切换目标 Word 文档 (${sessionCount} 个已打开)` : `Switch active Word document (${sessionCount} open)` : hasSession ? snap.activeDocumentName : zh ? "请打开 Word 文档" : "Open a Word document",
       sessionBadgeText: sessionCount >= 2 ? `${activeSessionIdx}/${sessionCount}` : "",
       isMultiSession: sessionCount >= 2,
       hasWordSession: hasSession,
       statStrip: buildWordStatStrip(zh, snap),
       currentCite: buildCurrentCiteDisplay(zh, snap, items, itemIDs),
-      insertLabel: itemIDs.length > 1 ? zh ? `合并插入 ${itemIDs.length} 篇引文到 Word` : `Insert ${itemIDs.length} Citations in Word` : zh ? "插入到 Word 光标处" : "Insert at Word Cursor",
+      insertLabel,
       insertDisabled: pending || itemIDs.length === 0 || !sectionEnabled,
       refreshDisabled: pending || !sectionEnabled,
       refreshTitle: zh ? "刷新当前 Word 文档引文与编号" : "Refresh Word document & sync ordinals",
@@ -5427,9 +5447,18 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     });
   }
 
-  // src/domains/inspector/word-cite-styles.ts
+  // src/domains/inspector/word-cite-icons.ts
   var SVG_NS2 = "http://www.w3.org/2000/svg";
-  var ICON_PATHS = {
+  var WORD_SHAPES = [
+    { tag: "path", attrs: { d: "M7.2 4.8C7.2 3.53 8.23 2.5 9.5 2.5h9.7c1.27 0 2.3 1.03 2.3 2.3v2.45H7.2V4.8Z", fill: "var(--zbf-w-b1)" } },
+    { tag: "path", attrs: { d: "M7.2 7.25h14.3v4.75H7.2V7.25Z", fill: "var(--zbf-w-b2)" } },
+    { tag: "path", attrs: { d: "M7.2 12h14.3v4.75H7.2V12Z", fill: "var(--zbf-w-b3)" } },
+    { tag: "path", attrs: { d: "M7.2 16.75h14.3v2.45c0 1.27-1.03 2.3-2.3 2.3H9.5c-1.27 0-2.3-1.03-2.3-2.3v-2.45Z", fill: "var(--zbf-w-b4)" } },
+    { tag: "rect", attrs: { x: "2.8", y: "6.9", width: "11.4", height: "11.4", rx: "2.5", fill: "var(--zbf-w-shadow)" } },
+    { tag: "rect", attrs: { x: "2", y: "6.1", width: "11.4", height: "11.4", rx: "2.5", fill: "var(--zbf-w-shield)" } },
+    { tag: "path", attrs: { d: "M4.05 8.9h1.48l.98 4.45 1.08-4.45h1.34l1.08 4.45.98-4.45h1.48l-1.62 5.75H9.44L8.26 10.4l-1.18 4.25H5.67L4.05 8.9Z", fill: "#ffffff" } }
+  ];
+  var STROKE_ICON_PATHS = {
     refresh: {
       viewBox: "0 0 14 14",
       paths: [
@@ -5449,15 +5478,27 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       paths: ["M2.6 4.5L6 7.9 9.4 4.5"]
     }
   };
+  function createSvgNode(doc, tag) {
+    return typeof doc.createElementNS === "function" ? doc.createElementNS(SVG_NS2, tag) : doc.createElement(tag);
+  }
   function createWordCiteSvgIcon(doc, name, cls = "zbf-wc-svg") {
-    const spec = ICON_PATHS[name];
-    const svg = typeof doc.createElementNS === "function" ? doc.createElementNS(SVG_NS2, "svg") : doc.createElement("span");
+    const svg = createSvgNode(doc, "svg");
     svg.setAttribute("class", cls);
-    svg.setAttribute("viewBox", spec.viewBox);
     svg.setAttribute("fill", "none");
     svg.setAttribute("aria-hidden", "true");
+    if (name === "word") {
+      svg.setAttribute("viewBox", "0 0 24 24");
+      for (const spec2 of WORD_SHAPES) {
+        const node = createSvgNode(doc, spec2.tag);
+        for (const [k, v] of Object.entries(spec2.attrs)) node.setAttribute(k, v);
+        svg.appendChild(node);
+      }
+      return svg;
+    }
+    const spec = STROKE_ICON_PATHS[name];
+    svg.setAttribute("viewBox", spec.viewBox);
     for (const d of spec.paths) {
-      const path = typeof doc.createElementNS === "function" ? doc.createElementNS(SVG_NS2, "path") : doc.createElement("span");
+      const path = createSvgNode(doc, "path");
       path.setAttribute("d", d);
       path.setAttribute("stroke", "currentColor");
       path.setAttribute("stroke-width", "1.4");
@@ -5467,175 +5508,202 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     return svg;
   }
+
+  // src/domains/inspector/word-cite-styles.ts
   var WORD_CITE_SCHEME_C_CSS = `
 item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth-last-child(1 of [data-pane]:not([hidden])) .zbf-word-cite-wrap)::before { height: 0; }
 .zbf-word-cite-wrap {
-	--zbf-wc-fg: var(--fill-primary, light-dark(#1f2328, #e6e8ec));
-	--zbf-wc-fg-sec: light-dark(#57606a, #a0a8b4);
-	--zbf-wc-fg-muted: light-dark(#6e7781, #858d99);
-	--zbf-wc-card: light-dark(#ffffff, #2d3036);
-	--zbf-wc-card-hi: light-dark(#ffffff, #343841);
-	--zbf-wc-well: light-dark(#ebebee, #1f2023);
-	--zbf-wc-well-soft: light-dark(rgba(0, 0, 0, 0.045), rgba(255, 255, 255, 0.065));
-	--zbf-wc-line: light-dark(rgba(0, 0, 0, 0.085), rgba(255, 255, 255, 0.1));
-	--zbf-wc-line-strong: light-dark(rgba(0, 0, 0, 0.15), rgba(255, 255, 255, 0.18));
-	--zbf-wc-blue: light-dark(#2d64bd, #5b9cf5);
-	--zbf-wc-pill-bg: light-dark(rgba(45, 100, 189, 0.10), rgba(91, 156, 245, 0.16));
-	--zbf-wc-pill-fg: light-dark(#2a5fb5, #84bcff);
-	--zbf-wc-warn-bg: light-dark(#fdf3e1, rgba(245, 158, 11, 0.16));
-	--zbf-wc-warn-bd: light-dark(#edd09a, rgba(245, 158, 11, 0.32));
-	--zbf-wc-warn-fg: light-dark(#944f08, #fbbf24);
-	--zbf-wc-ok-bg: light-dark(#eef8f2, rgba(34, 197, 94, 0.16));
-	--zbf-wc-ok-fg: light-dark(#18794e, #4ade80);
-	box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px;
+	--zbf-num-font: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+	--zbf-wc-fg: var(--fill-primary, light-dark(#1a2230, #e8ecf2));
+	--zbf-wc-fg-sec: light-dark(#4e5b6c, #a2acb9);
+	--zbf-wc-fg-muted: light-dark(#6c7888, #848f9e);
+	--zbf-wc-lbl: light-dark(#5a6677, #9ca7b8);
+	--zbf-wc-card: light-dark(#ffffff, #2c3038);
+	--zbf-wc-card-hi: light-dark(#ffffff, #343842);
+	--zbf-wc-subtle: light-dark(#f7f9fc, #272a31);
+	--zbf-wc-well: light-dark(#ebeef3, #1e2126);
+	--zbf-wc-well-soft: light-dark(rgba(20, 34, 56, 0.055), rgba(255, 255, 255, 0.07));
+	--zbf-wc-line: light-dark(rgba(20, 34, 56, 0.095), rgba(255, 255, 255, 0.1));
+	--zbf-wc-line-strong: light-dark(rgba(20, 34, 56, 0.16), rgba(255, 255, 255, 0.18));
+	--zbf-wc-blue: light-dark(#2563c4, #5b9cf5);
+	--zbf-wc-pill-bg: light-dark(#eef4fe, rgba(76, 138, 230, 0.18));
+	--zbf-wc-pill-fg: light-dark(#1d4fa3, #8cc0ff);
+	--zbf-wc-warn-bg: light-dark(#fff4de, rgba(245, 158, 11, 0.17));
+	--zbf-wc-warn-bd: light-dark(#e8be76, rgba(251, 191, 36, 0.35));
+	--zbf-wc-warn-fg: light-dark(#a65108, #fcd34d);
+	--zbf-wc-ok-bg: light-dark(#ebf8f1, rgba(34, 197, 94, 0.15));
+	--zbf-wc-ok-fg: light-dark(#13794b, #4ade80);
+	--zbf-w-b1: light-dark(#fbbf24, #fcd34d);
+	--zbf-w-b2: light-dark(#f59e0b, #fbbf24);
+	--zbf-w-b3: light-dark(#d97706, #f59e0b);
+	--zbf-w-b4: light-dark(#b45309, #d97706);
+	--zbf-w-shield: light-dark(#b45309, #d97706);
+	--zbf-w-shadow: light-dark(rgba(120, 53, 15, 0.22), rgba(0, 0, 0, 0.36));
+	box-sizing: border-box; display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px;
 	inline-size: 100%; max-inline-size: 100%; min-inline-size: 0; contain: inline-size; overflow: hidden;
-	padding: 3px 5px 6px 3px; background: transparent;
-	font: 12px/1.4 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	padding: 3px 5px 7px 3px; background: transparent;
+	font: 12px/1.42 "Segoe UI Variable Text", system-ui, -apple-system, "Segoe UI", "Microsoft YaHei UI", sans-serif;
 	color: var(--zbf-wc-fg);
 }
 .zbf-word-cite-wrap [hidden] { display: none !important; }
-.zbf-wc-main-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
+.zbf-wc-main-view { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; min-width: 0; }
 .zbf-wc-svg { width: 12px; height: 12px; flex: none; display: block; pointer-events: none; }
+.zbf-wc-word-svg { width: 22px; height: 22px; flex: none; display: block; pointer-events: none; }
 
 .zbf-wc-card {
 	box-sizing: border-box; background: var(--zbf-wc-card);
-	border: 1px solid var(--zbf-wc-line); border-radius: 7px;
-	padding: 6px 8px; min-width: 0; max-width: 100%;
+	border: 1px solid var(--zbf-wc-line); border-radius: 8px;
+	padding: 7px 9px; min-width: 0; max-width: 100%;
+	box-shadow: 0 1px 2px light-dark(rgba(18, 32, 54, 0.035), rgba(0, 0, 0, 0.2));
 }
 
-/* 1. Document Card (Harmonized with B4 Cornflower Blue) */
+/* 1. Document Card (Amber when disconnected, Cornflower Blue when live) */
 .zbf-wc-doc-card {
-	background: linear-gradient(135deg, light-dark(#eef4fe, rgba(58, 118, 210, 0.2)) 0%, light-dark(#fafcff, rgba(45, 95, 184, 0.06)) 100%);
-	border-color: light-dark(#ccdef9, rgba(96, 165, 250, 0.28));
+	background: linear-gradient(135deg, var(--zbf-wc-warn-bg) 0%, color-mix(in srgb, var(--zbf-wc-warn-bg) 45%, var(--zbf-wc-card)) 100%);
+	border-color: var(--zbf-wc-warn-bd);
+	transition: background-color 150ms ease, border-color 150ms ease;
 }
-.zbf-wc-doc-row { display: flex; align-items: center; gap: 7px; min-width: 0; }
-.zbf-wc-w {
-	width: 21px; height: 22px; border-radius: 5px; flex: none;
-	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
-	display: grid; place-items: center; font-size: 10.5px; font-weight: 700;
+.zbf-wc-doc-card.is-live {
+	--zbf-w-b1: #41a5ee;
+	--zbf-w-b2: #2b7cd3;
+	--zbf-w-b3: #185abd;
+	--zbf-w-b4: #103f91;
+	--zbf-w-shield: #185abd;
+	--zbf-w-shadow: rgba(11, 37, 89, 0.26);
+	background: linear-gradient(135deg, light-dark(#eef4fe, rgba(58, 118, 210, 0.2)) 0%, light-dark(#fafcff, rgba(44, 48, 56, 0.9)) 100%);
+	border-color: light-dark(#ccdef9, rgba(96, 165, 250, 0.3));
 }
-.zbf-wc-w.is-live {
-	background: linear-gradient(135deg, light-dark(#3a76d2, #4280de) 0%, light-dark(#2d5fb8, #3164bd) 100%);
-	color: #ffffff;
-}
-.zbf-wc-doc-meta { min-width: 0; flex: 1 1 0; display: grid; gap: 1px; }
+.zbf-wc-doc-row { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; }
+.zbf-wc-w { width: 22px; height: 22px; flex: none; display: grid; place-items: center; }
+.zbf-wc-doc-meta { min-width: 0; flex: 1 1 0; display: grid; gap: 1.5px; }
 .zbf-wc-docname {
-	font-size: 11.5px; font-weight: 500; line-height: 1.32; color: var(--zbf-wc-fg);
-	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	display: flex; align-items: baseline; font-size: 12px; font-weight: 600; line-height: 1.3;
+	color: var(--zbf-wc-warn-fg); min-width: 0; overflow: hidden; white-space: nowrap;
 }
+.zbf-wc-doc-card.is-live .zbf-wc-docname { color: var(--zbf-wc-fg); }
+.zbf-wc-doc-stem { overflow: hidden; text-overflow: ellipsis; }
+.zbf-wc-doc-ext { flex: none; font-size: 11px; font-weight: 450; color: var(--zbf-wc-fg-muted); }
 .zbf-wc-doc-sub {
-	display: flex; align-items: center; gap: 4px; font-size: 9.5px; color: var(--zbf-wc-fg-muted);
-	min-width: 0; overflow: hidden; white-space: nowrap;
+	display: flex; align-items: center; gap: 4.5px; font-size: 10.5px; font-weight: 500;
+	color: var(--zbf-wc-warn-fg); min-width: 0; overflow: hidden; white-space: nowrap;
 }
-.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: light-dark(#adb5bd, #636b75); }
-.zbf-wc-dot.is-live { background: #1fa363; }
+.zbf-wc-doc-card.is-live .zbf-wc-doc-sub { color: var(--zbf-wc-fg-sec); font-weight: 400; }
+.zbf-wc-dot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: #d97706; }
+.zbf-wc-dot.is-live { background: #1ea866; box-shadow: 0 0 0 2.5px var(--zbf-wc-ok-bg); }
 .zbf-wc-doc-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-inline-sep { opacity: 0.55; flex: none; }
+.zbf-wc-inline-sep { opacity: 0.48; flex: none; }
 .zbf-wc-col-inline {
-	appearance: none; border: 0; background: transparent; padding: 0 2px; border-radius: 3px;
-	font: inherit; color: var(--zbf-wc-pill-fg); cursor: pointer;
+	appearance: none; border: 0; background: transparent; padding: 0 3px; border-radius: 4px;
+	font-family: inherit; font-size: 10.5px; font-weight: 500; line-height: 1.3; color: var(--zbf-wc-pill-fg); cursor: pointer;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }
 .zbf-wc-col-inline:hover { text-decoration: underline; background: var(--zbf-wc-pill-bg); }
 .zbf-wc-doc-switch {
-	appearance: none; height: 21px; padding: 0 6px; gap: 3px; border-radius: 5px;
+	appearance: none; height: 22px; padding: 0 6px; gap: 3.5px; border-radius: 5.5px;
 	border: 1px solid light-dark(#ccdef9, rgba(96, 165, 250, 0.28));
-	background: light-dark(rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.08));
-	color: var(--zbf-wc-fg-sec); font: 500 10px/1 inherit; font-variant-numeric: tabular-nums;
-	cursor: pointer; flex: none; display: inline-flex; align-items: center; justify-content: center;
-	transition: border-color 120ms ease, color 120ms ease;
+	background: light-dark(rgba(255, 255, 255, 0.88), rgba(255, 255, 255, 0.08));
+	color: var(--zbf-wc-fg-sec); font-family: var(--zbf-num-font); font-size: 10px; font-weight: 550; line-height: 1;
+	font-variant-numeric: tabular-nums; cursor: pointer; flex: none; display: inline-flex; align-items: center; justify-content: center;
+	transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
 }
 .zbf-wc-doc-switch .zbf-wc-svg { width: 11px; height: 11px; }
-.zbf-wc-doc-switch:hover:not(:disabled) { border-color: var(--zbf-wc-blue); color: var(--zbf-wc-pill-fg); }
+.zbf-wc-doc-switch:hover:not(:disabled) { border-color: var(--zbf-wc-blue); color: var(--zbf-wc-pill-fg); background: var(--zbf-wc-pill-bg); }
 
-/* 2. Three Color-Tinted Stat Tiles (Clean, Balanced Contrast) */
+/* 2. Three Color-Tinted Stat Tiles (18px/650 Coordinated Numbers + Slate Labels) */
 .zbf-wc-stat-strip {
-	display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; min-width: 0;
+	display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; min-width: 0;
 }
 .zbf-wc-stat-cell {
-	box-sizing: border-box; padding: 5px 7px; border-radius: 7px;
-	background: var(--zbf-wc-card); border: 1px solid var(--zbf-wc-line);
-	text-align: left; min-width: 0; transition: filter 120ms ease, border-color 120ms ease;
+	box-sizing: border-box; padding: 7px 8px 6px; border-radius: 8px;
+	background: var(--zbf-wc-subtle); border: 1px solid var(--zbf-wc-line);
+	box-shadow: 0 1px 2px light-dark(rgba(18, 32, 54, 0.03), rgba(0, 0, 0, 0.16));
+	text-align: left; min-width: 0; transition: filter 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
-.zbf-wc-stat-cell:nth-child(1) {
-	background: light-dark(#eff4fd, rgba(58, 118, 210, 0.14));
-	border-color: light-dark(#d0e0f8, rgba(96, 165, 250, 0.25));
-}
-.zbf-wc-stat-cell:nth-child(1) .zbf-wc-stat-val { color: light-dark(#2457a8, #8cc2ff); }
-.zbf-wc-stat-cell:nth-child(2) {
-	background: light-dark(#f2f2fd, rgba(129, 140, 248, 0.13));
-	border-color: light-dark(#d8dbf8, rgba(129, 140, 248, 0.25));
-}
-.zbf-wc-stat-cell:nth-child(2) .zbf-wc-stat-val { color: light-dark(#434aa6, #a5b4fc); }
-.zbf-wc-stat-cell:nth-child(3) {
-	background: light-dark(#eef8f2, rgba(34, 197, 94, 0.12));
-	border-color: light-dark(#c8e8d5, rgba(34, 197, 94, 0.25));
-}
-.zbf-wc-stat-cell:nth-child(3) .zbf-wc-stat-val { color: light-dark(#18794e, #4ade80); }
-.zbf-wc-stat-cell.is-interactive { cursor: pointer; }
-.zbf-wc-stat-cell.is-interactive:hover { filter: brightness(0.98); }
 .zbf-wc-stat-val {
-	display: block; font-size: 13.5px; font-weight: 600; line-height: 1.12;
-	font-variant-numeric: tabular-nums; color: var(--zbf-wc-fg);
+	display: block; font-family: var(--zbf-num-font); font-size: 18px; font-weight: 500; line-height: 1.15;
+	letter-spacing: -0.015em; font-variant-numeric: tabular-nums;
+	color: color-mix(in srgb, var(--zbf-wc-fg-muted) 70%, transparent);
 }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-val { font-weight: 650; }
 .zbf-wc-stat-lbl {
-	display: block; font-size: 9.5px; color: var(--zbf-wc-fg-muted); margin-top: 2px;
+	display: block; font-size: 10.5px; font-weight: 400; color: var(--zbf-wc-lbl); margin-top: 2px;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.zbf-wc-stat-cell:nth-child(3).is-warn,
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(1) {
+	background: linear-gradient(180deg, light-dark(#f5f9ff, rgba(59, 130, 246, 0.18)) 0%, light-dark(#eff4fd, rgba(59, 130, 246, 0.11)) 100%);
+	border-color: light-dark(#d2e3fa, rgba(96, 165, 250, 0.3));
+}
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(1) .zbf-wc-stat-val { color: light-dark(#2358b2, #7fb4fc); }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(2) {
+	background: linear-gradient(180deg, light-dark(#f7f7ff, rgba(129, 140, 248, 0.18)) 0%, light-dark(#f0f0fd, rgba(129, 140, 248, 0.11)) 100%);
+	border-color: light-dark(#dadcf8, rgba(129, 140, 248, 0.3));
+}
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(2) .zbf-wc-stat-val { color: light-dark(#4c4aa1, #adaaf8); }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(3) {
+	background: linear-gradient(180deg, light-dark(#f3fbf7, rgba(34, 197, 94, 0.16)) 0%, light-dark(#ebf7f0, rgba(34, 197, 94, 0.1)) 100%);
+	border-color: light-dark(#c6e8d4, rgba(74, 222, 128, 0.28));
+}
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell:nth-child(3) .zbf-wc-stat-val { color: light-dark(#19734b, #52d886); }
+.zbf-wc-stat-cell.is-interactive { cursor: pointer; }
+.zbf-wc-stat-cell.is-interactive:hover { filter: brightness(0.985); transform: translateY(-0.5px); }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell[class*="zbf-wc-stat-cell"].is-warn,
 .zbf-wc-stat-cell.is-warn { border-color: var(--zbf-wc-warn-bd); background: var(--zbf-wc-warn-bg); }
-.zbf-wc-stat-cell.is-warn .zbf-wc-stat-val,
-.zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl { color: var(--zbf-wc-warn-fg); }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell.is-warn .zbf-wc-stat-val { color: var(--zbf-wc-warn-fg); }
+.zbf-wc-stat-strip.is-live .zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl { color: color-mix(in srgb, var(--zbf-wc-warn-fg) 85%, var(--zbf-wc-fg-sec)); }
+.zbf-wc-stat-cell.is-warn .zbf-wc-stat-lbl::after { content: " ↘"; font-weight: 600; }
 
-/* 3. Selected Item Card (Zotero Coral Spine & Soft Rose Tint) */
+/* 3. Selected Item Card (Zotero Coral Spine + Soft Ordinal Badge + In-Text Freq Pill) */
 .zbf-wc-cite-card {
-	background: linear-gradient(135deg, light-dark(#fff9fa, rgba(244, 63, 94, 0.11)) 0%, light-dark(#ffffff, #2d3036) 100%);
-	border-color: light-dark(#ecd2d5, rgba(244, 63, 94, 0.28));
-	border-inline-start: 3px solid light-dark(#c9323f, #f45b69);
+	position: relative; padding: 8px 9px 8px 12px;
+	background: linear-gradient(135deg, light-dark(#fff9fa, rgba(244, 63, 94, 0.11)) 0%, light-dark(#ffffff, #2c3038) 68%);
+	border-color: light-dark(#ebd0d4, rgba(244, 63, 94, 0.28));
+	overflow: hidden;
 }
-.zbf-wc-cite-kicker {
-	display: block; font-size: 9.5px; color: var(--zbf-wc-fg-muted); margin-bottom: 2px;
-	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.zbf-wc-cite-card::before {
+	content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3.5px;
+	background: light-dark(#c9323f, #f06572); opacity: 0.72;
 }
+.zbf-wc-cite-card.is-live::before { opacity: 1; }
+.zbf-wc-cite-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 17px; margin-bottom: 3px; }
+.zbf-wc-cite-kicker { font-size: 10.5px; font-weight: 550; color: var(--zbf-wc-fg-sec); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.zbf-wc-cite-freq {
+	flex: none; padding: 0.5px 6px; border-radius: 999px; font-family: var(--zbf-num-font);
+	font-size: 10px; font-weight: 550; font-variant-numeric: tabular-nums;
+	background: var(--zbf-wc-pill-bg); color: var(--zbf-wc-pill-fg);
+}
+.zbf-wc-cite-freq.is-uncited { background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-sec); }
 .zbf-wc-cite-title-row {
-	font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg);
+	font-size: 12px; font-weight: 580; line-height: 1.42; letter-spacing: -0.008em; color: var(--zbf-wc-fg);
 	display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
 }
 .zbf-wc-ord-badge {
-	display: inline-block; margin-inline-end: 4px; padding: 0.5px 5px; border-radius: 4px;
-	font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; vertical-align: baseline;
+	display: inline-block; text-align: center; margin-inline-end: 5px;
+	padding: 0.5px 5.5px; border-radius: 4.5px; font-family: var(--zbf-num-font); font-size: 11px; font-weight: 650;
+	line-height: 1.3; font-variant-numeric: tabular-nums; vertical-align: baseline;
 	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
 }
-.zbf-wc-ord-badge.is-cited {
-	background: light-dark(#fdedef, rgba(244, 63, 94, 0.18));
-	color: light-dark(#b4232f, #fda4af); font-weight: 600;
-}
-.zbf-wc-cite-sub {
-	font-size: 10px; color: var(--zbf-wc-fg-muted); margin-top: 2.5px;
-	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.zbf-wc-ord-badge.is-cited { background: light-dark(#fdecef, rgba(244, 63, 94, 0.22)); color: light-dark(#b4232f, #fda4af); }
+.zbf-wc-cite-sub { font-size: 10.5px; color: var(--zbf-wc-fg-sec); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-synergy {
 	display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;
 	margin-top: 5px; padding-top: 4px; border-top: 1px solid light-dark(rgba(201, 50, 63, 0.1), rgba(255, 255, 255, 0.08)); min-width: 0;
 }
 .zbf-wc-link {
 	appearance: none; min-width: 0; max-width: 100%; background: transparent; border: 0; padding: 1px 0;
-	font: 400 10.5px/1.3 inherit; color: var(--zbf-wc-pill-fg); cursor: pointer;
+	font-family: inherit; font-size: 10.5px; font-weight: 450; line-height: 1.3; color: var(--zbf-wc-pill-fg); cursor: pointer;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
 }
 .zbf-wc-link:hover:not(:disabled) { text-decoration: underline; }
 .zbf-wc-link:disabled { opacity: 0.45; cursor: default; }
 
-/* 4. Standalone Action Bar (B4: Borderless Cornflower Blue Soft-Glow CTA + Matching Refresh) */
-.zbf-wc-actions {
-	display: grid; grid-template-columns: minmax(0, 1fr) 29px; gap: 6px; align-items: stretch; min-width: 0;
-}
+/* 4. Standalone Action Bar */
+.zbf-wc-actions { display: grid; grid-template-columns: minmax(0, 1fr) 31px; gap: 6px; align-items: stretch; min-width: 0; }
 .zbf-word-cite-action {
-	appearance: none; box-sizing: border-box; height: 29px; min-width: 0; padding: 0 10px; gap: 6px;
+	appearance: none; box-sizing: border-box; height: 31px; min-width: 0; padding: 0 10px; gap: 6px;
 	border: 0; border-radius: 7px;
-	background: linear-gradient(135deg, light-dark(#3a76d2, #4280de) 0%, light-dark(#2d5fb8, #3164bd) 100%);
-	box-shadow: 0 2px 6px light-dark(rgba(45, 95, 184, 0.24), rgba(0, 0, 0, 0.34));
-	color: #ffffff; font: 500 11.5px/1 inherit; cursor: pointer;
+	background: linear-gradient(135deg, light-dark(#3a76d2, #4c8ae6) 0%, light-dark(#2d5fb8, #3772cb) 100%);
+	box-shadow: 0 2px 6px light-dark(rgba(45, 95, 184, 0.24), rgba(0, 0, 0, 0.36)), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+	color: #ffffff; font-family: inherit; font-size: 11.5px; font-weight: 600; line-height: 1; cursor: pointer;
 	overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 	display: inline-flex; align-items: center; justify-content: center;
 	transition: filter 130ms ease, box-shadow 130ms ease, transform 80ms ease, opacity 120ms ease;
@@ -5645,62 +5713,61 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 	mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3 4.2h8M3 7h5.2M9.5 6.8v4.4M7.3 9h4.4' stroke='%23000' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 .zbf-word-cite-action:hover:not(:disabled) {
-	filter: brightness(1.07);
-	box-shadow: 0 3px 8px light-dark(rgba(45, 95, 184, 0.32), rgba(0, 0, 0, 0.44));
+	filter: brightness(1.06);
+	box-shadow: 0 3px 9px light-dark(rgba(45, 95, 184, 0.32), rgba(0, 0, 0, 0.44)), inset 0 1px 0 rgba(255, 255, 255, 0.26);
 }
-.zbf-word-cite-action:active:not(:disabled) { filter: brightness(0.96); box-shadow: 0 1px 3px rgba(45, 95, 184, 0.2); }
-.zbf-word-cite-action:disabled {
-	background: var(--zbf-wc-well); color: var(--zbf-wc-fg-muted);
-	box-shadow: none; cursor: default; opacity: 0.72;
-}
+.zbf-word-cite-action:active:not(:disabled) { transform: translateY(0.5px); filter: brightness(0.97); }
+.zbf-word-cite-action:disabled { background: var(--zbf-wc-well); color: var(--zbf-wc-fg-muted); box-shadow: none; cursor: default; opacity: 0.75; }
 .zbf-word-refresh-action {
-	appearance: none; box-sizing: border-box; height: 29px; width: 29px; padding: 0; border-radius: 7px;
-	border: 1px solid light-dark(#d4dce7, #444954); background: light-dark(#ffffff, #31353e);
+	appearance: none; box-sizing: border-box; height: 31px; width: 31px; padding: 0; border-radius: 7px;
+	border: 1px solid var(--zbf-wc-line-strong); background: var(--zbf-wc-card);
 	box-shadow: 0 1px 2px light-dark(rgba(20, 40, 70, 0.05), rgba(0, 0, 0, 0.2));
 	color: var(--zbf-wc-fg-sec); cursor: pointer;
 	display: inline-flex; align-items: center; justify-content: center;
 	transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
-.zbf-word-refresh-action .zbf-wc-svg { width: 12.5px; height: 12.5px; }
-.zbf-word-refresh-action:hover:not(:disabled) {
-	background: light-dark(#f4f7fc, #3a3f4a); border-color: light-dark(#9ec0ec, #5d6473); color: var(--zbf-wc-pill-fg);
-}
+.zbf-word-refresh-action .zbf-wc-svg { width: 13px; height: 13px; }
+.zbf-word-refresh-action .zbf-wc-svg.is-spinning { animation: zbf-wc-spin 420ms cubic-bezier(0.22, 1, 0.36, 1); }
+.zbf-word-refresh-action:hover:not(:disabled) { background: var(--zbf-wc-pill-bg); border-color: light-dark(#9ec0ec, #5d6473); color: var(--zbf-wc-pill-fg); }
 .zbf-word-refresh-action:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+@keyframes zbf-wc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-/* Orphan Recovery Accordion */
+/* 5. Governance Cards Below Actions: Orphan Recovery Accordion */
 .zbf-wc-acc {
 	box-sizing: border-box; background: var(--zbf-wc-card);
-	border: 1px solid var(--zbf-wc-warn-bd); border-radius: 7px;
+	border: 1px solid var(--zbf-wc-warn-bd); border-radius: 8px;
 	overflow: hidden; min-width: 0; max-width: 100%;
+	box-shadow: 0 1px 2px light-dark(rgba(18, 32, 54, 0.03), rgba(0, 0, 0, 0.16));
 }
 .zbf-wc-acc-head {
 	appearance: none; width: 100%; box-sizing: border-box; display: flex; align-items: center; gap: 6px;
-	padding: 6px 9px; border: 0; background: var(--zbf-wc-warn-bg); color: var(--zbf-wc-fg);
-	text-align: left; cursor: pointer; font: 500 11px/1.35 inherit; min-width: 0;
+	padding: 6.5px 9px; border: 0; background: var(--zbf-wc-warn-bg); color: var(--zbf-wc-warn-fg);
+	text-align: left; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1.35; min-width: 0;
 }
 .zbf-wc-badge {
 	display: inline-flex; align-items: center; justify-content: center;
-	min-width: 15px; height: 15px; padding: 0 4px; border-radius: 999px;
+	min-width: 16px; height: 16px; padding: 0 4.5px; border-radius: 999px;
 	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-sec);
-	font-size: 9.5px; font-weight: 700; flex: none; font-variant-numeric: tabular-nums;
+	font-family: var(--zbf-num-font); font-size: 9.5px; font-weight: 650; flex: none; font-variant-numeric: tabular-nums;
 }
 .zbf-wc-badge.is-warn { background: rgba(217, 119, 6, 0.2); color: var(--zbf-wc-warn-fg); }
 .zbf-wc-badge.is-ok { background: var(--zbf-wc-ok-bg); color: var(--zbf-wc-ok-fg); }
 .zbf-wc-acc-title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zbf-wc-acc-arrow { flex: none; color: var(--zbf-wc-fg-muted); display: inline-flex; align-items: center; justify-content: center; transition: transform 140ms ease; }
+.zbf-wc-acc-arrow { flex: none; color: var(--zbf-wc-warn-fg); display: inline-flex; align-items: center; justify-content: center; transition: transform 140ms ease; }
 .zbf-wc-acc.is-closed .zbf-wc-acc-arrow { transform: rotate(-90deg); }
 .zbf-wc-acc-body {
-	box-sizing: border-box; padding: 6px 8px 8px; border-top: 1px solid var(--zbf-wc-line);
+	box-sizing: border-box; padding: 6px 8px 8px; border-top: 1px solid var(--zbf-wc-warn-bd);
 	display: grid; gap: 6px; min-width: 0; max-width: 100%; overflow: hidden;
 }
 .zbf-wc-sec-btn {
 	appearance: none; box-sizing: border-box; height: 24px; padding: 0 9px; border-radius: 5px;
 	border: 1px solid var(--zbf-wc-warn-bd); background: var(--zbf-wc-warn-bg);
-	color: var(--zbf-wc-warn-fg); font: 500 10.5px/1 inherit; cursor: pointer; white-space: nowrap;
+	color: var(--zbf-wc-warn-fg); font-family: inherit; font-size: 10.5px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap;
 }
 .zbf-wc-sec-btn:hover:not(:disabled) { filter: brightness(0.97); }
 .zbf-wc-sec-btn:disabled { opacity: 0.45; cursor: default; }
 .zbf-wc-doc-switch:focus-visible, .zbf-word-cite-action:focus-visible, .zbf-word-refresh-action:focus-visible, .zbf-wc-link:focus-visible, .zbf-wc-col-inline:focus-visible, .zbf-wc-acc-head:focus-visible, .zbf-wc-rem-entry:focus-visible, .zbf-wc-sec-btn:focus-visible, .zbf-wc-rcp-btn:focus-visible, .zbf-wc-rem-row:focus-visible { outline: 2px solid var(--accent-blue, #3a76d2); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .zbf-word-refresh-action .zbf-wc-svg.is-spinning { animation: none; } }
 `;
 
   // src/domains/inspector/word-cite-orphan-ui.ts
@@ -5734,7 +5801,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-orphan-row:last-child { border-bottom: 0; }
 .zbf-wc-orphan-row.is-disabled { opacity: 0.6; cursor: default; }
 .zbf-wc-orphan-chk { margin: 2px 0 0; flex: none; cursor: inherit; accent-color: #2d6cdf; }
-.zbf-wc-orphan-ord { flex: none; font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
+.zbf-wc-orphan-ord { flex: none; font-family: var(--zbf-num-font, inherit); font-size: 10.5px; font-weight: 600; color: light-dark(#9a5209, #fbbf24); font-variant-numeric: tabular-nums; line-height: 1.4; }
 .zbf-wc-orphan-main { flex: 1 1 0; min-width: 0; display: grid; gap: 2px; }
 .zbf-wc-orphan-item-title { font-size: 11.5px; font-weight: 500; line-height: 1.38; color: var(--zbf-wc-fg, light-dark(#1f2328, #e6e8eb)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-orphan-item-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; font-size: 10px; color: var(--zbf-wc-fg-muted, light-dark(#6e7781, #8b949e)); min-width: 0; }
@@ -5931,8 +5998,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
   var REMINDERS_CARD_CSS = `
 /* 5. In-place Collapsible Reminder Card (Concept A Visuals, Zero Extra Sub-page) */
 .zbf-wc-rem-card {
-	box-sizing: border-box; border-radius: 6px;
+	box-sizing: border-box; border-radius: 8px;
 	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
+	box-shadow: 0 1px 2px light-dark(rgba(18, 32, 54, 0.03), rgba(0, 0, 0, 0.16));
 	overflow: hidden; min-width: 0; max-width: 100%;
 	transition: border-color 120ms ease, background-color 120ms ease;
 }
@@ -5944,9 +6012,9 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 }
 .zbf-wc-rem-entry {
 	appearance: none; box-sizing: border-box; width: 100%;
-	display: flex; align-items: center; gap: 6px; padding: 6px 8px;
-	border: 0; background: transparent; color: var(--zbf-wc-fg-sec);
-	text-align: left; cursor: pointer; font: 400 11px/1.35 inherit; min-width: 0;
+	display: flex; align-items: center; gap: 6.5px; padding: 7px 9px;
+	border: 0; background: transparent; color: var(--zbf-wc-fg);
+	text-align: left; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 550; line-height: 1.35; min-width: 0;
 	transition: background-color 120ms ease;
 }
 .zbf-wc-rem-entry:hover { background: light-dark(rgba(0, 0, 0, 0.025), rgba(255, 255, 255, 0.04)); }
@@ -5979,14 +6047,14 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 }
 .zbf-wc-rem-filter {
 	appearance: none; border: 0; border-radius: 3.5px; background: transparent;
-	color: var(--zbf-wc-fg-muted); padding: 1.5px 7px; font: 400 10px/1.3 inherit;
-	cursor: pointer; transition: background-color 120ms ease, color 120ms ease;
+	color: var(--zbf-wc-fg-muted); padding: 1.5px 7px; font-family: var(--zbf-num-font, inherit); font-size: 10px; line-height: 1.3; font-weight: 500;
+	font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 120ms ease, color 120ms ease;
 }
 .zbf-wc-rem-filter:hover { color: var(--zbf-wc-fg); }
 .zbf-wc-rem-filter.is-active {
 	background: var(--zbf-wc-card-hi);
 	box-shadow: 0 1px 2px light-dark(rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.22));
-	color: var(--zbf-wc-fg); font-weight: 500;
+	color: var(--zbf-wc-fg); font-weight: 580;
 }
 .zbf-wc-rem-hint {
 	font-size: 10px; line-height: 1.35; color: var(--zbf-wc-fg-muted);
@@ -6027,7 +6095,7 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 .zbf-wc-rem-act {
 	flex: none; appearance: none; height: 20px; padding: 0 7px; border-radius: 4px;
 	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
-	color: var(--zbf-wc-fg-sec); font: 400 9.5px/1 inherit; cursor: pointer;
+	color: var(--zbf-wc-fg-sec); font-family: inherit; font-size: 9.5px; font-weight: 400; line-height: 1; cursor: pointer;
 	transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
 }
 .zbf-wc-rem-act:hover { color: var(--zbf-wc-fg); background: var(--zbf-wc-card-hi); border-color: var(--zbf-wc-line-strong); }
@@ -6189,9 +6257,12 @@ ${REMINDERS_CARD_CSS}`;
     const docCard = el("div", "zbf-wc-card zbf-wc-doc-card");
     const docRow = el("div", "zbf-wc-doc-row");
     const wBadge = el("span", "zbf-wc-w");
-    wBadge.textContent = "W";
+    wBadge.appendChild(createWordCiteSvgIcon(doc, "word", "zbf-wc-word-svg"));
     const docMeta = el("div", "zbf-wc-doc-meta");
     const docNameEl = el("strong", "zbf-wc-docname");
+    const docStemEl = el("span", "zbf-wc-doc-stem");
+    const docExtEl = el("span", "zbf-wc-doc-ext");
+    docNameEl.append(docStemEl, docExtEl);
     const docSub = el("div", "zbf-wc-doc-sub");
     const docDot = el("span", "zbf-wc-dot");
     const docStatusEl = el("span", "zbf-wc-doc-status");
@@ -6220,7 +6291,10 @@ ${REMINDERS_CARD_CSS}`;
     const c3 = mkCell();
     statStrip.append(c1.cell, c2.cell, c3.cell);
     const citeCard = el("div", "zbf-wc-card zbf-wc-cite-card");
+    const citeHeadEl = el("div", "zbf-wc-cite-head");
     const citeKickerEl = el("span", "zbf-wc-cite-kicker");
+    const citeFreqEl = el("span", "zbf-wc-cite-freq");
+    citeHeadEl.append(citeKickerEl, citeFreqEl);
     const citeTitleRow = el("div", "zbf-wc-cite-title-row");
     const ordBadgeEl = el("span", "zbf-wc-ord-badge");
     const citeTitleEl = el("span", "zbf-wc-cite-title");
@@ -6230,13 +6304,19 @@ ${REMINDERS_CARD_CSS}`;
     const groupBtn = el("button", "zbf-wc-link zbf-word-group-action");
     groupBtn.type = "button";
     synergyEl.appendChild(groupBtn);
-    citeCard.append(citeKickerEl, citeTitleRow, citeSubEl, synergyEl);
+    citeCard.append(citeHeadEl, citeTitleRow, citeSubEl, synergyEl);
     const actionsEl = el("div", "zbf-wc-actions");
     const insertBtn = el("button", "zbf-word-cite-action");
     insertBtn.type = "button";
     const refreshBtn = el("button", "zbf-word-refresh-action");
     refreshBtn.type = "button";
-    refreshBtn.appendChild(createWordCiteSvgIcon(doc, "refresh"));
+    const refreshIcon = createWordCiteSvgIcon(doc, "refresh");
+    refreshBtn.appendChild(refreshIcon);
+    refreshBtn.addEventListener("click", () => {
+      refreshIcon.classList?.remove?.("is-spinning");
+      void refreshIcon.offsetWidth;
+      refreshIcon.classList?.add?.("is-spinning");
+    }, { signal });
     actionsEl.append(insertBtn, refreshBtn);
     const orphanRefs = createOrphanAccordionDom(doc);
     const reminderRefs = createReminderCardDom(doc, reminderHeadCb, signal);
@@ -6253,6 +6333,8 @@ ${REMINDERS_CARD_CSS}`;
       docRow,
       wBadge,
       docNameEl,
+      docStemEl,
+      docExtEl,
       docDot,
       docStatusEl,
       colSepEl,
@@ -6270,6 +6352,7 @@ ${REMINDERS_CARD_CSS}`;
       orphanLblEl: c3.lbl,
       citeCard,
       citeKickerEl,
+      citeFreqEl,
       ordBadgeEl,
       citeTitleEl,
       citeSubEl,
@@ -6290,9 +6373,11 @@ ${REMINDERS_CARD_CSS}`;
     const doc = st.root.ownerDocument;
     st.docRow.hidden = !vm.showDocSwitcher;
     st.docCard.hidden = !vm.showDocSwitcher;
+    st.docCard.classList.toggle("is-live", vm.hasWordSession);
     st.wBadge.classList.toggle("is-live", vm.hasWordSession);
     st.docDot.classList.toggle("is-live", vm.hasWordSession);
-    st.docNameEl.textContent = vm.docName;
+    st.docStemEl.textContent = vm.docStem;
+    st.docExtEl.textContent = vm.docExt;
     st.docNameEl.title = vm.docSwitchTitle;
     st.docStatusEl.textContent = vm.docStatusText;
     st.colSepEl.hidden = !vm.showCollectionButton;
@@ -6304,6 +6389,7 @@ ${REMINDERS_CARD_CSS}`;
     st.docSwitchBtn.title = vm.docSwitchTitle;
     st.docSwitchLbl.textContent = vm.sessionBadgeText;
     st.statStrip.hidden = !vm.showSummaryCounts;
+    st.statStrip.classList.toggle("is-live", vm.hasWordSession);
     st.statStrip.title = vm.statStrip.tooltip;
     st.citedValEl.textContent = vm.statStrip.citedValue;
     st.citedLblEl.textContent = vm.statStrip.citedLabel;
@@ -6315,7 +6401,11 @@ ${REMINDERS_CARD_CSS}`;
     st.orphanLblEl.textContent = vm.statStrip.orphanLabel;
     st.orphanCell.classList.toggle("is-warn", vm.statStrip.orphanWarn);
     st.orphanCell.classList.toggle("is-interactive", vm.statStrip.orphanWarn && vm.orphanCard.visible);
+    st.citeCard.classList.toggle("is-live", vm.hasWordSession);
     st.citeKickerEl.textContent = vm.currentCite.kicker;
+    st.citeFreqEl.hidden = !vm.currentCite.freqText;
+    st.citeFreqEl.textContent = vm.currentCite.freqText;
+    st.citeFreqEl.classList.toggle("is-uncited", vm.currentCite.freqUncited);
     st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
     st.ordBadgeEl.textContent = vm.currentCite.badgeText;
     st.ordBadgeEl.classList.toggle("is-cited", vm.currentCite.badgeCited);
@@ -8074,7 +8164,7 @@ ${REMINDERS_CARD_CSS}`;
     }
     return svg;
   }
-  var ICON_PATHS2 = {
+  var ICON_PATHS = {
     grid: [
       "M3.5 3.5h4.2v4.2H3.5z",
       "M10.3 3.5h4.2v4.2h-4.2z",
@@ -8150,7 +8240,7 @@ ${REMINDERS_CARD_CSS}`;
     svg.setAttribute("stroke-linejoin", "round");
     svg.setAttribute("aria-hidden", "true");
     svg.style.flex = "none";
-    for (const d of ICON_PATHS2[name] || []) {
+    for (const d of ICON_PATHS[name] || []) {
       const path = doc.createElementNS(SVG_NS3, "path");
       path.setAttribute("d", d);
       svg.appendChild(path);
@@ -25553,7 +25643,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.8.4" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.5" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;

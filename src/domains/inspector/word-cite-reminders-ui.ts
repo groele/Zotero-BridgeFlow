@@ -48,8 +48,9 @@ function clearChildren(el: HTMLElement): void {
 export const REMINDERS_CARD_CSS = `
 /* 5. In-place Collapsible Reminder Card (Concept A Visuals, Zero Extra Sub-page) */
 .zbf-wc-rem-card {
-	box-sizing: border-box; border-radius: 6px;
+	box-sizing: border-box; border-radius: 8px;
 	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
+	box-shadow: 0 1px 2px light-dark(rgba(18, 32, 54, 0.03), rgba(0, 0, 0, 0.16));
 	overflow: hidden; min-width: 0; max-width: 100%;
 	transition: border-color 120ms ease, background-color 120ms ease;
 }
@@ -61,9 +62,9 @@ export const REMINDERS_CARD_CSS = `
 }
 .zbf-wc-rem-entry {
 	appearance: none; box-sizing: border-box; width: 100%;
-	display: flex; align-items: center; gap: 6px; padding: 6px 8px;
-	border: 0; background: transparent; color: var(--zbf-wc-fg-sec);
-	text-align: left; cursor: pointer; font: 400 11px/1.35 inherit; min-width: 0;
+	display: flex; align-items: center; gap: 6.5px; padding: 7px 9px;
+	border: 0; background: transparent; color: var(--zbf-wc-fg);
+	text-align: left; cursor: pointer; font-family: inherit; font-size: 11px; font-weight: 550; line-height: 1.35; min-width: 0;
 	transition: background-color 120ms ease;
 }
 .zbf-wc-rem-entry:hover { background: light-dark(rgba(0, 0, 0, 0.025), rgba(255, 255, 255, 0.04)); }
@@ -96,14 +97,14 @@ export const REMINDERS_CARD_CSS = `
 }
 .zbf-wc-rem-filter {
 	appearance: none; border: 0; border-radius: 3.5px; background: transparent;
-	color: var(--zbf-wc-fg-muted); padding: 1.5px 7px; font: 400 10px/1.3 inherit;
-	cursor: pointer; transition: background-color 120ms ease, color 120ms ease;
+	color: var(--zbf-wc-fg-muted); padding: 1.5px 7px; font-family: var(--zbf-num-font, inherit); font-size: 10px; line-height: 1.3; font-weight: 500;
+	font-variant-numeric: tabular-nums; cursor: pointer; transition: background-color 120ms ease, color 120ms ease;
 }
 .zbf-wc-rem-filter:hover { color: var(--zbf-wc-fg); }
 .zbf-wc-rem-filter.is-active {
 	background: var(--zbf-wc-card-hi);
 	box-shadow: 0 1px 2px light-dark(rgba(0, 0, 0, 0.06), rgba(0, 0, 0, 0.22));
-	color: var(--zbf-wc-fg); font-weight: 500;
+	color: var(--zbf-wc-fg); font-weight: 580;
 }
 .zbf-wc-rem-hint {
 	font-size: 10px; line-height: 1.35; color: var(--zbf-wc-fg-muted);
@@ -144,7 +145,7 @@ export const REMINDERS_CARD_CSS = `
 .zbf-wc-rem-act {
 	flex: none; appearance: none; height: 20px; padding: 0 7px; border-radius: 4px;
 	border: 1px solid var(--zbf-wc-line); background: var(--zbf-wc-card);
-	color: var(--zbf-wc-fg-sec); font: 400 9.5px/1 inherit; cursor: pointer;
+	color: var(--zbf-wc-fg-sec); font-family: inherit; font-size: 9.5px; font-weight: 400; line-height: 1; cursor: pointer;
 	transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
 }
 .zbf-wc-rem-act:hover { color: var(--zbf-wc-fg); background: var(--zbf-wc-card-hi); border-color: var(--zbf-wc-line-strong); }

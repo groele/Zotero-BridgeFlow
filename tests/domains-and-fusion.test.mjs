@@ -484,16 +484,18 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	const [docNameEl, docSub] = docMeta.children;
 	const [, , , colBtn] = docSub.children;
 	const [citedCell, inTextCell, orphanCell] = statStrip.children;
-	const [, citeTitleRow, , synergy] = citeCard.children;
+	const [citeHeadEl, citeTitleRow, , synergy] = citeCard.children;
 	const [ordBadgeEl, citeTitleEl] = citeTitleRow.children;
 	const [groupBtn] = synergy.children;
 	const [insertBtn, refreshBtn] = actions.children;
 
-	assert.equal(docNameEl.textContent, 'de.docx');
+	assert.equal(docNameEl.children[0].textContent, 'de');
+	assert.equal(docNameEl.children[1].textContent, '.docx');
 	assert.equal(citedCell.children[0].textContent, '14');
 	assert.equal(inTextCell.children[0].textContent, '2');
 	assert.equal(orphanCell.children[0].textContent, '0');
-	assert.equal(ordBadgeEl.textContent, '[3] · 2次');
+	assert.equal(ordBadgeEl.textContent, '[3]');
+	assert.equal(citeHeadEl.children[1].textContent, '文内已引 2 处');
 	assert.equal(citeTitleEl.textContent, 'Optical Microcavity');
 	assert.equal(groupBtn.textContent, '↗ 引用所在分组「核心基底」(3)');
 	assert.equal(colBtn.hidden, false);

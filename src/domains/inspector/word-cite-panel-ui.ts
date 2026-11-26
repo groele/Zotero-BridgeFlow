@@ -69,8 +69,10 @@ export interface WordCiteBodyState {
 	docRow: HTMLElement;
 	wBadge: HTMLSpanElement;
 	docNameEl: HTMLElement;
+	docStemEl: HTMLSpanElement;
+	docExtEl: HTMLSpanElement;
 	docDot: HTMLSpanElement;
-	docStatusEl: HTMLSpanElement;
+	docStatusEl: HTMLElement;
 	colSepEl: HTMLSpanElement;
 	colBtn: HTMLButtonElement;
 	docSwitchBtn: HTMLButtonElement;
@@ -86,6 +88,7 @@ export interface WordCiteBodyState {
 	orphanLblEl: HTMLSpanElement;
 	citeCard: HTMLElement;
 	citeKickerEl: HTMLSpanElement;
+	citeFreqEl: HTMLSpanElement;
 	ordBadgeEl: HTMLSpanElement;
 	citeTitleEl: HTMLSpanElement;
 	citeSubEl: HTMLElement;
@@ -140,13 +143,16 @@ export function createWordCiteBodyState(
 	const root = el('div', 'zbf-word-cite-wrap');
 	const mainView = el('div', 'zbf-wc-main-view');
 
-	// 1. Document Connection Card
+	// 1. Document Connection Card (Amber when disconnected, Cornflower Blue when live)
 	const docCard = el('div', 'zbf-wc-card zbf-wc-doc-card');
 	const docRow = el('div', 'zbf-wc-doc-row');
 	const wBadge = el('span', 'zbf-wc-w');
-	wBadge.textContent = 'W';
+	wBadge.appendChild(createWordCiteSvgIcon(doc, 'word', 'zbf-wc-word-svg'));
 	const docMeta = el('div', 'zbf-wc-doc-meta');
 	const docNameEl = el('strong', 'zbf-wc-docname');
+	const docStemEl = el('span', 'zbf-wc-doc-stem');
+	const docExtEl = el('span', 'zbf-wc-doc-ext');
+	docNameEl.append(docStemEl, docExtEl);
 	const docSub = el('div', 'zbf-wc-doc-sub');
 	const docDot = el('span', 'zbf-wc-dot');
 	const docStatusEl = el('span', 'zbf-wc-doc-status');
@@ -163,7 +169,7 @@ export function createWordCiteBodyState(
 	docRow.append(wBadge, docMeta, docSwitchBtn);
 	docCard.appendChild(docRow);
 
-	// 2. Three Independent Stat Tiles
+	// 2. Three Independent Stat Tiles (Coordinated 18px/650 Numbers + Slate Labels)
 	const statStrip = el('div', 'zbf-wc-stat-strip');
 	const mkCell = () => {
 		const cell = el('div', 'zbf-wc-stat-cell');
@@ -177,9 +183,12 @@ export function createWordCiteBodyState(
 	const c3 = mkCell();
 	statStrip.append(c1.cell, c2.cell, c3.cell);
 
-	// 3. Selected Item Card
+	// 3. Selected Item Card (Coral Spine + Ordinal Badge + In-Text Frequency Pill)
 	const citeCard = el('div', 'zbf-wc-card zbf-wc-cite-card');
+	const citeHeadEl = el('div', 'zbf-wc-cite-head');
 	const citeKickerEl = el('span', 'zbf-wc-cite-kicker');
+	const citeFreqEl = el('span', 'zbf-wc-cite-freq');
+	citeHeadEl.append(citeKickerEl, citeFreqEl);
 	const citeTitleRow = el('div', 'zbf-wc-cite-title-row');
 	const ordBadgeEl = el('span', 'zbf-wc-ord-badge');
 	const citeTitleEl = el('span', 'zbf-wc-cite-title');
@@ -189,21 +198,26 @@ export function createWordCiteBodyState(
 	const groupBtn = el('button', 'zbf-wc-link zbf-word-group-action');
 	groupBtn.type = 'button';
 	synergyEl.appendChild(groupBtn);
-	citeCard.append(citeKickerEl, citeTitleRow, citeSubEl, synergyEl);
+	citeCard.append(citeHeadEl, citeTitleRow, citeSubEl, synergyEl);
 
-	// 4. Standalone Action Bar (Outside Selected Item Card)
+	// 4. Standalone Action Bar
 	const actionsEl = el('div', 'zbf-wc-actions');
 	const insertBtn = el('button', 'zbf-word-cite-action');
 	insertBtn.type = 'button';
 	const refreshBtn = el('button', 'zbf-word-refresh-action');
 	refreshBtn.type = 'button';
-	refreshBtn.appendChild(createWordCiteSvgIcon(doc, 'refresh'));
+	const refreshIcon = createWordCiteSvgIcon(doc, 'refresh');
+	refreshBtn.appendChild(refreshIcon);
+	refreshBtn.addEventListener('click', () => {
+		refreshIcon.classList?.remove?.('is-spinning');
+		void (refreshIcon as unknown as { offsetWidth?: number }).offsetWidth;
+		refreshIcon.classList?.add?.('is-spinning');
+	}, { signal });
 	actionsEl.append(insertBtn, refreshBtn);
 
+	// 5. Governance Cards Below Action Bar (Orphan Recovery -> Metadata Reminders)
 	const orphanRefs = createOrphanAccordionDom(doc);
 	const reminderRefs = createReminderCardDom(doc, reminderHeadCb, signal);
-
-	// 5. Assemble Main View + Shared Receipt + In-place Collapsible Reminder Card
 	mainView.append(docCard, statStrip, citeCard, actionsEl, orphanRefs.box, reminderRefs.root);
 
 	const receiptEl = el('div', 'zbf-wc-receipt');
@@ -214,10 +228,10 @@ export function createWordCiteBodyState(
 	body.appendChild(root);
 
 	return {
-		root, mainView, docCard, docRow, wBadge, docNameEl, docDot, docStatusEl, colSepEl, colBtn, docSwitchBtn, docSwitchLbl,
+		root, mainView, docCard, docRow, wBadge, docNameEl, docStemEl, docExtEl, docDot, docStatusEl, colSepEl, colBtn, docSwitchBtn, docSwitchLbl,
 		statStrip, citedCell: c1.cell, citedValEl: c1.val, citedLblEl: c1.lbl, inTextValEl: c2.val, inTextLblEl: c2.lbl,
 		orphanCell: c3.cell, orphanValEl: c3.val, orphanLblEl: c3.lbl,
-		citeCard, citeKickerEl, ordBadgeEl, citeTitleEl, citeSubEl, synergyEl, groupBtn,
+		citeCard, citeKickerEl, citeFreqEl, ordBadgeEl, citeTitleEl, citeSubEl, synergyEl, groupBtn,
 		actionsEl, insertBtn, refreshBtn, receiptEl, orphanRefs, reminderRefs,
 		activeItem: null, lastItemIDs: [], lastGroup: null,
 	};
@@ -233,9 +247,11 @@ export function renderWordCitePanel(
 
 	st.docRow.hidden = !vm.showDocSwitcher;
 	st.docCard.hidden = !vm.showDocSwitcher;
+	st.docCard.classList.toggle('is-live', vm.hasWordSession);
 	st.wBadge.classList.toggle('is-live', vm.hasWordSession);
 	st.docDot.classList.toggle('is-live', vm.hasWordSession);
-	st.docNameEl.textContent = vm.docName;
+	st.docStemEl.textContent = vm.docStem;
+	st.docExtEl.textContent = vm.docExt;
 	st.docNameEl.title = vm.docSwitchTitle;
 	st.docStatusEl.textContent = vm.docStatusText;
 	st.colSepEl.hidden = !vm.showCollectionButton;
@@ -248,6 +264,7 @@ export function renderWordCitePanel(
 	st.docSwitchLbl.textContent = vm.sessionBadgeText;
 
 	st.statStrip.hidden = !vm.showSummaryCounts;
+	st.statStrip.classList.toggle('is-live', vm.hasWordSession);
 	st.statStrip.title = vm.statStrip.tooltip;
 	st.citedValEl.textContent = vm.statStrip.citedValue;
 	st.citedLblEl.textContent = vm.statStrip.citedLabel;
@@ -260,7 +277,11 @@ export function renderWordCitePanel(
 	st.orphanCell.classList.toggle('is-warn', vm.statStrip.orphanWarn);
 	st.orphanCell.classList.toggle('is-interactive', vm.statStrip.orphanWarn && vm.orphanCard.visible);
 
+	st.citeCard.classList.toggle('is-live', vm.hasWordSession);
 	st.citeKickerEl.textContent = vm.currentCite.kicker;
+	st.citeFreqEl.hidden = !vm.currentCite.freqText;
+	st.citeFreqEl.textContent = vm.currentCite.freqText;
+	st.citeFreqEl.classList.toggle('is-uncited', vm.currentCite.freqUncited);
 	st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
 	st.ordBadgeEl.textContent = vm.currentCite.badgeText;
 	st.ordBadgeEl.classList.toggle('is-cited', vm.currentCite.badgeCited);

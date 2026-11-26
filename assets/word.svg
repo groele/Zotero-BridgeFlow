@@ -1,25 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="16" height="16" fill="none" role="img" aria-label="Microsoft Word">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="16" height="16" fill="none" role="img" aria-label="Microsoft Word">
   <title>Microsoft Word</title>
-  <defs>
-    <linearGradient id="msWordTop" x1="36" y1="12" x2="118" y2="40" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#41A5EE" />
-      <stop offset="100%" stop-color="#2B7CD3" />
-    </linearGradient>
-    <linearGradient id="msWordTile" x1="10" y1="32" x2="72" y2="96" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#2368C4" />
-      <stop offset="50%" stop-color="#185ABD" />
-      <stop offset="100%" stop-color="#114694" />
-    </linearGradient>
-  </defs>
-  <!-- 4-Tier Microsoft 365 Fluent Word Document Bands -->
-  <path d="M 38 22 C 38 15.4 43.4 10 50 10 H 106 C 112.6 10 118 15.4 118 22 V 37 H 38 Z" fill="url(#msWordTop)" />
-  <rect x="38" y="36" width="80" height="28" fill="#2B7CD3" />
-  <rect x="38" y="63" width="80" height="28" fill="#185ABD" />
-  <path d="M 38 90 H 118 V 106 C 118 112.6 112.6 118 106 118 H 50 C 43.4 118 38 112.6 38 106 Z" fill="#103F91" />
-  <!-- Ambient Shadow Behind Floating W Tile -->
-  <rect x="13" y="36" width="62" height="62" rx="13" fill="#0B2559" fill-opacity="0.32" />
-  <!-- Floating Royal Blue Word Shield -->
-  <rect x="10" y="33" width="62" height="62" rx="13" fill="url(#msWordTile)" />
-  <!-- Crisp Geometric White W -->
-  <path d="M 20.5 47 H 28.5 L 33.5 72.5 L 40 47 H 46.8 L 53.2 72.5 L 58.2 47 H 66 L 57.5 82 H 49.8 L 43.4 58.2 L 37 82 H 29.2 Z" fill="#FFFFFF" />
+  <path d="M7.2 4.8C7.2 3.53 8.23 2.5 9.5 2.5H19.2C20.47 2.5 21.5 3.53 21.5 4.8V7.25H7.2V4.8Z" fill="#41A5EE"/>
+  <path d="M7.2 7.25H21.5V12H7.2V7.25Z" fill="#2B7CD3"/>
+  <path d="M7.2 12H21.5V16.75H7.2V12Z" fill="#185ABD"/>
+  <path d="M7.2 16.75H21.5V19.2C21.5 20.47 20.47 21.5 19.2 21.5H9.5C8.23 21.5 7.2 20.47 7.2 19.2V16.75Z" fill="#103F91"/>
+  <rect x="2.8" y="6.9" width="11.4" height="11.4" rx="2.5" fill="#0B2559" fill-opacity="0.26"/>
+  <rect x="2" y="6.1" width="11.4" height="11.4" rx="2.5" fill="#185ABD"/>
+  <path d="M4.05 8.9H5.53L6.51 13.35L7.59 8.9H8.93L10.01 13.35L10.99 8.9H12.47L10.85 14.65H9.44L8.26 10.4L7.08 14.65H5.67L4.05 8.9Z" fill="#FFFFFF"/>
 </svg>
