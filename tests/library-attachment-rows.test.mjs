@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectItemAnnotations } from '../src/services/annotation-utils.ts';
-import { readItemRemarkWithFallback } from '../src/domains/visual-notes/data-source.ts';
+import { clearGalleryCardCache, resolveCachedCardStatic } from '../src/domains/visual-notes/gallery-card-cache.ts';
+import { clearExtraRemarkCache, readItemRemarkWithFallback } from '../src/domains/visual-notes/data-source.ts';
 import { ReadingColumnsController } from '../src/domains/visual-notes/library-columns.ts';
 
 import { getNormalizedItemRemark, setNormalizedItemRemark } from '../src/domains/workspace/workspace-session-ops.ts';
@@ -42,4 +43,30 @@ test('gallery brief notes resolve attached PDFs and standalone children through 
 	assert.equal(source.getRemark(2), '');
 	assert.equal(setNormalizedItemRemark(state, 2, 'standalone note'), true);
 	assert.equal(source.getRemark(2), 'standalone note');
+});
+
+test('gallery cache refreshes changed IDs, versions and display settings independently', () => {
+	const make = id => ({
+		id, version: 1, text: 'original', itemType: 'book',
+		getField(key) { return key === 'title' ? this.text : key === 'extra' ? 'BridgeFlow-Remark: ' + this.text : ''; },
+		getTags: () => [{ tag: '/Reading' }],
+	});
+	const a = make(81001), b = make(81002);
+	const card = (item, zh = false, excluded = '/Citations') => resolveCachedCardStatic(item, item.id, zh, excluded);
+	const original = card(b);
+	assert.equal(card(a).title, 'original');
+	assert.equal(readItemRemarkWithFallback(a), 'original');
+	assert.equal(readItemRemarkWithFallback(b), 'original');
+	a.text = b.text = 'edited';
+	clearGalleryCardCache([a.id]);
+	clearExtraRemarkCache([a.id]);
+	assert.equal(card(a).title, 'edited');
+	assert.equal(readItemRemarkWithFallback(a), 'edited');
+	assert.equal(card(b), original);
+	assert.equal(readItemRemarkWithFallback(b), 'original');
+	b.version++;
+	assert.equal(card(b).title, 'edited');
+	assert.equal(readItemRemarkWithFallback(b), 'edited');
+	assert.notEqual(card(a, true).itemTypeLabel, card(a).itemTypeLabel);
+	assert.deepEqual(card(a, false, '/Reading').tags, []);
 });

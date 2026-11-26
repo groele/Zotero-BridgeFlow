@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.1 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -9412,9 +9412,14 @@ ${REMINDERS_CARD_CSS}`;
   var ioQueue = createGalleryWorkQueue(async () => {
   }, 8);
   var activeJobs = /* @__PURE__ */ new Map();
-  function notifyGalleryCoverScroll(paused) {
-    if (typeof paused === "boolean") defaultScrollIdle.setPaused(paused);
-    else defaultScrollIdle.touch();
+  var draggingViewports = /* @__PURE__ */ new Set();
+  function notifyGalleryCoverScroll() {
+    defaultScrollIdle.touch();
+  }
+  function setGalleryCoverDragging(viewport, dragging) {
+    if (dragging) draggingViewports.add(viewport);
+    else draggingViewports.delete(viewport);
+    defaultScrollIdle.setPaused(draggingViewports.size > 0);
   }
   function requestGalleryPdfCover(opts) {
     const { attID, doc } = opts;
@@ -11118,18 +11123,14 @@ ${REMINDERS_CARD_CSS}`;
       extraRemarkCache.clear();
       return;
     }
-    const targets = new Set(itemIDs);
-    if (!targets.size) return;
-    for (const key of extraRemarkCache.keys()) {
-      if (targets.has(Number(key.split(":", 1)[0]))) extraRemarkCache.delete(key);
-    }
+    for (const id of itemIDs) extraRemarkCache.delete(id);
   }
   function readItemRemarkWithFallback(item, dataSource) {
     if (!item) return "";
     const id = Number(item.id || 0);
     if (id > 0 && dataSource) {
-      const cached = dataSource.getRemark(id);
-      if (cached) return cached;
+      const cached2 = dataSource.getRemark(id);
+      if (cached2) return cached2;
     }
     const parentID = resolveParentItemID(item);
     if (parentID > 0 && parentID !== id && dataSource) {
@@ -11140,26 +11141,24 @@ ${REMINDERS_CARD_CSS}`;
     const targetItem = parentID > 0 && parentID !== id ? hostItems?.get?.(parentID) || item : item;
     const targetID = Number(targetItem?.id || 0);
     const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? "");
-    const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : "";
-    if (cacheKey && extraRemarkCache.has(cacheKey)) {
-      const hit = extraRemarkCache.get(cacheKey);
-      if (hit) return hit;
-      if (!dataSource) return "";
-    }
+    const cacheable = targetID > 0 && Boolean(stamp);
+    const cached = cacheable ? extraRemarkCache.get(targetID) : void 0;
+    if (cached?.stamp === stamp && (cached.remark || !dataSource)) return cached.remark;
     if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === "function") {
       for (const attID of item.getAttachments() || []) {
         const attCached = dataSource.getRemark(attID);
         if (attCached) return attCached;
       }
     }
-    if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey);
+    if (cached?.stamp === stamp) return cached.remark;
     const resolved = getItemBriefNote(targetItem);
-    if (cacheKey) {
+    if (cacheable) {
+      extraRemarkCache.delete(targetID);
       if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
         const oldest = extraRemarkCache.keys().next().value;
         if (oldest !== void 0) extraRemarkCache.delete(oldest);
       }
-      extraRemarkCache.set(cacheKey, resolved);
+      extraRemarkCache.set(targetID, { stamp, remark: resolved });
     }
     return resolved;
   }
@@ -11868,12 +11867,7 @@ ${REMINDERS_CARD_CSS}`;
       cardStaticCache.clear();
       return;
     }
-    const targets = new Set(itemIDs);
-    if (!targets.size) return;
-    for (const key of cardStaticCache.keys()) {
-      const id = Number(key.split(":", 1)[0]);
-      if (targets.has(id)) cardStaticCache.delete(key);
-    }
+    for (const id of itemIDs) cardStaticCache.delete(id);
   }
   function safeField(item, field) {
     try {
@@ -11931,13 +11925,13 @@ ${REMINDERS_CARD_CSS}`;
   }
   function resolveCachedCardStatic(ref, itemID, zh, excludedStatusTag) {
     const stamp = String(ref.version ?? ref.dateModified ?? "");
-    const cacheKey = stamp ? `${itemID}:${stamp}:${excludedStatusTag}:${zh ? 1 : 0}` : "";
-    if (cacheKey) {
-      const hit = cardStaticCache.get(cacheKey);
-      if (hit) {
-        cardStaticCache.delete(cacheKey);
-        cardStaticCache.set(cacheKey, hit);
-        return hit;
+    const signature = `${stamp}:${excludedStatusTag}:${zh ? 1 : 0}`;
+    if (stamp) {
+      const cached = cardStaticCache.get(itemID);
+      if (cached?.signature === signature) {
+        cardStaticCache.delete(itemID);
+        cardStaticCache.set(itemID, cached);
+        return cached.fields;
       }
     }
     const title = safeField(ref, "title") || String(ref.title || `#${itemID}`);
@@ -11969,12 +11963,13 @@ ${REMINDERS_CARD_CSS}`;
       status,
       baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ""} ${tags.join(" ")}`.toLowerCase()
     };
-    if (cacheKey) {
+    if (stamp) {
+      cardStaticCache.delete(itemID);
       if (cardStaticCache.size >= CARD_STATIC_CACHE_LIMIT) {
         const oldest = cardStaticCache.keys().next().value;
         if (oldest !== void 0) cardStaticCache.delete(oldest);
       }
-      cardStaticCache.set(cacheKey, built);
+      cardStaticCache.set(itemID, { signature, fields: built });
     }
     return built;
   }
@@ -12167,6 +12162,35 @@ ${REMINDERS_CARD_CSS}`;
       return setItemRating(card.item, Number(targetColumnKey) || 0, options.ratingStorage);
     }
     return false;
+  }
+
+  // src/domains/visual-notes/gallery-scroll.ts
+  function captureGalleryScroll(panel) {
+    const previous = panel.querySelector(".zbf-gal-viewport");
+    const top = previous?.scrollTop || 0;
+    const left = previous?.scrollLeft || 0;
+    const boardLeft = previous?.querySelector(".zbf-gal-board")?.scrollLeft || 0;
+    const columns = /* @__PURE__ */ new Map();
+    previous?.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((column) => {
+      const offset = column.querySelector(".zbf-gal-col-body")?.scrollTop;
+      if (offset && column.dataset.colKey) columns.set(column.dataset.colKey, offset);
+    });
+    return (viewport) => {
+      if (left) viewport.scrollLeft = left;
+      if (top) viewport.scrollTop = top;
+      if (boardLeft) {
+        const board = viewport.querySelector(".zbf-gal-board");
+        if (board) board.scrollLeft = boardLeft;
+      }
+      if (columns.size) {
+        viewport.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((column) => {
+          const offset = columns.get(column.dataset.colKey || "");
+          const body = column.querySelector(".zbf-gal-col-body");
+          if (offset && body) body.scrollTop = offset;
+        });
+      }
+      return Boolean(top || columns.size);
+    };
   }
 
   // src/domains/visual-notes/gallery-card-renderer.ts
@@ -13386,7 +13410,6 @@ ${REMINDERS_CARD_CSS}`;
       } };
     }
     const cardByID = new Map(sorted.map((c) => [c.itemID, c]));
-    let columnDragging = false;
     const board = galEl(doc, "div");
     board.className = "zbf-gal-board";
     viewport.appendChild(board);
@@ -13398,6 +13421,10 @@ ${REMINDERS_CARD_CSS}`;
     const allColKeys = cols.map((c) => c.key);
     const droppableCols = new Set(cols.filter((c) => c.droppable).map((c) => c.key));
     let layoutRef = null;
+    const setDragging = (dragging) => {
+      setGalleryCoverDragging(viewport, dragging);
+      layoutRef?.setDragging(dragging);
+    };
     const colSpecs = cols.map((col) => ({
       value: col.key,
       items: col.cards.map((c) => ({ id: c.itemID, key: String(c.itemID), data: c })),
@@ -13411,15 +13438,11 @@ ${REMINDERS_CARD_CSS}`;
         head.draggable = true;
         head.addEventListener("dragstart", (ev) => {
           ev.stopPropagation();
-          columnDragging = true;
-          notifyGalleryCoverScroll(true);
-          layoutRef?.setDragging(true);
+          setDragging(true);
           ev.dataTransfer?.setData("text/zbf-col-key", col.key);
         });
         head.addEventListener("dragend", () => {
-          columnDragging = false;
-          notifyGalleryCoverScroll(false);
-          layoutRef?.setDragging(false);
+          setDragging(false);
         });
         const pill = galEl(doc, "span");
         pill.className = "zbf-gal-col-pill";
@@ -13461,7 +13484,8 @@ ${REMINDERS_CARD_CSS}`;
           const draggedID = Number(ev.dataTransfer?.getData("text/zbf-item-id") || 0);
           if (!draggedID) return;
           ev.preventDefault();
-          const targetIDs = opts.selectedIDs.has(draggedID) ? [...opts.selectedIDs] : [draggedID];
+          const selected = opts.getSelectedIDs();
+          const targetIDs = selected.has(draggedID) ? [...selected] : [draggedID];
           void (async () => {
             let anyChanged = false;
             for (const tid of targetIDs) {
@@ -13492,15 +13516,12 @@ ${REMINDERS_CARD_CSS}`;
       estimateHeight,
       measurements: opts.measurements,
       columns: colSpecs,
-      createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), (dragging) => {
-        notifyGalleryCoverScroll(dragging);
-        layoutRef?.setDragging(dragging);
-      }),
+      createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), setDragging),
       onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
       onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl)
     });
     return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => {
-      if (columnDragging) notifyGalleryCoverScroll(false);
+      setGalleryCoverDragging(viewport, false);
       layoutRef?.destroy();
       hydrator.dispose();
     } };
@@ -13762,14 +13783,7 @@ ${REMINDERS_CARD_CSS}`;
       const doc = st.win.document;
       const panel = st.panel;
       if (!doc || !panel || !st.open) return;
-      const prevScrollTop = panel.querySelector(".zbf-gal-viewport")?.scrollTop || 0;
-      const prevScrollLeft = panel.querySelector(".zbf-gal-viewport")?.scrollLeft || 0;
-      const prevColScroll = /* @__PURE__ */ new Map();
-      panel.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((colNode) => {
-        const k = colNode.dataset.colKey;
-        const stTop = colNode.querySelector(".zbf-gal-col-body")?.scrollTop || 0;
-        if (k && stTop > 0) prevColScroll.set(k, stTop);
-      });
+      const restoreScroll = captureGalleryScroll(panel);
       this.disposeViewport(st);
       const zh = this.isZh();
       const density = this.kernel.prefs.get("visualNotes.gallery.cardDensity") === "compact" ? "compact" : "comfortable";
@@ -13807,7 +13821,7 @@ ${REMINDERS_CARD_CSS}`;
           density,
           sorted,
           rawItems,
-          selectedIDs: st.selectedIDs,
+          getSelectedIDs: () => st.selectedIDs,
           columnOrder: st.columnOrders.get(st.groupBy),
           measurements: st.measurements,
           excludedTag,
@@ -13939,16 +13953,8 @@ ${REMINDERS_CARD_CSS}`;
         }));
         panel.appendChild(bodyViewport);
       }
-      if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
-      if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
-      if (prevColScroll.size) {
-        bodyViewport.querySelectorAll(".zbf-gal-col[data-col-key]").forEach((colNode) => {
-          const stTop = prevColScroll.get(colNode.dataset.colKey || "");
-          const bodyEl = colNode.querySelector(".zbf-gal-col-body");
-          if (stTop && bodyEl) bodyEl.scrollTop = stTop;
-        });
-      }
       st.layout?.refresh();
+      if (restoreScroll(bodyViewport)) st.layout?.refresh();
       activateCovers?.();
     }
   };
@@ -25543,7 +25549,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.8.1" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.2" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;

@@ -28,19 +28,14 @@ const ITEM_TYPE_ZH: Readonly<Record<string, string>> = {
 };
 
 const CARD_STATIC_CACHE_LIMIT = 5000;
-const cardStaticCache = new Map<string, CachedCardStaticFields>();
+const cardStaticCache = new Map<number, { signature: string; fields: CachedCardStaticFields }>();
 
 export function clearGalleryCardCache(itemIDs?: Iterable<number>): void {
 	if (!itemIDs) {
 		cardStaticCache.clear();
 		return;
 	}
-	const targets = new Set(itemIDs);
-	if (!targets.size) return;
-	for (const key of cardStaticCache.keys()) {
-		const id = Number(key.split(':', 1)[0]);
-		if (targets.has(id)) cardStaticCache.delete(key);
-	}
+	for (const id of itemIDs) cardStaticCache.delete(id);
 }
 
 function safeField(item: any, field: string): string {
@@ -98,13 +93,13 @@ function extractCleanTags(item: any, excludedStatusTag: string): string[] {
 
 export function resolveCachedCardStatic(ref: any, itemID: number, zh: boolean, excludedStatusTag: string): CachedCardStaticFields {
 	const stamp = String(ref.version ?? ref.dateModified ?? '');
-	const cacheKey = stamp ? `${itemID}:${stamp}:${excludedStatusTag}:${zh ? 1 : 0}` : '';
-	if (cacheKey) {
-		const hit = cardStaticCache.get(cacheKey);
-		if (hit) {
-			cardStaticCache.delete(cacheKey);
-			cardStaticCache.set(cacheKey, hit);
-			return hit;
+	const signature = `${stamp}:${excludedStatusTag}:${zh ? 1 : 0}`;
+	if (stamp) {
+		const cached = cardStaticCache.get(itemID);
+		if (cached?.signature === signature) {
+			cardStaticCache.delete(itemID);
+			cardStaticCache.set(itemID, cached);
+			return cached.fields;
 		}
 	}
 	const title = safeField(ref, 'title') || String(ref.title || `#${itemID}`);
@@ -132,12 +127,13 @@ export function resolveCachedCardStatic(ref: any, itemID: number, zh: boolean, e
 		status,
 		baseSearchLower: `${title} ${creator} ${year} ${venue} ${status?.label || ''} ${tags.join(' ')}`.toLowerCase(),
 	};
-	if (cacheKey) {
+	if (stamp) {
+		cardStaticCache.delete(itemID);
 		if (cardStaticCache.size >= CARD_STATIC_CACHE_LIMIT) {
 			const oldest = cardStaticCache.keys().next().value;
 			if (oldest !== undefined) cardStaticCache.delete(oldest);
 		}
-		cardStaticCache.set(cacheKey, built);
+		cardStaticCache.set(itemID, { signature, fields: built });
 	}
 	return built;
 }

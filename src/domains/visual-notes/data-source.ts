@@ -21,18 +21,14 @@ export function resolveParentItemID(item: any): number {
 }
 
 const EXTRA_REMARK_CACHE_LIMIT = 5000;
-const extraRemarkCache = new Map<string, string>();
+const extraRemarkCache = new Map<number, { stamp: string; remark: string }>();
 
 export function clearExtraRemarkCache(itemIDs?: Iterable<number>): void {
 	if (!itemIDs) {
 		extraRemarkCache.clear();
 		return;
 	}
-	const targets = new Set(itemIDs);
-	if (!targets.size) return;
-	for (const key of extraRemarkCache.keys()) {
-		if (targets.has(Number(key.split(':', 1)[0]))) extraRemarkCache.delete(key);
-	}
+	for (const id of itemIDs) extraRemarkCache.delete(id);
 }
 
 export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDataSource): string {
@@ -51,26 +47,24 @@ export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDa
 	const targetItem = parentID > 0 && parentID !== id ? (hostItems?.get?.(parentID) || item) : item;
 	const targetID = Number(targetItem?.id || 0);
 	const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? '');
-	const cacheKey = targetID > 0 && stamp ? `${targetID}:${stamp}` : '';
-	if (cacheKey && extraRemarkCache.has(cacheKey)) {
-		const hit = extraRemarkCache.get(cacheKey)!;
-		if (hit) return hit;
-		if (!dataSource) return '';
-	}
+	const cacheable = targetID > 0 && Boolean(stamp);
+	const cached = cacheable ? extraRemarkCache.get(targetID) : undefined;
+	if (cached?.stamp === stamp && (cached.remark || !dataSource)) return cached.remark;
 	if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === 'function') {
 		for (const attID of item.getAttachments() || []) {
 			const attCached = dataSource.getRemark(attID);
 			if (attCached) return attCached;
 		}
 	}
-	if (cacheKey && extraRemarkCache.has(cacheKey)) return extraRemarkCache.get(cacheKey)!;
+	if (cached?.stamp === stamp) return cached.remark;
 	const resolved = getItemBriefNote(targetItem);
-	if (cacheKey) {
+	if (cacheable) {
+		extraRemarkCache.delete(targetID);
 		if (extraRemarkCache.size >= EXTRA_REMARK_CACHE_LIMIT) {
 			const oldest = extraRemarkCache.keys().next().value;
 			if (oldest !== undefined) extraRemarkCache.delete(oldest);
 		}
-		extraRemarkCache.set(cacheKey, resolved);
+		extraRemarkCache.set(targetID, { stamp, remark: resolved });
 	}
 	return resolved;
 }

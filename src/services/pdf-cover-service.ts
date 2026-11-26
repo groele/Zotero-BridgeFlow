@@ -186,9 +186,14 @@ const activeJobs = new Map<string, {
 	promise: Promise<string | null>;
 }>();
 
-export function notifyGalleryCoverScroll(paused?: boolean): void {
-	if (typeof paused === 'boolean') defaultScrollIdle.setPaused(paused);
-	else defaultScrollIdle.touch();
+const draggingViewports = new Set<HTMLElement>();
+
+export function notifyGalleryCoverScroll(): void { defaultScrollIdle.touch(); }
+
+export function setGalleryCoverDragging(viewport: HTMLElement, dragging: boolean): void {
+	if (dragging) draggingViewports.add(viewport);
+	else draggingViewports.delete(viewport);
+	defaultScrollIdle.setPaused(draggingViewports.size > 0);
 }
 
 export function requestGalleryPdfCover(opts: {

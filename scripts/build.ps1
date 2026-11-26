@@ -43,7 +43,7 @@ if (-not $VerifyOnly) {
         $archive = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create)
         try {
             foreach ($entry in $entries) {
-                $zipEntry = $archive.CreateEntry($entry.Name, [IO.Compression.CompressionLevel]::Optimal)
+                $zipEntry = $archive.CreateEntry($entry.Name, [IO.Compression.CompressionLevel]::SmallestSize)
                 $zipEntry.LastWriteTime = [DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
                 $inputStream = [IO.File]::OpenRead($entry.Source)
                 $outputStream = $zipEntry.Open()

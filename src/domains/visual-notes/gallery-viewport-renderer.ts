@@ -1,7 +1,7 @@
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import { collectHubAnnotations, collectHubNotes } from '../../services/collection-notes.ts';
 import type { RatingStorageLocation } from '../../services/item-status-rating.ts';
-import { notifyGalleryCoverScroll } from '../../services/pdf-cover-service.ts';
+import { notifyGalleryCoverScroll, setGalleryCoverDragging } from '../../services/pdf-cover-service.ts';
 import { extractQueryTerms } from './annotation-matrix-ui.ts';
 import {
 	ensureCollectionHubStyles,
@@ -36,7 +36,7 @@ export function renderGalleryViewport(opts: {
 	density: 'comfortable' | 'compact';
 	sorted: readonly GalleryCardModel[];
 	rawItems: readonly any[];
-	selectedIDs: ReadonlySet<number>;
+	getSelectedIDs: () => ReadonlySet<number>;
 	columnOrder?: readonly string[];
 	measurements?: Map<string, number>;
 	excludedTag: string;
@@ -90,7 +90,6 @@ export function renderGalleryViewport(opts: {
 	}
 
 	const cardByID = new Map<number, GalleryCardModel>(sorted.map((c) => [c.itemID, c]));
-	let columnDragging = false;
 	const board = galEl(doc, 'div');
 	board.className = 'zbf-gal-board';
 	viewport.appendChild(board);
@@ -103,6 +102,10 @@ export function renderGalleryViewport(opts: {
 	const droppableCols = new Set(cols.filter((c) => c.droppable).map((c) => c.key));
 
 	let layoutRef: GalleryVirtualLayoutController | null = null;
+	const setDragging = (dragging: boolean) => {
+		setGalleryCoverDragging(viewport, dragging);
+		layoutRef?.setDragging(dragging);
+	};
 	const colSpecs = cols.map((col) => ({
 		value: col.key,
 		items: col.cards.map((c) => ({ id: c.itemID, key: String(c.itemID), data: c })),
@@ -117,15 +120,11 @@ export function renderGalleryViewport(opts: {
 			head.draggable = true;
 			head.addEventListener('dragstart', (ev) => {
 				ev.stopPropagation();
-				columnDragging = true;
-				notifyGalleryCoverScroll(true);
-				layoutRef?.setDragging(true);
+				setDragging(true);
 				ev.dataTransfer?.setData('text/zbf-col-key', col.key);
 			});
 			head.addEventListener('dragend', () => {
-				columnDragging = false;
-				notifyGalleryCoverScroll(false);
-				layoutRef?.setDragging(false);
+				setDragging(false);
 			});
 
 			const pill = galEl(doc, 'span');
@@ -170,7 +169,8 @@ export function renderGalleryViewport(opts: {
 				const draggedID = Number(ev.dataTransfer?.getData('text/zbf-item-id') || 0);
 				if (!draggedID) return;
 				ev.preventDefault();
-				const targetIDs = opts.selectedIDs.has(draggedID) ? [...opts.selectedIDs] : [draggedID];
+				const selected = opts.getSelectedIDs();
+				const targetIDs = selected.has(draggedID) ? [...selected] : [draggedID];
 				void (async () => {
 					let anyChanged = false;
 					for (const tid of targetIDs) {
@@ -195,16 +195,13 @@ export function renderGalleryViewport(opts: {
 		doc, scroll: viewport, content: board, board: true,
 		cardMinWidth: opts.cardMinWidth, gap: 10, estimateHeight,
 		measurements: opts.measurements, columns: colSpecs,
-		createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), (dragging) => {
-			notifyGalleryCoverScroll(dragging);
-			layoutRef?.setDragging(dragging);
-		}),
+		createCard: ({ data, columnValue }) => opts.makeCard(data, droppableCols.has(columnValue), setDragging),
 		onCardMounted: (cardEl) => hydrator.observeCard(cardEl),
 		onCardUnmounted: (cardEl) => hydrator.unobserveCard(cardEl),
 	});
 
 	return { viewport, layout: layoutRef, activate: () => hydrator.activate(), dispose: () => {
-		if (columnDragging) notifyGalleryCoverScroll(false);
+		setGalleryCoverDragging(viewport, false);
 		layoutRef?.destroy();
 		hydrator.dispose();
 	} };

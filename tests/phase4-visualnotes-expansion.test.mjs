@@ -1,3 +1,4 @@
+import { captureGalleryScroll } from '../src/domains/visual-notes/gallery-scroll.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -750,4 +751,21 @@ test('Phase 4.10: Gallery Fenwick virtualization, priority cover work queue, vis
 	assert.equal(treeNode.style.getPropertyValue('visibility'), '');
 	assert.equal(treeNode.getAttribute('inert'), null);
 	guard.destroy();
+});
+
+test('a board refresh restores horizontal position and surviving columns by key', () => {
+	const column = (key, offset) => {
+		const body = { scrollTop: offset };
+		return { dataset: { colKey: key }, querySelector: () => body };
+	};
+	const viewport = (left, columns) => {
+		const board = { scrollLeft: left };
+		return { scrollTop: 0, scrollLeft: 0, querySelector: () => board, querySelectorAll: () => columns };
+	};
+	const old = viewport(325, [column('A', 540), column('removed', 90)]);
+	const restore = captureGalleryScroll({ querySelector: () => old });
+	const fresh = viewport(0, [column('new', 0), column('A', 0)]);
+	assert.equal(restore(fresh), true);
+	assert.equal(fresh.querySelector().scrollLeft, 325);
+	assert.deepEqual(fresh.querySelectorAll().map(c => c.querySelector().scrollTop), [0, 540]);
 });

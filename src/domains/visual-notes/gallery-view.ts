@@ -1,3 +1,4 @@
+import { captureGalleryScroll } from './gallery-scroll.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import { normalizeRatingStorage } from '../../services/item-status-rating.ts';
 import type { TabReadingProgress } from '../../services/reading-stats.ts';
@@ -211,14 +212,7 @@ export class GalleryBoardController {
 		const panel = st.panel;
 		if (!doc || !panel || !st.open) return;
 
-		const prevScrollTop = panel.querySelector('.zbf-gal-viewport')?.scrollTop || 0;
-		const prevScrollLeft = panel.querySelector('.zbf-gal-viewport')?.scrollLeft || 0;
-		const prevColScroll = new Map<string, number>();
-		panel.querySelectorAll('.zbf-gal-col[data-col-key]').forEach((colNode) => {
-			const k = (colNode as HTMLElement).dataset.colKey;
-			const stTop = colNode.querySelector('.zbf-gal-col-body')?.scrollTop || 0;
-			if (k && stTop > 0) prevColScroll.set(k, stTop);
-		});
+		const restoreScroll = captureGalleryScroll(panel);
 		this.disposeViewport(st);
 
 		const zh = this.isZh();
@@ -252,7 +246,7 @@ export class GalleryBoardController {
 			displayCount = sorted.length;
 			const vpRes = renderGalleryViewport({
 				doc, zh, mode: st.mode, groupBy: st.groupBy, cardMinWidth: cardWidth, density,
-				sorted, rawItems, selectedIDs: st.selectedIDs,
+				sorted, rawItems, getSelectedIDs: () => st.selectedIDs,
 				columnOrder: st.columnOrders.get(st.groupBy),
 				measurements: st.measurements,
 				excludedTag, ratingStorage,
@@ -344,16 +338,8 @@ export class GalleryBoardController {
 			}));
 			panel.appendChild(bodyViewport);
 		}
-		if (prevScrollTop > 0) bodyViewport.scrollTop = prevScrollTop;
-		if (prevScrollLeft > 0) bodyViewport.scrollLeft = prevScrollLeft;
-		if (prevColScroll.size) {
-			bodyViewport.querySelectorAll('.zbf-gal-col[data-col-key]').forEach((colNode) => {
-				const stTop = prevColScroll.get((colNode as HTMLElement).dataset.colKey || '');
-				const bodyEl = colNode.querySelector('.zbf-gal-col-body');
-				if (stTop && bodyEl) bodyEl.scrollTop = stTop;
-			});
-		}
 		st.layout?.refresh();
+		if (restoreScroll(bodyViewport)) st.layout?.refresh();
 		activateCovers?.();
 	}
 }
