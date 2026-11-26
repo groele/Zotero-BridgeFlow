@@ -125,25 +125,13 @@ export class Win32BridgeService {
 
 	verifyDroppedWordTarget(overrideActiveTitle?: string): boolean {
 		const recorded = this.lastDroppedWordWindow;
-		if (recorded?.title && Date.now() - recorded.at <= 15_000) {
-			let activeTitle = overrideActiveTitle;
-			if (activeTitle === undefined) {
-				const probed = this.probeWordWindowTitles();
-				activeTitle = probed.foregroundTitle || probed.visibleTitles[0] || '';
-			}
-			if (activeTitle) {
-				const matches = normalizeWordTitleForMatch(activeTitle) === normalizeWordTitleForMatch(recorded.title);
-				if (!matches) {
-					this.lastDroppedWordWindow = null;
-					return false;
-				}
-				return true;
-			}
-		}
-		if (!this.supportsNativeWin32()) return true;
-		const cursor = this.probeCursorWordDropTarget();
-		if (cursor.status === 'word-confirmed') return true;
-		return Boolean(this.probeForegroundWordTitle());
+		if (!recorded?.title || Date.now() - recorded.at > 15_000) return false;
+		const expected = normalizeWordTitleForMatch(recorded.title);
+		if (!expected) return false;
+		if (overrideActiveTitle !== undefined) return normalizeWordTitleForMatch(overrideActiveTitle) === expected;
+		const { foregroundTitle, visibleTitles } = this.probeWordWindowTitles();
+		if (normalizeWordTitleForMatch(foregroundTitle) !== expected) return false;
+		return visibleTitles.filter(title => normalizeWordTitleForMatch(title) === expected).length === 1;
 	}
 
 	dispose(): void {

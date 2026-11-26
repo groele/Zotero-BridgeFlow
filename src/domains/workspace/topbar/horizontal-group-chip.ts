@@ -33,7 +33,6 @@ export function buildHorizontalTabChip(
 
 	const chip = createWorkspaceElement(doc, 'div');
 	chip.className = `zbf-htab${isSelected ? ' selected' : ''}${tab.sleeping ? ' sleeping' : ''}${tab.virtual ? ' virtual' : ''}${collapsed ? ' zbf-chip-collapsed' : ''}`;
-	chip.title = tabs.getDisplayTitle(tab);
 
 	if (!tab.virtual) {
 		chip.draggable = true;
@@ -63,7 +62,7 @@ export function buildHorizontalTabChip(
 		else tabs.selectTab(win, tab.tabID);
 	});
 	chip.addEventListener('auxclick', (e) => {
-		if ((e as MouseEvent).button !== 1) return;
+		if ((e as MouseEvent).button !== 1 || !prefs.get('workspace.middleClickCloseTab')) return;
 		e.preventDefault();
 		e.stopPropagation();
 		if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
@@ -75,7 +74,7 @@ export function buildHorizontalTabChip(
 		menus.openTabMenu(chip, tab, e as MouseEvent);
 	});
 	bindHorizontalDropToChip(deps, chip, tab);
-	hover.attach(chip, tab);
+	hover.attach(chip, tab, tabs.getDisplayTitle(tab));
 	return chip;
 }
 

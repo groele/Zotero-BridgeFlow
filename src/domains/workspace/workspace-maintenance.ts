@@ -28,11 +28,15 @@ export function flushWorkspaceReadingProgress(
 	usePreviousReader = false,
 ): { lastReadingTickAt: number; lastActivityAt: number; readingDirty: boolean } {
 	const now = Date.now();
+	if (!ctx.kernel.prefs.get('workspace.enableReadingTracker')) {
+		return { lastReadingTickAt: now, lastActivityAt: ctx.lastActivityAt, readingDirty: ctx.readingDirty };
+	}
 	const elapsed = Math.min(30, Math.floor((now - ctx.lastReadingTickAt) / 1000));
 	if (elapsed < minElapsed) {
 		return { lastReadingTickAt: ctx.lastReadingTickAt, lastActivityAt: ctx.lastActivityAt, readingDirty: ctx.readingDirty };
 	}
 
+	const idleCutoffMs = Math.max(30, Number(ctx.kernel.prefs.get('workspace.readingIdleTimeoutSec') || 180)) * 1000;
 	let nextActivityAt = ctx.lastActivityAt;
 	let nextDirty = ctx.readingDirty;
 	let updated = false;
@@ -43,10 +47,10 @@ export function flushWorkspaceReadingProgress(
 		const didUpdate = prev
 			? ctx.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
 				overrideKey: prev.key, overrideLastPage: prev.page, overrideTotalPages: prev.total,
-				idleCutoffMs: 180_000, lastActivityAt: nextActivityAt, now,
+				idleCutoffMs, lastActivityAt: nextActivityAt, now,
 			})
 			: ctx.tabs.trackReadingProgress(win, Math.max(1, elapsed), {
-				idleCutoffMs: 180_000, lastActivityAt: nextActivityAt, now,
+				idleCutoffMs, lastActivityAt: nextActivityAt, now,
 				onPageChanged: () => { nextActivityAt = now; },
 			});
 		if (didUpdate) { nextDirty = true; updated = true; }
@@ -86,7 +90,8 @@ export function runWorkspaceMaintenance(ctx: {
 		readingDirty = false;
 		void ctx.store.readingCache.flushNow(ctx.store.state);
 	}
-	if (ctx.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - lastRollingAt > 900_000) {
+	const intervalMs = Math.max(3, Number(ctx.kernel.prefs.get('workspace.rollingSnapshotIntervalMin') || 15)) * 60_000;
+	if (ctx.kernel.prefs.get('workspace.enableRollingSnapshots') && Date.now() - lastRollingAt > intervalMs) {
 		const openKeys = [...new Set([...ctx.windows].flatMap((win) => ctx.tabs.openKeys(win)))];
 		if (openKeys.length || ctx.store.state.groups.some((g) => g.memberKeys.length > 0)) {
 			const time = new Date().toLocaleTimeString();

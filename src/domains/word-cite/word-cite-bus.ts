@@ -74,6 +74,12 @@ export function showSpotlightRecoverToast(docName: string, res: WordRecoverOrpha
 	} catch { /* headless safe */ }
 }
 
+function receiptDocumentName(session: ReturnType<WordSessionTracker['getSession']> | null): string {
+	// A foreground title is a discovery hint and may refer to another Word window.
+	const path = session?.documentPath || '';
+	return session && /^(?:[a-z]:[\\/]|\\\\|\/|https?:\/\/)/i.test(path) ? session.displayName : '';
+}
+
 export function registerWordCiteBusHandlers(host: WordCiteBusHost, disposables: DisposableStack): void {
 	const { kernel, tracker, collections, poller, dragCite, win32 } = host;
 
@@ -89,11 +95,14 @@ export function registerWordCiteBusHandlers(host: WordCiteBusHost, disposables: 
 				const loaded = hostItems?.getAsync ? await hostItems.getAsync(ids) : ids.map(id => hostItems?.get?.(id));
 				const byID = new Map((Array.isArray(loaded) ? loaded : [loaded]).filter(Boolean).map(item => [item.id, item]));
 				const regular = ids.map(id => normalizeToRegularItem(byID.get(id)));
-				if (!host.isActive() || !regular.length || regular.some(item => !item)) throw new Error('Word selection is no longer available');
+				if (!host.isActive() || !regular.length || regular.some(item => !item)) {
+					kernel.bus.emit('word:insert-result', { requestId, status: 'invalid-selection', documentName, itemCount });
+					return;
+				}
 				const { items } = deduplicateRegularItems(regular);
 				itemCount = items.length;
 				status = await dragCite.insertItems(items, (sessionID) => {
-					documentName = tracker.getAllSessions().find((session) => session.sessionID === sessionID)?.displayName || '';
+					documentName = receiptDocumentName(tracker.getSession(sessionID));
 				});
 			} catch (err) {
 				kernel.logger.error('word-cite:insert-request', err);
@@ -106,7 +115,7 @@ export function registerWordCiteBusHandlers(host: WordCiteBusHost, disposables: 
 		kernel.bus.on('word:refresh-request', async ({ requestId, sessionID }) => {
 			if (!host.isActive()) return;
 			const session = sessionID ? tracker.getSession(sessionID) : tracker.getActiveSession();
-			const docName = session?.displayName || '';
+			const docName = receiptDocumentName(session);
 			const ok = (!sessionID || !!session) && await refreshActiveWordDocument(kernel, sessionID);
 			if (ok) void poller.notifyCommittedSession().catch((err) => kernel.logger.error('word-cite:poll', err));
 			kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: docName });
@@ -117,7 +126,9 @@ export function registerWordCiteBusHandlers(host: WordCiteBusHost, disposables: 
 
 	disposables.add(
 		kernel.bus.on('word:switch-session-request', ({ sessionID }) => {
-			if (host.isActive() && !tracker.setActiveSession(sessionID)) tracker.emitCurrentSnapshot();
+			if (!host.isActive()) return;
+			if (tracker.setActiveSession(sessionID)) poller.scheduleItemsViewRefresh();
+			else tracker.emitCurrentSnapshot();
 		}),
 	);
 

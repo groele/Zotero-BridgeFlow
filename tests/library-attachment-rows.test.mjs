@@ -1,3 +1,4 @@
+import { CitationColumnController } from '../src/domains/word-cite/governance/citation-column.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectItemAnnotations } from '../src/services/annotation-utils.ts';
@@ -69,4 +70,23 @@ test('gallery cache refreshes changed IDs, versions and display settings indepen
 	assert.equal(readItemRemarkWithFallback(b), 'edited');
 	assert.notEqual(card(a, true).itemTypeLabel, card(a).itemTypeLabel);
 	assert.deepEqual(card(a, false, '/Reading').tags, []);
+});
+
+test('Word citation column skips child lookups by default and preserves direct hits when enabled', t => {
+ const previous = globalThis.Zotero;
+ t.after(() => { globalThis.Zotero = previous; });
+ let provide, children = false;
+ const calls = [];
+ globalThis.Zotero = { ItemTreeManager: { registerColumn(opts) { provide = opts.dataProvider; return 'column'; } } };
+ const column = new CitationColumnController({ info: {}, prefs: { get: () => children } }, {
+  getCitationDisplayForItem(id) { calls.push(id); return ({ 4: '[1]', 6: '[2]' })[id] || ''; },
+ });
+ column.register();
+ assert.equal(provide({ id: 5, parentItemID: 4 }), '');
+ assert.deepEqual(calls, []);
+ assert.equal(provide({ id: 4 }), '[1]');
+ children = true;
+ assert.equal(provide({ id: 5, parentItemID: 4 }), '[1]');
+ assert.equal(provide({ id: 6, parentItemID: 4 }), '[2]');
+ assert.deepEqual(calls, [4, 5, 4, 6]);
 });

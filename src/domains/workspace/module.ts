@@ -14,12 +14,15 @@ import { flushWorkspaceReadingProgress, runWorkspaceMaintenance, type ReaderSnap
 import { WorkspaceWindowUI } from './workspace-ui.ts';
 
 const WATCHED_WORKSPACE_PREFS = [
-	'workspace.enableHorizontalGroups', 'workspace.horizontalTabCompactMode', 'workspace.compactTopBar',
-	'workspace.enableVerticalSidebar', 'workspace.verticalSidebarCollapsed', 'workspace.verticalSidebarWidth',
-	'workspace.enableBatchSelection', 'workspace.enablePinnedTabs', 'workspace.pinnedIconOnly',
-	'workspace.enableVirtualMembers', 'workspace.enableTabRemarks', 'workspace.remarkDisplayMode',
-	'workspace.verticalTabTitleMode', 'workspace.verticalTabSubtitleMode', 'workspace.verticalTabRowHeight',
-	'workspace.verticalTabFontSize', 'workspace.enableHoverPreview', 'workspace.enableSpotlight',
+	'workspace.enableHorizontalGroups', 'workspace.horizontalTabCompactMode', 'workspace.horizontalAutoCompactThreshold',
+	'workspace.compactTopBar', 'workspace.middleClickCloseTab', 'workspace.enableVerticalSidebar',
+	'workspace.verticalSidebarCollapsed', 'workspace.verticalSidebarWidth', 'workspace.enableBatchSelection',
+	'workspace.showSidebarProgressBar', 'workspace.showSidebarRowActions', 'workspace.enablePinnedTabs',
+	'workspace.pinnedIconOnly', 'workspace.enableVirtualMembers', 'workspace.enableTabRemarks',
+	'workspace.remarkDisplayMode', 'workspace.verticalTabTitleMode', 'workspace.verticalTabSubtitleMode',
+	'workspace.verticalTabRowHeight', 'workspace.verticalTabFontSize', 'workspace.enableHoverPreview',
+	'workspace.hoverPreviewDelayMs', 'workspace.hoverPreviewShowMeta', 'workspace.hoverPreviewShowRemark',
+	'workspace.hoverPreviewShowReadingStats', 'workspace.hoverPreviewShowHeatmap', 'workspace.enableSpotlight',
 	'workspace.enableSessions', 'workspace.enableTabSleep', 'workspace.activeReaderBudget',
 	'workspace.enableStaleSuggestions', 'workspace.staleSuggestDays', 'workspace.enableShowInFilesystem',
 	'workspace.enableTabContextMenu', 'workspace.enableCopyReference', 'workspace.enableReloadTab',
@@ -68,7 +71,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.disposables.reset();
 		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
 		this.disposables.add(this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()));
-		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher'], () => this.attachmentSwitcher.syncPref()));
+		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher', 'workspace.readerSwitcherOpenMode', 'workspace.readerSwitcherIncludeSnapshots'], () => this.attachmentSwitcher.syncPref()));
 		this.disposables.add(this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
 			const targetWin = win || this.getTargetWindow();
 			if (targetWin && this.active) this.windows.get(targetWin)?.openSpotlightWithQuery('');

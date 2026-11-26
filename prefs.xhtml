@@ -8,7 +8,7 @@
 			<html:div class="zbf-title-left">
 				<html:img class="zbf-brand-icon" alt=""/>
 				<html:h1 id="zbf-settings-title" data-l10n-id="zbf-prefs-title"/>
-				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.9.1"}'>v0.9.1</html:span>
+				<html:span id="zbf-version-badge" class="zbf-version-badge" data-l10n-id="zbf-prefs-version" data-l10n-args='{"version":"0.9.8"}'>v0.9.8</html:span>
 			</html:div>
 			<html:span id="zbf-prefs-status" class="zbf-status-pill" role="status" aria-live="polite" data-l10n-id="zbf-prefs-status-ready"/>
 		</html:div>
@@ -68,15 +68,21 @@
 					<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-tab-layout"/>
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableHorizontalGroups" native="true" data-l10n-id="zbf-pref-ws-horizontal"/>
-						<html:div id="zbf-sub-hcompact" class="zbf-sub-row">
-							<label data-l10n-id="zbf-pref-ws-hcompact" control="zbf-sel-hcompact"/>
-							<menulist id="zbf-sel-hcompact" native="true" preference="extensions.zotero.bridgeflow.workspace.horizontalTabCompactMode">
-								<menupopup>
-									<menuitem value="auto" data-l10n-id="zbf-opt-auto"/>
-									<menuitem value="compact" data-l10n-id="zbf-opt-compact"/>
-									<menuitem value="normal" data-l10n-id="zbf-opt-normal"/>
-								</menupopup>
-							</menulist>
+						<html:div id="zbf-sub-hcompact" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-ws-hcompact" control="zbf-sel-hcompact"/>
+								<menulist id="zbf-sel-hcompact" native="true" preference="extensions.zotero.bridgeflow.workspace.horizontalTabCompactMode">
+									<menupopup>
+										<menuitem value="auto" data-l10n-id="zbf-opt-auto"/>
+										<menuitem value="compact" data-l10n-id="zbf-opt-compact"/>
+										<menuitem value="normal" data-l10n-id="zbf-opt-normal"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<html:div id="zbf-sub-hcompact-threshold" class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-ws-hcompact-threshold" control="zbf-num-hcompact-thresh"/>
+								<html:input id="zbf-num-hcompact-thresh" class="zbf-num-input" type="number" min="2" max="30" value="5" data-zbf-pref="workspace.horizontalAutoCompactThreshold"/>
+							</html:div>
 						</html:div>
 						<html:div id="zbf-sub-compactTop" class="zbf-sub-stack">
 							<checkbox preference="extensions.zotero.bridgeflow.workspace.compactTopBar" native="true" data-l10n-id="zbf-pref-ws-compact-topbar"/>
@@ -86,6 +92,10 @@
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableVerticalSidebar" native="true" data-l10n-id="zbf-pref-ws-vertical"/>
 						<html:div id="zbf-sub-vsidebar-cfg" class="zbf-sub-stack">
 							<checkbox preference="extensions.zotero.bridgeflow.workspace.enableBatchSelection" native="true" data-l10n-id="zbf-pref-ws-batch"/>
+							<html:div class="zbf-check-grid-2">
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.showSidebarProgressBar" native="true" data-l10n-id="zbf-pref-ws-sb-progress"/>
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.showSidebarRowActions" native="true" data-l10n-id="zbf-pref-ws-sb-actions"/>
+							</html:div>
 							<html:div class="zbf-inline-field">
 								<label data-l10n-id="zbf-pref-ws-sidebar-width" control="zbf-num-vsidewidth"/>
 								<html:div class="zbf-actions">
@@ -101,6 +111,7 @@
 							<checkbox preference="extensions.zotero.bridgeflow.workspace.pinnedIconOnly" native="true" data-l10n-id="zbf-pref-ws-pinned-icon"/>
 						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableVirtualMembers" native="true" data-l10n-id="zbf-pref-ws-virtual"/>
+						<checkbox preference="extensions.zotero.bridgeflow.workspace.middleClickCloseTab" native="true" data-l10n-id="zbf-pref-ws-middle-close"/>
 					</html:div>
 				</html:div>
 				<html:div class="zbf-card">
@@ -130,9 +141,20 @@
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSessions" native="true" data-l10n-id="zbf-pref-ws-sessions"/>
 						<html:div id="zbf-sub-rolling" class="zbf-sub-stack">
 							<checkbox preference="extensions.zotero.bridgeflow.workspace.enableRollingSnapshots" native="true" data-l10n-id="zbf-pref-ws-rolling"/>
+							<html:div id="zbf-sub-rolling-interval" class="zbf-sub-row">
+								<label data-l10n-id="zbf-pref-ws-rolling-interval" control="zbf-num-rolling-min"/>
+								<html:input id="zbf-num-rolling-min" class="zbf-num-input" type="number" min="3" max="240" value="15" data-zbf-pref="workspace.rollingSnapshotIntervalMin"/>
+							</html:div>
 							<html:div id="zbf-session-actions" class="zbf-actions">
 								<button id="zbf-btn-ws-save-session" native="true" data-l10n-id="zbf-btn-ws-save-session"/>
 							</html:div>
+						</html:div>
+					</html:div>
+					<html:div class="zbf-item-group">
+						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableReadingTracker" native="true" data-l10n-id="zbf-pref-ws-reading-tracker"/>
+						<html:div id="zbf-sub-reading-tracker-cfg" class="zbf-sub-row">
+							<label data-l10n-id="zbf-pref-ws-reading-idle" control="zbf-num-reading-idle"/>
+							<html:input id="zbf-num-reading-idle" class="zbf-num-input" type="number" min="30" max="1800" value="180" data-zbf-pref="workspace.readingIdleTimeoutSec"/>
 						</html:div>
 					</html:div>
 					<html:div class="zbf-item-group">
@@ -211,8 +233,41 @@
 					</html:div>
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableHoverPreview" native="true" data-l10n-id="zbf-pref-ws-hover"/>
+						<html:div id="zbf-sub-hover-cfg" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-ws-hover-delay" control="zbf-num-hover-delay"/>
+								<html:input id="zbf-num-hover-delay" class="zbf-num-input" type="number" min="80" max="1500" value="260" data-zbf-pref="workspace.hoverPreviewDelayMs"/>
+							</html:div>
+							<html:div class="zbf-check-grid-2">
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.hoverPreviewShowMeta" native="true" data-l10n-id="zbf-pref-ws-hover-meta"/>
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.hoverPreviewShowRemark" native="true" data-l10n-id="zbf-pref-ws-hover-remark"/>
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.hoverPreviewShowReadingStats" native="true" data-l10n-id="zbf-pref-ws-hover-stats"/>
+								<checkbox preference="extensions.zotero.bridgeflow.workspace.hoverPreviewShowHeatmap" native="true" data-l10n-id="zbf-pref-ws-hover-heatmap"/>
+							</html:div>
+						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableReaderAttachmentSwitcher" native="true" data-l10n-id="zbf-pref-ws-reader-att-switcher"/>
+						<html:div id="zbf-sub-reader-switcher-cfg" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-ws-att-openmode" control="zbf-sel-att-openmode"/>
+								<menulist id="zbf-sel-att-openmode" native="true" preference="extensions.zotero.bridgeflow.workspace.readerSwitcherOpenMode">
+									<menupopup>
+										<menuitem value="new-tab" data-l10n-id="zbf-opt-att-new-tab"/>
+										<menuitem value="replace-tab" data-l10n-id="zbf-opt-att-replace-tab"/>
+										<menuitem value="background-tab" data-l10n-id="zbf-opt-att-background-tab"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<checkbox preference="extensions.zotero.bridgeflow.workspace.readerSwitcherIncludeSnapshots" native="true" data-l10n-id="zbf-pref-ws-att-snapshots"/>
+							<checkbox id="zbf-chk-ws-att-filename" preference="extensions.zotero.bridgeflow.workspace.readerSwitcherUseFilename" native="true" data-l10n-id="zbf-pref-ws-att-filename"/>
+						</html:div>
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableSpotlight" native="true" data-l10n-id="zbf-pref-ws-spotlight"/>
+						<html:div id="zbf-sub-spotlight-cfg" class="zbf-sub-stack">
+							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-ws-spotlight-max" control="zbf-num-spotlight-max"/>
+								<html:input id="zbf-num-spotlight-max" class="zbf-num-input" type="number" min="10" max="100" value="40" data-zbf-pref="workspace.spotlightMaxResults"/>
+							</html:div>
+							<checkbox preference="extensions.zotero.bridgeflow.workspace.spotlightIncludeCommands" native="true" data-l10n-id="zbf-pref-ws-spotlight-cmds"/>
+						</html:div>
 					</html:div>
 					<html:div class="zbf-item-group">
 						<checkbox preference="extensions.zotero.bridgeflow.workspace.enableTabContextMenu" native="true" data-l10n-id="zbf-pref-ws-tabmenu"/>
@@ -315,6 +370,18 @@
 								</menulist>
 							</html:div>
 							<html:div class="zbf-inline-field">
+								<label data-l10n-id="zbf-pref-vn-gallery-sort" control="zbf-sel-gallery-sort"/>
+								<menulist id="zbf-sel-gallery-sort" native="true" preference="extensions.zotero.bridgeflow.visualNotes.gallery.defaultSort">
+									<menupopup>
+										<menuitem value="dateModified" data-l10n-id="zbf-opt-gal-sort-modified"/>
+										<menuitem value="year" data-l10n-id="zbf-opt-gal-sort-year"/>
+										<menuitem value="rating" data-l10n-id="zbf-opt-gal-sort-rating"/>
+										<menuitem value="readTime" data-l10n-id="zbf-opt-gal-sort-readtime"/>
+										<menuitem value="title" data-l10n-id="zbf-opt-gal-sort-title"/>
+									</menupopup>
+								</menulist>
+							</html:div>
+							<html:div class="zbf-inline-field">
 								<label data-l10n-id="zbf-pref-vn-gallery-density" control="zbf-sel-gallery-density"/>
 								<menulist id="zbf-sel-gallery-density" native="true" preference="extensions.zotero.bridgeflow.visualNotes.gallery.cardDensity">
 									<menupopup>
@@ -323,7 +390,12 @@
 									</menupopup>
 								</menulist>
 							</html:div>
-							<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showBriefNote" native="true" data-l10n-id="zbf-pref-vn-gallery-brief"/>
+							<html:div class="zbf-check-grid-2">
+								<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showBriefNote" native="true" data-l10n-id="zbf-pref-vn-gallery-brief"/>
+								<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showRatingStars" native="true" data-l10n-id="zbf-pref-vn-gallery-stars"/>
+								<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showTags" native="true" data-l10n-id="zbf-pref-vn-gallery-tags"/>
+								<checkbox preference="extensions.zotero.bridgeflow.visualNotes.gallery.showReadTime" native="true" data-l10n-id="zbf-pref-vn-gallery-readtime"/>
+							</html:div>
 							<html:div class="zbf-actions">
 								<button id="zbf-btn-open-gallery" native="true" data-l10n-id="zbf-btn-open-gallery"/>
 							</html:div>
@@ -447,6 +519,8 @@
 						<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.enable" native="true" data-l10n-id="zbf-pref-ins-lookup-enable"/>
 						<html:div id="zbf-sub-lookup-history" class="zbf-sub-stack">
 							<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.historyEnable" native="true" data-l10n-id="zbf-pref-ins-lookup-history"/>
+							<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.autoSearchOnPaste" native="true" data-l10n-id="zbf-pref-ins-lookup-paste"/>
+							<checkbox preference="extensions.zotero.bridgeflow.inspector.lookup.autoLocateExactMatch" native="true" data-l10n-id="zbf-pref-ins-lookup-autolocate"/>
 						</html:div>
 					</html:div>
 				</html:div>
@@ -527,6 +601,7 @@
 					<html:h2 class="zbf-card-title" data-l10n-id="zbf-sec-word-sync"/>
 					<html:div class="zbf-stack">
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.column.enable" native="true" data-l10n-id="zbf-pref-wc-column"/>
+						<checkbox id="zbf-chk-wc-children" preference="extensions.zotero.bridgeflow.wordCite.column.showChildren" native="true" data-l10n-id="zbf-pref-wc-children"/>
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.dragCite.enable" native="true" data-l10n-id="zbf-pref-wc-drag"/>
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.tabContextMenu.enable" native="true" data-l10n-id="zbf-pref-wc-tab-menu"/>
 						<checkbox preference="extensions.zotero.bridgeflow.wordCite.collections.enable" native="true" data-l10n-id="zbf-pref-wc-collections"/>

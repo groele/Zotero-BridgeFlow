@@ -125,7 +125,7 @@ test('lossless build keeps unmangled identifiers, compacts inline CSS, and dedup
 	assert.ok(!mainJs.includes('#zbf-inline {\n  display: flex;'), 'Expected multiline indentation removed from inline CSS');
 
 	// Prefs bundle no longer embeds duplicated kernel/cover-queue runtime modules
-	assert.ok(prefsJs.length < 40000, `Expected deduplicated prefs bundle < 40KB, got ${prefsJs.length} B`);
+	assert.ok(prefsJs.length < 45000, `Expected deduplicated prefs bundle < 45KB, got ${prefsJs.length} B`);
 	assert.ok(!prefsJs.includes('requestGalleryPdfCover'), 'Prefs bundle must not duplicate pdf-cover-service/queue');
 	assert.ok(!prefsJs.includes('cacheMaxEntries'), 'Prefs bundle must not duplicate full PREF_SCHEMA table');
 

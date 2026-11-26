@@ -121,6 +121,7 @@ export class WorkspaceWindowUI {
 		}
 		try {
 			this.bindOpenReaderDocs();
+			if (!this.prefs.get('workspace.enableHoverPreview')) this.hoverCard?.hide();
 			const snapshot = this.tabs.buildTrackedTabs(this.win);
 			this.sidebar?.render(snapshot);
 			this.horizontal?.render(snapshot);

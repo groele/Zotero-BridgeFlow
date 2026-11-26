@@ -177,7 +177,10 @@ function classifyAttachment(child: any): { kind: AttachmentKind; kindLabel: stri
 	return { kind: 'file', kindLabel: 'File', readerCapable: false };
 }
 
-export function resolveSiblingAttachments(currentAttID: number): { parentID: number; items: SiblingAttachmentEntry[] } {
+export function resolveSiblingAttachments(
+	currentAttID: number,
+	includeSnapshots = true,
+): { parentID: number; items: SiblingAttachmentEntry[] } {
 	const hostItems = (globalThis as any).Zotero?.Items;
 	if (!hostItems?.get || !currentAttID) return { parentID: 0, items: [] };
 	const cur = hostItems.get(currentAttID);
@@ -198,6 +201,7 @@ export function resolveSiblingAttachments(currentAttID: number): { parentID: num
 		const child = hostItems.get(id);
 		if (!child || child.deleted || child.isTrashed?.() || child.isNote?.() === true) return;
 		const { kind, kindLabel, readerCapable } = classifyAttachment(child);
+		if (!includeSnapshots && id !== currentAttID && kind !== 'pdf' && kind !== 'epub') return;
 		const rawTitle = stripItemTitleMarkup(String(child.getField?.('title') || '')).trim();
 		const filename = String(child.attachmentFilename || '').trim();
 		const fallback = kind === 'snapshot' ? 'Snapshot' : (filename || kindLabel);

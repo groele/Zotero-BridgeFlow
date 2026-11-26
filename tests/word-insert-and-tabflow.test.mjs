@@ -28,6 +28,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	const deletedFields = [];
 	let activeDocArg = 'UNSET';
 	let throwOnAddCitation = false;
+	let returnWrongItems = false;
 	let existingField = null;
 	let skipCommand = false;
 	let cancelCommand = false;
@@ -53,7 +54,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 		async getFields() { return this.rawField ? [this.rawField] : []; }
 		async updateFromDocument() {}
 		async _insertCitingResult(fieldIndex, field, citation) {
-			return [{ fieldIndex, field, citationItems: citation.citationItems }];
+			return [{ fieldIndex, field, citationItems: returnWrongItems ? [{ id: 999 }] : citation.citationItems }];
 		}
 		async addCitation(_idx, _note, citation) {
 			if (throwOnAddCitation) throw new Error('Simulated COM failure');
@@ -140,7 +141,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	assert.equal(failRes, 'unavailable');
 	assert.equal(deletedFields.length, 1);
 	existingField = { type: 0, async delete() { deletedFields.push('existing'); } };
-	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'field-conflict');
 	assert.deepEqual(deletedFields, ['deleted'], 'rollback must preserve fields supplied by the document');
 	existingField = null;
 	assert.equal(MockSession.prototype.cite, origCite);
@@ -150,11 +151,16 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	assert.equal(kernel.runtime.pendingPatchCount, 0);
 
 	throwOnAddCitation = false;
-	throwOnWrite = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103), { ...makeRegularItem(104), deleted: true }]), 'invalid-selection');
+	returnWrongItems = true;
 	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	assert.deepEqual(committedIDs, [101, 102]);
+	returnWrongItems = false;
+	throwOnWrite = true;
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'uncertain-write');
 	throwOnWrite = false;
 	throwOnSetDocumentData = true;
-	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'uncertain-write');
 	throwOnSetDocumentData = false;
 	cancelCommand = true;
 	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'cancelled');
@@ -267,6 +273,12 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 	win32.setLastDroppedWordTargetForTest('PaperDraft.docx [自动保存] - Word');
 	assert.equal(win32.verifyDroppedWordTarget('PaperDraft.docx - Microsoft Word'), true);
 	assert.equal(win32.verifyDroppedWordTarget('WrongManuscript.docx - Word'), false);
+	const probe = win32.probeWordWindowTitles;
+	win32.probeWordWindowTitles = () => ({
+		foregroundTitle: 'PaperDraft.docx - Word', visibleTitles: ['PaperDraft.docx - Word', 'PaperDraft.docx - Word'],
+	});
+	assert.equal(win32.verifyDroppedWordTarget(), false);
+	win32.probeWordWindowTitles = probe;
 
 	// 2. Numeric key sort ("0", "2", "10"), trashed exclusion, and 2-read empty confirmation
 	const kernel = new PluginKernel({ prefAdapter: createMemoryPrefs() });

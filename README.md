@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.9.1** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.9.8** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -119,11 +119,15 @@ npm run build:xpi
 
 ---
 
-## 安装包完整性校验 (`v0.9.1`)
+在「Word 引用」设置中，引用列默认仅在顶层条目显示。开启子条目显示后，优先显示子条目自身的引用，缺失时沿用父条目。
 
-- 文件名：`Zotero-BridgeFlow-0.9.1.xpi`（`292,925` 字节，19 个条目，确定性构建）
-- SHA-256：`F6911AC326C6EE0CB3A6FDDCBE67F2FB2BC879AC822D9A7870C50F31F8749267`
-- SHA-512：`21CF7C067ADFA435A3DBCBA99CA44E469EC88270B736DC699933825E24F5C10CE09AA40494BFB0EAAE8DEBF146F16CD442C3DDD29D5CA35FF3C34FB9393E164F`
+在「工作区」设置中，可以为附件版本菜单选择打开方式、是否包含网页快照，以及是否优先显示文件名。
+
+## 安装包完整性校验 (`v0.9.8`)
+
+- 文件名：`Zotero-BridgeFlow-0.9.8.xpi`（`298,872` 字节，19 个条目，确定性构建）
+- SHA-256：`C8DCBD5EBCAE1AD7872DCD3F740D8230147D50BB53E4184297B6F8AA1CA49359`
+- SHA-512：`BAD3B575BA3CE7E5AAE525C44CE993C1F1BD570FFBC09391C9131AB81E147AF45EE112D66B33BC32EB6BD0678FAC3476ED9A4CFCBF0927A33F05BB719191CC19`
 
 ---
 

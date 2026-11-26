@@ -68,6 +68,7 @@ export class WordCiteDomainModule implements DomainModule {
 		void this.collections.purgeStaleCollections();
 		if (this.kernel.prefs.get('wordCite.column.enable')) this.column.register();
 		this.poller.start();
+		this.disposables.add(this.kernel.prefs.observeKeys(['wordCite.column.showChildren'], () => this.poller.scheduleItemsViewRefresh()));
 
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(['wordCite.column.enable'], () => {

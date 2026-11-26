@@ -83,7 +83,8 @@ export class WorkspaceHorizontalBar {
 		const compactMode = this.prefs.get('workspace.horizontalTabCompactMode');
 		const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(',');
 		const tKey = tracked.map((t) => `${t.key}:${t.tabID}:${t.groupId}:${t.pinned ? 1 : 0}:${t.sleeping ? 1 : 0}:${t.virtual ? 1 : 0}:${t.remark}:${this.store.state.remarkModes[t.key] || ''}:${t.title}:${t.shortTitle}:${t.filename}`).join('|');
-		const pKey = `${this.prefs.get('workspace.pinnedIconOnly')}|${this.prefs.get('workspace.enablePinnedTabs')}|${this.prefs.get('workspace.enableTabRemarks')}|${this.prefs.get('workspace.remarkDisplayMode')}|${this.prefs.get('workspace.verticalTabTitleMode')}`;
+		const autoThreshold = Math.max(2, Number(this.prefs.get('workspace.horizontalAutoCompactThreshold') || 5));
+		const pKey = `${this.prefs.get('workspace.pinnedIconOnly')}|${this.prefs.get('workspace.enablePinnedTabs')}|${this.prefs.get('workspace.enableTabRemarks')}|${this.prefs.get('workspace.remarkDisplayMode')}|${this.prefs.get('workspace.verticalTabTitleMode')}|${this.prefs.get('workspace.enableHoverPreview')}|${autoThreshold}`;
 		const renderKey = `${selectedID}|${compactMode}|${pKey}|${this.store.state.collapsed.join(',')}|${gKey}|${tKey}`;
 		if (renderKey === this.lastRenderKey && this.inlineEl.children.length > 0) return;
 		this.lastRenderKey = renderKey;
@@ -93,7 +94,7 @@ export class WorkspaceHorizontalBar {
 		const unpinned = tracked.filter((t) => t.virtual || !t.pinned);
 		this.pinnedStrip.render(frag, pinnedTabs, selectedID);
 
-		const compactInactive = compactMode === 'compact' || (compactMode === 'auto' && unpinned.length > 5);
+		const compactInactive = compactMode === 'compact' || (compactMode === 'auto' && unpinned.length > autoThreshold);
 		const deps = this.chipDeps;
 
 		for (const group of this.store.state.groups) {

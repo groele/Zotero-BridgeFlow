@@ -1,9 +1,8 @@
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import { tLocale } from '../../../kernel/locale.ts';
 import type { Disposable } from '../../../kernel/types.ts';
-import { deduplicateRegularItems } from '../../../services/item-resolution.ts';
 import type { Win32BridgeService } from '../../../services/win32-bridge.ts';
-import { insertItemsIntoWord, type WordInsertResult } from './word-inserter.ts';
+import { insertItemsIntoWord, resolveWordCitationIDs, type WordInsertResult } from './word-inserter.ts';
 
 /**
  * Word citation inserter:
@@ -64,10 +63,9 @@ export class DragCiteController {
 					if (res === false || !dragEnabled) return res;
 
 					const selected = (win as any).ZoteroPane?.getSelectedItems?.() || [];
-					const { items } = deduplicateRegularItems(selected);
-					if (!items.length) return res;
+					if (!resolveWordCitationIDs(selected).length) return res;
 
-					this.activeDragItems = items;
+					this.activeDragItems = selected.slice();
 					this.activeDragStartedAt = Date.now();
 					try {
 						event?.dataTransfer?.clearData?.('text/html');
@@ -127,10 +125,19 @@ export class DragCiteController {
 			}
 			return 'non-word';
 		}
-		return insertItemsIntoWord(this.kernel, this.win32, items, {
+		const result = await insertItemsIntoWord(this.kernel, this.win32, items, {
 			verifyCursor: true,
 			onCommitted: this.onInserted,
 		});
+		if (result === 'non-word') this.notifyHint(tLocale(
+			'无法唯一确认拖放目标是当前 Word 稿件，已停止插入。',
+			'Could not uniquely confirm the drop target as the active Word document. Insertion stopped.',
+		));
+		else if (result === 'uncertain-write') this.notifyHint(tLocale(
+			'Word 可能已写入引文，重试前请检查光标处的引文。',
+			'Word may have written the citation. Check the citation at the cursor before retrying.',
+		));
+		return result;
 	}
 
 	async insertItems(items: readonly any[], onInserted?: (sessionID: string) => void): Promise<WordInsertResult> {

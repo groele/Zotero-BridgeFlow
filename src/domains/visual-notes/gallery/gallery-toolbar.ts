@@ -11,6 +11,9 @@ export interface GalleryCardFactoryDeps {
 	win: Window;
 	kernel: PluginKernel;
 	showBrief: boolean;
+	showRatingStars?: boolean;
+	showTags?: boolean;
+	showReadTime?: boolean;
 	ratingStorage: RatingStorageLocation;
 	getSelectedIDs: () => ReadonlySet<number>;
 	getAnchorID: () => number;
@@ -29,6 +32,9 @@ export function createGalleryCardElementFactory(deps: GalleryCardFactoryDeps) {
 			card: c,
 			selected: deps.getSelectedIDs().has(c.itemID),
 			showBrief: deps.showBrief,
+			showRatingStars: deps.showRatingStars,
+			showTags: deps.showTags,
+			showReadTime: deps.showReadTime,
 			ratingStorage: deps.ratingStorage,
 			draggable,
 			onDragStateChange,

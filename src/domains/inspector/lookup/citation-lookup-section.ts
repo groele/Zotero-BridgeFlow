@@ -219,9 +219,13 @@ export class CitationLookupSectionController {
 					if (outcome.historyMatched) {
 						renderLookupItemCard(doc, statusDiv, hit, '已匹配文献', 'zbf-lookup-state-matched', cb);
 					} else if (hit.source === 'physical-exact' || hit.source === 'doi') {
-						await this.locateInLibrary(hit.itemID);
-						if (!isActive()) return;
-						renderLookupItemCard(doc, statusDiv, hit, '已定位文献', 'zbf-lookup-state-located', cb);
+						if (this.kernel.prefs.get('inspector.lookup.autoLocateExactMatch')) {
+							await this.locateInLibrary(hit.itemID);
+							if (!isActive()) return;
+							renderLookupItemCard(doc, statusDiv, hit, '已定位文献', 'zbf-lookup-state-located', cb);
+						} else {
+							renderLookupItemCard(doc, statusDiv, hit, '已匹配文献', 'zbf-lookup-state-matched', cb);
+						}
 					} else {
 						renderLookupCandidatesList(doc, statusDiv, outcome.candidates, cb);
 					}
@@ -263,6 +267,7 @@ export class CitationLookupSectionController {
 		};
 		searchBtn.onclick = () => { void executeLookup(input.value); };
 		input.onpaste = () => {
+			if (!this.kernel.prefs.get('inspector.lookup.autoSearchOnPaste')) return;
 			cancelPaste();
 			pasteTimer = setTimeout(() => {
 				pasteTimer = undefined;

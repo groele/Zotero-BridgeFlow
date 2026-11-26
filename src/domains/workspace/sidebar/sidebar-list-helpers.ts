@@ -38,7 +38,6 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 	row.className = `zbf-vtab-row${isSelected ? ' selected' : ''}${tab.sleeping ? ' sleeping' : ''}${tab.virtual ? ' virtual' : ''}`;
 	row.tabIndex = 0;
 	row.setAttribute('data-zbf-nav', 'row');
-	row.title = tab.title;
 	const rowH = prefs.get('workspace.verticalTabRowHeight');
 	if (rowH >= 28 && rowH <= 72) row.style.minHeight = `${rowH}px`;
 
@@ -72,7 +71,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		subEl.textContent = subText;
 		main.appendChild(subEl);
 	}
-	if (prog.ratio !== null && prog.ratio > 0) {
+	if (prog.ratio !== null && prog.ratio > 0 && prefs.get('workspace.showSidebarProgressBar')) {
 		const bar = createWorkspaceElement(doc, 'div');
 		bar.className = 'zbf-vtab-progress';
 		const fill = createWorkspaceElement(doc, 'span');
@@ -99,7 +98,8 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		right.appendChild(badge);
 	}
 
-	if (!tab.virtual && tab.itemID > 0 && prefs.get('workspace.enableShowInFilesystem')) {
+	const showActions = Boolean(prefs.get('workspace.showSidebarRowActions'));
+	if (showActions && !tab.virtual && tab.itemID > 0 && prefs.get('workspace.enableShowInFilesystem')) {
 		const folderBtn = createWorkspaceElement(doc, 'button');
 		folderBtn.type = 'button';
 		folderBtn.className = 'zbf-row-btn';
@@ -112,7 +112,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		right.appendChild(folderBtn);
 	}
 
-	if (!tab.virtual && !tab.pinned && prefs.get('workspace.enableTabSleep')) {
+	if (showActions && !tab.virtual && !tab.pinned && prefs.get('workspace.enableTabSleep')) {
 		const sleepBtn = createWorkspaceElement(doc, 'button');
 		sleepBtn.type = 'button';
 		sleepBtn.className = 'zbf-row-btn';
@@ -158,7 +158,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		else tabs.selectTab(win, tab.tabID);
 	});
 	row.addEventListener('auxclick', (e) => {
-		if ((e as MouseEvent).button !== 1) return;
+		if ((e as MouseEvent).button !== 1 || !prefs.get('workspace.middleClickCloseTab')) return;
 		e.preventDefault();
 		e.stopPropagation();
 		if (!tab.virtual) void tabs.closeTabs(win, [tab.tabID], { preserveVirtual: true, protectPinned: true });
@@ -169,7 +169,7 @@ export function buildSidebarTabRow(deps: SidebarRowDeps, tab: TrackedTab): HTMLE
 		e.stopPropagation();
 		menus.openTabMenu(row, tab, e as MouseEvent);
 	});
-	hover.attach(row, tab);
+	hover.attach(row, tab, tab.title);
 	return row;
 }
 

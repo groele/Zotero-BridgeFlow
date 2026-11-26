@@ -1,5 +1,6 @@
+import type { WordInsertResultPayload } from '../../../kernel/types.ts';
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
-import { deduplicateRegularItems } from '../../../services/item-resolution.ts';
+import { normalizeToRegularItem } from '../../../services/item-resolution.ts';
 import type { Win32BridgeService } from '../../../services/win32-bridge.ts';
 import { runWordCommand } from './word-command.ts';
 
@@ -32,7 +33,18 @@ interface NativeSession {
 	cite(field: NativeField | null): Promise<NativeCitation[]>;
 }
 
-export type WordInsertResult = 'inserted' | 'busy' | 'non-word' | 'cancelled' | 'unavailable';
+export type WordInsertResult = WordInsertResultPayload['status'];
+
+export function resolveWordCitationIDs(rawItems: readonly any[]): number[] {
+	const ids = new Set<number>();
+	for (const raw of rawItems) {
+		const item = normalizeToRegularItem(raw);
+		const id = Number(item?.id);
+		if (!Number.isSafeInteger(id) || id <= 0) return [];
+		ids.add(id);
+	}
+	return [...ids];
+}
 
 export function resolveActiveSelectionForWord(win?: Window): any[] {
 	const zotero = (globalThis as any).Zotero;
@@ -42,13 +54,11 @@ export function resolveActiveSelectionForWord(win?: Window): any[] {
 	if (!tabs || !pane) return [];
 
 	if (tabs.selectedID === 'zotero-pane' || tabs.selectedIndex === 0) {
-		const { items } = deduplicateRegularItems(pane.getSelectedItems?.() || []);
-		return items;
+		return pane.getSelectedItems?.() || [];
 	}
 	const reader = zotero?.Reader?.getByTabID?.(tabs.selectedID);
 	const attachment = reader && zotero?.Items?.get?.(reader.itemID);
-	const candidate = attachment?.parentItem || attachment;
-	return candidate ? deduplicateRegularItems([candidate]).items : [];
+	return attachment ? [attachment] : [];
 }
 
 /**
@@ -61,9 +71,8 @@ export async function insertItemsIntoWord(
 	rawItems: readonly any[],
 	options: { verifyCursor?: boolean; onCommitted?: (session?: unknown) => void } = {},
 ): Promise<WordInsertResult> {
-	const { items } = deduplicateRegularItems(rawItems);
-	const selectedIDs = items.map((item) => Number(item.id)).filter((id) => Number.isSafeInteger(id) && id > 0);
-	if (!selectedIDs.length) return 'unavailable';
+	const selectedIDs = resolveWordCitationIDs(rawItems);
+	if (!selectedIDs.length) return 'invalid-selection';
 
 	const host = (globalThis as any).Zotero;
 	const integration = host?.Integration;
@@ -71,7 +80,9 @@ export async function insertItemsIntoWord(
 		|| typeof integration?.Field?.loadExisting !== 'function') return 'unavailable';
 
 	const verifyDrop = host.isMac !== true && options.verifyCursor;
-	if (verifyDrop && !win32.verifyDroppedWordTarget()) return 'non-word';
+	let rejection: WordInsertResult | null = null;
+	let writeAttempted = false;
+	let fieldVerified = false;
 
 	const insertCitation = async function (this: NativeSession, field: NativeField | null): Promise<NativeCitation[]> {
 		let newField = false;
@@ -83,13 +94,14 @@ export async function insertItemsIntoWord(
 			if (activeField) {
 				activeField = await integration.Field.loadExisting(activeField);
 				if (activeField && activeField.type === 2) {
+					rejection = 'field-conflict';
 					throw new host.Exception.Alert('integration.error.notInCitation');
 				}
 				if (activeField && activeField.type === 1) {
 					citation = new integration.Citation(activeField, await activeField.unserialize(), await activeField.getNoteIndex());
 				} else {
-					activeField = new integration.CitationField(activeField?._field ?? activeField);
-					citation = new integration.Citation(activeField);
+					rejection = 'field-conflict';
+					throw new Error('Word cursor is in an unrecognized field');
 				}
 			} else {
 				newField = true;
@@ -113,34 +125,33 @@ export async function insertItemsIntoWord(
 				if (fieldResult.status === 'rejected') throw fieldResult.reason;
 				if (updateResult.status === 'rejected') throw updateResult.reason;
 				fieldIndex = fieldResult.value;
+				if (fieldIndex < 0) {
+					rejection = 'field-conflict';
+					throw new Error('Could not locate the Word citation field');
+				}
 			}
 
 			const existingIDs = new Set(citation.citationItems.map((item) => Number(item.id)));
 			for (const id of selectedIDs) {
 				if (!existingIDs.has(id)) citation.citationItems.push({ id });
 			}
+			const expectedIDs = citation.citationItems.map(item => String(item.id)).sort();
+			writeAttempted = true;
 			const citations = await this._insertCitingResult(fieldIndex, activeField!, citation);
-			if (!citations.length) throw new Error('Word returned no citation fields');
-			let refreshedFields: NativeField[] | undefined;
-
-			if (!this.data?.prefs?.delayCitationUpdates) {
-				if (citations.length !== 1) {
-					refreshedFields = await this.getFields(true);
-				}
-				await this.updateFromDocument(0);
+			const actualIDs = citations[0]?.citationItems.map(item => String(item.id)).sort();
+			if (citations.length !== 1 || actualIDs.length !== expectedIDs.length
+				|| actualIDs.some((id, index) => id !== expectedIDs[index])) {
+				throw new Error('Word returned a citation cluster with unexpected item identities');
 			}
-
-			for (const cit of citations) {
-				const idx = (cit.fieldIndex ?? cit._fieldIndex)!;
-				if (refreshedFields && refreshedFields[idx]) {
-					const rep = new integration.CitationField(refreshedFields[idx]);
-					if ('field' in cit) cit.field = rep;
-					else cit._field = rep;
-				}
-				const citField = (cit.field ?? cit._field)!;
-				await this.addCitation(idx, await citField.getNoteIndex(), cit);
-				committed = true;
+			const [result] = citations;
+			const index = result.fieldIndex ?? result._fieldIndex;
+			const resultField = result.field ?? result._field;
+			if (!resultField || index === undefined || !Number.isInteger(index) || index < (fieldIndex === -1 ? -1 : 0)) {
+				throw new Error('Word returned an invalid citation field');
 			}
+			if (!this.data?.prefs?.delayCitationUpdates) await this.updateFromDocument(0);
+			await this.addCitation(index, await resultField.getNoteIndex(), result);
+			committed = true;
 			return citations;
 		} catch (error) {
 			if (newField && !committed && typeof activeField?.delete === 'function') {
@@ -148,7 +159,9 @@ export async function insertItemsIntoWord(
 					await activeField.delete();
 					await this.getFields(true);
 					await this.updateFromDocument(0);
+					writeAttempted = false;
 				} catch (cleanupErr) {
+					writeAttempted = true;
 					kernel.logger.error('word-cite:rollback', cleanupErr);
 				}
 			}
@@ -158,7 +171,17 @@ export async function insertItemsIntoWord(
 
 	let committedSession: NativeSession | undefined;
 	try {
+		if (verifyDrop && !win32.verifyDroppedWordTarget()) return 'non-word';
 		const result = await runWordCommand(kernel, 'addEditCitation', async (invoke, session: NativeSession) => {
+			if (verifyDrop && !win32.verifyDroppedWordTarget()) {
+				rejection = 'non-word';
+				return;
+			}
+			const liveIDs = resolveWordCitationIDs(rawItems);
+			if (liveIDs.length !== selectedIDs.length || liveIDs.some((id, index) => id !== selectedIDs[index])) {
+				rejection = 'invalid-selection';
+				return;
+			}
 			if (typeof session?.cite !== 'function' || typeof session._insertCitingResult !== 'function'
 				|| typeof session.addCitation !== 'function') throw new Error('Word citation API unavailable');
 			let wroteCitation = false;
@@ -166,6 +189,7 @@ export async function insertItemsIntoWord(
 				() => async (field) => {
 					const citations = await insertCitation.call(session, field as NativeField | null);
 					wroteCitation = true;
+					fieldVerified = true;
 					return citations;
 				},
 			);
@@ -177,7 +201,10 @@ export async function insertItemsIntoWord(
 				dispose();
 			}
 		});
+		if (writeAttempted && result !== 'completed') return 'uncertain-write';
+		if (rejection) return rejection;
 		if (result !== 'completed') return result;
+		if (!fieldVerified) return 'unavailable';
 		try { options.onCommitted?.(committedSession); } catch { /* Word has already completed */ }
 		return 'inserted';
 	} finally {

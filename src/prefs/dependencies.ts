@@ -70,6 +70,10 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-group-word-perf'), !wcOn);
 
 	setSubtreeDisabled(doc.getElementById('zbf-sub-hcompact'), !wsOn || !prefs.get('workspace.enableHorizontalGroups'));
+	setSubtreeDisabled(
+		doc.getElementById('zbf-sub-hcompact-threshold'),
+		!wsOn || !prefs.get('workspace.enableHorizontalGroups') || prefs.get('workspace.horizontalTabCompactMode') !== 'auto',
+	);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-compactTop'), !vSideOn || !prefs.get('workspace.enableHorizontalGroups'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-vsidebar-cfg'), !vSideOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-vsidebar-typo'), !vSideOn);
@@ -77,9 +81,17 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-sub-multicol'), !wsOn || prefs.get('workspace.newTabMode') !== 'collection');
 	setSubtreeDisabled(doc.getElementById('zbf-session-actions'), !wsOn || !prefs.get('workspace.enableSessions'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-rolling'), !wsOn || !prefs.get('workspace.enableSessions'));
+	setSubtreeDisabled(
+		doc.getElementById('zbf-sub-rolling-interval'),
+		!wsOn || !prefs.get('workspace.enableSessions') || !prefs.get('workspace.enableRollingSnapshots'),
+	);
+	setSubtreeDisabled(doc.getElementById('zbf-sub-reading-tracker-cfg'), !wsOn || !prefs.get('workspace.enableReadingTracker'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-sleep-cfg'), !wsOn || !prefs.get('workspace.enableTabSleep'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-stale-days'), !wsOn || !prefs.get('workspace.enableStaleSuggestions'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-remark-cfg'), !wsOn || !prefs.get('workspace.enableTabRemarks'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-hover-cfg'), !wsOn || !prefs.get('workspace.enableHoverPreview'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-reader-switcher-cfg'), !wsOn || !prefs.get('workspace.enableReaderAttachmentSwitcher'));
+	setSubtreeDisabled(doc.getElementById('zbf-sub-spotlight-cfg'), !wsOn || !prefs.get('workspace.enableSpotlight'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-tabmenu'), !wsOn || !prefs.get('workspace.enableTabContextMenu'));
 
 	setControlDisabled(doc.getElementById('zbf-btn-open-matrix'), !vnOn || !prefs.get('workspace.enableAnnotationMatrix'));
@@ -96,6 +108,7 @@ export function updatePreferenceDependencies(doc: Document, prefs: UnifiedPrefSe
 	setSubtreeDisabled(doc.getElementById('zbf-card-annotations'), !vnOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-pdf-folder'), !insOn || !prefs.get('inspector.pdfFolder.enable'));
 
+	setControlDisabled(doc.getElementById('zbf-chk-wc-children'), !wcOn || !prefs.get('wordCite.column.enable'));
 	const wordPanelOn = wcOn && insOn && Boolean(prefs.get('inspector.wordCite.enable'));
 	setSubtreeDisabled(doc.getElementById('zbf-sub-word-panel-card'), !wcOn || !insOn);
 	setSubtreeDisabled(doc.getElementById('zbf-sub-word-panel'), !wordPanelOn);

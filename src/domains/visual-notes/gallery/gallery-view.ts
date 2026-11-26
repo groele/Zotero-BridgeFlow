@@ -51,12 +51,24 @@ export class GalleryBoardController {
 		if (v === 'rating' || v === 'readState' || v === 'year' || v === 'publication' || v === 'itemType') return v;
 		return 'status';
 	}
+	private defaultSort(): GallerySortField {
+		const v = String(this.kernel.prefs.get('visualNotes.gallery.defaultSort') || 'dateModified');
+		if (v === 'year' || v === 'rating' || v === 'readTime' || v === 'title') return v;
+		return 'dateModified';
+	}
+	syncDefaultSort(): void {
+		const next = this.defaultSort();
+		for (const st of this.states.values()) {
+			st.sortField = next;
+			if (st.open) this.renderPanel(st);
+		}
+	}
 
 	attachWindow(win: Window): void {
 		if (!win?.document || this.states.has(win)) return;
 		const st: WindowGalleryState = {
 			win, open: false, contentTab: 'items', mode: this.defaultMode(), groupBy: this.defaultGroupBy(),
-			sortField: 'dateModified', query: '', selectedIDs: new Set(), anchorItemID: 0,
+			sortField: this.defaultSort(), query: '', selectedIDs: new Set(), anchorItemID: 0,
 			readingSelection: { itemID: 0 }, columnOrders: new Map(), measurements: new Map(), measureSig: '',
 			tbGroup: null, btnGallery: null, btnHub: null, panel: null, layout: null,
 			viewportDispose: null, queryTimer: null, visibilityGuard: null, paneAdapter: null,
@@ -216,11 +228,14 @@ export class GalleryBoardController {
 		const zh = this.isZh();
 		const density = this.kernel.prefs.get('visualNotes.gallery.cardDensity') === 'compact' ? 'compact' : 'comfortable';
 		const showBrief = Boolean(this.kernel.prefs.get('visualNotes.gallery.showBriefNote'));
+		const showRatingStars = this.kernel.prefs.get('visualNotes.gallery.showRatingStars') !== false;
+		const showTags = this.kernel.prefs.get('visualNotes.gallery.showTags') !== false;
+		const showReadTime = this.kernel.prefs.get('visualNotes.gallery.showReadTime') !== false;
 		const excludedTag = String(this.kernel.prefs.get('wordCite.citationTags.text') || '/Citations');
 		const ratingStorage = normalizeRatingStorage(this.kernel.prefs.get('visualNotes.ratingStorage'));
 		const cardWidth = Number(this.kernel.prefs.get('visualNotes.gallery.cardWidth')) || 220;
 		const coverHeight = Number(this.kernel.prefs.get('visualNotes.gallery.coverHeight')) || 0;
-		const nextMeasureSig = `${cardWidth}|${coverHeight}|${density}|${showBrief ? 1 : 0}`;
+		const nextMeasureSig = `${cardWidth}|${coverHeight}|${density}|${showBrief ? 1 : 0}|${showTags ? 1 : 0}|${showReadTime ? 1 : 0}`;
 		if (st.measureSig && st.measureSig !== nextMeasureSig) st.measurements.clear();
 		st.measureSig = nextMeasureSig;
 
@@ -243,7 +258,7 @@ export class GalleryBoardController {
 			const sorted = filterAndSortGalleryCards(allCards, st.query, st.sortField);
 			displayCount = sorted.length;
 			const makeCard = createGalleryCardElementFactory({
-				doc, win: st.win, kernel: this.kernel, showBrief, ratingStorage,
+				doc, win: st.win, kernel: this.kernel, showBrief, showRatingStars, showTags, showReadTime, ratingStorage,
 				getSelectedIDs: () => st.selectedIDs,
 				getAnchorID: () => st.anchorItemID,
 				getLayout: () => st.layout,
@@ -288,7 +303,7 @@ export class GalleryBoardController {
 			onContentTabChange: (t) => { st.contentTab = t; this.renderPanel(st); },
 			onModeChange: (m) => { st.mode = m; this.kernel.prefs.set('visualNotes.gallery.defaultMode', m); this.renderPanel(st); },
 			onGroupByChange: (g) => { st.groupBy = g; this.kernel.prefs.set('visualNotes.gallery.groupBy', g); this.renderPanel(st); },
-			onSortChange: (s) => { st.sortField = s; this.renderPanel(st); },
+			onSortChange: (s) => { st.sortField = s; this.kernel.prefs.set('visualNotes.gallery.defaultSort', s); this.renderPanel(st); },
 			onQueryInput: (q) => {
 				st.query = q;
 				if (st.queryTimer !== null) clearTimeout(st.queryTimer);

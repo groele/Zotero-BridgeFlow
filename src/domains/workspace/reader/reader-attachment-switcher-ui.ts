@@ -23,11 +23,14 @@ export {
 export interface AttachmentMenuOptions {
 	doc: Document;
 	hostWin?: Window | null;
+	readerFrame?: Element | null;
 	anchorBtn: HTMLButtonElement;
 	items: readonly SiblingAttachmentEntry[];
 	currentAttID: number;
 	openAttIDs: ReadonlySet<number>;
 	zh: boolean;
+	useFilename?: boolean;
+	openMode?: 'new-tab' | 'replace-tab' | 'background-tab';
 	onSelect: (entry: SiblingAttachmentEntry, ev: MouseEvent | KeyboardEvent, forceBackground?: boolean) => void;
 	onClose: () => void;
 }
@@ -97,9 +100,11 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 		});
 	};
 
-	const hint = zh
-		? '点击切换 · Alt+点击替换当前标签 · Ctrl/中键后台打开'
-		: 'Click to switch · Alt+Click replace tab · Ctrl/Middle-click open in background';
+	const hint = opts.openMode === 'replace-tab'
+		? (zh ? '点击替换当前标签 · Alt+点击新开 · Ctrl/中键后台打开' : 'Click to replace tab · Alt+Click open in new tab · Ctrl/Middle-click background')
+		: opts.openMode === 'background-tab'
+			? (zh ? '点击后台新开 · Alt+点击替换当前标签' : 'Click to open in background · Alt+Click replace tab')
+			: (zh ? '点击切换 · Alt+点击替换当前标签 · Ctrl/中键后台打开' : 'Click to switch · Alt+Click replace tab · Ctrl/Middle-click open in background');
 
 	items.forEach((entry, idx) => {
 		const row = createReaderHtmlEl(doc, 'button');
@@ -119,7 +124,7 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 
 		const titleEl = createReaderHtmlEl(doc, 'span');
 		titleEl.className = 'zbf-reader-att-title';
-		titleEl.textContent = entry.title;
+		titleEl.textContent = opts.useFilename && entry.filename ? entry.filename : entry.title;
 		row.appendChild(titleEl);
 
 		if (openAttIDs.has(entry.id) && !active) {
@@ -173,13 +178,36 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 	anchorBtn.setAttribute('aria-expanded', 'true');
 
 	let closed = false;
+	let pointerInMenu = false;
+	let pointerTimer: ReturnType<typeof setTimeout> | null = null;
+	const markMenuPointer = () => {
+		pointerInMenu = true;
+		if (pointerTimer !== null) clearTimeout(pointerTimer);
+		pointerTimer = setTimeout(() => { pointerInMenu = false; pointerTimer = null; }, 400);
+	};
 	const onBackdropDown = (ev: Event) => { ev.preventDefault(); ev.stopPropagation(); close(); };
 	const onDocPointer = (ev: Event) => {
 		const target = ev.target as Node | null;
 		if (target && (menu.contains(target) || anchorBtn.contains(target))) return;
 		close();
 	};
-	const onHostPointer = () => close();
+	const onHostPointer = (ev: Event) => {
+		const target = ev.target as Element | null;
+		if (target && (
+			menu.contains(target) || anchorBtn.contains(target) || ev.composedPath?.().includes(menu)
+			|| target === opts.readerFrame
+			|| opts.readerFrame?.contains?.(target)
+			|| target.localName === 'browser'
+			|| target.classList?.contains?.('reader')
+		)) {
+			return;
+		}
+		close();
+	};
+	const onWinBlur = () => {
+		if (pointerInMenu) return;
+		close();
+	};
 	const onKey = (ev: KeyboardEvent) => {
 		if (ev.key === 'Escape') { ev.preventDefault(); close(); anchorBtn.focus?.(); }
 		else if (ev.key === 'ArrowDown' && rowEls.length) { ev.preventDefault(); updateFocus(focusIdx + 1); }
@@ -190,20 +218,23 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 	const close = () => {
 		if (closed) return;
 		closed = true;
+		if (pointerTimer !== null) { clearTimeout(pointerTimer); pointerTimer = null; }
+		menu.removeEventListener('pointerdown', markMenuPointer, true);
 		backdrop.removeEventListener('pointerdown', onBackdropDown, true);
 		doc.removeEventListener('pointerdown', onDocPointer, true);
 		doc.removeEventListener('keydown', onKey, true);
-		doc.defaultView?.removeEventListener('blur', close);
+		doc.defaultView?.removeEventListener('blur', onWinBlur);
 		hostDoc?.removeEventListener('pointerdown', onHostPointer, true);
 		anchorBtn.setAttribute('aria-expanded', 'false');
 		backdrop.remove();
 		menu.remove();
 		onClose();
 	};
+	menu.addEventListener('pointerdown', markMenuPointer, true);
 	backdrop.addEventListener('pointerdown', onBackdropDown, true);
 	doc.addEventListener('pointerdown', onDocPointer, true);
 	doc.addEventListener('keydown', onKey, true);
-	doc.defaultView?.addEventListener('blur', close);
+	doc.defaultView?.addEventListener('blur', onWinBlur);
 	hostDoc?.addEventListener('pointerdown', onHostPointer, true);
 	return close;
 }

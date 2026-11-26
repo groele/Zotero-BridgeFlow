@@ -40,7 +40,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 	const sessionID = String(session?.sessionID || session?.data?.sessionID || '').trim();
 	const citeprocOrdinals = resolveCiteprocOrdinalMap(session);
 
-	const validMap = new Map<number, { ordinal: number; knownOrdinal?: number; occurrences: number; labels: string[] }>();
+	const validMap = new Map<number, { ordinal: number; knownOrdinal?: number; occurrences: number; labels: Set<string> }>();
 	const orphanMap = new Map<string, { info: OrphanCitationInfo; knownOrdinal?: number; doi: string }>();
 	const orphanAliasToKey = new Map<string, string>();
 	const orphanItemIDs = new Set<number>();
@@ -73,7 +73,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 		const label = cleanCitationText(shortText);
 		let existing = validMap.get(itemID);
 		if (!existing) {
-			existing = { ordinal: 0, knownOrdinal, occurrences: 0, labels: [] };
+			existing = { ordinal: 0, knownOrdinal, occurrences: 0, labels: new Set() };
 			validMap.set(itemID, existing);
 			orderQueue.push({ kind: 'valid', itemID });
 		} else if (!existing.knownOrdinal && knownOrdinal) {
@@ -81,7 +81,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 		}
 		if (countOcc) existing.occurrences += 1;
 		else if (existing.occurrences === 0) existing.occurrences = 1;
-		if (label && !existing.labels.includes(label)) existing.labels.push(label);
+		if (label) existing.labels.add(label);
 	};
 
 	const recordOrphanHit = (
@@ -242,7 +242,7 @@ export function extractSessionCitationsWithOrphans(session: any): ExtractedSessi
 		citations: [...validMap.entries()].map(([itemID, info]) => ({
 			itemID,
 			ordinal: info.ordinal,
-			shortText: info.labels.join(', '),
+			shortText: [...info.labels].join(', '),
 			occurrences: info.occurrences,
 		})),
 		orphans: [...orphanMap.values()].map((slot) => slot.info).sort((a, b) => a.ordinal - b.ordinal),

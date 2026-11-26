@@ -23,20 +23,22 @@ export class WorkspaceSpotlightEngine {
 	}
 
 	query(rawTerm: string, win: Window): SpotlightItemResult[] {
+		const rawMax = this.prefs.get('workspace.spotlightMaxResults');
+		const maxRes = typeof rawMax === 'number' && Number.isFinite(rawMax) ? Math.max(10, Math.min(100, rawMax)) : 40;
 		const term = rawTerm.trim().toLowerCase();
 		if (term.startsWith('>') && term !== '>tabs' && term !== '>recent') {
 			const command = term.slice(1).trim();
 			const results = this.filterBuiltInCommands(command, win);
 			for (const provider of this.providers) {
-				try { results.push(...provider.query(command, win)); } catch { /* isolate providers */ }
+				try { results.push(...provider.query(command, win, 'commands').filter(hit => hit.category === 'command')); } catch { /* isolate providers */ }
 			}
-			return results.slice(0, 40);
+			return results.slice(0, maxRes);
 		}
 
 		const tabList = term === '>tabs' || term === '>recent';
 		const needle = tabList ? '' : term;
 		const results: SpotlightItemResult[] = [];
-		const limit = term ? 40 : 12;
+		const limit = term ? maxRes : Math.min(12, maxRes);
 		if (term === '>recent') {
 			for (const rec of this.tabs.getRecentlyClosed(win)) {
 				results.push({
@@ -118,9 +120,11 @@ export class WorkspaceSpotlightEngine {
 					}
 				} catch { /* isolate providers */ }
 			}
-			for (const cmd of this.filterBuiltInCommands(needle, win)) {
-				results.push(cmd);
-				if (results.length === limit) break;
+			if (this.prefs.get('workspace.spotlightIncludeCommands')) {
+				for (const cmd of this.filterBuiltInCommands(needle, win)) {
+					results.push(cmd);
+					if (results.length === limit) break;
+				}
 			}
 		}
 		return results;

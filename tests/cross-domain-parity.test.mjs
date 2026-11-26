@@ -374,3 +374,27 @@ test('Multi-PDF discovery, selection, and comparison under a single parent item 
 
 	delete globalThis.Zotero;
 });
+
+test('unchanged Word polls preserve session maps while edits, foreground switches and removal remain visible', () => {
+	let foreground = '';
+	const tracker = new WordSessionTracker({ emit() {} }, { probeForegroundWordTitle: () => foreground });
+	const docs = ['First', 'Second'].map((name, i) => ({
+		sessionID: name, documentPath: name + '.docx',
+		citations: [{ itemID: i + 1, ordinal: i + 1, shortText: '' }],
+	}));
+	assert.equal(tracker.syncSessions(docs), true);
+	const original = tracker.getSession('Second');
+	assert.equal(tracker.getCitationDisplayForItem(2), '[2]');
+	assert.equal(tracker.syncSessions(structuredClone(docs)), false);
+	assert.equal(tracker.getSession('Second'), original);
+	foreground = 'Second.docx - Word';
+	assert.equal(tracker.syncSessions(docs), true);
+	assert.equal(tracker.getActiveSession().sessionID, 'Second');
+	docs[0].citations[0].ordinal = 7;
+	assert.equal(tracker.syncSessions(docs), true);
+	assert.equal(tracker.getCitationDisplayForItem(1), '[7]');
+	assert.equal(tracker.syncSessions(docs.slice(1)), true);
+	assert.equal(tracker.getCitationDisplayForItem(1), '');
+	tracker.clear();
+	assert.deepEqual([...tracker.getUnionCitedItemIDs()], []);
+});

@@ -6,16 +6,19 @@ import { buildMetadataRemindersModel, type ReminderCheckScope, type ReminderRule
 
 export function formatInsertReceipt(res: WordInsertResultPayload, zh: boolean): ReceiptState {
 	const doc = res.documentName ? (zh ? `「${res.documentName}」` : `"${res.documentName}"`) : 'Word';
-	if (res.status === 'inserted') return { tone: 'ok', text: zh ? `✓ 已插入 ${res.itemCount} 篇引文到 ${doc}` : `✓ Inserted ${res.itemCount} citation(s) into ${doc}` };
+	if (res.status === 'inserted') return { tone: 'ok', text: zh ? `✓ ${doc} 已提交引文，包含所选 ${res.itemCount} 篇文献` : `✓ ${doc} committed the citation containing all ${res.itemCount} selected item(s)` };
 	if (res.status === 'busy') return { tone: 'warn', text: zh ? '⌛ Word 正在处理引文，请稍候再试' : '⌛ Word is busy updating citations, try again' };
 	if (res.status === 'non-word') return { tone: 'warn', text: zh ? '⚠ 当前激活文档不是受支持的 Word 文档' : '⚠ Active document is not a supported Word document' };
+	if (res.status === 'invalid-selection') return { tone: 'warn', text: zh ? '⚠ 所选条目中有失效或无法解析的文献，整批插入已停止' : '⚠ A selected reference is missing or invalid. Insertion stopped.' };
+	if (res.status === 'field-conflict') return { tone: 'warn', text: zh ? '⚠ Word 光标所在的域无法安全编辑，请检查光标位置' : '⚠ The Word field at the cursor could not be edited safely. Check the cursor position.' };
+	if (res.status === 'uncertain-write') return { tone: 'warn', text: zh ? '⚠ Word 可能已写入引文，但未确认完成。重试前请检查光标处的引文' : '⚠ Word may have written the citation. Check the citation at the cursor before retrying.' };
 	if (res.status === 'cancelled') return { tone: 'warn', text: zh ? 'ⓘ 已取消插入引文' : 'ⓘ Citation insertion cancelled' };
 	return { tone: 'err', text: zh ? '✕ 插入失败：请先打开 Word 并确认插件连接正常' : '✕ Unable to insert: verify Word is open and connected' };
 }
 
 export function formatRefreshReceipt(res: WordRefreshResultPayload, zh: boolean): ReceiptState {
 	const doc = res.documentName ? (zh ? `「${res.documentName}」` : `"${res.documentName}"`) : 'Word';
-	if (res.ok) return { tone: 'ok', text: zh ? `↻ 已刷新 ${doc}，并同步序号` : `↻ Refreshed ${doc} citations` };
+	if (res.ok) return { tone: 'ok', text: zh ? `↻ 已刷新 ${doc} 的引文` : `↻ Refreshed ${doc} citations` };
 	return { tone: 'warn', text: zh ? '⚠ 未检测到可刷新的活动 Word 文档' : '⚠ No active Word document to refresh' };
 }
 

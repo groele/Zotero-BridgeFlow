@@ -98,12 +98,12 @@ export interface SpotlightItemResult {
 export interface SpotlightProvider {
 	readonly id: string;
 	readonly priority: number;
-	query(term: string, win: Window): readonly SpotlightItemResult[];
+	query(term: string, win: Window, mode?: 'commands'): readonly SpotlightItemResult[];
 }
 
 export interface WordInsertResultPayload {
 	readonly requestId?: string;
-	readonly status: 'inserted' | 'busy' | 'non-word' | 'cancelled' | 'unavailable';
+	readonly status: 'inserted' | 'busy' | 'non-word' | 'cancelled' | 'unavailable' | 'invalid-selection' | 'field-conflict' | 'uncertain-write';
 	readonly documentName: string;
 	readonly itemCount: number;
 }

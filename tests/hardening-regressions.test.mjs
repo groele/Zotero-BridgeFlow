@@ -155,3 +155,57 @@ test('parseCompactCitation and isJournalMatch handle standard, arXiv, DOI, and m
 	assert.equal(isJournalMatch('PNAS', 'Proceedings of the National Academy of Sciences', ''), true);
 	assert.equal(isJournalMatch('Science', 'Nature', 'Nat.'), false);
 });
+
+test('committed Word snapshot waits for an active poll and preserves other documents if the registry disappears', async (t) => {
+	const original = globalThis.Zotero;
+	t.after(() => { globalThis.Zotero = original; });
+	const tracker = new WordSessionTracker({ emit() {} }, { probeForegroundWordTitle: () => '' });
+	const poller = new WordIntegrationPoller(new PluginKernel(), tracker);
+	const citationsByIndex = id => ({ 0: { citationItems: [{ id }] } });
+	const first = { sessionID: 'first', citationsByIndex: citationsByIndex(1) };
+	let unblock, signalReading;
+	const reading = new Promise(resolve => { signalReading = resolve; });
+	const second = {
+		sessionID: 'second',
+		updateFromDocument: () => new Promise(resolve => {
+			unblock = () => {
+				second.citationsByIndex = citationsByIndex(2);
+				second.citationsByItemID = { 2: [] };
+				resolve();
+			};
+			signalReading();
+		}),
+	};
+	const integration = { sessions: new Map([['first', first], ['second', second]]) };
+	globalThis.Zotero = { Integration: integration };
+	const background = poller.pollOnce();
+	await reading;
+	const committed = poller.notifyCommittedSession({ sessionID: 'first', citationsByIndex: citationsByIndex(3) });
+	await Promise.resolve();
+	delete integration.sessions;
+	assert.equal(typeof unblock, 'function');
+	unblock();
+	assert.equal(await background, true);
+	assert.equal(await committed, true);
+	assert.deepEqual([...tracker.getSession('first').itemCitations.keys()], [3]);
+	assert.deepEqual([...tracker.getSession('second').itemCitations.keys()], [2]);
+});
+
+test('a Word document read failure preserves its prior citations while another document updates', async (t) => {
+	const previous = globalThis.Zotero;
+	t.after(() => { globalThis.Zotero = previous; });
+	const tracker = new WordSessionTracker({ emit() {} }, { probeForegroundWordTitle: () => '' });
+	const errors = [];
+	const poller = new WordIntegrationPoller({ logger: { error: (...args) => errors.push(args) } }, tracker);
+	const make = id => ({ citationsByIndex: { 0: { citationItems: [{ id }] } } });
+	const sessions = { a: make(1), b: make(2) };
+	globalThis.Zotero = { Integration: { sessions } };
+	await poller.pollOnce();
+	sessions.a = make(9);
+	sessions.b = make(3);
+	globalThis.Zotero.Items = { get(id) { if (id === 9) throw Error('temporary read error'); return { id }; } };
+	assert.equal(await poller.pollOnce(), true);
+	assert.deepEqual([...tracker.getSession('a').itemCitations.keys()], [1]);
+	assert.deepEqual([...tracker.getSession('b').itemCitations.keys()], [3]);
+	assert.equal(errors.length, 1);
+});

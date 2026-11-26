@@ -147,6 +147,9 @@ export function renderGalleryCardElement(opts: {
 	card: GalleryCardModel;
 	selected: boolean;
 	showBrief: boolean;
+	showRatingStars?: boolean;
+	showTags?: boolean;
+	showReadTime?: boolean;
 	ratingStorage: RatingStorageLocation;
 	draggable: boolean;
 	onSelect: (card: GalleryCardModel, el: HTMLElement, ev: MouseEvent) => void;
@@ -246,8 +249,10 @@ export function renderGalleryCardElement(opts: {
 		starEls.push(s);
 		rateFloat.appendChild(s);
 	}
-	syncCardStars(currentRating);
-	cover.appendChild(rateFloat);
+	if (opts.showRatingStars !== false) {
+		syncCardStars(currentRating);
+		cover.appendChild(rateFloat);
+	}
 	el.appendChild(cover);
 
 	const titleRow = galEl(doc, 'div');
@@ -277,7 +282,7 @@ export function renderGalleryCardElement(opts: {
 	addMetaRow('user', card.creator);
 	addMetaRow('calendar', card.year);
 	addMetaRow('book', card.venue);
-	if (card.readSeconds > 0 && card.readText) addMetaRow('clock', card.readText);
+	if (opts.showReadTime !== false && card.readSeconds > 0 && card.readText) addMetaRow('clock', card.readText);
 	el.appendChild(metaStack);
 
 	if (opts.showBrief && card.briefNote) {
@@ -287,7 +292,7 @@ export function renderGalleryCardElement(opts: {
 		el.appendChild(brief);
 	}
 
-	if (card.tags.length > 0) {
+	if (opts.showTags !== false && card.tags.length > 0) {
 		const tagsRow = galEl(doc, 'div');
 		tagsRow.className = 'zbf-gal-tags-row';
 		tagsRow.appendChild(createGallerySvgIcon(doc, 'tag', 12));

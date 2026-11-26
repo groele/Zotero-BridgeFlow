@@ -42,11 +42,11 @@ export class CitationColumnController {
 			pluginID: this.kernel.info.id,
 			dataProvider: (item: any) => {
 				const id = Number(item?.id || 0);
-				if (!id) return '';
+				const parentID = Number(item?.parentItemID || 0);
+				if (!id || (parentID > 0 && !this.kernel.prefs.get('wordCite.column.showChildren'))) return '';
 				const preferred = this.resolvePreferredSessionID();
 				const direct = this.tracker.getCitationDisplayForItem(id, preferred);
 				if (direct) return direct;
-				const parentID = Number(item?.parentItemID || 0);
 				return parentID > 0 ? this.tracker.getCitationDisplayForItem(parentID, preferred) : '';
 			},
 		};

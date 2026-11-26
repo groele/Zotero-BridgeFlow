@@ -1,3 +1,4 @@
+import type { WordSessionRecord } from '../domains/word-cite/ipc/session-tracker.ts';
 import type { WordCiteDomainModule } from '../domains/word-cite/module.ts';
 import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
@@ -22,6 +23,17 @@ export class SpotlightFusionBridge implements BridgeModule {
 	public readonly id = 'spotlight-fusion-bridge';
 	private readonly disposables = new DisposableStack();
 
+	private sortedBySession = new WeakMap<WordSessionRecord, Array<[number, { ordinal: number; shortText: string }]>>();
+
+	private sortedCitations(session: WordSessionRecord) {
+		let entries = this.sortedBySession.get(session);
+		if (!entries) {
+			entries = [...session.itemCitations.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
+			this.sortedBySession.set(session, entries);
+		}
+		return entries;
+	}
+
 	private readonly kernel: PluginKernel;
 	private readonly workspace: WorkspaceDomainModule;
 	private readonly wordCite: WordCiteDomainModule;
@@ -38,27 +50,26 @@ export class SpotlightFusionBridge implements BridgeModule {
 			this.workspace.registerSpotlightProvider({
 				id: 'bridgeflow-cross-domain',
 				priority: 80,
-				query: (term: string, win: Window): readonly SpotlightItemResult[] => {
+				query: (term: string, win: Window, mode?: 'commands'): readonly SpotlightItemResult[] => {
 					if (!this.kernel.prefs.get('fusion.spotlightCrossDomain')) return [];
 					const doc = win?.document ?? null;
 					const out: SpotlightItemResult[] = [];
 					const active = this.wordCite.tracker.getActiveSession();
 
 					const clean = term.trim().toLowerCase();
-					if (active && active.itemCitations.size > 0 && !clean.startsWith('>')) {
+					if (mode !== 'commands' && active && active.itemCitations.size > 0 && !clean.startsWith('>')) {
 						const ordMatch = clean.match(/^(?:#|\[)(\d+)\]?$/);
 						const targetOrd = ordMatch ? Number(ordMatch[1]) : 0;
 						if (targetOrd > 0 || clean.length >= 2) {
 							const hostItems = (globalThis as any).Zotero?.Items;
-							const sorted = [...active.itemCitations.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
-							for (const [itemID, info] of sorted) {
+							const candidates = targetOrd > 0 ? active.itemCitations : this.sortedCitations(active);
+							for (const [itemID, info] of candidates) {
+								if (targetOrd > 0 && info.ordinal !== targetOrd) continue;
 								const it = hostItems?.get?.(itemID);
 								const fields = it ? getCachedPrimaryItemFields(it) : null;
 								const title = fields?.title || info.shortText || `Item #${itemID}`;
 								const sub = [fields?.creatorYear, fields?.source, active.displayName].filter(Boolean).join(' · ');
-								const match = targetOrd > 0
-									? info.ordinal === targetOrd
-									: `${title} ${sub} [${info.ordinal}]`.toLowerCase().includes(clean);
+								const match = targetOrd > 0 || `${title} ${sub} [${info.ordinal}]`.toLowerCase().includes(clean);
 								if (!match) continue;
 								out.push({
 									id: `word-cited:${itemID}`,
@@ -232,6 +243,7 @@ export class SpotlightFusionBridge implements BridgeModule {
 	}
 
 	stop(): void {
+		this.sortedBySession = new WeakMap();
 		this.disposables.disposeAll();
 	}
 }

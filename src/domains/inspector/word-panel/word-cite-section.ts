@@ -154,8 +154,18 @@ export class WordCiteSectionController {
 		this.receipt = formatPendingReceipt(kind, isChineseLocale());
 		this.pendingTimer = setTimeout(() => {
 			if (this.pendingRequest !== requestId) return;
-			this.pendingTimer = null; this.pendingRequest = undefined;
-			this.receipt = { tone: 'warn', text: isChineseLocale() ? '⌛ 未收到 Word 响应，请检查 Word 后重试' : '⌛ Word request timed out; retry when ready' };
+			this.pendingTimer = null;
+			const zh = isChineseLocale();
+			if (kind === 'insert') {
+				this.receipt = { tone: 'warn', text: zh
+					? '⌛ Word 尚未确认写入，请检查 Word 是否有等待处理的对话框'
+					: '⌛ Word has yet to confirm the insertion. Check for a Word dialog.' };
+			} else {
+				this.pendingRequest = undefined;
+				this.receipt = { tone: 'warn', text: zh
+					? '⌛ 未收到 Word 响应，请检查 Word 后重试'
+					: '⌛ Word request timed out; retry when ready' };
+			}
 			this.renderAllBodies();
 		}, kind === 'insert' ? 12_000 : 25_000);
 		this.renderAllBodies();

@@ -35,12 +35,21 @@ export class WorkspaceHoverCard {
 		this.wordCiteMap = new Map(badges);
 	}
 
-	attach(target: HTMLElement, tab: TrackedTab): void {
+	attach(target: HTMLElement, tab: TrackedTab, fallbackTitle?: string): void {
+		const tip = fallbackTitle ?? tab.title;
+		if (this.prefs.get('workspace.enableHoverPreview')) target.removeAttribute('title');
+		else if (tip) target.title = tip;
+
 		target.addEventListener('mouseenter', () => {
-			if (!this.prefs.get('workspace.enableHoverPreview')) return;
+			if (!this.prefs.get('workspace.enableHoverPreview')) {
+				if (tip && !target.getAttribute('title')) target.title = tip;
+				return;
+			}
+			target.removeAttribute('title');
 			this.clearTimers();
 			const win = this.doc.defaultView || (globalThis as any);
-			this.showTimer = win.setTimeout(() => this.show(target, tab), 260);
+			const delay = Math.max(80, Math.min(1500, Number(this.prefs.get('workspace.hoverPreviewDelayMs') || 260)));
+			this.showTimer = win.setTimeout(() => this.show(target, tab), delay);
 		});
 		target.addEventListener('mouseleave', () => {
 			this.clearTimers();
@@ -56,6 +65,11 @@ export class WorkspaceHoverCard {
 		const host = this.doc.documentElement || this.doc.body;
 		if (!host) return;
 
+		const showMeta = this.prefs.get('workspace.hoverPreviewShowMeta') !== false;
+		const showRemark = this.prefs.get('workspace.hoverPreviewShowRemark') !== false && Boolean(this.prefs.get('workspace.enableTabRemarks'));
+		const showStats = this.prefs.get('workspace.hoverPreviewShowReadingStats') !== false;
+		const showHeatmap = this.prefs.get('workspace.hoverPreviewShowHeatmap') !== false;
+
 		const card = createWorkspaceElement(this.doc, 'div');
 		card.className = 'zbf-hover-card';
 		card.setAttribute('data-zbf-hover-card', '1');
@@ -65,7 +79,7 @@ export class WorkspaceHoverCard {
 		titleEl.textContent = tab.title;
 		card.appendChild(titleEl);
 
-		const subParts = [tab.creatorYear, tab.source].filter(Boolean);
+		const subParts = showMeta ? [tab.creatorYear, tab.source].filter(Boolean) : [];
 		if (subParts.length) {
 			const subEl = createWorkspaceElement(this.doc, 'div');
 			subEl.className = 'zbf-hc-meta';
@@ -73,7 +87,7 @@ export class WorkspaceHoverCard {
 			card.appendChild(subEl);
 		}
 
-		if (tab.remark) {
+		if (showRemark && tab.remark) {
 			const remarkEl = createWorkspaceElement(this.doc, 'div');
 			remarkEl.className = 'zbf-hc-note';
 			remarkEl.textContent = `备注：${tab.remark}`;
@@ -82,58 +96,62 @@ export class WorkspaceHoverCard {
 
 		const group = tab.groupId ? this.store.state.groups.find((g) => g.id === tab.groupId) : null;
 		const statusParts: string[] = [];
-		if (group) statusParts.push(`分组：${group.name}`);
-		if (tab.collection) statusParts.push(`集合：${tab.collection}`);
-		const citeInfo = this.wordCiteMap.get(tab.parentItemID) || this.wordCiteMap.get(tab.itemID);
-		if (citeInfo) statusParts.push(`Word [${citeInfo.ordinal}] (${citeInfo.documentName})`);
-		if (tab.pinned) statusParts.push('已固定');
-		if (tab.sleeping) statusParts.push('已休眠');
-		if (tab.virtual) statusParts.push('虚拟成员');
-		const rel = formatRelativeTimeZh(tab.lastViewedAt);
-		if (rel) statusParts.push(`上次阅读：${rel}`);
-
-		const reader = !tab.virtual && tab.tabID ? (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
-		const ir = reader?._internalReader;
-		const app = ir?._primaryView?._iframeWindow?.PDFViewerApplication;
-		const pageIdx = typeof app?.page === 'number' && app.page > 0
-			? app.page - 1
-			: (ir?._state?.primaryViewStats?.pageIndex ?? ir?._state?.primaryViewState?.pageIndex ?? reader?.state?.pageIndex);
-		const numPages = app?.pagesCount || ir?._state?.primaryViewStats?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+		if (showMeta) {
+			if (group) statusParts.push(`分组：${group.name}`);
+			if (tab.collection) statusParts.push(`集合：${tab.collection}`);
+			const citeInfo = this.wordCiteMap.get(tab.parentItemID) || this.wordCiteMap.get(tab.itemID);
+			if (citeInfo) statusParts.push(`Word [${citeInfo.ordinal}] (${citeInfo.documentName})`);
+			if (tab.pinned) statusParts.push('已固定');
+			if (tab.sleeping) statusParts.push('已休眠');
+			if (tab.virtual) statusParts.push('虚拟成员');
+		}
 		const storedProg = this.store.state.readingProgress[tab.key];
-		const prog = formatReadingProgress(storedProg);
-		if (typeof pageIdx === 'number' && pageIdx >= 0) {
-			const total = typeof numPages === 'number' && numPages > 0 ? numPages : (storedProg?.totalPages || 0);
-			const sec = Math.floor(storedProg?.readSeconds || 0);
-			const durLabel = sec >= 60 ? formatReadingDuration(sec) : (sec > 0 ? `${sec}s` : '');
-			const dur = durLabel ? ` · ${durLabel}` : '';
-			statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
-		} else if (prog.text) {
-			statusParts.push(prog.text);
-		} else if (storedProg?.readSeconds && storedProg.readSeconds > 0) {
-			statusParts.push(`${Math.floor(storedProg.readSeconds)}s`);
-		}
 		let peakNote = '';
-		if (storedProg?.pageSeconds) {
-			let peakPage = '';
-			let peakSec = 0;
-			for (const [p, sec] of Object.entries(storedProg.pageSeconds)) {
-				if (sec > peakSec) { peakSec = sec; peakPage = p; }
+		if (showStats) {
+			const rel = formatRelativeTimeZh(tab.lastViewedAt);
+			if (rel) statusParts.push(`上次阅读：${rel}`);
+
+			const reader = !tab.virtual && tab.tabID ? (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
+			const ir = reader?._internalReader;
+			const app = ir?._primaryView?._iframeWindow?.PDFViewerApplication;
+			const pageIdx = typeof app?.page === 'number' && app.page > 0
+				? app.page - 1
+				: (ir?._state?.primaryViewStats?.pageIndex ?? ir?._state?.primaryViewState?.pageIndex ?? reader?.state?.pageIndex);
+			const numPages = app?.pagesCount || ir?._state?.primaryViewStats?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+			const prog = formatReadingProgress(storedProg);
+			if (typeof pageIdx === 'number' && pageIdx >= 0) {
+				const total = typeof numPages === 'number' && numPages > 0 ? numPages : (storedProg?.totalPages || 0);
+				const sec = Math.floor(storedProg?.readSeconds || 0);
+				const durLabel = sec >= 60 ? formatReadingDuration(sec) : (sec > 0 ? `${sec}s` : '');
+				const dur = durLabel ? ` · ${durLabel}` : '';
+				statusParts.push((total > 0 ? `第 ${pageIdx + 1} / ${total} 页` : `第 ${pageIdx + 1} 页`) + dur);
+			} else if (prog.text) {
+				statusParts.push(prog.text);
+			} else if (storedProg?.readSeconds && storedProg.readSeconds > 0) {
+				statusParts.push(`${Math.floor(storedProg.readSeconds)}s`);
 			}
-			if (peakPage && peakSec > 0) {
-				peakNote = `最常停留 P${peakPage} (${Math.round(peakSec)}s)`;
-				statusParts.push(peakNote);
+			if (storedProg?.pageSeconds) {
+				let peakPage = '';
+				let peakSec = 0;
+				for (const [p, sec] of Object.entries(storedProg.pageSeconds)) {
+					if (sec > peakSec) { peakSec = sec; peakPage = p; }
+				}
+				if (peakPage && peakSec > 0) {
+					peakNote = `最常停留 P${peakPage} (${Math.round(peakSec)}s)`;
+					statusParts.push(peakNote);
+				}
 			}
-		}
-		const itemObj = tab.itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(tab.itemID) : null;
-		let annots: number | undefined;
-		try {
-			const isFile = itemObj?.isFileAttachment ? itemObj.isFileAttachment() : itemObj?.isAttachment?.();
-			if (isFile && typeof itemObj?.getAnnotations === 'function') {
-				annots = itemObj.getAnnotations()?.length;
+			const itemObj = tab.itemID > 0 ? (globalThis as any).Zotero?.Items?.get?.(tab.itemID) : null;
+			let annots: number | undefined;
+			try {
+				const isFile = itemObj?.isFileAttachment ? itemObj.isFileAttachment() : itemObj?.isAttachment?.();
+				if (isFile && typeof itemObj?.getAnnotations === 'function') {
+					annots = itemObj.getAnnotations()?.length;
+				}
+			} catch { /* ignore linked URL attachments */ }
+			if (typeof annots === 'number' && annots > 0) {
+				statusParts.push(`批注 ${annots} 条`);
 			}
-		} catch { /* ignore linked URL attachments */ }
-		if (typeof annots === 'number' && annots > 0) {
-			statusParts.push(`批注 ${annots} 条`);
 		}
 
 		if (statusParts.length) {
@@ -142,24 +160,26 @@ export class WorkspaceHoverCard {
 			footEl.textContent = statusParts.join(' · ');
 			card.appendChild(footEl);
 		}
-		const bucketCount = storedProg?.totalPages && storedProg.totalPages < 16 ? storedProg.totalPages : 16;
-		const heat = buildReadingHeatmapBuckets(storedProg, bucketCount);
-		if (heat.length) {
-			const bar = createWorkspaceElement(this.doc, 'div');
-			bar.className = 'zbf-hc-heatbar';
-			bar.style.gridTemplateColumns = `repeat(${heat.length}, 1fr)`;
-			const heatColor = String(this.prefs.get('workspace.readingHeatmap.color') || '').trim();
-			const heatOpacity = Math.max(20, Math.min(95, Number(this.prefs.get('workspace.readingHeatmap.opacity') || 42))) / 100;
-			if (heatColor) bar.style.setProperty('--zbf-heat-accent', heatColor);
-			bar.title = peakNote ? `按页阅读热力分布 · ${peakNote}` : '按页阅读时长热力分布';
-			for (const ratio of heat) {
-				const cell = createWorkspaceElement(this.doc, 'span');
-				cell.className = 'zbf-hc-heatcell';
-				cell.style.opacity = String(ratio > 0 ? Math.max(0.24, Math.min(1, ratio * (0.45 + heatOpacity * 0.85))) : 0.12);
-				if (ratio > 0) cell.setAttribute('data-active', 'true');
-				bar.appendChild(cell);
+		if (showHeatmap) {
+			const bucketCount = storedProg?.totalPages && storedProg.totalPages < 16 ? storedProg.totalPages : 16;
+			const heat = buildReadingHeatmapBuckets(storedProg, bucketCount);
+			if (heat.length) {
+				const bar = createWorkspaceElement(this.doc, 'div');
+				bar.className = 'zbf-hc-heatbar';
+				bar.style.gridTemplateColumns = `repeat(${heat.length}, 1fr)`;
+				const heatColor = String(this.prefs.get('workspace.readingHeatmap.color') || '').trim();
+				const heatOpacity = Math.max(20, Math.min(95, Number(this.prefs.get('workspace.readingHeatmap.opacity') || 42))) / 100;
+				if (heatColor) bar.style.setProperty('--zbf-heat-accent', heatColor);
+				bar.title = peakNote ? `按页阅读热力分布 · ${peakNote}` : '按页阅读时长热力分布';
+				for (const ratio of heat) {
+					const cell = createWorkspaceElement(this.doc, 'span');
+					cell.className = 'zbf-hc-heatcell';
+					cell.style.opacity = String(ratio > 0 ? Math.max(0.24, Math.min(1, ratio * (0.45 + heatOpacity * 0.85))) : 0.12);
+					if (ratio > 0) cell.setAttribute('data-active', 'true');
+					bar.appendChild(cell);
+				}
+				card.appendChild(bar);
 			}
-			card.appendChild(bar);
 		}
 
 		host.appendChild(card);

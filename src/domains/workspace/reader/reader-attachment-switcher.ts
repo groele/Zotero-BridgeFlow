@@ -1,3 +1,4 @@
+import { collectOpenAttIDs, resolveOwnerWindow } from './reader-owner-window.ts';
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
@@ -33,6 +34,9 @@ export class ReaderAttachmentSwitcher {
 	private unregisterToolbar: Disposable | null = null;
 	private unsubNotifier: Disposable | null = null;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	private scanRequested = false;
+	private changedIDs = new Set<number>();
+	private refreshAll = false;
 	private closeActiveMenu: (() => void) | null = null;
 	private active = false;
 
@@ -45,12 +49,16 @@ export class ReaderAttachmentSwitcher {
 		if (this.active) return;
 		this.active = true;
 		this.registerToolbarHook();
-		this.unsubNotifier = this.kernel.notifier.subscribe(['item', 'tab'], ({ event, type }) => {
-			if (!this.active) return;
+		this.unsubNotifier = this.kernel.notifier.subscribe(['item', 'tab'], ({ event, type, ids }) => {
+			if (!this.active || !this.isEnabled()) return;
 			if (type === 'tab' && (event === 'add' || event === 'select' || event === 'close')) {
 				if (event === 'select') this.closeMenu();
+				this.scanRequested = true;
 				this.scheduleRefresh(40);
 			} else if (type === 'item' && (event === 'add' || event === 'modify' || event === 'trash' || event === 'restore' || event === 'delete')) {
+				if (!this.slots.size) return;
+				if (!ids.length) this.refreshAll = true;
+				for (const id of ids) this.changedIDs.add(Number(id));
 				this.scheduleRefresh(40);
 			}
 		});
@@ -61,6 +69,7 @@ export class ReaderAttachmentSwitcher {
 		if (!this.active) return;
 		this.active = false;
 		if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
+		this.resetPendingRefresh();
 		this.unsubNotifier?.();
 		this.unsubNotifier = null;
 		this.unregisterToolbar?.();
@@ -71,14 +80,16 @@ export class ReaderAttachmentSwitcher {
 	syncPref(): void {
 		if (!this.active) return;
 		if (!this.isEnabled()) { this.unmountAll(); return; }
+		this.pruneClosedSlots();
+		for (const slot of this.slots.values()) this.refreshSlot(slot);
 		this.scanOpenReaders();
-		this.refreshAllMounted();
 	}
 
 	mountReaderToolbar(reader: any, doc: Document, append?: (...els: Element[]) => void): void {
 		if (!this.active || !this.isEnabled() || !reader || !doc) return;
 		this.pruneClosedSlots();
-		const existing = this.slots.get(doc);
+		const documentKey = reader._iframeWindow?.document ?? doc;
+		const existing = this.slots.get(documentKey);
 		if (existing && existing.wrap.isConnected !== false) {
 			existing.reader = reader;
 			this.refreshSlot(existing);
@@ -112,7 +123,7 @@ export class ReaderAttachmentSwitcher {
 			ev.stopPropagation();
 			this.toggleMenu(slot);
 		});
-		this.slots.set(doc, slot);
+		this.slots.set(documentKey, slot);
 		this.refreshSlot(slot);
 	}
 
@@ -143,6 +154,7 @@ export class ReaderAttachmentSwitcher {
 		for (const reader of readers) {
 			if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
 			const doc = reader._iframeWindow?.document as Document | undefined;
+			if (doc && this.slots.get(doc)?.wrap.isConnected) continue;
 			if (doc?.querySelector?.('.toolbar .custom-sections')) {
 				this.mountReaderToolbar(reader, doc);
 			} else if (!this.pendingReaders.has(reader)) {
@@ -159,18 +171,32 @@ export class ReaderAttachmentSwitcher {
 	}
 
 	private scheduleRefresh(delayMs: number): void {
-		if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+		if (this.refreshTimer !== null) return;
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
-			if (!this.active) return;
-			if (this.isEnabled()) this.scanOpenReaders();
-			this.refreshAllMounted();
+			if (this.active && this.isEnabled()) {
+				this.pruneClosedSlots();
+				const affected = this.changedIDs;
+				for (const id of [...affected]) {
+					try {
+						const item = (globalThis as any).Zotero?.Items?.get?.(id);
+						if (item?.parentItemID && (item.isAttachment?.() ?? Boolean(item.attachmentContentType))) affected.add(item.parentItemID);
+					} catch { /* A deleted item can still match its previous reader slot. */ }
+				}
+				if (this.refreshAll || affected.size) for (const slot of this.slots.values()) {
+					if (this.refreshAll || affected.has(slot.parentID) || affected.has(Number(slot.reader?.itemID))
+						|| slot.items.some(item => affected.has(item.id))) this.refreshSlot(slot);
+				}
+				if (this.scanRequested) this.scanOpenReaders();
+			}
+			this.resetPendingRefresh();
 		}, delayMs);
 	}
 
-	private refreshAllMounted(): void {
-		this.pruneClosedSlots();
-		for (const slot of this.slots.values()) this.refreshSlot(slot);
+	private resetPendingRefresh(): void {
+		this.scanRequested = false;
+		this.refreshAll = false;
+		this.changedIDs.clear();
 	}
 
 	private syncSlotVisibility(slot: ReaderSlot, hidden: boolean): void {
@@ -182,7 +208,8 @@ export class ReaderAttachmentSwitcher {
 	private refreshSlot(slot: ReaderSlot): void {
 		if (!this.isEnabled()) { this.syncSlotVisibility(slot, true); return; }
 		const attID = Number(slot.reader?.itemID || 0);
-		const { parentID, items } = resolveSiblingAttachments(attID);
+		const includeSnapshots = Boolean(this.kernel.prefs.get('workspace.readerSwitcherIncludeSnapshots'));
+		const { parentID, items } = resolveSiblingAttachments(attID, includeSnapshots);
 		slot.parentID = parentID;
 		slot.items = items;
 		if (items.length < 2) { this.syncSlotVisibility(slot, true); return; }
@@ -202,40 +229,25 @@ export class ReaderAttachmentSwitcher {
 		if (slot.items.length < 2) return;
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 		const curAttID = Number(slot.reader?.itemID || 0);
+		const readerFrame = slot.reader?._iframe || (slot.doc.defaultView as any)?.frameElement || null;
+		const rawMode = String(this.kernel.prefs.get('workspace.readerSwitcherOpenMode') || 'new-tab');
+		const openMode = rawMode === 'replace-tab' || rawMode === 'background-tab' ? rawMode : 'new-tab';
 		this.closeActiveMenu = openSiblingAttachmentMenu({
 			doc: slot.doc,
-			hostWin: this.resolveOwnerWindow(slot.reader),
+			hostWin: resolveOwnerWindow(slot.reader),
+			readerFrame,
 			anchorBtn: slot.btn,
 			items: slot.items,
 			currentAttID: curAttID,
-			openAttIDs: this.collectOpenAttIDs(slot.reader),
+			useFilename: this.kernel.prefs.get('workspace.readerSwitcherUseFilename'),
+			openAttIDs: collectOpenAttIDs(slot.reader),
 			zh,
+			openMode,
 			onSelect: (entry, ev, forceBackground) => {
 				void this.switchToAttachment(slot.reader, slot.parentID, entry, ev, forceBackground);
 			},
 			onClose: () => { this.closeActiveMenu = null; },
 		});
-	}
-
-	private collectOpenAttIDs(reader: any): Set<number> {
-		const open = new Set<number>();
-		const win = this.resolveOwnerWindow(reader);
-		const tabs: any[] = Array.isArray((win as any)?.Zotero_Tabs?._tabs) ? (win as any).Zotero_Tabs._tabs : [];
-		for (const t of tabs) {
-			const id = Number(t?.data?.itemID || 0);
-			if (id > 0) open.add(id);
-		}
-		return open;
-	}
-
-	private resolveOwnerWindow(reader: any): Window | null {
-		const tabID = String(reader?.tabID || '');
-		const wins: Window[] = (globalThis as any).Zotero?.getMainWindows?.() || [];
-		if (tabID) {
-			const matched = wins.find((w: any) => Array.isArray(w?.Zotero_Tabs?._tabs) && w.Zotero_Tabs._tabs.some((t: any) => t?.id === tabID));
-			if (matched) return matched;
-		}
-		return (globalThis as any).Zotero?.getMainWindow?.() || wins[0] || null;
 	}
 
 	async switchToAttachment(
@@ -247,21 +259,29 @@ export class ReaderAttachmentSwitcher {
 	): Promise<boolean> {
 		const currentAttID = Number(reader?.itemID || 0);
 		if (!target?.id || target.id === currentAttID) return false;
-		const win = this.resolveOwnerWindow(reader) as any;
+		const win = resolveOwnerWindow(reader) as any;
 		const zotero = (globalThis as any).Zotero;
 		const tabsApi = win?.Zotero_Tabs;
 		const nativeTabs: any[] = Array.isArray(tabsApi?._tabs) ? tabsApi._tabs : [];
 		const curTabID = String(reader?.tabID || '');
 		const curIdx = curTabID ? nativeTabs.findIndex((t) => t?.id === curTabID) : -1;
-		const bg = Boolean(forceBackground || (ev && (ev.ctrlKey || ev.metaKey)));
-		const replaceCur = Boolean(!bg && ev && ev.altKey && curTabID);
+		const openMode = String(this.kernel.prefs.get('workspace.readerSwitcherOpenMode') || 'new-tab');
+		const bg = Boolean(forceBackground || (ev && (ev.ctrlKey || ev.metaKey)) || (!ev?.altKey && openMode === 'background-tab'));
+		const replaceCur = Boolean(!bg && curTabID && (ev?.altKey ? openMode !== 'replace-tab' : openMode === 'replace-tab'));
 		const groupId = this.store.groupOfKey(`item:${currentAttID}`)
 			|| (parentID > 0 ? this.store.groupOfKey(`item:${parentID}`) : '')
 			|| '';
 
+		this.store.setSleeping(`item:${target.id}`, false);
 		const existing = nativeTabs.find((t) => Number(t?.data?.itemID || 0) === target.id);
 		if (existing) {
-			if (!bg) tabsApi?.select?.(existing.id);
+			if (!bg) {
+				if (target.readerCapable && typeof zotero?.Reader?.open === 'function' && typeof zotero?.Reader?.getByTabID === 'function' && !zotero.Reader.getByTabID(existing.id)) {
+					try { await zotero.Reader.open(target.id); } catch { tabsApi?.select?.(existing.id); }
+				} else {
+					tabsApi?.select?.(existing.id);
+				}
+			}
 			this.store.removeVirtualMember(`item:${target.id}`);
 			if (groupId && !this.store.groupOfKey(`item:${target.id}`)) this.store.assignToGroup(`item:${target.id}`, groupId);
 			if (replaceCur && existing.id !== curTabID) tabsApi?.close?.(curTabID);
@@ -269,18 +289,27 @@ export class ReaderAttachmentSwitcher {
 		}
 
 		let opened = false;
+		const openInWindow = Boolean(!curTabID && !tabsApi);
 		if (target.readerCapable && typeof zotero?.Reader?.open === 'function') {
 			try {
 				await zotero.Reader.open(target.id, undefined, {
 					tabIndex: curIdx >= 0 ? curIdx + 1 : undefined,
 					openInBackground: bg,
+					openInWindow,
 				});
 				opened = true;
-			} catch { /* fall back to viewAttachment */ }
+			} catch { /* fall back */ }
+		}
+		if (!opened && target.kind === 'link') {
+			const url = zotero?.Items?.get?.(target.id)?.getField?.('url');
+			if (url && typeof zotero?.launchURL === 'function') {
+				zotero.launchURL(url);
+				opened = true;
+			}
 		}
 		if (!opened && typeof win?.ZoteroPane?.viewAttachment === 'function') {
 			try {
-				await win.ZoteroPane.viewAttachment(target.id, ev);
+				await win.ZoteroPane.viewAttachment(target.id);
 				opened = true;
 			} catch { /* ignore */ }
 		}
@@ -288,7 +317,7 @@ export class ReaderAttachmentSwitcher {
 
 		this.store.removeVirtualMember(`item:${target.id}`);
 		if (groupId) this.store.assignToGroup(`item:${target.id}`, groupId);
-		if (replaceCur) tabsApi?.close?.(curTabID);
+		if (replaceCur && curTabID) tabsApi?.close?.(curTabID);
 		return true;
 	}
 
@@ -304,7 +333,7 @@ export class ReaderAttachmentSwitcher {
 
 	private pruneClosedSlots(): void {
 		for (const [doc, slot] of [...this.slots.entries()]) {
-			if (!doc.defaultView || (doc.defaultView as any).closed || slot.reader?._isTabClosed) {
+			if (slot.wrap.isConnected === false || !doc.defaultView || (doc.defaultView as any).closed || slot.reader?._isTabClosed) {
 				this.removeSlotDom(slot);
 				this.slots.delete(doc);
 			}

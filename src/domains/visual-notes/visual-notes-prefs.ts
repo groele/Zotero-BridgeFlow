@@ -11,8 +11,9 @@ import type { StatusRatingColumnsController } from './columns/status-rating-colu
 export const VISUAL_NOTES_WATCHED_PREFS: readonly PrefKey[] = [
 	'visualNotes.infoBriefNote.enable', 'visualNotes.showTitleTagDots', 'visualNotes.statusColumn.enable', 'visualNotes.statusSyncZoteroTagColor',
 	'visualNotes.statusCustomColors', 'visualNotes.ratingColumn.enable', 'visualNotes.ratingStorage', 'visualNotes.gallery.enable',
-	'visualNotes.gallery.defaultMode', 'visualNotes.gallery.groupBy', 'visualNotes.gallery.cardDensity', 'visualNotes.gallery.cardWidth',
-	'visualNotes.gallery.coverHeight', 'visualNotes.gallery.showBriefNote', 'visualNotes.collectionHub.enable',
+	'visualNotes.gallery.defaultMode', 'visualNotes.gallery.groupBy', 'visualNotes.gallery.defaultSort', 'visualNotes.gallery.cardDensity',
+	'visualNotes.gallery.cardWidth', 'visualNotes.gallery.coverHeight', 'visualNotes.gallery.showBriefNote', 'visualNotes.gallery.showRatingStars',
+	'visualNotes.gallery.showTags', 'visualNotes.gallery.showReadTime', 'visualNotes.collectionHub.enable',
 	'visualNotes.collectionHub.ignoreFigureTable', 'visualNotes.collectionHub.preferCommentOverQuote', 'workspace.remarkColumn.enable',
 	'workspace.readingColumn.enable', 'workspace.readingTitleHeatmap.enable', 'workspace.readingHeatmap.color', 'workspace.readingHeatmap.opacity',
 	'workspace.annotationColumn.enable', 'inspector.annotations.popupLabelsEnable', 'inspector.annotations.colorLabels',
@@ -56,6 +57,9 @@ export function handleVisualNotesPrefChange(ctx: VisualNotesPrefContext, key: Pr
 		clearGalleryCardCache();
 		ctx.statusRatingColumns.refreshColumns();
 		ctx.galleryBoard.refreshWindows();
+	}
+	if (key === 'visualNotes.gallery.defaultSort') {
+		ctx.galleryBoard.syncDefaultSort();
 	}
 	if (key === 'visualNotes.collectionHub.ignoreFigureTable' || key === 'visualNotes.collectionHub.preferCommentOverQuote') {
 		ctx.galleryBoard.refreshWindows();

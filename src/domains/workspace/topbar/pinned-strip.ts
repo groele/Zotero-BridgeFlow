@@ -46,7 +46,6 @@ export class HorizontalPinnedStrip {
 			const chip = createWorkspaceElement(this.doc, 'button');
 			chip.type = 'button';
 			chip.className = `zbf-pinned-chip${iconOnly ? ' icon-only' : ''}${tab.tabID === selectedID ? ' selected' : ''}`;
-			chip.title = tab.title;
 			chip.appendChild(createWorkspaceIcon(this.doc, 'pin', 12));
 			if (!iconOnly) {
 				const span = createWorkspaceElement(this.doc, 'span');
@@ -60,7 +59,7 @@ export class HorizontalPinnedStrip {
 				e.stopPropagation();
 				this.menus.openTabMenu(chip, tab, e as MouseEvent);
 			});
-			this.hover.attach(chip, tab);
+			this.hover.attach(chip, tab, tab.title);
 			strip.appendChild(chip);
 		}
 

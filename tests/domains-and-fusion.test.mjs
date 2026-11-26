@@ -404,7 +404,7 @@ test('WordSessionTracker tracks occurrences, totalCitedCount, sessions and manua
 	assert.equal(snap2.byItemID.get(103)?.occurrences, 2);
 });
 
-test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons dispatch Word & Workspace synergy actions', () => {
+test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons dispatch Word & Workspace synergy actions', (t) => {
 	const item201 = {
 		id: 201, libraryID: 1, key: 'KEY201', deleted: false,
 		isRegularItem: () => true, isTrashed: () => false,
@@ -513,6 +513,7 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 
 	// The host may isolate panel events from document-level delegation.
 	doc.dispatchEvent = () => true;
+	t.mock.timers.enable({ apis: ['setTimeout'] });
 	insertBtn.click();
 	assert.deepEqual(inserts.at(-1)?.itemIDs, [201]);
 	assert.equal(insertBtn.disabled, true);
@@ -522,10 +523,15 @@ test('WordCiteSectionController Plan C: sidenav click only opens panel; buttons 
 	assert.equal(otherReceipt.hidden, true);
 	insertBtn.click();
 	assert.equal(inserts.length, 1);
+	t.mock.timers.tick(12_000);
+	assert.match(receipt.textContent, /尚未确认写入/);
+	assert.equal(insertBtn.disabled, true);
+	insertBtn.click();
+	assert.equal(inserts.length, 1);
 	app.kernel.bus.emit('word:insert-result', { requestId: 'stale', status: 'inserted', documentName: '', itemCount: 1 });
 	assert.equal(insertBtn.disabled, true);
 	app.kernel.bus.emit('word:insert-result', { requestId: inserts[0].requestId, status: 'inserted', documentName: 'de.docx', itemCount: 1 });
-	assert.match(receipt.textContent, /✓ 已插入/);
+	assert.match(receipt.textContent, /✓ .*已提交引文，包含所选 1 篇文献/);
 	assert.equal(otherReceipt.hidden, true);
 	assert.equal(insertBtn.disabled, false);
 
