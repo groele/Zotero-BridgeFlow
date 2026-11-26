@@ -45,6 +45,7 @@ export class ItemPanePositionCoordinator {
 	private readonly timers = new Map<PositionOwner, ReturnType<typeof setTimeout>>();
 	private readonly running = new Set<PositionOwner>();
 	private readonly dirty = new Set<PositionOwner>();
+	private readonly lastAppliedSig = new WeakMap<PositionOwner, string>();
 
 	setTarget(
 		key: string,
@@ -52,6 +53,7 @@ export class ItemPanePositionCoordinator {
 	): void {
 		if (!spec) this.targets.delete(key);
 		else this.targets.set(key, { key, ...spec });
+		for (const owner of this.observers.keys()) this.lastAppliedSig.delete(owner);
 	}
 
 	private pruneDisconnected(): void {
@@ -86,9 +88,18 @@ export class ItemPanePositionCoordinator {
 		this.queue(owner);
 	}
 
+	private computeOwnerSig(owner: PositionOwner): string {
+		const paneIDs = this.getPaneIDs(owner);
+		const targetSig = Array.from(this.targets.values())
+			.map((s) => `${s.sectionID}@${s.getPosition()}:${s.anchorAfterSectionID || ''}`)
+			.join(',');
+		return `${paneIDs.join(',')}|${targetSig}`;
+	}
+
 	queueAll(): void {
 		this.pruneDisconnected();
 		for (const owner of this.observers.keys()) {
+			this.lastAppliedSig.delete(owner);
 			this.queue(owner);
 		}
 	}
@@ -97,6 +108,9 @@ export class ItemPanePositionCoordinator {
 		if (!owner?.getPanes || this.timers.has(owner)) return;
 		if (this.running.has(owner)) {
 			this.dirty.add(owner);
+			return;
+		}
+		if (!owner.skipRender && !owner.querySelector?.('[data-ztf-pdf-full-section]') && this.lastAppliedSig.get(owner) === this.computeOwnerSig(owner)) {
 			return;
 		}
 		const timer = setTimeout(() => {
@@ -167,6 +181,7 @@ export class ItemPanePositionCoordinator {
 			if (currentIndex < 0 || targetIndex < 0 || currentIndex + 1 === targetIndex) continue;
 			await this.reorderPane(owner, id, next, targetIndex);
 		}
+		this.lastAppliedSig.set(owner, this.computeOwnerSig(owner));
 	}
 
 	private getPaneIDs(owner: PositionOwner): string[] {

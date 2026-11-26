@@ -110,8 +110,11 @@ export class InspectorDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.notifier.subscribe(['item'], ({ event }) => {
-				if (this.active && event === 'modify') void this.cslPreview.refreshAll();
+			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
+				if (!this.active || event !== 'modify') return;
+				const itemIDs = ids.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
+				if (itemIDs.length) this.services.csl.invalidateItems(itemIDs);
+				void this.cslPreview.refreshModifiedItems(itemIDs);
 			}),
 		);
 	}

@@ -33,11 +33,11 @@ export class GalleryBoardController {
 	private dataSource?: VisualNotesDataSource;
 	private readonly getReadProgress: (item: any) => TabReadingProgress | undefined;
 	private readonly onOpenHub: (win: Window) => void;
-	private readonly onMutated: () => void;
+	private readonly onMutated: (itemIDs?: readonly number[]) => void;
 
 	constructor(options: {
 		kernel: PluginKernel; getReadProgress: (item: any) => TabReadingProgress | undefined;
-		onOpenHub: (win: Window) => void; onMutated: () => void;
+		onOpenHub: (win: Window) => void; onMutated: (itemIDs?: readonly number[]) => void;
 	}) {
 		this.kernel = options.kernel; this.getReadProgress = options.getReadProgress;
 		this.onOpenHub = options.onOpenHub; this.onMutated = options.onMutated;
@@ -292,18 +292,12 @@ export class GalleryBoardController {
 						this.applyGallerySelection(st, nextSel, ev.shiftKey ? st.anchorItemID : nextID, true);
 					},
 					onRated: () => {
-						this.onMutated();
+						this.onMutated([c.itemID]);
 						if (st.sortField === 'rating' || (st.mode === 'board' && st.groupBy === 'rating')) this.renderPanel(st, true);
 					},
 				}),
-				onColumnOrderChange: (nextKeys) => {
-					st.columnOrders.set(st.groupBy, nextKeys);
-					this.renderPanel(st, true);
-				},
-				onDropMutated: () => {
-					this.onMutated();
-					this.renderPanel(st, true);
-				},
+				onColumnOrderChange: (nextKeys) => { st.columnOrders.set(st.groupBy, nextKeys); this.renderPanel(st, true); },
+				onDropMutated: (targetIDs) => { this.onMutated(targetIDs); this.renderPanel(st, true); },
 				onClearQuery: st.query ? () => { st.query = ''; this.renderPanel(st); } : undefined,
 			});
 			bodyViewport = vpRes.viewport;

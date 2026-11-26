@@ -22,6 +22,7 @@ export class WordIntegrationPoller {
 	private idleRounds = 0;
 	private readonly emptyStreakBySession = new Map<string, number>();
 	private readonly docPathBySession = new Map<string, string>();
+	private readonly lastWinProbeAt = new Map<string, number>();
 	private readonly updating = new WeakSet<object>();
 	private pendingCmdDocHint = '';
 
@@ -59,6 +60,7 @@ export class WordIntegrationPoller {
 		this.pendingCmdDocHint = '';
 		this.emptyStreakBySession.clear();
 		this.docPathBySession.clear();
+		this.lastWinProbeAt.clear();
 	}
 
 	async notifyCommittedSession(session?: any): Promise<boolean> {
@@ -70,7 +72,10 @@ export class WordIntegrationPoller {
 		const integration = (globalThis as any).Zotero?.Integration;
 		if (!allowDuringExec && integration?.currentDoc) return false;
 		const sessionsMap = integration?.sessions;
-		if (!sessionsMap && !committedSession) return false;
+		if (!sessionsMap && !committedSession) {
+			this.idleRounds = Math.min(20, this.idleRounds + 1);
+			return false;
+		}
 
 		this.polling = true;
 		const epoch = this.stopEpoch;
@@ -125,11 +130,12 @@ export class WordIntegrationPoller {
 
 			for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
 			for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
+			for (const key of this.lastWinProbeAt.keys()) if (!activeIDs.has(key)) this.lastWinProbeAt.delete(key);
 
 			if (this.stopEpoch !== epoch || (!allowDuringExec && (this.execDepth > 0 || integration?.currentDoc))) return false;
 			const changed = this.tracker.syncSessions(rawSessions);
 			if (changed) { this.idleRounds = 0; if (this.running) this.scheduleItemsViewRefresh(); }
-			else { this.idleRounds = Math.min(10, this.idleRounds + 1); }
+			else { this.idleRounds = Math.min(20, this.idleRounds + 1); }
 			return changed;
 		} finally {
 			this.polling = false;
@@ -184,8 +190,13 @@ export class WordIntegrationPoller {
 		}
 		const cached = this.docPathBySession.get(sessionID);
 		if (cached && !cached.startsWith('window-title:')) return cached;
+		const now = Date.now();
+		if (cached && cached.startsWith('window-title:') && this.idleRounds > 0 && now - (this.lastWinProbeAt.get(sessionID) ?? 0) < 15_000) {
+			return cached;
+		}
 
 		if (this.win32 && totalSessions === 1) {
+			this.lastWinProbeAt.set(sessionID, now);
 			const probed = this.win32.probeWordWindowTitles();
 			const fg = probed.foregroundTitle ? extractDocumentBaseName(`window-title:${probed.foregroundTitle}`) : '';
 			if (fg && fg !== 'Untitled Word Document' && (totalSessions === 1 || !cached)) {
@@ -282,7 +293,10 @@ export class WordIntegrationPoller {
 
 	private scheduleNext(): void {
 		if (!this.running) return;
-		const delay = this.idleRounds >= 10 ? 5000 : this.idleRounds >= 4 ? 3000 : 1200;
+		const hasSessions = this.tracker.getAllSessions().length > 0;
+		const delay = !hasSessions && this.idleRounds >= 6
+			? 12_000
+			: this.idleRounds >= 10 ? 5000 : this.idleRounds >= 4 ? 3000 : 1200;
 		this.timer = setTimeout(() => {
 			this.timer = null;
 			if (!this.running) return;

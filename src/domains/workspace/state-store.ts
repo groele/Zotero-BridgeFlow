@@ -18,7 +18,7 @@ import {
 	type RemarkDisplayMode, type TabGroup, type TabReadingProgress, type VirtualMemberMeta, type WorkspaceSession, type WorkspaceState,
 } from './types.ts';
 
-type StoreChange = 'data' | 'session' | 'reading' | 'notes-local-clear' | 'import';
+type StoreChange = 'layout' | 'notes' | 'session' | 'reading' | 'notes-local-clear' | 'import';
 
 const createEmptyState = (): WorkspaceState => ({
 	version: 2, groups: [], collapsed: [], pinnedKeys: [], sleepingKeys: [],
@@ -67,7 +67,7 @@ export class WorkspaceStateStore {
 
 	async initDiskCache(): Promise<boolean> { return hydrateWorkspaceDiskCaches(this); }
 
-	save(immediateDisk = false, change: StoreChange = 'data'): void {
+	save(immediateDisk = false, change: StoreChange = 'layout'): void {
 		if (!this.readOnlyGuard) {
 			const layout = this.legacyMigrationPending ? this.state : pickWorkspaceLayoutState(this.state);
 			const serialized = JSON.stringify(layout);
@@ -89,10 +89,10 @@ export class WorkspaceStateStore {
 
 	saveBriefNotes(immediateDisk = false): void {
 		this.notesCache.scheduleSave(this.state, immediateDisk);
-		this.emitChange();
+		this.emitChange('notes');
 	}
 
-	private emitChange(change: StoreChange = 'data'): void {
+	private emitChange(change: StoreChange = 'layout'): void {
 		for (const fn of this.listeners) { try { fn(change); } catch { /* ignore */ } }
 	}
 

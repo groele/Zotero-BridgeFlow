@@ -146,10 +146,15 @@ function checkVersionAlignment() {
 }
 check('Version alignment & Zotero 10.0-12.* scope', checkVersionAlignment);
 
-check('Valid CSS font shorthands in word-cite UI', () => {
-	for (const f of srcFiles.filter((file) => path.basename(file).startsWith('word-cite-'))) {
-		if (/font:\s*[^;]*\binherit\b/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+check('Valid CSS font shorthands across all src modules', () => {
+	const bad = [];
+	const badFontRe = /(?<![-\w])font\s*:(?!\s*inherit(?:\s+!important)?\s*(?:[;'"`}]|$))[^;'"`{}]+\binherit\b/;
+	for (const f of srcFiles) {
+		if (badFontRe.test(fs.readFileSync(f, 'utf8'))) {
+			bad.push(path.relative(root, f));
+		}
 	}
+	if (bad.length) throw Error(`Invalid CSS font shorthand with inherit in: ${bad.join(', ')}`);
 });
 
 

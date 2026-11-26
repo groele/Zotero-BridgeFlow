@@ -14,6 +14,8 @@ export const TITLE_TAG_DOTS_STYLE_ID = 'zbf-title-tag-dots-style';
 export const TITLE_TAG_DOTS_HIDE_CSS = '#zotero-items-pane .cell.primary .colored-tag-swatches { display: none !important; }';
 const MAX_GRADIENT_CACHE = 5000;
 const heatmapGradientCache = new Map<string, string>();
+const progressGradientMemo = new WeakMap<TabReadingProgress, Map<string, string>>();
+const progressSummaryMemo = new WeakMap<TabReadingProgress, { zh?: string; en?: string }>();
 
 function setGradientCache(key: string, value: string): void {
 	if (heatmapGradientCache.has(key)) heatmapGradientCache.delete(key);
@@ -23,25 +25,30 @@ function setGradientCache(key: string, value: string): void {
 	}
 	heatmapGradientCache.set(key, value);
 }
-const HEATMAP_CSS = `
-.virtualized-table .cell-text[data-zbf-heatmap="1"] {
-  border-radius: 4px;
-  padding-inline: 4px;
-  margin-inline: -4px;
-  background-repeat: no-repeat;
-  box-decoration-break: clone;
-  transition: filter 0.14s ease;
+const HEATMAP_CSS = `.virtualized-table .cell-text[data-zbf-heatmap="1"]{border-radius:4px;padding-inline:4px;margin-inline:-4px;background-repeat:no-repeat;box-decoration-break:clone;transition:filter .14s ease}.virtualized-table .row:hover .cell-text[data-zbf-heatmap="1"]{filter:saturate(1.12)}.virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"]{--zbf-heat-rgb:255,255,255!important}@media (prefers-reduced-motion:reduce){.virtualized-table .cell-text[data-zbf-heatmap="1"]{transition:none!important}}`;
+
+function resolveProgressTooltipSummary(progress: TabReadingProgress, zh: boolean): string {
+	const memo = progressSummaryMemo.get(progress);
+	const cached = zh ? memo?.zh : memo?.en;
+	if (cached !== undefined) return cached;
+	const secs = Math.max(0, Math.floor(Number(progress.readSeconds) || 0));
+	const dur = secs < 60 ? (secs > 0 ? `${secs}s` : '') : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60) || ''}m`);
+	let peakPage = 0, peakSec = 0;
+	for (const [k, v] of Object.entries(progress.pageSeconds || {})) {
+		const p = Number(k), s = Number(v);
+		if (p > 0 && s > peakSec) { peakPage = p; peakSec = s; }
+	}
+	const parts: string[] = [];
+	if (dur) parts.push(dur);
+	if (progress.lastPage) parts.push(progress.totalPages ? `p.${progress.lastPage}/${progress.totalPages}` : `p.${progress.lastPage}`);
+	if (peakPage > 0) parts.push(zh ? `峰值 p.${peakPage} (${peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`})` : `Peak p.${peakPage} (${peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`})`);
+	const summary = parts.length ? (zh ? `阅读热图：${parts.join(' · ')}` : `Reading Heatmap: ${parts.join(' · ')}`) : '';
+	const slot = memo || {};
+	if (zh) slot.zh = summary;
+	else slot.en = summary;
+	progressSummaryMemo.set(progress, slot);
+	return summary;
 }
-.virtualized-table .row:hover .cell-text[data-zbf-heatmap="1"] {
-  filter: saturate(1.12);
-}
-.virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"] {
-  --zbf-heat-rgb: 255, 255, 255 !important;
-}
-@media (prefers-reduced-motion: reduce) {
-  .virtualized-table .cell-text[data-zbf-heatmap="1"] { transition: none !important; }
-}
-`;
 
 export function formatTitleHeatmapTooltip(
 	baseTitle: string,
@@ -49,24 +56,8 @@ export function formatTitleHeatmapTooltip(
 	zh = true,
 ): string {
 	if (!progress) return baseTitle;
-	const secs = Math.max(0, Math.floor(Number(progress.readSeconds) || 0));
-	const dur = secs < 60 ? (secs > 0 ? `${secs}s` : '') : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60) || ''}m`);
-	let peakPage = 0;
-	let peakSec = 0;
-	for (const [k, v] of Object.entries(progress.pageSeconds || {})) {
-		const p = Number(k);
-		const s = Number(v);
-		if (p > 0 && s > peakSec) { peakPage = p; peakSec = s; }
-	}
-	const parts: string[] = [];
-	if (dur) parts.push(dur);
-	if (progress.lastPage) parts.push(progress.totalPages ? `p.${progress.lastPage}/${progress.totalPages}` : `p.${progress.lastPage}`);
-	if (peakPage > 0) {
-		const pDur = peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`;
-		parts.push(zh ? `峰值 p.${peakPage} (${pDur})` : `Peak p.${peakPage} (${pDur})`);
-	}
-	if (!parts.length) return baseTitle;
-	const summary = zh ? `阅读热图：${parts.join(' · ')}` : `Reading Heatmap: ${parts.join(' · ')}`;
+	const summary = resolveProgressTooltipSummary(progress, zh);
+	if (!summary) return baseTitle;
 	return baseTitle ? `${baseTitle}\n${summary}` : summary;
 }
 
@@ -95,22 +86,35 @@ export function buildTitleHeatmapGradient(
 	progress?: TabReadingProgress,
 	options: TitleHeatmapOptions = {},
 ): string {
-	const rawTotal = Number(progress?.totalPages || 0);
+	if (!progress?.pageSeconds) return '';
+	const optKey = `${options.bucketCount ?? ''}|${options.color || ''}|${options.opacityPercent ?? ''}`;
+	let progMap = progressGradientMemo.get(progress);
+	const memoHit = progMap?.get(optKey);
+	if (memoHit !== undefined) return memoHit;
+
+	const rawTotal = Number(progress.totalPages || 0);
 	const bucketCount = options.bucketCount ?? (rawTotal > 0 && rawTotal < 16 ? rawTotal : 16);
-	const pageEntries = progress?.pageSeconds ? Object.entries(progress.pageSeconds) : [];
+	const pageEntries = Object.entries(progress.pageSeconds);
 	if (!pageEntries.length) return '';
 
-	const cacheKey = `${Number(progress?.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ''}|${options.opacityPercent ?? ''}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(',')}`;
+	const rememberProgress = (val: string) => {
+		if (!progMap) { progMap = new Map(); progressGradientMemo.set(progress, progMap); }
+		progMap.set(optKey, val);
+	};
+
+	const cacheKey = `${Number(progress.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ''}|${options.opacityPercent ?? ''}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(',')}`;
 	const cached = heatmapGradientCache.get(cacheKey);
 	if (cached !== undefined) {
 		heatmapGradientCache.delete(cacheKey);
 		heatmapGradientCache.set(cacheKey, cached);
+		rememberProgress(cached);
 		return cached;
 	}
 
 	const buckets = buildReadingHeatmapBuckets(progress, bucketCount);
 	if (!buckets.length || !buckets.some((v) => v > 0)) {
 		setGradientCache(cacheKey, '');
+		rememberProgress('');
 		return '';
 	}
 
@@ -136,6 +140,7 @@ export function buildTitleHeatmapGradient(
 	}
 	const out = `linear-gradient(to right, ${stops.join(', ')})`;
 	setGradientCache(cacheKey, out);
+	rememberProgress(out);
 	return out;
 }
 
@@ -184,7 +189,7 @@ export function applyTitleHeatmapToCell(
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 		const baseTitle = String(textEl.textContent || '').trim();
 		const tip = formatTitleHeatmapTooltip(baseTitle, progress, zh);
-		if (tip) {
+		if (tip && textEl.getAttribute?.('title') !== tip) {
 			textEl.setAttribute('title', tip);
 			textEl.setAttribute('data-zbf-heatmap-title', '1');
 		}
@@ -198,17 +203,22 @@ export class TitleHeatmapController {
 	private readonly windows = new Set<Window>();
 	private readonly disposers = new Map<Window, Disposable>();
 	private readonly pollTimers = new Map<Window, ReturnType<typeof setTimeout>>();
+	private cachedEnabled = false;
+	private cachedOptions: TitleHeatmapOptions = { color: '#0d9488', opacityPercent: 42 };
 
 	constructor(kernel: PluginKernel, resolveProgress: (item: any) => TabReadingProgress | undefined) {
 		this.kernel = kernel;
 		this.resolveProgress = resolveProgress;
+		this.refreshCachedPrefs();
+	}
+
+	private refreshCachedPrefs(): void {
+		this.cachedEnabled = this.isEnabled();
+		this.cachedOptions = this.getOptions();
 	}
 
 	isEnabled(): boolean {
-		return Boolean(
-			this.kernel.prefs.get('modules.visualNotes.enable')
-			&& this.kernel.prefs.get('workspace.readingTitleHeatmap.enable'),
-		);
+		return Boolean(this.kernel.prefs.get('modules.visualNotes.enable') && this.kernel.prefs.get('workspace.readingTitleHeatmap.enable'));
 	}
 
 	getOptions(): TitleHeatmapOptions {
@@ -220,9 +230,10 @@ export class TitleHeatmapController {
 
 	attachWindow(win: Window): void {
 		if (!win) return;
+		this.refreshCachedPrefs();
 		this.windows.add(win);
 		this.syncTitleTagDotsStyle(win);
-		if (!this.isEnabled() || this.disposers.has(win) || this.pollTimers.has(win)) return;
+		if (!this.cachedEnabled || this.disposers.has(win) || this.pollTimers.has(win)) return;
 		this.tryPatchWindow(win, 0);
 	}
 
@@ -233,21 +244,14 @@ export class TitleHeatmapController {
 	}
 
 	sync(knownWindows?: Iterable<Window>): void {
-		if (knownWindows) {
-			for (const win of knownWindows) this.windows.add(win);
-		}
+		this.refreshCachedPrefs();
+		if (knownWindows) for (const win of knownWindows) this.windows.add(win);
 		for (const win of this.windows) this.syncTitleTagDotsStyle(win);
-		if (this.isEnabled()) {
-			for (const win of this.windows) {
-				if (!this.disposers.has(win) && !this.pollTimers.has(win)) {
-					this.tryPatchWindow(win, 0);
-				}
-			}
+		if (this.cachedEnabled) {
+			for (const win of this.windows) if (!this.disposers.has(win) && !this.pollTimers.has(win)) this.tryPatchWindow(win, 0);
 			this.refreshWindows();
 		} else {
-			for (const win of [...this.windows]) {
-				this.clearWindowPatch(win);
-			}
+			for (const win of [...this.windows]) this.clearWindowPatch(win);
 		}
 	}
 
@@ -291,10 +295,7 @@ export class TitleHeatmapController {
 
 	private clearWindowPatch(win: Window): void {
 		const timer = this.pollTimers.get(win);
-		if (timer !== undefined) {
-			clearTimeout(timer);
-			this.pollTimers.delete(win);
-		}
+		if (timer !== undefined) { clearTimeout(timer); this.pollTimers.delete(win); }
 		try { win.document?.getElementById?.(HEATMAP_STYLE_ID)?.remove?.(); } catch { /* ignore */ }
 		const dispose = this.disposers.get(win);
 		if (dispose) {
@@ -321,30 +322,24 @@ export class TitleHeatmapController {
 
 	private tryPatchWindow(win: Window, attempt: number): void {
 		this.pollTimers.delete(win);
-		if ((win as any).closed || !this.windows.has(win) || !this.isEnabled() || this.disposers.has(win)) {
-			return;
-		}
+		if ((win as any).closed || !this.windows.has(win) || !this.cachedEnabled || this.disposers.has(win)) return;
 		const iv = (win as any)?.ZoteroPane?.itemsView;
 		if (!iv || typeof iv._renderCell !== 'function') {
-			if (attempt < 120) {
-				const timer = setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50);
-				this.pollTimers.set(win, timer);
-			}
+			if (attempt < 120) this.pollTimers.set(win, setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50));
 			return;
 		}
 		this.ensureWindowStyles(win);
+		const ctrl = this;
 		const resolveProgress = this.resolveProgress;
-		const isEnabled = () => this.isEnabled();
-		const getOptions = () => this.getOptions();
 		const dispose = this.kernel.runtime.patch(iv, '_renderCell', 'itemsView', (orig) => function (this: any, ...args: unknown[]) {
 			const cell = orig.apply(this, args);
-			if (!isEnabled() || !cell) return cell;
+			if (!cell || !ctrl.cachedEnabled) return cell;
 			const [index, , column] = args as [number, unknown, { dataKey?: string; primary?: boolean }?];
 			if (column?.dataKey !== 'title' && column?.primary !== true) return cell;
 			const row = this.getRow?.(index) ?? this._rows?.[index];
 			const item = row?.ref;
 			if (item && typeof item.id === 'number' && !item.deleted && (row?.isItem ?? true)) {
-				applyTitleHeatmapToCell(cell as Element, resolveProgress(item), getOptions());
+				applyTitleHeatmapToCell(cell as Element, resolveProgress(item), ctrl.cachedOptions);
 			} else {
 				clearTitleHeatmapFromCell(cell as Element);
 			}

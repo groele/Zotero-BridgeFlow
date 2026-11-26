@@ -95,7 +95,7 @@ function isValidJpegDataUrl(url: unknown): url is string {
 	return typeof url === 'string' && url.length > 32 && url.length <= MAX_COVER_BYTES && url.startsWith('data:image/jpeg;base64,');
 }
 
-async function locateAttachmentPdf(attID: number, width: number): Promise<{ key: string; path: string; stamp: string } | null> {
+async function locateAttachmentPdf(attID: number, width: number): Promise<{ key: string; path: string; size: number; stamp: string } | null> {
 	try {
 		const zotero = (globalThis as any).Zotero;
 		const ioUtils = (globalThis as any).IOUtils || zotero?.getMainWindow?.()?.IOUtils;
@@ -108,6 +108,7 @@ async function locateAttachmentPdf(attID: number, width: number): Promise<{ key:
 		return {
 			key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
 			path: pdfPath,
+			size: stat.size,
 			stamp: JSON.stringify([stat.lastModified, stat.size]),
 		};
 	} catch { return null; }
@@ -254,7 +255,7 @@ export function requestGalleryPdfCover(opts: {
 				try {
 					const host = (globalThis as any).Zotero;
 					// Direct PDF.js page-1 rasterization is ~20x faster than spawning an offscreen <attachment-preview> reader iframe.
-					const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host, hint?.path);
+					const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host, hint?.path, hint?.size);
 					if (viaDirect) return viaDirect;
 					return await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host, (s) => defaultScrollIdle.wait(s));
 				} finally {

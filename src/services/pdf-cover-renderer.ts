@@ -217,8 +217,9 @@ export async function renderFallbackPdfJsCover(
 	doc: Document,
 	zoteroHost: any,
 	knownPath?: string,
+	knownSize?: number,
 ): Promise<string | false> {
-	if (signal.aborted || !doc) return false;
+	if (signal.aborted || !doc || (typeof knownSize === 'number' && knownSize > 80 * 1024 * 1024)) return false;
 	let loadingTask: any = null;
 	let pdfDoc: any = null;
 	let page: any = null;

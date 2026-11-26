@@ -134,6 +134,7 @@ export class ReadingColumnsController {
 	private readonly callbacks?: ReadingColumnCallbacks;
 	private cachedColorRaw = '';
 	private cachedSemantics = parseColorSemantics(undefined);
+	private cachedHeatColor = '#0d9488';
 	private readonly annSummaryCache = new Map<string, AnnotationSummaryRecord>();
 
 	constructor(
@@ -146,6 +147,11 @@ export class ReadingColumnsController {
 		this.dataSource = storeOrSource && 'getReadingProgress' in storeOrSource
 			? storeOrSource
 			: makeSourceFromStore(storeOrSource);
+		this.syncPrefs();
+	}
+
+	syncPrefs(): void {
+		this.cachedHeatColor = String(this.kernel?.prefs?.get?.('workspace.readingHeatmap.color') || '#0d9488');
 	}
 
 	setDataSource(source?: VisualNotesDataSource): void {
@@ -157,6 +163,7 @@ export class ReadingColumnsController {
 	}
 
 	syncColumns(): void {
+		this.syncPrefs();
 		const wantRead = Boolean(this.kernel.prefs.get('workspace.readingColumn.enable'));
 		const wantAnn = Boolean(this.kernel.prefs.get('workspace.annotationColumn.enable'));
 		if (wantRead !== this.activeReadTime || wantAnn !== this.activeAnnotations) {
@@ -186,8 +193,8 @@ export class ReadingColumnsController {
 		}
 	}
 
-	refreshColumns(): void {
-		this.clearCache();
+	refreshColumns(itemIDs?: Iterable<number>): void {
+		this.clearCache(itemIDs);
 		if ((!this.activeReadTime && !this.activeAnnotations) || !this.registeredKeys.size) return;
 		try {
 			(globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -290,7 +297,7 @@ export class ReadingColumnsController {
 					prog: item ? this.getReadProgressForItem(item) : undefined,
 					className: column?.className,
 					zh,
-					heatColor: String(this.kernel.prefs.get('workspace.readingHeatmap.color') || '#0d9488'),
+					heatColor: this.cachedHeatColor,
 					callbacks: this.callbacks,
 				});
 			},

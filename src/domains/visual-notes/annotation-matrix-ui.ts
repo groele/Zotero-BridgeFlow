@@ -34,7 +34,7 @@ export const MATRIX_CSS = `
 .zbf-matrix-mark { padding: 0 2px; border-radius: 2px; background: light-dark(#fef08a, rgba(250, 204, 21, 0.34)); color: inherit; font-weight: 600; }
 .zbf-matrix-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .zbf-matrix-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 500 12px/1.2 inherit; cursor: pointer; }
+.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2; cursor: pointer; }
 .zbf-matrix-btn:hover { background: light-dark(#e2e8f0, #334155); }
 .zbf-matrix-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .zbf-matrix-btn.primary:hover { background: #1d4ed8; }

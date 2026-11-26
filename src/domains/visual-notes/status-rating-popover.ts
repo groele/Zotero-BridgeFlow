@@ -85,7 +85,7 @@ export const STATUS_RATING_CSS = `
 .zbf-status-pop-input { flex: 1 1 auto; min-width: 0; height: 27px; padding: 0 8px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.3)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; transition: border-color 0.14s, box-shadow 0.14s; }
 .zbf-status-pop-input:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 2px rgba(79,70,229,0.16); }
 .zbf-status-pop-color { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; cursor: pointer; flex: none; }
-.zbf-status-pop-add { height: 27px; padding: 0 9px; border-radius: 6px; border: 0; background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; font: 600 12px/1 inherit; cursor: pointer; flex: none; transition: filter 0.14s, transform 0.12s; }
+.zbf-status-pop-add { height: 27px; padding: 0 9px; border-radius: 6px; border: 0; background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1; cursor: pointer; flex: none; transition: filter 0.14s, transform 0.12s; }
 .zbf-status-pop-add:hover { filter: brightness(1.08); }
 .zbf-status-pop-add:active { transform: scale(0.94); }
 @media (prefers-reduced-motion: reduce) { .zbf-status-pop { animation: none !important; } .zbf-status-pop-item, .zbf-rating-star, .zbf-status-pill { transition: none !important; } }
@@ -116,7 +116,7 @@ export function openStatusPickerPopover(options: {
 	zh: boolean;
 	excludedTag: string;
 	syncZoteroTagColor?: boolean;
-	onApplied: () => void;
+	onApplied: (targetIDs?: readonly number[]) => void;
 }): void {
 	const { win, anchor, clickedItem, current, zh, excludedTag, syncZoteroTagColor, onApplied } = options;
 	const doc = win.document;
@@ -170,13 +170,14 @@ export function openStatusPickerPopover(options: {
 
 	const applyStatus = (tag: string | null, color?: string) => {
 		close();
+		const targetIDs = targets.map((t) => Number(t?.id || 0)).filter((n) => n > 0);
 		void (async () => {
 			try {
 				for (const t of targets) {
 					try { await setItemStatus(t, tag, { color, excludedTag, syncZoteroTagColor }); } catch { /* isolate per-item failure */ }
 				}
 			} finally {
-				onApplied();
+				onApplied(targetIDs);
 			}
 		})();
 	};

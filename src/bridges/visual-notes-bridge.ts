@@ -45,14 +45,18 @@ export class VisualNotesBridge implements BridgeModule {
 		});
 
 		this.disposeStoreListener = this.workspace.store.onChange((change) => {
-			if (!this.active || change === 'session') return;
+			if (!this.active || change === 'session' || change === 'layout') return;
 			if (change === 'reading') {
 				this.visualNotes.refreshLibraryViews(undefined, true);
 				return;
 			}
-			if (change === 'notes-local-clear' || change === 'import') this.seedRemarks();
-			else this.syncChangedRemarksToExtra();
-			this.visualNotes.refreshLibraryViews();
+			if (change === 'notes-local-clear' || change === 'import') {
+				this.seedRemarks();
+				this.visualNotes.refreshLibraryViews();
+				return;
+			}
+			const affected = this.syncChangedRemarksToExtra();
+			if (affected.size > 0) this.visualNotes.refreshLibraryViews(affected);
 		});
 	}
 
@@ -71,7 +75,7 @@ export class VisualNotesBridge implements BridgeModule {
 		}
 	}
 
-	private syncChangedRemarksToExtra(): void {
+	private syncChangedRemarksToExtra(): Set<number> {
 		const current = this.workspace.store.state.remarks;
 		const changedKeys: Array<{ key: string; value: string }> = [];
 		for (const [k, v] of Object.entries(current)) {
@@ -80,16 +84,19 @@ export class VisualNotesBridge implements BridgeModule {
 		for (const k of this.prevRemarks.keys()) {
 			if (!(k in current)) changedKeys.push({ key: k, value: '' });
 		}
-		if (!changedKeys.length) return;
+		const affected = new Set<number>();
+		if (!changedKeys.length) return affected;
 		this.seedRemarks();
-		if (!this.kernel.prefs.get('workspace.syncRemarkToExtra')) return;
+		const syncExtra = this.kernel.prefs.get('workspace.syncRemarkToExtra');
 		for (const entry of changedKeys) {
 			const vm = this.workspace.store.state.virtualMembers[entry.key];
 			const match = entry.key.match(/^item:(\d+)$/);
 			const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
 			if (itemID > 0) {
-				void syncItemRemarkToExtra(itemID, entry.value).catch(() => {});
+				affected.add(itemID);
+				if (syncExtra) void syncItemRemarkToExtra(itemID, entry.value).catch(() => {});
 			}
 		}
+		return affected;
 	}
 }

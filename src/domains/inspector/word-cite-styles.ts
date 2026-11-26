@@ -172,7 +172,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 	line-height: 1.3; font-variant-numeric: tabular-nums; vertical-align: baseline;
 	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
 }
-.zbf-wc-ord-badge.is-cited { background: light-dark(#fdecef, rgba(244, 63, 94, 0.22)); color: light-dark(#b4232f, #fda4af); }
+.zbf-wc-ord-badge.is-cited { background: light-dark(#fdecef, rgba(244, 63, 94, 0.22)); color: light-dark(#b4232f, #fda4af); cursor: pointer; transition: filter 120ms ease; }
+.zbf-wc-ord-badge.is-cited:hover { filter: brightness(0.95); }
 .zbf-wc-cite-sub { font-size: 10.5px; color: var(--zbf-wc-fg-sec); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-synergy {
 	display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;

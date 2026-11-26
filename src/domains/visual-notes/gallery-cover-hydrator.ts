@@ -7,6 +7,49 @@ import {
 import { createToolbarArt } from './gallery-icons.ts';
 import { galEl } from './gallery-styles.ts';
 
+const MAX_BLOB_COVER_URLS = 320;
+const coverBlobPools = new WeakMap<Window, Map<string, { sourceUrl: string; blobUrl: string }>>();
+
+function resolveCoverRenderSrc(doc: Document, key: string, dataUrl: string): string {
+	const win = doc.defaultView as (Window & { URL?: typeof URL; Blob?: typeof Blob; atob?: (s: string) => string }) | null;
+	if (!win?.URL?.createObjectURL || typeof win.Blob !== 'function' || typeof win.atob !== 'function' || !dataUrl.startsWith('data:image/jpeg;base64,')) {
+		return dataUrl;
+	}
+	let pool = coverBlobPools.get(win);
+	if (!pool) {
+		pool = new Map();
+		coverBlobPools.set(win, pool);
+		win.addEventListener?.('unload', () => {
+			for (const entry of pool!.values()) { try { win.URL!.revokeObjectURL(entry.blobUrl); } catch { /* ignore */ } }
+			pool!.clear();
+		}, { once: true });
+	}
+	const hit = pool.get(key);
+	if (hit && hit.sourceUrl === dataUrl) {
+		pool.delete(key);
+		pool.set(key, hit);
+		return hit.blobUrl;
+	}
+	if (hit) { try { win.URL.revokeObjectURL(hit.blobUrl); } catch { /* ignore */ } pool.delete(key); }
+	try {
+		const bin = win.atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+		const bytes = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+		const blobUrl = win.URL.createObjectURL(new win.Blob([bytes], { type: 'image/jpeg' }));
+		while (pool.size >= MAX_BLOB_COVER_URLS) {
+			const oldestKey = pool.keys().next().value;
+			if (!oldestKey) break;
+			const old = pool.get(oldestKey);
+			if (old) { try { win.URL.revokeObjectURL(old.blobUrl); } catch { /* ignore */ } }
+			pool.delete(oldestKey);
+		}
+		pool.set(key, { sourceUrl: dataUrl, blobUrl });
+		return blobUrl;
+	} catch {
+		return dataUrl;
+	}
+}
+
 export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document) {
 	const tasks = new Map<HTMLElement, AbortController>();
 	const tracked = new Set<HTMLElement>();
@@ -55,7 +98,7 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 				startCard(card);
 			}, { once: true });
 			cover.prepend(img);
-			img.src = url;
+			img.src = resolveCoverRenderSrc(doc, String(attID), url);
 		}).catch(() => {
 			if (tasks.get(card) === ctrl) tasks.delete(card);
 		});

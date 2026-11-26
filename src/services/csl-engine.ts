@@ -40,9 +40,25 @@ export class CslFormattingEngine {
 		options: { limit?: number; byteLimit?: number; ttlMs?: number } = {},
 	) {
 		this.prefs = prefs;
-		this.limit = options.limit ?? 64;
+		this.limit = options.limit ?? 256;
 		this.byteLimit = options.byteLimit ?? 2 * 1024 * 1024;
-		this.ttlMs = options.ttlMs ?? 60_000;
+		this.ttlMs = options.ttlMs ?? 3_600_000;
+	}
+
+	peekCached(
+		items: readonly any[],
+		options: { styleID?: string; asCitation?: boolean } = {},
+	): CslFormatResult | null {
+		if (!items.length) return null;
+		try {
+			const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
+			const asCitation = Boolean(options.asCitation);
+			const locale = typeof format === 'string' ? '' : format.locale || '';
+			const key = JSON.stringify([this.buildCacheKey(items, styleID, asCitation), locale]);
+			return this.getCached(key);
+		} catch {
+			return null;
+		}
 	}
 
 	resolveStyleID(overrideStyle?: string): string {

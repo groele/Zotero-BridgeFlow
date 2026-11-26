@@ -17,7 +17,7 @@ export const COLLECTION_HUB_CSS = `
 .zbf-notebook-title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .zbf-notebook-title { font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; }
 .zbf-notebook-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#f1f5f9, #1e293b); gap: 2px; }
-.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.25 inherit; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
+.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
 .zbf-notebook-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
 .zbf-notebook-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.08); }
 
@@ -32,7 +32,7 @@ export const COLLECTION_HUB_CSS = `
 .zbf-notebook-card { padding: 12px 14px; border-radius: 12px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.025); display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.14s ease; }
 .zbf-notebook-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,0.05); }
 .zbf-notebook-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font: 600 13.2px/1.4 inherit; text-align: left; cursor: pointer; }
+.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font-family: inherit; font-size: 13.2px; font-weight: 600; line-height: 1.4; text-align: left; cursor: pointer; }
 .zbf-notebook-item-btn:hover { color: light-dark(#2563eb, #60a5fa); }
 .zbf-notebook-item-btn sub, .zbf-notebook-item-btn sup { font-size: 0.74em; line-height: 0; }
 .zbf-notebook-meta { font-size: 11.5px; color: light-dark(#94a3b8, #64748b); flex: none; white-space: nowrap; }
@@ -44,7 +44,7 @@ export const COLLECTION_HUB_CSS = `
 
 .zbf-notebook-brief-row { display: flex; align-items: center; gap: 8px; }
 .zbf-notebook-brief-lbl { padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; background: light-dark(#dcfce7, rgba(34,197,94,0.18)); color: light-dark(#166534, #86efac); flex: none; }
-.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 12.2px/1.2 inherit; transition: border-color 0.14s, background-color 0.14s; }
+.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font-family: inherit; font-size: 12.2px; line-height: 1.2; transition: border-color 0.14s, background-color 0.14s; }
 .zbf-notebook-brief-input:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.12); }
 
 .zbf-notebook-note-box { padding: 8px 10px; border-radius: 8px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.06), rgba(148,163,184,0.12)); font-size: 12.2px; line-height: 1.52; color: light-dark(#334155, #cbd5e1); }

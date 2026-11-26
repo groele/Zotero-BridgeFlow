@@ -6,23 +6,12 @@ import { locateItemInZoteroLibrary } from '../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import {
-	assembleWordCiteViewModel,
-	formatIgnoreReminderReceipt,
-	formatInsertReceipt,
-	formatPendingReceipt,
-	formatRefreshReceipt,
-	preloadUnloadedCitedItems,
-	resolveWordCiteTargetItems,
+	assembleWordCiteViewModel, formatIgnoreReminderReceipt, formatInsertReceipt,
+	formatPendingReceipt, formatRefreshReceipt, preloadUnloadedCitedItems, resolveWordCiteTargetItems,
 } from './word-cite-panel-model.ts';
 import {
-	createWordCiteBodyState,
-	formatRecoverReceipt,
-	OrphanSelectionState,
-	renderWordCitePanel,
-	type OrphanDomCallbacks,
-	type ReceiptAction,
-	type ReceiptState,
-	type WordCiteBodyState,
+	createWordCiteBodyState, formatRecoverReceipt, OrphanSelectionState, renderWordCitePanel,
+	type OrphanDomCallbacks, type ReceiptAction, type ReceiptState, type WordCiteBodyState,
 } from './word-cite-panel-ui.ts';
 import { ReminderUiState, type ReminderItemRecord } from './word-cite-reminders-model.ts';
 
@@ -71,18 +60,19 @@ export class WordCiteSectionController {
 			this.renderAllBodies();
 		}));
 		this.disposables.add(this.kernel.bus.on('notifier:event', (ev) => {
-			if (ev.type === 'item') this.renderAllBodies();
+			if (ev.type !== 'item') return;
+			const numIDs = ev.ids.map((v) => Number(v)).filter((n) => n > 0);
+			const relevant = !numIDs.length || numIDs.some((id) =>
+				this.snapshot?.byItemID.has(id) || [...this.states.values()].some((st) => st.lastItemIDs.includes(id) || Number(st.activeItem?.id || 0) === id));
+			if (relevant) this.renderAllBodies();
 		}));
 		this.disposables.add(this.kernel.bus.on('word:insert-result', (res) => this.finishRequest(res.requestId, formatInsertReceipt(res, isChineseLocale()))));
 		this.disposables.add(this.kernel.bus.on('word:refresh-result', (res) => this.finishRequest(res.requestId, formatRefreshReceipt(res, isChineseLocale()))));
 		this.disposables.add(this.kernel.bus.on('word:recover-orphans-result', (res) => this.finishRequest(res.requestId, formatRecoverReceipt(res, isChineseLocale()))));
-
 		const icon = `${this.kernel.info.rootURI}assets/word-cite.svg`;
 		const reg = this.services.itemPanes.register({
-			paneID: 'bridgeflow-word-cite',
-			pluginID: this.kernel.info.id,
-			header: { l10nID: 'zbf-pane-word-cite-header', icon },
-			sidenav: { l10nID: 'zbf-pane-word-cite-sidenav', icon, orderable: true },
+			paneID: 'bridgeflow-word-cite', pluginID: this.kernel.info.id,
+			header: { l10nID: 'zbf-pane-word-cite-header', icon }, sidenav: { l10nID: 'zbf-pane-word-cite-sidenav', icon, orderable: true },
 			onInit: ({ doc, body, item, setEnabled, setSectionSummary }: { doc?: Document; body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
 				this.initBody(doc || body.ownerDocument!, body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
@@ -90,9 +80,7 @@ export class WordCiteSectionController {
 			onDestroy: ({ doc, body }: { doc?: Document; body: HTMLElement }) => this.onDestroy(doc || body.ownerDocument, body),
 			onItemChange: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
 				const isSticky = Boolean(this.receipt.stickyUntil && Date.now() < this.receipt.stickyUntil);
-				if (this.states.get(body) === this.receiptOwner && !this.pendingRequest && !isSticky) {
-					this.receipt = { text: '', tone: 'none' };
-				}
+				if (this.states.get(body) === this.receiptOwner && !this.pendingRequest && !isSticky) this.receipt = { text: '', tone: 'none' };
 				this.updateState(body, item, setEnabled, setSectionSummary);
 				this.services.panePositions.observeAndQueue(body);
 				return this.isSectionEnabled() && (Boolean(item) || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
@@ -109,10 +97,7 @@ export class WordCiteSectionController {
 		});
 		this.unregisterFn = reg.dispose;
 		if (reg.sectionID) {
-			this.services.panePositions.setTarget('word-cite', {
-				sectionID: reg.sectionID,
-				getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.wordCite.position'), 'zotero-editpane-related'),
-			});
+			this.services.panePositions.setTarget('word-cite', { sectionID: reg.sectionID, getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.wordCite.position'), 'zotero-editpane-related') });
 		}
 		this.kernel.bus.emit('word:snapshot-query', { requester: 'inspector' });
 		this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
@@ -198,8 +183,27 @@ export class WordCiteSectionController {
 		click(st.docSwitchBtn, () => this.cycleWordSession());
 		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
 		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', { sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
-		st.citedCell.addEventListener('click', () => { if (!st.colBtn.hidden) st.colBtn.click(); }, { signal: controller.signal });
-		st.orphanCell.addEventListener('click', () => { if (!st.orphanRefs.box.hidden) { this.orphanState.accordionOpen = true; this.renderAllBodies(); } }, { signal: controller.signal });
+		const onActivate = (el: HTMLElement, fn: () => void) => {
+			el.addEventListener('click', fn, { signal: controller.signal });
+			el.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); fn(); } }, { signal: controller.signal });
+		};
+		onActivate(st.citedCell, () => { if (!st.colBtn.hidden) st.colBtn.click(); });
+		onActivate(st.orphanCell, () => {
+			if (st.orphanRefs.box.hidden) return;
+			this.orphanState.accordionOpen = true;
+			this.renderAllBodies();
+			st.orphanRefs.box.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+		});
+		onActivate(st.ordBadgeEl, () => {
+			const txt = st.ordBadgeEl.textContent?.trim();
+			if (!txt || !st.ordBadgeEl.classList.contains('is-cited')) return;
+			if (this.services.clipboard.writePayload('', txt, true)) {
+				const zh = isChineseLocale(st.root.ownerDocument);
+				this.receiptOwner = st;
+				this.receipt = { tone: 'ok', text: zh ? `✓ 已复制引文标号 ${txt}` : `✓ Copied marker ${txt}`, stickyUntil: Date.now() + 3000 };
+				this.renderAllBodies();
+			}
+		});
 		click(st.orphanRefs.accHeadBtn, () => { this.orphanState.accordionOpen = !this.orphanState.accordionOpen; this.renderAllBodies(); });
 		click(st.orphanRefs.toggleBtn, () => { this.orphanState.expanded = !this.orphanState.expanded; this.renderAllBodies(); });
 		click(st.orphanRefs.actionBtn, () => {
@@ -248,11 +252,7 @@ export class WordCiteSectionController {
 			return true;
 		});
 		this.receiptOwner = st;
-		this.receipt = {
-			tone: 'ok',
-			text: zh ? '✓ 已定位到文献条目，可在「信息」页核对补全' : '✓ Located item; complete missing fields in Info pane',
-			stickyUntil: Date.now() + 4_000,
-		};
+		this.receipt = { tone: 'ok', text: zh ? '✓ 已定位到文献条目，可在「信息」页核对补全' : '✓ Located item; complete missing fields in Info pane', stickyUntil: Date.now() + 4_000 };
 		this.renderAllBodies();
 	}
 

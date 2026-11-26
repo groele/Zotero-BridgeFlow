@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.5 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.6 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -585,6 +585,34 @@
             const doc = win?.document ?? null;
             const out = [];
             const active = this.wordCite.tracker.getActiveSession();
+            const clean = term.trim().toLowerCase();
+            if (active && active.itemCitations.size > 0 && !clean.startsWith(">")) {
+              const ordMatch = clean.match(/^(?:#|\[)(\d+)\]?$/);
+              const targetOrd = ordMatch ? Number(ordMatch[1]) : 0;
+              if (targetOrd > 0 || clean.length >= 2) {
+                const hostItems = globalThis.Zotero?.Items;
+                const sorted = [...active.itemCitations.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
+                for (const [itemID, info] of sorted) {
+                  const it = hostItems?.get?.(itemID);
+                  const fields = it ? getCachedPrimaryItemFields(it) : null;
+                  const title = fields?.title || info.shortText || `Item #${itemID}`;
+                  const sub = [fields?.creatorYear, fields?.source, active.displayName].filter(Boolean).join(" · ");
+                  const match = targetOrd > 0 ? info.ordinal === targetOrd : `${title} ${sub} [${info.ordinal}]`.toLowerCase().includes(clean);
+                  if (!match) continue;
+                  out.push({
+                    id: `word-cited:${itemID}`,
+                    category: "citation",
+                    title,
+                    subtitle: sub || active.displayName,
+                    badge: `Word [${info.ordinal}]`,
+                    action: () => {
+                      void this.workspace.focusOrOpenItem({ itemID, preferExistingTab: true }, win);
+                    }
+                  });
+                  if (out.length >= 8) break;
+                }
+              }
+            }
             for (const ses of this.wordCite.tracker.getAllSessions()) {
               if (!ses.orphans.length) continue;
               const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(" ") + (ses.orphans.length > 4 ? "…" : "");
@@ -872,14 +900,18 @@
         }
       });
       this.disposeStoreListener = this.workspace.store.onChange((change) => {
-        if (!this.active || change === "session") return;
+        if (!this.active || change === "session" || change === "layout") return;
         if (change === "reading") {
           this.visualNotes.refreshLibraryViews(void 0, true);
           return;
         }
-        if (change === "notes-local-clear" || change === "import") this.seedRemarks();
-        else this.syncChangedRemarksToExtra();
-        this.visualNotes.refreshLibraryViews();
+        if (change === "notes-local-clear" || change === "import") {
+          this.seedRemarks();
+          this.visualNotes.refreshLibraryViews();
+          return;
+        }
+        const affected = this.syncChangedRemarksToExtra();
+        if (affected.size > 0) this.visualNotes.refreshLibraryViews(affected);
       });
     }
     stop() {
@@ -904,18 +936,21 @@
       for (const k of this.prevRemarks.keys()) {
         if (!(k in current)) changedKeys.push({ key: k, value: "" });
       }
-      if (!changedKeys.length) return;
+      const affected = /* @__PURE__ */ new Set();
+      if (!changedKeys.length) return affected;
       this.seedRemarks();
-      if (!this.kernel.prefs.get("workspace.syncRemarkToExtra")) return;
+      const syncExtra = this.kernel.prefs.get("workspace.syncRemarkToExtra");
       for (const entry of changedKeys) {
         const vm = this.workspace.store.state.virtualMembers[entry.key];
         const match = entry.key.match(/^item:(\d+)$/);
         const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
         if (itemID > 0) {
-          void syncItemRemarkToExtra(itemID, entry.value).catch(() => {
+          affected.add(itemID);
+          if (syncExtra) void syncItemRemarkToExtra(itemID, entry.value).catch(() => {
           });
         }
       }
+      return affected;
     }
   };
 
@@ -1342,9 +1377,11 @@
     timers = /* @__PURE__ */ new Map();
     running = /* @__PURE__ */ new Set();
     dirty = /* @__PURE__ */ new Set();
+    lastAppliedSig = /* @__PURE__ */ new WeakMap();
     setTarget(key, spec) {
       if (!spec) this.targets.delete(key);
       else this.targets.set(key, { key, ...spec });
+      for (const owner of this.observers.keys()) this.lastAppliedSig.delete(owner);
     }
     pruneDisconnected() {
       for (const [owner, obs] of this.observers.entries()) {
@@ -1382,9 +1419,15 @@
       }
       this.queue(owner);
     }
+    computeOwnerSig(owner) {
+      const paneIDs = this.getPaneIDs(owner);
+      const targetSig = Array.from(this.targets.values()).map((s) => `${s.sectionID}@${s.getPosition()}:${s.anchorAfterSectionID || ""}`).join(",");
+      return `${paneIDs.join(",")}|${targetSig}`;
+    }
     queueAll() {
       this.pruneDisconnected();
       for (const owner of this.observers.keys()) {
+        this.lastAppliedSig.delete(owner);
         this.queue(owner);
       }
     }
@@ -1392,6 +1435,9 @@
       if (!owner?.getPanes || this.timers.has(owner)) return;
       if (this.running.has(owner)) {
         this.dirty.add(owner);
+        return;
+      }
+      if (!owner.skipRender && !owner.querySelector?.("[data-ztf-pdf-full-section]") && this.lastAppliedSig.get(owner) === this.computeOwnerSig(owner)) {
         return;
       }
       const timer = setTimeout(() => {
@@ -1453,6 +1499,7 @@
         if (currentIndex < 0 || targetIndex < 0 || currentIndex + 1 === targetIndex) continue;
         await this.reorderPane(owner, id, next, targetIndex);
       }
+      this.lastAppliedSig.set(owner, this.computeOwnerSig(owner));
     }
     getPaneIDs(owner) {
       return owner.getPanes().flatMap((pane) => pane.dataset.pane ? [pane.dataset.pane] : []);
@@ -2379,6 +2426,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
             generation: 0,
             failed: false,
             lastHTML: "",
+            renderedSig: "",
+            lastChangeAt: 0,
             inFlightSig: "",
             inFlight: null,
             payload: null,
@@ -2430,22 +2479,28 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const st = this.states.get(body);
       if (!st) return;
       const runSig = `${st.itemsSig}|${this.kernel.prefs.get("inspector.cslPreview.citationstyle")}|${this.kernel.prefs.get("inspector.cslPreview.whatToShow")}|${this.kernel.prefs.get("inspector.cslPreview.fontsize")}|${this.kernel.prefs.get("inspector.cslPreview.spacing")}`;
+      if (!force && !st.failed && st.renderedSig === runSig && st.lastHTML) return;
       if (!force && st.inFlight && st.inFlightSig === runSig) return st.inFlight;
       const gen = ++st.generation;
       if (!st.items.length) {
         st.payload = null;
+        st.renderedSig = runSig;
         this.renderMessage(st, "zbf-preview-select-items", "请选择一个或多个条目以预览引用。");
         return;
       }
-      if (!st.payload && !st.lastHTML) {
-        this.renderMessage(st, "zbf-preview-loading", "正在生成预览…");
-      }
+      const mode = String(this.kernel.prefs.get("inspector.cslPreview.whatToShow") || "zpboth");
+      const wantBib = mode !== "zpcite" && mode !== "zpintext";
+      const wantCite = mode !== "zpbib";
+      const isCacheHit = (!wantBib || Boolean(this.services.csl.peekCached(st.items, { asCitation: false }))) && (!wantCite || Boolean(this.services.csl.peekCached(st.items, { asCitation: true })));
+      if (!st.payload && !st.lastHTML) this.renderMessage(st, "zbf-preview-loading", "正在生成预览…");
+      const scrubDelay = !force && !isCacheHit && st.lastChangeAt > 0 && Date.now() - st.lastChangeAt < 120 ? 42 : 0;
       let task = null;
       task = (async () => {
         try {
-          const mode = String(this.kernel.prefs.get("inspector.cslPreview.whatToShow") || "zpboth");
-          const wantBib = mode !== "zpcite" && mode !== "zpintext";
-          const wantCite = mode !== "zpbib";
+          if (scrubDelay > 0) {
+            await new Promise((r) => setTimeout(r, scrubDelay));
+            if (gen !== st.generation || st.body.isConnected === false) return;
+          }
           const [bibRes, citeRes] = await Promise.all([
             wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
             wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null)
@@ -2456,11 +2511,13 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
           if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
           st.payload = payload;
           st.failed = false;
+          st.renderedSig = runSig;
           this.renderPayload(st, payload);
         } catch (error) {
           if (gen !== st.generation || st.body.isConnected === false) return;
           st.payload = null;
           st.failed = true;
+          st.renderedSig = "";
           const code = error?.previewCode || "";
           const [id, fallback] = ERROR_L10N[code] || ["zbf-preview-unavailable", "预览不可用，请检查引用样式后重试。"];
           const detail = code ? "" : error instanceof Error ? error.message : String(error || "");
@@ -2476,9 +2533,24 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       st.inFlightSig = runSig;
       return task;
     }
+    async refreshModifiedItems(itemIDs) {
+      if (!itemIDs.length) {
+        await this.refreshAll();
+        return;
+      }
+      const idSet = new Set(itemIDs);
+      for (const [body, st] of this.states.entries()) {
+        if (!st.items.some((it) => idSet.has(Number(it?.id || 0)))) continue;
+        st.itemsSig = "";
+        st.renderedSig = "";
+        this.updateItems(st, st.items[0]);
+        await this.renderState(body, true);
+      }
+    }
     async refreshAll() {
       for (const [body, st] of this.states.entries()) {
         st.itemsSig = "";
+        st.renderedSig = "";
         this.updateItems(st, st.items[0]);
         await this.renderState(body, true);
       }
@@ -2497,17 +2569,19 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const paneSel = !isReader ? st.doc.defaultView?.ZoteroPane?.getSelectedItems?.() || globalThis.Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [] : [];
       const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || s?.id && s.id === item?.id));
       const selected = useMulti ? paneSel : item ? [item] : paneSel;
-      const { items } = deduplicateRegularItems(selected, maxItems);
+      const { items, truncated } = deduplicateRegularItems(selected, maxItems);
       const nextSig = items.map((it) => `${it?.id ?? ""}:${it?.version ?? it?.dateModified ?? ""}`).join("|");
       if (nextSig !== st.itemsSig) {
         st.itemsSig = nextSig;
+        st.renderedSig = "";
+        st.lastChangeAt = Date.now();
         st.generation++;
         st.inFlight = null;
         st.inFlightSig = "";
         st.payload = null;
       }
       st.items = items;
-      st.omitted = Math.max(0, deduplicateRegularItems(selected, 1e4).items.length - items.length);
+      st.omitted = truncated ? Math.max(0, deduplicateRegularItems(selected, 1e4).items.length - items.length) : 0;
       const enabled = items.length > 0;
       (setEnabled || st.setEnabled)?.(enabled);
       return enabled;
@@ -2609,10 +2683,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       status.textContent = "复制不可用，请尝试 Zotero 快捷键或重新选择条目。";
     }
     showCopyFeedback(st, button) {
-      for (const timer of st.copyFeedback.get(button) || []) {
-        clearTimeout(timer);
-        st.feedbackTimers.delete(timer);
-      }
+      for (const timer of st.feedbackTimers) clearTimeout(timer);
       button.classList.add("zotero-preview-copy-success");
       this.replaceButtonSvg(st.doc, button, SUCCESS_ICON_SVG);
       const scaleTimer = setTimeout(() => {
@@ -2630,11 +2701,8 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
     }
     replaceButtonSvg(doc, button, svgMarkup) {
       const Parser = doc.defaultView?.DOMParser || globalThis.DOMParser;
-      if (!Parser) return;
-      const parsed = new Parser().parseFromString(svgMarkup, "text/html");
-      if (parsed?.body?.firstChild) {
-        button.replaceChildren(doc.importNode(parsed.body.firstChild, true));
-      }
+      const parsed = Parser ? new Parser().parseFromString(svgMarkup, "text/html") : null;
+      if (parsed?.body?.firstChild) button.replaceChildren(doc.importNode(parsed.body.firstChild, true));
     }
     setHTML(st, html) {
       if (st.body.isConnected === false) return;
@@ -2646,9 +2714,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
       const parsed = new Parser().parseFromString(html, "text/html");
       if (!parsed?.body) return;
-      st.body.replaceChildren(
-        ...Array.from(parsed.body.childNodes).map((node) => st.doc.importNode(node, true))
-      );
+      st.body.replaceChildren(...Array.from(parsed.body.childNodes).map((n) => st.doc.importNode(n, true)));
     }
     clearTimers(st) {
       for (const timer of st.feedbackTimers) clearTimeout(timer);
@@ -5682,7 +5748,8 @@ item-details:not([pinnedPane]:not([pinnedPane=""])) .zotero-view-item:has(> :nth
 	line-height: 1.3; font-variant-numeric: tabular-nums; vertical-align: baseline;
 	background: var(--zbf-wc-well-soft); color: var(--zbf-wc-fg-muted);
 }
-.zbf-wc-ord-badge.is-cited { background: light-dark(#fdecef, rgba(244, 63, 94, 0.22)); color: light-dark(#b4232f, #fda4af); }
+.zbf-wc-ord-badge.is-cited { background: light-dark(#fdecef, rgba(244, 63, 94, 0.22)); color: light-dark(#b4232f, #fda4af); cursor: pointer; transition: filter 120ms ease; }
+.zbf-wc-ord-badge.is-cited:hover { filter: brightness(0.95); }
 .zbf-wc-cite-sub { font-size: 10.5px; color: var(--zbf-wc-fg-sec); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zbf-wc-synergy {
 	display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;
@@ -6395,12 +6462,19 @@ ${REMINDERS_CARD_CSS}`;
     st.citedLblEl.textContent = vm.statStrip.citedLabel;
     st.citedCell.classList.toggle("is-interactive", vm.showCollectionButton);
     st.citedCell.title = vm.showCollectionButton ? vm.colButtonTitle : vm.statStrip.tooltip;
+    st.citedCell.tabIndex = vm.showCollectionButton ? 0 : -1;
+    if (vm.showCollectionButton) st.citedCell.setAttribute?.("role", "button");
+    else st.citedCell.removeAttribute?.("role");
     st.inTextValEl.textContent = vm.statStrip.inTextValue;
     st.inTextLblEl.textContent = vm.statStrip.inTextLabel;
     st.orphanValEl.textContent = vm.statStrip.orphanValue;
     st.orphanLblEl.textContent = vm.statStrip.orphanLabel;
     st.orphanCell.classList.toggle("is-warn", vm.statStrip.orphanWarn);
-    st.orphanCell.classList.toggle("is-interactive", vm.statStrip.orphanWarn && vm.orphanCard.visible);
+    const orphanInteractive = vm.statStrip.orphanWarn && vm.orphanCard.visible;
+    st.orphanCell.classList.toggle("is-interactive", orphanInteractive);
+    st.orphanCell.tabIndex = orphanInteractive ? 0 : -1;
+    if (orphanInteractive) st.orphanCell.setAttribute?.("role", "button");
+    else st.orphanCell.removeAttribute?.("role");
     st.citeCard.classList.toggle("is-live", vm.hasWordSession);
     st.citeKickerEl.textContent = vm.currentCite.kicker;
     st.citeFreqEl.hidden = !vm.currentCite.freqText;
@@ -6409,6 +6483,14 @@ ${REMINDERS_CARD_CSS}`;
     st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
     st.ordBadgeEl.textContent = vm.currentCite.badgeText;
     st.ordBadgeEl.classList.toggle("is-cited", vm.currentCite.badgeCited);
+    st.ordBadgeEl.tabIndex = vm.currentCite.badgeCited ? 0 : -1;
+    if (vm.currentCite.badgeCited) {
+      st.ordBadgeEl.setAttribute?.("role", "button");
+      st.ordBadgeEl.title = vm.zh ? `点击复制引文标号 ${vm.currentCite.badgeText}` : `Copy citation marker ${vm.currentCite.badgeText}`;
+    } else {
+      st.ordBadgeEl.removeAttribute?.("role");
+      st.ordBadgeEl.removeAttribute?.("title");
+    }
     st.citeTitleEl.textContent = vm.currentCite.title;
     st.citeTitleEl.title = vm.currentCite.tooltip;
     st.citeSubEl.hidden = !vm.currentCite.submeta;
@@ -6471,7 +6553,10 @@ ${REMINDERS_CARD_CSS}`;
         this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("notifier:event", (ev) => {
-        if (ev.type === "item") this.renderAllBodies();
+        if (ev.type !== "item") return;
+        const numIDs = ev.ids.map((v) => Number(v)).filter((n) => n > 0);
+        const relevant = !numIDs.length || numIDs.some((id) => this.snapshot?.byItemID.has(id) || [...this.states.values()].some((st) => st.lastItemIDs.includes(id) || Number(st.activeItem?.id || 0) === id));
+        if (relevant) this.renderAllBodies();
       }));
       this.disposables.add(this.kernel.bus.on("word:insert-result", (res) => this.finishRequest(res.requestId, formatInsertReceipt(res, isChineseLocale()))));
       this.disposables.add(this.kernel.bus.on("word:refresh-result", (res) => this.finishRequest(res.requestId, formatRefreshReceipt(res, isChineseLocale()))));
@@ -6489,9 +6574,7 @@ ${REMINDERS_CARD_CSS}`;
         onDestroy: ({ doc, body }) => this.onDestroy(doc || body.ownerDocument, body),
         onItemChange: ({ body, item, setEnabled, setSectionSummary }) => {
           const isSticky = Boolean(this.receipt.stickyUntil && Date.now() < this.receipt.stickyUntil);
-          if (this.states.get(body) === this.receiptOwner && !this.pendingRequest && !isSticky) {
-            this.receipt = { text: "", tone: "none" };
-          }
+          if (this.states.get(body) === this.receiptOwner && !this.pendingRequest && !isSticky) this.receipt = { text: "", tone: "none" };
           this.updateState(body, item, setEnabled, setSectionSummary);
           this.services.panePositions.observeAndQueue(body);
           return this.isSectionEnabled() && (Boolean(item) || Boolean(this.snapshot?.activeSessionID) || Boolean(this.snapshot?.orphans?.length));
@@ -6508,10 +6591,7 @@ ${REMINDERS_CARD_CSS}`;
       });
       this.unregisterFn = reg.dispose;
       if (reg.sectionID) {
-        this.services.panePositions.setTarget("word-cite", {
-          sectionID: reg.sectionID,
-          getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.wordCite.position"), "zotero-editpane-related")
-        });
+        this.services.panePositions.setTarget("word-cite", { sectionID: reg.sectionID, getPosition: () => normalizePanePosition(this.kernel.prefs.get("inspector.wordCite.position"), "zotero-editpane-related") });
       }
       this.kernel.bus.emit("word:snapshot-query", { requester: "inspector" });
       this.kernel.bus.emit("workspace:groups-query", { requester: "inspector" });
@@ -6603,15 +6683,34 @@ ${REMINDERS_CARD_CSS}`;
       click(st.docSwitchBtn, () => this.cycleWordSession());
       click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? void 0, st));
       click(st.colBtn, () => this.kernel.bus.emit("word:select-collection-request", { sessionID: this.snapshot?.activeSessionID || void 0, win: win ?? void 0 }));
-      st.citedCell.addEventListener("click", () => {
+      const onActivate = (el, fn) => {
+        el.addEventListener("click", fn, { signal: controller.signal });
+        el.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault?.();
+            fn();
+          }
+        }, { signal: controller.signal });
+      };
+      onActivate(st.citedCell, () => {
         if (!st.colBtn.hidden) st.colBtn.click();
-      }, { signal: controller.signal });
-      st.orphanCell.addEventListener("click", () => {
-        if (!st.orphanRefs.box.hidden) {
-          this.orphanState.accordionOpen = true;
+      });
+      onActivate(st.orphanCell, () => {
+        if (st.orphanRefs.box.hidden) return;
+        this.orphanState.accordionOpen = true;
+        this.renderAllBodies();
+        st.orphanRefs.box.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+      });
+      onActivate(st.ordBadgeEl, () => {
+        const txt = st.ordBadgeEl.textContent?.trim();
+        if (!txt || !st.ordBadgeEl.classList.contains("is-cited")) return;
+        if (this.services.clipboard.writePayload("", txt, true)) {
+          const zh = isChineseLocale(st.root.ownerDocument);
+          this.receiptOwner = st;
+          this.receipt = { tone: "ok", text: zh ? `✓ 已复制引文标号 ${txt}` : `✓ Copied marker ${txt}`, stickyUntil: Date.now() + 3e3 };
           this.renderAllBodies();
         }
-      }, { signal: controller.signal });
+      });
       click(st.orphanRefs.accHeadBtn, () => {
         this.orphanState.accordionOpen = !this.orphanState.accordionOpen;
         this.renderAllBodies();
@@ -6670,11 +6769,7 @@ ${REMINDERS_CARD_CSS}`;
         return true;
       });
       this.receiptOwner = st;
-      this.receipt = {
-        tone: "ok",
-        text: zh ? "✓ 已定位到文献条目，可在「信息」页核对补全" : "✓ Located item; complete missing fields in Info pane",
-        stickyUntil: Date.now() + 4e3
-      };
+      this.receipt = { tone: "ok", text: zh ? "✓ 已定位到文献条目，可在「信息」页核对补全" : "✓ Located item; complete missing fields in Info pane", stickyUntil: Date.now() + 4e3 };
       this.renderAllBodies();
     }
     handleIgnoreReminder(rec, st, zh) {
@@ -6884,8 +6979,11 @@ ${REMINDERS_CARD_CSS}`;
         )
       );
       this.disposables.add(
-        this.kernel.notifier.subscribe(["item"], ({ event }) => {
-          if (this.active && event === "modify") void this.cslPreview.refreshAll();
+        this.kernel.notifier.subscribe(["item"], ({ event, ids }) => {
+          if (!this.active || event !== "modify") return;
+          const itemIDs = ids.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
+          if (itemIDs.length) this.services.csl.invalidateItems(itemIDs);
+          void this.cslPreview.refreshModifiedItems(itemIDs);
         })
       );
     }
@@ -7157,7 +7255,7 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-vc-snippet-txt { flex: 1 1 auto; min-width: 0; font-size: 11.5px; line-height: 1.42; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .zbf-vc-snippet-pg { flex: none; font-size: 10.5px; opacity: 0.65; font-variant-numeric: tabular-nums; }
 .zbf-vc-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 2px; border-top: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.16)); }
-.zbf-vc-btn { flex: 1 1 auto; height: 27px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.26)); background: light-dark(#ffffff, rgba(30,41,59,0.85)); color: inherit; font: 600 11.5px/1 inherit; cursor: pointer; white-space: nowrap; transition: background-color 0.14s, border-color 0.14s, transform 0.12s; }
+.zbf-vc-btn { flex: 1 1 auto; height: 27px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.26)); background: light-dark(#ffffff, rgba(30,41,59,0.85)); color: inherit; font-family: inherit; font-size: 11.5px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; transition: background-color 0.14s, border-color 0.14s, transform 0.12s; }
 .zbf-vc-btn:hover { border-color: light-dark(rgba(79,70,229,0.45), rgba(129,140,248,0.55)); background: light-dark(rgba(79,70,229,0.07), rgba(129,140,248,0.18)); }
 .zbf-vc-btn:active { transform: scale(0.97); }
 .zbf-vc-btn-primary { border: 0; background: linear-gradient(135deg, #0d9488, #2563eb); color: #ffffff; }
@@ -8612,7 +8710,7 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-status-pop-input { flex: 1 1 auto; min-width: 0; height: 27px; padding: 0 8px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.3)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: inherit; transition: border-color 0.14s, box-shadow 0.14s; }
 .zbf-status-pop-input:focus { outline: none; border-color: #4f46e5; box-shadow: 0 0 0 2px rgba(79,70,229,0.16); }
 .zbf-status-pop-color { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: transparent; cursor: pointer; flex: none; }
-.zbf-status-pop-add { height: 27px; padding: 0 9px; border-radius: 6px; border: 0; background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; font: 600 12px/1 inherit; cursor: pointer; flex: none; transition: filter 0.14s, transform 0.12s; }
+.zbf-status-pop-add { height: 27px; padding: 0 9px; border-radius: 6px; border: 0; background: linear-gradient(135deg, #4f46e5, #2563eb); color: #fff; font-family: inherit; font-size: 12px; font-weight: 600; line-height: 1; cursor: pointer; flex: none; transition: filter 0.14s, transform 0.12s; }
 .zbf-status-pop-add:hover { filter: brightness(1.08); }
 .zbf-status-pop-add:active { transform: scale(0.94); }
 @media (prefers-reduced-motion: reduce) { .zbf-status-pop { animation: none !important; } .zbf-status-pop-item, .zbf-rating-star, .zbf-status-pill { transition: none !important; } }
@@ -8678,6 +8776,7 @@ ${REMINDERS_CARD_CSS}`;
     activePopoverClosers.set(doc, { itemID: clickedID, close });
     const applyStatus = (tag, color) => {
       close();
+      const targetIDs = targets.map((t) => Number(t?.id || 0)).filter((n) => n > 0);
       void (async () => {
         try {
           for (const t of targets) {
@@ -8687,7 +8786,7 @@ ${REMINDERS_CARD_CSS}`;
             }
           }
         } finally {
-          onApplied();
+          onApplied(targetIDs);
         }
       })();
     };
@@ -9255,8 +9354,8 @@ ${REMINDERS_CARD_CSS}`;
       }
     }
   }
-  async function renderFallbackPdfJsCover(attachmentID, width, signal, doc, zoteroHost, knownPath) {
-    if (signal.aborted || !doc) return false;
+  async function renderFallbackPdfJsCover(attachmentID, width, signal, doc, zoteroHost, knownPath, knownSize) {
+    if (signal.aborted || !doc || typeof knownSize === "number" && knownSize > 80 * 1024 * 1024) return false;
     let loadingTask = null;
     let pdfDoc = null;
     let page = null;
@@ -9420,6 +9519,7 @@ ${REMINDERS_CARD_CSS}`;
       return {
         key: `${item.libraryID || 1}-${encodeURIComponent(String(item.key || attID))}-${width}`,
         path: pdfPath,
+        size: stat.size,
         stamp: JSON.stringify([stat.lastModified, stat.size])
       };
     } catch {
@@ -9559,7 +9659,7 @@ ${REMINDERS_CARD_CSS}`;
           const timer = setTimeout(() => timeoutCtrl.abort(), 15e3);
           try {
             const host2 = globalThis.Zotero;
-            const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host2, hint?.path);
+            const viaDirect = await renderFallbackPdfJsCover(attID, width, timeoutCtrl.signal, doc, host2, hint?.path, hint?.size);
             if (viaDirect) return viaDirect;
             return await renderAttachmentPreviewCover(attID, width, timeoutCtrl.signal, doc, host2, (s) => defaultScrollIdle.wait(s));
           } finally {
@@ -9786,7 +9886,7 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-matrix-mark { padding: 0 2px; border-radius: 2px; background: light-dark(#fef08a, rgba(250, 204, 21, 0.34)); color: inherit; font-weight: 600; }
 .zbf-matrix-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .zbf-matrix-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 500 12px/1.2 inherit; cursor: pointer; }
+.zbf-matrix-btn { padding: 5px 11px; border-radius: 6px; border: 1px solid light-dark(rgba(15,23,42,0.18), rgba(148,163,184,0.28)); background: light-dark(#f8fafc, #0f172a); color: inherit; font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2; cursor: pointer; }
 .zbf-matrix-btn:hover { background: light-dark(#e2e8f0, #334155); }
 .zbf-matrix-btn.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
 .zbf-matrix-btn.primary:hover { background: #1d4ed8; }
@@ -11290,7 +11390,7 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-notebook-title-wrap { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .zbf-notebook-title { font-size: 15.5px; font-weight: 650; letter-spacing: -0.01em; }
 .zbf-notebook-seg { display: inline-flex; padding: 3px; border-radius: 9px; background: light-dark(#f1f5f9, #1e293b); gap: 2px; }
-.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font: 500 12px/1.25 inherit; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
+.zbf-notebook-seg-btn { border: 0; border-radius: 6px; padding: 4px 11px; background: transparent; color: light-dark(#64748b, #94a3b8); font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.25; cursor: pointer; transition: background-color 0.14s, color 0.14s, box-shadow 0.14s; }
 .zbf-notebook-seg-btn:hover { color: light-dark(#0f172a, #f8fafc); }
 .zbf-notebook-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.08); }
 
@@ -11305,7 +11405,7 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-notebook-card { padding: 12px 14px; border-radius: 12px; background: light-dark(#ffffff, #162032); border: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.14)); box-shadow: 0 1px 2px rgba(15,23,42,0.025); display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.14s ease; }
 .zbf-notebook-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,0.05); }
 .zbf-notebook-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font: 600 13.2px/1.4 inherit; text-align: left; cursor: pointer; }
+.zbf-notebook-item-btn { display: inline-flex; align-items: flex-start; gap: 6px; border: 0; padding: 0; background: transparent; color: light-dark(#0f172a, #f1f5f9); font-family: inherit; font-size: 13.2px; font-weight: 600; line-height: 1.4; text-align: left; cursor: pointer; }
 .zbf-notebook-item-btn:hover { color: light-dark(#2563eb, #60a5fa); }
 .zbf-notebook-item-btn sub, .zbf-notebook-item-btn sup { font-size: 0.74em; line-height: 0; }
 .zbf-notebook-meta { font-size: 11.5px; color: light-dark(#94a3b8, #64748b); flex: none; white-space: nowrap; }
@@ -11317,7 +11417,7 @@ ${REMINDERS_CARD_CSS}`;
 
 .zbf-notebook-brief-row { display: flex; align-items: center; gap: 8px; }
 .zbf-notebook-brief-lbl { padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 600; background: light-dark(#dcfce7, rgba(34,197,94,0.18)); color: light-dark(#166534, #86efac); flex: none; }
-.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font: 12.2px/1.2 inherit; transition: border-color 0.14s, background-color 0.14s; }
+.zbf-notebook-brief-input { flex: 1 1 auto; height: 28px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.08), rgba(148,163,184,0.18)); background: light-dark(#f8fafc, #0f172a); color: inherit; font-family: inherit; font-size: 12.2px; line-height: 1.2; transition: border-color 0.14s, background-color 0.14s; }
 .zbf-notebook-brief-input:focus { outline: none; background: light-dark(#ffffff, #0f172a); border-color: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,0.12); }
 
 .zbf-notebook-note-box { padding: 8px 10px; border-radius: 8px; background: light-dark(#f8fafc, rgba(255,255,255,0.035)); border: 1px solid light-dark(rgba(15,23,42,0.06), rgba(148,163,184,0.12)); font-size: 12.2px; line-height: 1.52; color: light-dark(#334155, #cbd5e1); }
@@ -12918,6 +13018,63 @@ ${REMINDERS_CARD_CSS}`;
   }
 
   // src/domains/visual-notes/gallery-cover-hydrator.ts
+  var MAX_BLOB_COVER_URLS = 320;
+  var coverBlobPools = /* @__PURE__ */ new WeakMap();
+  function resolveCoverRenderSrc(doc, key, dataUrl) {
+    const win = doc.defaultView;
+    if (!win?.URL?.createObjectURL || typeof win.Blob !== "function" || typeof win.atob !== "function" || !dataUrl.startsWith("data:image/jpeg;base64,")) {
+      return dataUrl;
+    }
+    let pool = coverBlobPools.get(win);
+    if (!pool) {
+      pool = /* @__PURE__ */ new Map();
+      coverBlobPools.set(win, pool);
+      win.addEventListener?.("unload", () => {
+        for (const entry of pool.values()) {
+          try {
+            win.URL.revokeObjectURL(entry.blobUrl);
+          } catch {
+          }
+        }
+        pool.clear();
+      }, { once: true });
+    }
+    const hit = pool.get(key);
+    if (hit && hit.sourceUrl === dataUrl) {
+      pool.delete(key);
+      pool.set(key, hit);
+      return hit.blobUrl;
+    }
+    if (hit) {
+      try {
+        win.URL.revokeObjectURL(hit.blobUrl);
+      } catch {
+      }
+      pool.delete(key);
+    }
+    try {
+      const bin = win.atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blobUrl = win.URL.createObjectURL(new win.Blob([bytes], { type: "image/jpeg" }));
+      while (pool.size >= MAX_BLOB_COVER_URLS) {
+        const oldestKey = pool.keys().next().value;
+        if (!oldestKey) break;
+        const old = pool.get(oldestKey);
+        if (old) {
+          try {
+            win.URL.revokeObjectURL(old.blobUrl);
+          } catch {
+          }
+        }
+        pool.delete(oldestKey);
+      }
+      pool.set(key, { sourceUrl: dataUrl, blobUrl });
+      return blobUrl;
+    } catch {
+      return dataUrl;
+    }
+  }
   function createViewportCoverHydrator(viewport, doc) {
     const tasks = /* @__PURE__ */ new Map();
     const tracked = /* @__PURE__ */ new Set();
@@ -12965,7 +13122,7 @@ ${REMINDERS_CARD_CSS}`;
           startCard(card);
         }, { once: true });
         cover.prepend(img);
-        img.src = url;
+        img.src = resolveCoverRenderSrc(doc, String(attID), url);
       }).catch(() => {
         if (tasks.get(card) === ctrl) tasks.delete(card);
       });
@@ -13578,7 +13735,7 @@ ${REMINDERS_CARD_CSS}`;
               }).catch(() => false);
               if (ch) anyChanged = true;
             }
-            if (anyChanged) opts.onDropMutated();
+            if (anyChanged) opts.onDropMutated(targetIDs);
           })();
         });
         colEl.append(head, body);
@@ -13955,7 +14112,7 @@ ${REMINDERS_CARD_CSS}`;
               this.applyGallerySelection(st, nextSel, ev.shiftKey ? st.anchorItemID : nextID, true);
             },
             onRated: () => {
-              this.onMutated();
+              this.onMutated([c.itemID]);
               if (st.sortField === "rating" || st.mode === "board" && st.groupBy === "rating") this.renderPanel(st, true);
             }
           }),
@@ -13963,8 +14120,8 @@ ${REMINDERS_CARD_CSS}`;
             st.columnOrders.set(st.groupBy, nextKeys);
             this.renderPanel(st, true);
           },
-          onDropMutated: () => {
-            this.onMutated();
+          onDropMutated: (targetIDs) => {
+            this.onMutated(targetIDs);
             this.renderPanel(st, true);
           },
           onClearQuery: st.query ? () => {
@@ -14382,11 +14539,16 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
     callbacks;
     cachedColorRaw = "";
     cachedSemantics = parseColorSemantics(void 0);
+    cachedHeatColor = "#0d9488";
     annSummaryCache = /* @__PURE__ */ new Map();
     constructor(kernel, storeOrSource, callbacks) {
       this.kernel = kernel;
       this.callbacks = callbacks;
       this.dataSource = storeOrSource && "getReadingProgress" in storeOrSource ? storeOrSource : makeSourceFromStore(storeOrSource);
+      this.syncPrefs();
+    }
+    syncPrefs() {
+      this.cachedHeatColor = String(this.kernel?.prefs?.get?.("workspace.readingHeatmap.color") || "#0d9488");
     }
     setDataSource(source) {
       this.dataSource = source;
@@ -14395,6 +14557,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       return this.activeReadTime && this.registeredKeys.size > 0;
     }
     syncColumns() {
+      this.syncPrefs();
       const wantRead = Boolean(this.kernel.prefs.get("workspace.readingColumn.enable"));
       const wantAnn = Boolean(this.kernel.prefs.get("workspace.annotationColumn.enable"));
       if (wantRead !== this.activeReadTime || wantAnn !== this.activeAnnotations) {
@@ -14421,8 +14584,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
         if (targets.has(Number(k.split(":", 1)[0]))) this.annSummaryCache.delete(k);
       }
     }
-    refreshColumns() {
-      this.clearCache();
+    refreshColumns(itemIDs) {
+      this.clearCache(itemIDs);
       if (!this.activeReadTime && !this.activeAnnotations || !this.registeredKeys.size) return;
       try {
         globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -14521,7 +14684,7 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
             prog: item ? this.getReadProgressForItem(item) : void 0,
             className: column?.className,
             zh,
-            heatColor: String(this.kernel.prefs.get("workspace.readingHeatmap.color") || "#0d9488"),
+            heatColor: this.cachedHeatColor,
             callbacks: this.callbacks
           });
         }
@@ -14630,24 +14793,34 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
   }
   var StatusRatingColumnsController = class {
     registeredKeys = /* @__PURE__ */ new Set();
+    styledDocs = /* @__PURE__ */ new WeakSet();
     activeStatus = false;
     activeRating = false;
+    cachedExcludedTag = "/Citations";
+    cachedRatingStorage = "cache";
+    cachedSyncTagColor = false;
     kernel;
     onMutated;
     constructor(kernel, onMutated) {
       this.kernel = kernel;
       this.onMutated = onMutated;
+      this.refreshPrefs();
     }
     isZh() {
       return Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
     }
-    excludedTag() {
-      return String(this.kernel.prefs.get("wordCite.citationTags.text") || "/Citations");
+    refreshPrefs() {
+      this.cachedExcludedTag = String(this.kernel.prefs.get("wordCite.citationTags.text") || "/Citations");
+      this.cachedRatingStorage = normalizeRatingStorage(this.kernel.prefs.get("visualNotes.ratingStorage"));
+      this.cachedSyncTagColor = Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor"));
     }
-    ratingStorage() {
-      return normalizeRatingStorage(this.kernel.prefs.get("visualNotes.ratingStorage"));
+    ensureStyled(doc) {
+      if (this.styledDocs.has(doc)) return;
+      ensureStatusRatingStyle(doc);
+      if (doc.getElementById?.("zbf-status-rating-style")) this.styledDocs.add(doc);
     }
     syncColumns() {
+      this.refreshPrefs();
       const wantStatus = Boolean(this.kernel.prefs.get("visualNotes.statusColumn.enable"));
       const wantRating = Boolean(this.kernel.prefs.get("visualNotes.ratingColumn.enable"));
       if (wantStatus !== this.activeStatus || wantRating !== this.activeRating) {
@@ -14666,8 +14839,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
     clearCache(itemIDs) {
       clearStatusRatingCaches(itemIDs);
     }
-    refreshColumns() {
-      this.clearCache();
+    refreshColumns(itemIDs) {
+      this.clearCache(itemIDs);
       if (!this.activeStatus && !this.activeRating || !this.registeredKeys.size) return;
       try {
         globalThis.Zotero?.ItemTreeManager?.refreshColumns?.();
@@ -14681,15 +14854,15 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
       return { win, doc, item };
     }
     getStatusDisplay(item) {
-      return getItemStatus(item, this.excludedTag())?.label || "";
+      return getItemStatus(item, this.cachedExcludedTag)?.label || "";
     }
     getRatingDisplay(item) {
-      const r = getItemRating(item, this.ratingStorage());
+      const r = getItemRating(item, this.cachedRatingStorage);
       return r > 0 ? String(r) : "";
     }
-    notifyApplied = () => {
-      this.refreshColumns();
-      this.onMutated?.();
+    notifyApplied = (targetIDs) => {
+      this.refreshColumns(targetIDs);
+      this.onMutated?.(targetIDs);
     };
     registerStatusColumn() {
       const zh = this.isZh();
@@ -14706,11 +14879,11 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
         renderCell: (index, _data, column, _first, treeDoc) => {
           const { win, doc, item } = this.resolveRowContext(index, treeDoc);
           if (!doc) return {};
-          ensureStatusRatingStyle(doc);
+          this.ensureStyled(doc);
           const span = srHtmlEl(doc, "span");
           span.className = `cell ${column?.className || ""} clickable zbf-status-cell`.trim();
           if (!item || typeof item.isRegularItem === "function" && !item.isRegularItem()) return span;
-          const current = getItemStatus(item, this.excludedTag());
+          const current = getItemStatus(item, this.cachedExcludedTag);
           const trigger = srHtmlEl(doc, "span");
           if (current) {
             trigger.className = "zbf-status-pill";
@@ -14737,8 +14910,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
                 clickedItem: item,
                 current,
                 zh,
-                excludedTag: this.excludedTag(),
-                syncZoteroTagColor: Boolean(this.kernel.prefs.get("visualNotes.statusSyncZoteroTagColor")),
+                excludedTag: this.cachedExcludedTag,
+                syncZoteroTagColor: this.cachedSyncTagColor,
                 onApplied: this.notifyApplied
               });
             }
@@ -14765,11 +14938,11 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
         renderCell: (index, _data, column, _first, treeDoc) => {
           const { win, doc, item } = this.resolveRowContext(index, treeDoc);
           if (!doc) return {};
-          ensureStatusRatingStyle(doc);
+          this.ensureStyled(doc);
           const span = srHtmlEl(doc, "span");
           span.className = `cell ${column?.className || ""} clickable zbf-rating-cell`.trim();
           if (!item || typeof item.isRegularItem === "function" && !item.isRegularItem()) return span;
-          let current = getItemRating(item, this.ratingStorage());
+          let current = getItemRating(item, this.cachedRatingStorage);
           const fit = srHtmlEl(doc, "span");
           fit.className = "zbf-sr-fit";
           const wrap = srHtmlEl(doc, "span");
@@ -14788,50 +14961,57 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
               s.title = zh ? val === k ? `点击清除 ${k} 星评级` : `设为 ${k} 星（支持多选批量打分）` : val === k ? `Clear ${k}-star rating` : `Rate ${k} stars (multi-select aware)`;
             });
           };
+          for (let k = 1; k <= 5; k++) {
+            const star = srHtmlEl(doc, "span");
+            star.className = "zbf-rating-star";
+            star.dataset.star = String(k);
+            star.textContent = "⭐";
+            starEls.push(star);
+            wrap.appendChild(star);
+          }
+          wrap.addEventListener("mouseover", (ev) => {
+            const k = Number(ev.target?.closest?.("[data-star]")?.getAttribute("data-star") || 0);
+            if (k >= 1 && k <= 5) {
+              wrap.setAttribute("data-hover", String(k));
+              if (current === k) wrap.setAttribute("data-clear-hint", "true");
+              else wrap.removeAttribute("data-clear-hint");
+            }
+          });
           wrap.addEventListener("mouseleave", () => {
             wrap.removeAttribute("data-hover");
             wrap.removeAttribute("data-clear-hint");
           });
-          for (let k = 1; k <= 5; k++) {
-            const star = srHtmlEl(doc, "span");
-            star.className = "zbf-rating-star";
-            star.textContent = "⭐";
-            star.addEventListener("mouseenter", () => {
-              wrap.setAttribute("data-hover", String(k));
-              if (current === k) wrap.setAttribute("data-clear-hint", "true");
-              else wrap.removeAttribute("data-clear-hint");
-            });
-            bindInstantCellPress(star, () => {
-              const selected = win?.ZoteroPane?.getSelectedItems?.() || [];
-              const targets = captureBatchTargets(selected, item);
-              const prev = current;
-              const next = current === k ? 0 : k;
-              current = next;
-              wrap.removeAttribute("data-hover");
-              wrap.removeAttribute("data-clear-hint");
-              syncVisual(next);
-              const storage = this.ratingStorage();
-              void (async () => {
-                let anySaved = false;
-                try {
-                  for (const t of targets) {
-                    try {
-                      if (await setItemRating(t, next, storage)) anySaved = true;
-                    } catch {
-                    }
+          bindInstantCellPress(wrap, (ev) => {
+            const k = Number(ev.target?.closest?.("[data-star]")?.getAttribute("data-star") || 0);
+            if (k < 1 || k > 5) return;
+            const selected = win?.ZoteroPane?.getSelectedItems?.() || [];
+            const targets = captureBatchTargets(selected, item);
+            const targetIDs = targets.map((t) => Number(t?.id || 0)).filter((n) => n > 0);
+            const prev = current;
+            const next = current === k ? 0 : k;
+            current = next;
+            wrap.removeAttribute("data-hover");
+            wrap.removeAttribute("data-clear-hint");
+            syncVisual(next);
+            const storage = this.cachedRatingStorage;
+            void (async () => {
+              let anySaved = false;
+              try {
+                for (const t of targets) {
+                  try {
+                    if (await setItemRating(t, next, storage)) anySaved = true;
+                  } catch {
                   }
-                } finally {
-                  if (!anySaved) {
-                    current = prev;
-                    syncVisual(prev);
-                  }
-                  this.notifyApplied();
                 }
-              })();
-            });
-            starEls.push(star);
-            wrap.appendChild(star);
-          }
+              } finally {
+                if (!anySaved) {
+                  current = prev;
+                  syncVisual(prev);
+                }
+                this.notifyApplied(targetIDs);
+              }
+            })();
+          });
           syncVisual(current);
           fit.appendChild(wrap);
           span.appendChild(fit);
@@ -14850,6 +15030,8 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
   var TITLE_TAG_DOTS_HIDE_CSS = "#zotero-items-pane .cell.primary .colored-tag-swatches { display: none !important; }";
   var MAX_GRADIENT_CACHE = 5e3;
   var heatmapGradientCache = /* @__PURE__ */ new Map();
+  var progressGradientMemo = /* @__PURE__ */ new WeakMap();
+  var progressSummaryMemo = /* @__PURE__ */ new WeakMap();
   function setGradientCache(key, value) {
     if (heatmapGradientCache.has(key)) heatmapGradientCache.delete(key);
     else if (heatmapGradientCache.size >= MAX_GRADIENT_CACHE) {
@@ -14858,34 +15040,16 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
     }
     heatmapGradientCache.set(key, value);
   }
-  var HEATMAP_CSS = `
-.virtualized-table .cell-text[data-zbf-heatmap="1"] {
-  border-radius: 4px;
-  padding-inline: 4px;
-  margin-inline: -4px;
-  background-repeat: no-repeat;
-  box-decoration-break: clone;
-  transition: filter 0.14s ease;
-}
-.virtualized-table .row:hover .cell-text[data-zbf-heatmap="1"] {
-  filter: saturate(1.12);
-}
-.virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"] {
-  --zbf-heat-rgb: 255, 255, 255 !important;
-}
-@media (prefers-reduced-motion: reduce) {
-  .virtualized-table .cell-text[data-zbf-heatmap="1"] { transition: none !important; }
-}
-`;
-  function formatTitleHeatmapTooltip(baseTitle, progress2, zh = true) {
-    if (!progress2) return baseTitle;
+  var HEATMAP_CSS = `.virtualized-table .cell-text[data-zbf-heatmap="1"]{border-radius:4px;padding-inline:4px;margin-inline:-4px;background-repeat:no-repeat;box-decoration-break:clone;transition:filter .14s ease}.virtualized-table .row:hover .cell-text[data-zbf-heatmap="1"]{filter:saturate(1.12)}.virtualized-table:focus-within .row.selected .cell-text[data-zbf-heatmap="1"]{--zbf-heat-rgb:255,255,255!important}@media (prefers-reduced-motion:reduce){.virtualized-table .cell-text[data-zbf-heatmap="1"]{transition:none!important}}`;
+  function resolveProgressTooltipSummary(progress2, zh) {
+    const memo = progressSummaryMemo.get(progress2);
+    const cached = zh ? memo?.zh : memo?.en;
+    if (cached !== void 0) return cached;
     const secs = Math.max(0, Math.floor(Number(progress2.readSeconds) || 0));
     const dur = secs < 60 ? secs > 0 ? `${secs}s` : "" : secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor(secs % 3600 / 60) || ""}m`;
-    let peakPage = 0;
-    let peakSec = 0;
+    let peakPage = 0, peakSec = 0;
     for (const [k, v] of Object.entries(progress2.pageSeconds || {})) {
-      const p = Number(k);
-      const s = Number(v);
+      const p = Number(k), s = Number(v);
       if (p > 0 && s > peakSec) {
         peakPage = p;
         peakSec = s;
@@ -14894,12 +15058,18 @@ ${zh ? "点击展开色彩分布、预览并跳转 PDF / 对比矩阵" : "Click 
     const parts = [];
     if (dur) parts.push(dur);
     if (progress2.lastPage) parts.push(progress2.totalPages ? `p.${progress2.lastPage}/${progress2.totalPages}` : `p.${progress2.lastPage}`);
-    if (peakPage > 0) {
-      const pDur = peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`;
-      parts.push(zh ? `峰值 p.${peakPage} (${pDur})` : `Peak p.${peakPage} (${pDur})`);
-    }
-    if (!parts.length) return baseTitle;
-    const summary = zh ? `阅读热图：${parts.join(" · ")}` : `Reading Heatmap: ${parts.join(" · ")}`;
+    if (peakPage > 0) parts.push(zh ? `峰值 p.${peakPage} (${peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`})` : `Peak p.${peakPage} (${peakSec < 60 ? `${peakSec}s` : `${Math.floor(peakSec / 60)}m`})`);
+    const summary = parts.length ? zh ? `阅读热图：${parts.join(" · ")}` : `Reading Heatmap: ${parts.join(" · ")}` : "";
+    const slot = memo || {};
+    if (zh) slot.zh = summary;
+    else slot.en = summary;
+    progressSummaryMemo.set(progress2, slot);
+    return summary;
+  }
+  function formatTitleHeatmapTooltip(baseTitle, progress2, zh = true) {
+    if (!progress2) return baseTitle;
+    const summary = resolveProgressTooltipSummary(progress2, zh);
+    if (!summary) return baseTitle;
     return baseTitle ? `${baseTitle}
 ${summary}` : summary;
   }
@@ -14919,20 +15089,34 @@ ${summary}` : summary;
     return `${(idx / total * 100).toFixed(2)}%`;
   }
   function buildTitleHeatmapGradient(progress2, options = {}) {
-    const rawTotal = Number(progress2?.totalPages || 0);
+    if (!progress2?.pageSeconds) return "";
+    const optKey = `${options.bucketCount ?? ""}|${options.color || ""}|${options.opacityPercent ?? ""}`;
+    let progMap = progressGradientMemo.get(progress2);
+    const memoHit = progMap?.get(optKey);
+    if (memoHit !== void 0) return memoHit;
+    const rawTotal = Number(progress2.totalPages || 0);
     const bucketCount = options.bucketCount ?? (rawTotal > 0 && rawTotal < 16 ? rawTotal : 16);
-    const pageEntries = progress2?.pageSeconds ? Object.entries(progress2.pageSeconds) : [];
+    const pageEntries = Object.entries(progress2.pageSeconds);
     if (!pageEntries.length) return "";
-    const cacheKey = `${Number(progress2?.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ""}|${options.opacityPercent ?? ""}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(",")}`;
+    const rememberProgress = (val) => {
+      if (!progMap) {
+        progMap = /* @__PURE__ */ new Map();
+        progressGradientMemo.set(progress2, progMap);
+      }
+      progMap.set(optKey, val);
+    };
+    const cacheKey = `${Number(progress2.readSeconds || 0)}|${rawTotal}|${bucketCount}|${options.color || ""}|${options.opacityPercent ?? ""}|${pageEntries.map(([p, s]) => `${p}:${s}`).join(",")}`;
     const cached = heatmapGradientCache.get(cacheKey);
     if (cached !== void 0) {
       heatmapGradientCache.delete(cacheKey);
       heatmapGradientCache.set(cacheKey, cached);
+      rememberProgress(cached);
       return cached;
     }
     const buckets = buildReadingHeatmapBuckets(progress2, bucketCount);
     if (!buckets.length || !buckets.some((v) => v > 0)) {
       setGradientCache(cacheKey, "");
+      rememberProgress("");
       return "";
     }
     const rgb = hexToRgbTuple(options.color);
@@ -14952,6 +15136,7 @@ ${summary}` : summary;
     }
     const out = `linear-gradient(to right, ${stops.join(", ")})`;
     setGradientCache(cacheKey, out);
+    rememberProgress(out);
     return out;
   }
   function findCellText(cell) {
@@ -14993,7 +15178,7 @@ ${summary}` : summary;
       const zh = Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
       const baseTitle = String(textEl.textContent || "").trim();
       const tip = formatTitleHeatmapTooltip(baseTitle, progress2, zh);
-      if (tip) {
+      if (tip && textEl.getAttribute?.("title") !== tip) {
         textEl.setAttribute("title", tip);
         textEl.setAttribute("data-zbf-heatmap-title", "1");
       }
@@ -15006,14 +15191,19 @@ ${summary}` : summary;
     windows = /* @__PURE__ */ new Set();
     disposers = /* @__PURE__ */ new Map();
     pollTimers = /* @__PURE__ */ new Map();
+    cachedEnabled = false;
+    cachedOptions = { color: "#0d9488", opacityPercent: 42 };
     constructor(kernel, resolveProgress) {
       this.kernel = kernel;
       this.resolveProgress = resolveProgress;
+      this.refreshCachedPrefs();
+    }
+    refreshCachedPrefs() {
+      this.cachedEnabled = this.isEnabled();
+      this.cachedOptions = this.getOptions();
     }
     isEnabled() {
-      return Boolean(
-        this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.readingTitleHeatmap.enable")
-      );
+      return Boolean(this.kernel.prefs.get("modules.visualNotes.enable") && this.kernel.prefs.get("workspace.readingTitleHeatmap.enable"));
     }
     getOptions() {
       return {
@@ -15023,9 +15213,10 @@ ${summary}` : summary;
     }
     attachWindow(win) {
       if (!win) return;
+      this.refreshCachedPrefs();
       this.windows.add(win);
       this.syncTitleTagDotsStyle(win);
-      if (!this.isEnabled() || this.disposers.has(win) || this.pollTimers.has(win)) return;
+      if (!this.cachedEnabled || this.disposers.has(win) || this.pollTimers.has(win)) return;
       this.tryPatchWindow(win, 0);
     }
     detachWindow(win) {
@@ -15037,21 +15228,14 @@ ${summary}` : summary;
       this.clearWindowPatch(win);
     }
     sync(knownWindows) {
-      if (knownWindows) {
-        for (const win of knownWindows) this.windows.add(win);
-      }
+      this.refreshCachedPrefs();
+      if (knownWindows) for (const win of knownWindows) this.windows.add(win);
       for (const win of this.windows) this.syncTitleTagDotsStyle(win);
-      if (this.isEnabled()) {
-        for (const win of this.windows) {
-          if (!this.disposers.has(win) && !this.pollTimers.has(win)) {
-            this.tryPatchWindow(win, 0);
-          }
-        }
+      if (this.cachedEnabled) {
+        for (const win of this.windows) if (!this.disposers.has(win) && !this.pollTimers.has(win)) this.tryPatchWindow(win, 0);
         this.refreshWindows();
       } else {
-        for (const win of [...this.windows]) {
-          this.clearWindowPatch(win);
-        }
+        for (const win of [...this.windows]) this.clearWindowPatch(win);
       }
     }
     syncTitleTagDotsStyle(win) {
@@ -15130,30 +15314,24 @@ ${summary}` : summary;
     }
     tryPatchWindow(win, attempt) {
       this.pollTimers.delete(win);
-      if (win.closed || !this.windows.has(win) || !this.isEnabled() || this.disposers.has(win)) {
-        return;
-      }
+      if (win.closed || !this.windows.has(win) || !this.cachedEnabled || this.disposers.has(win)) return;
       const iv = win?.ZoteroPane?.itemsView;
       if (!iv || typeof iv._renderCell !== "function") {
-        if (attempt < 120) {
-          const timer = setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50);
-          this.pollTimers.set(win, timer);
-        }
+        if (attempt < 120) this.pollTimers.set(win, setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50));
         return;
       }
       this.ensureWindowStyles(win);
+      const ctrl = this;
       const resolveProgress = this.resolveProgress;
-      const isEnabled = () => this.isEnabled();
-      const getOptions = () => this.getOptions();
       const dispose = this.kernel.runtime.patch(iv, "_renderCell", "itemsView", (orig) => function(...args) {
         const cell = orig.apply(this, args);
-        if (!isEnabled() || !cell) return cell;
+        if (!cell || !ctrl.cachedEnabled) return cell;
         const [index, , column] = args;
         if (column?.dataKey !== "title" && column?.primary !== true) return cell;
         const row = this.getRow?.(index) ?? this._rows?.[index];
         const item = row?.ref;
         if (item && typeof item.id === "number" && !item.deleted && (row?.isItem ?? true)) {
-          applyTitleHeatmapToCell(cell, resolveProgress(item), getOptions());
+          applyTitleHeatmapToCell(cell, resolveProgress(item), ctrl.cachedOptions);
         } else {
           clearTitleHeatmapFromCell(cell);
         }
@@ -15195,7 +15373,10 @@ ${summary}` : summary;
         onOpenMatrix: (win, title, itemIDs) => this.openMatrixModal(win, title, itemIDs),
         onOpenHub: (win) => this.openCollectionHub(win, "annotations")
       });
-      this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => this.galleryBoard.refreshWindows());
+      this.statusRatingColumns = new StatusRatingColumnsController(kernel, (ids) => {
+        clearGalleryCardCache(ids);
+        this.galleryBoard.refreshWindows();
+      });
       this.infoBriefNote = new InfoBriefNoteController(kernel, () => {
         this.remarkColumn.refresh();
         this.galleryBoard.refreshWindows();
@@ -15205,8 +15386,9 @@ ${summary}` : summary;
         kernel,
         getReadProgress: (item) => this.readingColumns.getReadProgressForItem(item),
         onOpenHub: (win) => this.openCollectionHub(win),
-        onMutated: () => {
-          this.statusRatingColumns.refreshColumns();
+        onMutated: (ids) => {
+          clearGalleryCardCache(ids);
+          this.statusRatingColumns.refreshColumns(ids);
           this.remarkColumn.refresh();
         }
       });
@@ -15292,11 +15474,13 @@ ${summary}` : summary;
             if (key === "inspector.annotations.popupLabelsEnable" || key === "inspector.annotations.colorLabels" || key === "inspector.annotations.enabledColors") {
               this.annotationTools.popupLabels.sync();
             }
-            if (key === "inspector.annotations.colorLabels") {
-              this.readingColumns.refreshColumns();
-            }
+            if (key === "inspector.annotations.colorLabels") this.readingColumns.refreshColumns();
+            if (key === "workspace.readingHeatmap.color") this.readingColumns.syncPrefs();
             if (key === "visualNotes.collectionHub.enable" && !this.kernel.prefs.get(key)) {
               for (const win of this.windows) closeHubPage(win);
+            }
+            if (key === "visualNotes.ratingStorage" || key === "wordCite.citationTags.text" || key === "visualNotes.statusSyncZoteroTagColor") {
+              this.statusRatingColumns.refreshPrefs();
             }
             if (key === "visualNotes.ratingStorage" || key === "wordCite.citationTags.text") {
               clearGalleryCardCache();
@@ -17886,6 +18070,7 @@ ${summary}` : summary;
     idleRounds = 0;
     emptyStreakBySession = /* @__PURE__ */ new Map();
     docPathBySession = /* @__PURE__ */ new Map();
+    lastWinProbeAt = /* @__PURE__ */ new Map();
     updating = /* @__PURE__ */ new WeakSet();
     pendingCmdDocHint = "";
     kernel;
@@ -17928,6 +18113,7 @@ ${summary}` : summary;
       this.pendingCmdDocHint = "";
       this.emptyStreakBySession.clear();
       this.docPathBySession.clear();
+      this.lastWinProbeAt.clear();
     }
     async notifyCommittedSession(session2) {
       return this.pollOnce(true, session2);
@@ -17937,7 +18123,10 @@ ${summary}` : summary;
       const integration = globalThis.Zotero?.Integration;
       if (!allowDuringExec && integration?.currentDoc) return false;
       const sessionsMap = integration?.sessions;
-      if (!sessionsMap && !committedSession) return false;
+      if (!sessionsMap && !committedSession) {
+        this.idleRounds = Math.min(20, this.idleRounds + 1);
+        return false;
+      }
       this.polling = true;
       const epoch = this.stopEpoch;
       try {
@@ -17981,13 +18170,14 @@ ${summary}` : summary;
         }
         for (const key of this.emptyStreakBySession.keys()) if (!activeIDs.has(key)) this.emptyStreakBySession.delete(key);
         for (const key of this.docPathBySession.keys()) if (!activeIDs.has(key)) this.docPathBySession.delete(key);
+        for (const key of this.lastWinProbeAt.keys()) if (!activeIDs.has(key)) this.lastWinProbeAt.delete(key);
         if (this.stopEpoch !== epoch || !allowDuringExec && (this.execDepth > 0 || integration?.currentDoc)) return false;
         const changed = this.tracker.syncSessions(rawSessions);
         if (changed) {
           this.idleRounds = 0;
           if (this.running) this.scheduleItemsViewRefresh();
         } else {
-          this.idleRounds = Math.min(10, this.idleRounds + 1);
+          this.idleRounds = Math.min(20, this.idleRounds + 1);
         }
         return changed;
       } finally {
@@ -18055,7 +18245,12 @@ ${summary}` : summary;
       }
       const cached = this.docPathBySession.get(sessionID);
       if (cached && !cached.startsWith("window-title:")) return cached;
+      const now = Date.now();
+      if (cached && cached.startsWith("window-title:") && this.idleRounds > 0 && now - (this.lastWinProbeAt.get(sessionID) ?? 0) < 15e3) {
+        return cached;
+      }
       if (this.win32 && totalSessions === 1) {
+        this.lastWinProbeAt.set(sessionID, now);
         const probed = this.win32.probeWordWindowTitles();
         const fg = probed.foregroundTitle ? extractDocumentBaseName(`window-title:${probed.foregroundTitle}`) : "";
         if (fg && fg !== "Untitled Word Document" && (totalSessions === 1 || !cached)) {
@@ -18151,7 +18346,8 @@ ${summary}` : summary;
     }
     scheduleNext() {
       if (!this.running) return;
-      const delay = this.idleRounds >= 10 ? 5e3 : this.idleRounds >= 4 ? 3e3 : 1200;
+      const hasSessions = this.tracker.getAllSessions().length > 0;
+      const delay = !hasSessions && this.idleRounds >= 6 ? 12e3 : this.idleRounds >= 10 ? 5e3 : this.idleRounds >= 4 ? 3e3 : 1200;
       this.timer = setTimeout(() => {
         this.timer = null;
         if (!this.running) return;
@@ -18519,19 +18715,21 @@ ${summary}` : summary;
         }
       }
       const nativeTabs = win.Zotero_Tabs?._tabs || [];
-      const viewedAt = (tab) => this.store.state.lastViewedAt[tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id] || 0;
+      const viewedAt = (tab) => this.store.state.lastViewedAt?.[tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id] || 0;
       const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;
       for (const tab of source) {
         if (tab.type === "library") continue;
         const key = tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id;
         const title = stripItemTitleMarkup(tab.title || "") || key;
-        const remark = this.prefs.get("workspace.enableTabRemarks") ? tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks[key] || "" : "";
-        if (needle && !(title + " " + remark).toLowerCase().includes(needle)) continue;
+        const remark = this.prefs.get("workspace.enableTabRemarks") ? tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks?.[key] || "" : "";
+        const vm = needle ? this.store.state.virtualMembers?.[key] : void 0;
+        const hay = `${title} ${remark} ${vm?.creatorYear || ""} ${vm?.shortTitle || ""} ${vm?.collection || ""}`;
+        if (needle && !hay.toLowerCase().includes(needle)) continue;
         results.push({
           id: "tab:" + key,
           category: "tab",
           title,
-          subtitle: remark,
+          subtitle: remark || vm?.creatorYear || "",
           action: () => {
             this.tabs.selectTab(win, tab.id);
           }
@@ -18539,6 +18737,34 @@ ${summary}` : summary;
         if (results.length === limit) return results;
       }
       if (!needle) return results;
+      if (this.prefs.get("workspace.enableVirtualMembers") && this.store.state.groups?.length && this.store.state.virtualMembers) {
+        const liveKeys = /* @__PURE__ */ new Set();
+        for (const tab of nativeTabs) {
+          if (tab.type !== "library") liveKeys.add(tab.data?.itemID ? "item:" + tab.data.itemID : "tab:" + tab.id);
+        }
+        for (const group2 of this.store.state.groups) {
+          for (const key of group2.memberKeys || []) {
+            if (liveKeys.has(key) || !key.startsWith("item:")) continue;
+            const vm = this.store.state.virtualMembers[key];
+            if (!vm) continue;
+            const vTitle = stripItemTitleMarkup(vm.title) || key;
+            const remark = this.prefs.get("workspace.enableTabRemarks") ? this.store.state.remarks?.[key] || "" : "";
+            const vHay = `${vTitle} ${vm.shortTitle || ""} ${vm.creatorYear || ""} ${vm.collection || ""} ${remark}`.toLowerCase();
+            if (!vHay.includes(needle)) continue;
+            results.push({
+              id: "vtab:" + key,
+              category: "tab",
+              title: vTitle,
+              subtitle: remark || vm.creatorYear || group2.name,
+              badge: "虚拟保留",
+              action: () => {
+                void this.tabs.openVirtualOrItem(win, vm.itemID, group2.id, false);
+              }
+            });
+            if (results.length === limit) return results;
+          }
+        }
+      }
       for (const group2 of this.store.state.groups) {
         if (!group2.name.toLowerCase().includes(needle)) continue;
         results.push({
@@ -19959,7 +20185,7 @@ ${summary}` : summary;
     async initDiskCache() {
       return hydrateWorkspaceDiskCaches(this);
     }
-    save(immediateDisk = false, change = "data") {
+    save(immediateDisk = false, change = "layout") {
       if (!this.readOnlyGuard) {
         const layout = this.legacyMigrationPending ? this.state : pickWorkspaceLayoutState(this.state);
         const serialized = JSON.stringify(layout);
@@ -19981,9 +20207,9 @@ ${summary}` : summary;
     }
     saveBriefNotes(immediateDisk = false) {
       this.notesCache.scheduleSave(this.state, immediateDisk);
-      this.emitChange();
+      this.emitChange("notes");
     }
-    emitChange(change = "data") {
+    emitChange(change = "layout") {
       for (const fn of this.listeners) {
         try {
           fn(change);
@@ -25643,7 +25869,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.8.5" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.6" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;
@@ -26253,9 +26479,21 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     prefs;
     constructor(prefs, options = {}) {
       this.prefs = prefs;
-      this.limit = options.limit ?? 64;
+      this.limit = options.limit ?? 256;
       this.byteLimit = options.byteLimit ?? 2 * 1024 * 1024;
-      this.ttlMs = options.ttlMs ?? 6e4;
+      this.ttlMs = options.ttlMs ?? 36e5;
+    }
+    peekCached(items, options = {}) {
+      if (!items.length) return null;
+      try {
+        const { format, styleID } = this.resolveFormatConfig(items[0], options.styleID);
+        const asCitation = Boolean(options.asCitation);
+        const locale = typeof format === "string" ? "" : format.locale || "";
+        const key = JSON.stringify([this.buildCacheKey(items, styleID, asCitation), locale]);
+        return this.getCached(key);
+      } catch {
+        return null;
+      }
     }
     resolveStyleID(overrideStyle) {
       const custom = (overrideStyle ?? this.prefs.get("inspector.cslPreview.citationstyle")).trim();

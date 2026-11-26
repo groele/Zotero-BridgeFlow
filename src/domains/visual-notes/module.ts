@@ -50,7 +50,10 @@ export class VisualNotesDomainModule implements DomainModule {
 			onOpenMatrix: (win, title, itemIDs) => this.openMatrixModal(win, title, itemIDs),
 			onOpenHub: (win) => this.openCollectionHub(win, 'annotations'),
 		});
-		this.statusRatingColumns = new StatusRatingColumnsController(kernel, () => this.galleryBoard.refreshWindows());
+		this.statusRatingColumns = new StatusRatingColumnsController(kernel, (ids) => {
+			clearGalleryCardCache(ids);
+			this.galleryBoard.refreshWindows();
+		});
 		this.infoBriefNote = new InfoBriefNoteController(kernel, () => {
 			this.remarkColumn.refresh();
 			this.galleryBoard.refreshWindows();
@@ -60,10 +63,7 @@ export class VisualNotesDomainModule implements DomainModule {
 			kernel,
 			getReadProgress: (item) => this.readingColumns.getReadProgressForItem(item),
 			onOpenHub: (win) => this.openCollectionHub(win),
-			onMutated: () => {
-				this.statusRatingColumns.refreshColumns();
-				this.remarkColumn.refresh();
-			},
+			onMutated: (ids) => { clearGalleryCardCache(ids); this.statusRatingColumns.refreshColumns(ids); this.remarkColumn.refresh(); },
 		});
 		this.annotationTools = new ReaderAnnotationTools(kernel);
 	}
@@ -135,11 +135,13 @@ export class VisualNotesDomainModule implements DomainModule {
 					if (key === 'inspector.annotations.popupLabelsEnable' || key === 'inspector.annotations.colorLabels' || key === 'inspector.annotations.enabledColors') {
 						this.annotationTools.popupLabels.sync();
 					}
-					if (key === 'inspector.annotations.colorLabels') {
-						this.readingColumns.refreshColumns();
-					}
+					if (key === 'inspector.annotations.colorLabels') this.readingColumns.refreshColumns();
+					if (key === 'workspace.readingHeatmap.color') this.readingColumns.syncPrefs();
 					if (key === 'visualNotes.collectionHub.enable' && !this.kernel.prefs.get(key)) {
 						for (const win of this.windows) closeHubPage(win);
+					}
+					if (key === 'visualNotes.ratingStorage' || key === 'wordCite.citationTags.text' || key === 'visualNotes.statusSyncZoteroTagColor') {
+						this.statusRatingColumns.refreshPrefs();
 					}
 					if (key === 'visualNotes.ratingStorage' || key === 'wordCite.citationTags.text') {
 						clearGalleryCardCache();

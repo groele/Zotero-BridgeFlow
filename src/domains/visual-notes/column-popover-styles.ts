@@ -97,7 +97,7 @@ export const VISUAL_COLUMN_CSS = `
 .zbf-vc-snippet-txt { flex: 1 1 auto; min-width: 0; font-size: 11.5px; line-height: 1.42; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .zbf-vc-snippet-pg { flex: none; font-size: 10.5px; opacity: 0.65; font-variant-numeric: tabular-nums; }
 .zbf-vc-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 2px; border-top: 1px solid light-dark(rgba(15,23,42,0.07), rgba(148,163,184,0.16)); }
-.zbf-vc-btn { flex: 1 1 auto; height: 27px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.26)); background: light-dark(#ffffff, rgba(30,41,59,0.85)); color: inherit; font: 600 11.5px/1 inherit; cursor: pointer; white-space: nowrap; transition: background-color 0.14s, border-color 0.14s, transform 0.12s; }
+.zbf-vc-btn { flex: 1 1 auto; height: 27px; padding: 0 9px; border-radius: 7px; border: 1px solid light-dark(rgba(15,23,42,0.12), rgba(148,163,184,0.26)); background: light-dark(#ffffff, rgba(30,41,59,0.85)); color: inherit; font-family: inherit; font-size: 11.5px; font-weight: 600; line-height: 1; cursor: pointer; white-space: nowrap; transition: background-color 0.14s, border-color 0.14s, transform 0.12s; }
 .zbf-vc-btn:hover { border-color: light-dark(rgba(79,70,229,0.45), rgba(129,140,248,0.55)); background: light-dark(rgba(79,70,229,0.07), rgba(129,140,248,0.18)); }
 .zbf-vc-btn:active { transform: scale(0.97); }
 .zbf-vc-btn-primary { border: 0; background: linear-gradient(135deg, #0d9488, #2563eb); color: #ffffff; }

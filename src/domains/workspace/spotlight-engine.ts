@@ -53,7 +53,7 @@ export class WorkspaceSpotlightEngine {
 		// visits virtual members and fetches library metadata for each window.
 		const nativeTabs: { id: string; type: string; title?: string; data?: { itemID?: number } }[] =
 			(win as any).Zotero_Tabs?._tabs || [];
-		const viewedAt = (tab: (typeof nativeTabs)[number]) => this.store.state.lastViewedAt[
+		const viewedAt = (tab: (typeof nativeTabs)[number]) => this.store.state.lastViewedAt?.[
 			tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id] || 0;
 		const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;
 		for (const tab of source) {
@@ -61,14 +61,36 @@ export class WorkspaceSpotlightEngine {
 			const key = tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id;
 			const title = stripItemTitleMarkup(tab.title || '') || key;
 			const remark = this.prefs.get('workspace.enableTabRemarks')
-				? (tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks[key] || '')
+				? (tab.data?.itemID ? this.store.getItemRemark(tab.data.itemID) : this.store.state.remarks?.[key] || '')
 				: '';
-			if (needle && !(title + ' ' + remark).toLowerCase().includes(needle)) continue;
-			results.push({ id: 'tab:' + key, category: 'tab', title, subtitle: remark,
+			const vm = needle ? this.store.state.virtualMembers?.[key] : undefined;
+			const hay = `${title} ${remark} ${vm?.creatorYear || ''} ${vm?.shortTitle || ''} ${vm?.collection || ''}`;
+			if (needle && !hay.toLowerCase().includes(needle)) continue;
+			results.push({ id: 'tab:' + key, category: 'tab', title, subtitle: remark || vm?.creatorYear || '',
 				action: () => { this.tabs.selectTab(win, tab.id); } });
 			if (results.length === limit) return results;
 		}
 		if (!needle) return results;
+		if (this.prefs.get('workspace.enableVirtualMembers') && this.store.state.groups?.length && this.store.state.virtualMembers) {
+			const liveKeys = new Set<string>();
+			for (const tab of nativeTabs) {
+				if (tab.type !== 'library') liveKeys.add(tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id);
+			}
+			for (const group of this.store.state.groups) {
+				for (const key of group.memberKeys || []) {
+					if (liveKeys.has(key) || !key.startsWith('item:')) continue;
+					const vm = this.store.state.virtualMembers[key];
+					if (!vm) continue;
+					const vTitle = stripItemTitleMarkup(vm.title) || key;
+					const remark = this.prefs.get('workspace.enableTabRemarks') ? (this.store.state.remarks?.[key] || '') : '';
+					const vHay = `${vTitle} ${vm.shortTitle || ''} ${vm.creatorYear || ''} ${vm.collection || ''} ${remark}`.toLowerCase();
+					if (!vHay.includes(needle)) continue;
+					results.push({ id: 'vtab:' + key, category: 'tab', title: vTitle, subtitle: remark || vm.creatorYear || group.name,
+						badge: '虚拟保留', action: () => { void this.tabs.openVirtualOrItem(win, vm.itemID, group.id, false); } });
+					if (results.length === limit) return results;
+				}
+			}
+		}
 		for (const group of this.store.state.groups) {
 			if (!group.name.toLowerCase().includes(needle)) continue;
 			results.push({ id: 'group:' + group.id, category: 'collection', title: group.name, badge: '分组',

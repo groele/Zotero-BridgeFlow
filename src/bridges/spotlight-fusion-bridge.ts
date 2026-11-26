@@ -4,6 +4,7 @@ import { DisposableStack } from '../kernel/disposable.ts';
 import { tLocale } from '../kernel/locale.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule, SpotlightItemResult } from '../kernel/types.ts';
+import { getCachedPrimaryItemFields } from '../services/item-resolution.ts';
 
 function matchesCmdQuery(rawTerm: string, title: string, subtitle: string, keywords: string): boolean {
 	const clean = rawTerm.replace(/^>\s*/, '').trim().toLowerCase();
@@ -42,6 +43,35 @@ export class SpotlightFusionBridge implements BridgeModule {
 					const doc = win?.document ?? null;
 					const out: SpotlightItemResult[] = [];
 					const active = this.wordCite.tracker.getActiveSession();
+
+					const clean = term.trim().toLowerCase();
+					if (active && active.itemCitations.size > 0 && !clean.startsWith('>')) {
+						const ordMatch = clean.match(/^(?:#|\[)(\d+)\]?$/);
+						const targetOrd = ordMatch ? Number(ordMatch[1]) : 0;
+						if (targetOrd > 0 || clean.length >= 2) {
+							const hostItems = (globalThis as any).Zotero?.Items;
+							const sorted = [...active.itemCitations.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
+							for (const [itemID, info] of sorted) {
+								const it = hostItems?.get?.(itemID);
+								const fields = it ? getCachedPrimaryItemFields(it) : null;
+								const title = fields?.title || info.shortText || `Item #${itemID}`;
+								const sub = [fields?.creatorYear, fields?.source, active.displayName].filter(Boolean).join(' · ');
+								const match = targetOrd > 0
+									? info.ordinal === targetOrd
+									: `${title} ${sub} [${info.ordinal}]`.toLowerCase().includes(clean);
+								if (!match) continue;
+								out.push({
+									id: `word-cited:${itemID}`,
+									category: 'citation',
+									title,
+									subtitle: sub || active.displayName,
+									badge: `Word [${info.ordinal}]`,
+									action: () => { void this.workspace.focusOrOpenItem({ itemID, preferExistingTab: true }, win); },
+								});
+								if (out.length >= 8) break;
+							}
+						}
+					}
 
 					for (const ses of this.wordCite.tracker.getAllSessions()) {
 						if (!ses.orphans.length) continue;

@@ -270,12 +270,19 @@ export function renderWordCitePanel(
 	st.citedLblEl.textContent = vm.statStrip.citedLabel;
 	st.citedCell.classList.toggle('is-interactive', vm.showCollectionButton);
 	st.citedCell.title = vm.showCollectionButton ? vm.colButtonTitle : vm.statStrip.tooltip;
+	st.citedCell.tabIndex = vm.showCollectionButton ? 0 : -1;
+	if (vm.showCollectionButton) st.citedCell.setAttribute?.('role', 'button');
+	else st.citedCell.removeAttribute?.('role');
 	st.inTextValEl.textContent = vm.statStrip.inTextValue;
 	st.inTextLblEl.textContent = vm.statStrip.inTextLabel;
 	st.orphanValEl.textContent = vm.statStrip.orphanValue;
 	st.orphanLblEl.textContent = vm.statStrip.orphanLabel;
 	st.orphanCell.classList.toggle('is-warn', vm.statStrip.orphanWarn);
-	st.orphanCell.classList.toggle('is-interactive', vm.statStrip.orphanWarn && vm.orphanCard.visible);
+	const orphanInteractive = vm.statStrip.orphanWarn && vm.orphanCard.visible;
+	st.orphanCell.classList.toggle('is-interactive', orphanInteractive);
+	st.orphanCell.tabIndex = orphanInteractive ? 0 : -1;
+	if (orphanInteractive) st.orphanCell.setAttribute?.('role', 'button');
+	else st.orphanCell.removeAttribute?.('role');
 
 	st.citeCard.classList.toggle('is-live', vm.hasWordSession);
 	st.citeKickerEl.textContent = vm.currentCite.kicker;
@@ -285,6 +292,14 @@ export function renderWordCitePanel(
 	st.ordBadgeEl.hidden = !vm.currentCite.badgeText;
 	st.ordBadgeEl.textContent = vm.currentCite.badgeText;
 	st.ordBadgeEl.classList.toggle('is-cited', vm.currentCite.badgeCited);
+	st.ordBadgeEl.tabIndex = vm.currentCite.badgeCited ? 0 : -1;
+	if (vm.currentCite.badgeCited) {
+		st.ordBadgeEl.setAttribute?.('role', 'button');
+		st.ordBadgeEl.title = vm.zh ? `点击复制引文标号 ${vm.currentCite.badgeText}` : `Copy citation marker ${vm.currentCite.badgeText}`;
+	} else {
+		st.ordBadgeEl.removeAttribute?.('role');
+		st.ordBadgeEl.removeAttribute?.('title');
+	}
 	st.citeTitleEl.textContent = vm.currentCite.title;
 	st.citeTitleEl.title = vm.currentCite.tooltip;
 	st.citeSubEl.hidden = !vm.currentCite.submeta;

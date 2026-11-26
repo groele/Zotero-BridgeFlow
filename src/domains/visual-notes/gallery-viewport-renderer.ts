@@ -44,7 +44,7 @@ export function renderGalleryViewport(opts: {
 	syncZoteroTagColor?: boolean;
 	makeCard: (card: GalleryCardModel, draggable: boolean, onDragStateChange?: (dragging: boolean) => void) => HTMLElement;
 	onColumnOrderChange?: (nextKeys: string[]) => void;
-	onDropMutated: () => void;
+	onDropMutated: (targetIDs?: readonly number[]) => void;
 	onClearQuery?: () => void;
 }): { viewport: HTMLElement; layout: GalleryVirtualLayoutController | null; activate: () => void; dispose: () => void } {
 	const { doc, zh, sorted } = opts;
@@ -182,7 +182,7 @@ export function renderGalleryViewport(opts: {
 						}).catch(() => false);
 						if (ch) anyChanged = true;
 					}
-					if (anyChanged) opts.onDropMutated();
+					if (anyChanged) opts.onDropMutated(targetIDs);
 				})();
 			});
 

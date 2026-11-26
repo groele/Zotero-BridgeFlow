@@ -14,7 +14,8 @@ interface PreviewBlockContent {
 
 interface PreviewPaneState {
 	body: HTMLElement; doc: Document; items: any[]; itemsSig: string; omitted: number; generation: number;
-	failed: boolean; lastHTML: string; inFlightSig: string; inFlight: Promise<void> | null;
+	failed: boolean; lastHTML: string; renderedSig: string; lastChangeAt: number;
+	inFlightSig: string; inFlight: Promise<void> | null;
 	payload: Partial<Record<'bibliography' | 'citation', PreviewBlockContent>> | null;
 	copyFeedback: Map<HTMLElement, ReturnType<typeof setTimeout>[]>;
 	feedbackTimers: Set<ReturnType<typeof setTimeout>>;
@@ -60,7 +61,8 @@ export class CslPreviewSectionController {
 				body.style.contain = 'content';
 				const st: PreviewPaneState = {
 					body, doc, items: [], itemsSig: '', omitted: 0, generation: 0, failed: false, lastHTML: '',
-					inFlightSig: '', inFlight: null, payload: null, copyFeedback: new Map(), feedbackTimers: new Set(), setEnabled,
+					renderedSig: '', lastChangeAt: 0, inFlightSig: '', inFlight: null, payload: null,
+					copyFeedback: new Map(), feedbackTimers: new Set(), setEnabled,
 				};
 				this.states.set(body, st);
 				this.bindBodyEvents(st);
@@ -103,39 +105,46 @@ export class CslPreviewSectionController {
 		const st = this.states.get(body);
 		if (!st) return;
 		const runSig = `${st.itemsSig}|${this.kernel.prefs.get('inspector.cslPreview.citationstyle')}|${this.kernel.prefs.get('inspector.cslPreview.whatToShow')}|${this.kernel.prefs.get('inspector.cslPreview.fontsize')}|${this.kernel.prefs.get('inspector.cslPreview.spacing')}`;
+		if (!force && !st.failed && st.renderedSig === runSig && st.lastHTML) return;
 		if (!force && st.inFlight && st.inFlightSig === runSig) return st.inFlight;
 		const gen = ++st.generation;
 		if (!st.items.length) {
 			st.payload = null;
+			st.renderedSig = runSig;
 			this.renderMessage(st, 'zbf-preview-select-items', '请选择一个或多个条目以预览引用。');
 			return;
 		}
-		if (!st.payload && !st.lastHTML) {
-			this.renderMessage(st, 'zbf-preview-loading', '正在生成预览…');
-		}
+		const mode = String(this.kernel.prefs.get('inspector.cslPreview.whatToShow') || 'zpboth');
+		const wantBib = mode !== 'zpcite' && mode !== 'zpintext';
+		const wantCite = mode !== 'zpbib';
+		const isCacheHit = (!wantBib || Boolean(this.services.csl.peekCached(st.items, { asCitation: false })))
+			&& (!wantCite || Boolean(this.services.csl.peekCached(st.items, { asCitation: true })));
+		if (!st.payload && !st.lastHTML) this.renderMessage(st, 'zbf-preview-loading', '正在生成预览…');
+		const scrubDelay = !force && !isCacheHit && st.lastChangeAt > 0 && Date.now() - st.lastChangeAt < 120 ? 42 : 0;
 		let task: Promise<void> | null = null;
 		task = (async () => {
 			try {
-				const mode = String(this.kernel.prefs.get('inspector.cslPreview.whatToShow') || 'zpboth');
-				const wantBib = mode !== 'zpcite' && mode !== 'zpintext';
-				const wantCite = mode !== 'zpbib';
-
+				if (scrubDelay > 0) {
+					await new Promise<void>((r) => setTimeout(r, scrubDelay));
+					if (gen !== st.generation || st.body.isConnected === false) return;
+				}
 				const [bibRes, citeRes] = await Promise.all([
 					wantBib ? this.services.csl.formatItems(st.items, { asCitation: false }) : Promise.resolve(null),
 					wantCite ? this.services.csl.formatItems(st.items, { asCitation: true }) : Promise.resolve(null),
 				]);
 				if (gen !== st.generation || st.body.isConnected === false) return;
-
 				const payload: Partial<Record<'bibliography' | 'citation', PreviewBlockContent>> = {};
 				if (bibRes && (bibRes.html || bibRes.text)) payload.bibliography = bibRes;
 				if (citeRes && (citeRes.html || citeRes.text)) payload.citation = citeRes;
 				st.payload = payload;
 				st.failed = false;
+				st.renderedSig = runSig;
 				this.renderPayload(st, payload);
 			} catch (error) {
 				if (gen !== st.generation || st.body.isConnected === false) return;
 				st.payload = null;
 				st.failed = true;
+				st.renderedSig = '';
 				const code = (error as { previewCode?: string })?.previewCode || '';
 				const [id, fallback] = ERROR_L10N[code] || ['zbf-preview-unavailable', '预览不可用，请检查引用样式后重试。'];
 				const detail = code ? '' : (error instanceof Error ? error.message : String(error || ''));
@@ -149,9 +158,22 @@ export class CslPreviewSectionController {
 		return task;
 	}
 
+	async refreshModifiedItems(itemIDs: readonly number[]): Promise<void> {
+		if (!itemIDs.length) { await this.refreshAll(); return; }
+		const idSet = new Set(itemIDs);
+		for (const [body, st] of this.states.entries()) {
+			if (!st.items.some((it) => idSet.has(Number(it?.id || 0)))) continue;
+			st.itemsSig = '';
+			st.renderedSig = '';
+			this.updateItems(st, st.items[0]);
+			await this.renderState(body, true);
+		}
+	}
+
 	async refreshAll(): Promise<void> {
 		for (const [body, st] of this.states.entries()) {
 			st.itemsSig = '';
+			st.renderedSig = '';
 			this.updateItems(st, st.items[0]);
 			await this.renderState(body, true);
 		}
@@ -174,17 +196,19 @@ export class CslPreviewSectionController {
 			: [];
 		const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || (s?.id && s.id === item?.id)));
 		const selected = useMulti ? paneSel : (item ? [item] : paneSel);
-		const { items } = deduplicateRegularItems(selected, maxItems);
+		const { items, truncated } = deduplicateRegularItems(selected, maxItems);
 		const nextSig = items.map((it) => `${it?.id ?? ''}:${it?.version ?? it?.dateModified ?? ''}`).join('|');
 		if (nextSig !== st.itemsSig) {
 			st.itemsSig = nextSig;
+			st.renderedSig = '';
+			st.lastChangeAt = Date.now();
 			st.generation++;
 			st.inFlight = null;
 			st.inFlightSig = '';
 			st.payload = null;
 		}
 		st.items = items;
-		st.omitted = Math.max(0, deduplicateRegularItems(selected, 10_000).items.length - items.length);
+		st.omitted = truncated ? Math.max(0, deduplicateRegularItems(selected, 10_000).items.length - items.length) : 0;
 		const enabled = items.length > 0;
 		(setEnabled || st.setEnabled)?.(enabled);
 		return enabled;
@@ -299,21 +323,11 @@ export class CslPreviewSectionController {
 	}
 
 	private showCopyFeedback(st: PreviewPaneState, button: HTMLElement): void {
-		for (const timer of st.copyFeedback.get(button) || []) {
-			clearTimeout(timer);
-			st.feedbackTimers.delete(timer);
-		}
+		for (const timer of st.feedbackTimers) clearTimeout(timer);
 		button.classList.add('zotero-preview-copy-success');
 		this.replaceButtonSvg(st.doc, button, SUCCESS_ICON_SVG);
-		const scaleTimer = setTimeout(() => {
-			st.feedbackTimers.delete(scaleTimer);
-			button.classList.remove('zotero-preview-copy-success');
-		}, 300);
-		const iconTimer = setTimeout(() => {
-			st.feedbackTimers.delete(iconTimer);
-			st.copyFeedback.delete(button);
-			this.replaceButtonSvg(st.doc, button, CLIPBOARD_ICON_SVG);
-		}, 1000);
+		const scaleTimer = setTimeout(() => { st.feedbackTimers.delete(scaleTimer); button.classList.remove('zotero-preview-copy-success'); }, 300);
+		const iconTimer = setTimeout(() => { st.feedbackTimers.delete(iconTimer); st.copyFeedback.delete(button); this.replaceButtonSvg(st.doc, button, CLIPBOARD_ICON_SVG); }, 1000);
 		st.feedbackTimers.add(scaleTimer);
 		st.feedbackTimers.add(iconTimer);
 		st.copyFeedback.set(button, [scaleTimer, iconTimer]);
@@ -321,31 +335,22 @@ export class CslPreviewSectionController {
 
 	private replaceButtonSvg(doc: Document, button: HTMLElement, svgMarkup: string): void {
 		const Parser = doc.defaultView?.DOMParser || globalThis.DOMParser;
-		if (!Parser) return;
-		const parsed = new Parser().parseFromString(svgMarkup, 'text/html');
-		if (parsed?.body?.firstChild) {
-			button.replaceChildren(doc.importNode(parsed.body.firstChild, true));
-		}
+		const parsed = Parser ? new Parser().parseFromString(svgMarkup, 'text/html') : null;
+		if (parsed?.body?.firstChild) button.replaceChildren(doc.importNode(parsed.body.firstChild, true));
 	}
 
 	private setHTML(st: PreviewPaneState, html: string): void {
 		if (st.body.isConnected === false) return;
 		this.clearTimers(st);
 		const Parser = st.doc.defaultView?.DOMParser || globalThis.DOMParser;
-		if (!Parser) {
-			st.body.textContent = html.replace(/<[^>]*>/g, '');
-			return;
-		}
+		if (!Parser) { st.body.textContent = html.replace(/<[^>]*>/g, ''); return; }
 		const parsed = new Parser().parseFromString(html, 'text/html');
 		if (!parsed?.body) return;
-		st.body.replaceChildren(
-			...(Array.from(parsed.body.childNodes) as Node[]).map((node) => st.doc.importNode(node, true)),
-		);
+		st.body.replaceChildren(...(Array.from(parsed.body.childNodes) as Node[]).map((n) => st.doc.importNode(n, true)));
 	}
 
 	private clearTimers(st: PreviewPaneState): void {
 		for (const timer of st.feedbackTimers) clearTimeout(timer);
-		st.feedbackTimers.clear();
-		st.copyFeedback.clear();
+		st.feedbackTimers.clear(); st.copyFeedback.clear();
 	}
 }
