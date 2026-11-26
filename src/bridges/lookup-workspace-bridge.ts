@@ -8,6 +8,7 @@ import type { BridgeModule } from '../kernel/types.ts';
  */
 export class LookupWorkspaceBridge implements BridgeModule {
 	public readonly id = 'lookup-workspace-bridge';
+	public readonly requires = ['workspace'] as const;
 	private readonly disposables = new DisposableStack();
 
 	private readonly kernel: PluginKernel;
@@ -22,11 +23,16 @@ export class LookupWorkspaceBridge implements BridgeModule {
 		this.disposables.reset();
 		this.disposables.add(
 			this.kernel.bus.on('workspace:open-item-request', async (req) => {
-				if (!this.workspace.isActive()) return;
-				await this.workspace.focusOrOpenItem({
+				const payload = {
 					...req,
 					preferExistingTab: req.preferExistingTab ?? this.kernel.prefs.get('fusion.lookupJumpExistingTab'),
-				});
+				};
+				const port = this.kernel.ports.get('workspace');
+				if (port) {
+					await port.focusOrOpenItem(payload);
+				} else if (this.workspace.isActive()) {
+					await this.workspace.focusOrOpenItem(payload);
+				}
 			}),
 		);
 	}

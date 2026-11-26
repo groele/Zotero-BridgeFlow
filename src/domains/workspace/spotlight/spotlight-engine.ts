@@ -1,3 +1,4 @@
+import type { CommandRegistry } from '../../../kernel/command-registry.ts';
 import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
 import type { Disposable, SpotlightItemResult, SpotlightProvider } from '../../../kernel/types.ts';
 import { stripItemTitleMarkup } from '../../../services/item-resolution.ts';
@@ -9,10 +10,12 @@ export class WorkspaceSpotlightEngine {
 	private readonly prefs: UnifiedPrefService;
 	private readonly store: WorkspaceStateStore;
 	private readonly tabs: WorkspaceTabController;
-	constructor(prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController) {
+	private readonly commands?: CommandRegistry;
+	constructor(prefs: UnifiedPrefService, store: WorkspaceStateStore, tabs: WorkspaceTabController, commands?: CommandRegistry) {
 		this.prefs = prefs;
 		this.store = store;
 		this.tabs = tabs;
+		this.commands = commands;
 	}
 
 	registerProvider(provider: SpotlightProvider): Disposable {
@@ -29,8 +32,20 @@ export class WorkspaceSpotlightEngine {
 		if (term.startsWith('>') && term !== '>tabs' && term !== '>recent') {
 			const command = term.slice(1).trim();
 			const results = this.filterBuiltInCommands(command, win);
+			const seen = new Set(results.map((r) => r.id));
+			for (const hit of this.commands?.query(command, win) ?? []) {
+				if (seen.has(hit.id)) continue;
+				seen.add(hit.id);
+				results.push(hit);
+			}
 			for (const provider of this.providers) {
-				try { results.push(...provider.query(command, win, 'commands').filter(hit => hit.category === 'command')); } catch { /* isolate providers */ }
+				try {
+					for (const hit of provider.query(command, win, 'commands')) {
+						if (hit.category !== 'command' || seen.has(hit.id)) continue;
+						seen.add(hit.id);
+						results.push(hit);
+					}
+				} catch { /* isolate providers */ }
 			}
 			return results.slice(0, maxRes);
 		}
@@ -121,9 +136,20 @@ export class WorkspaceSpotlightEngine {
 				} catch { /* isolate providers */ }
 			}
 			if (this.prefs.get('workspace.spotlightIncludeCommands')) {
+				const seen = new Set(results.map((r) => r.id));
 				for (const cmd of this.filterBuiltInCommands(needle, win)) {
+					if (seen.has(cmd.id)) continue;
+					seen.add(cmd.id);
 					results.push(cmd);
 					if (results.length === limit) break;
+				}
+				if (results.length < limit) {
+					for (const cmd of this.commands?.query(needle, win) ?? []) {
+						if (seen.has(cmd.id)) continue;
+						seen.add(cmd.id);
+						results.push(cmd);
+						if (results.length === limit) break;
+					}
 				}
 			}
 		}

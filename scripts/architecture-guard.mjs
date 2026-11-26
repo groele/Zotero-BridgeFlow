@@ -251,5 +251,49 @@ check('Explicit package module and TypeScript 6+ toolchain', () => {
 	if (pkg.type !== 'module' || Number.parseInt(pkg.devDependencies.typescript) < 6) throw Error('Unsupported build configuration');
 });
 
+// 15. Bridge isolation: forbid penetrating domain internal .store. / .tracker. or store imports
+check('Bridge isolation (no direct .store. / .tracker. penetration)', () => {
+	const violations = [];
+	const bridgeFiles = srcFiles.filter((f) => /[\\/]bridges[\\/]/.test(f));
+	for (const f of bridgeFiles) {
+		const txt = fs.readFileSync(f, 'utf8');
+		if (/\.store\.|\.tracker\.|domains\/[^'"]+\/store\//.test(txt)) {
+			violations.push(path.relative(root, f));
+		}
+	}
+	if (violations.length) throw new Error(`Bridge domain penetration found in: ${violations.join(', ')}`);
+});
+
+// 16. Host monkey-patch fence: runtime.patch must stay within src/services/host/ or Word IPC integration
+check('Host runtime.patch fence (host adapters & Word IPC only)', () => {
+	const violations = [];
+	for (const f of srcFiles) {
+		const rel = path.relative(path.join(root, 'src'), f).replace(/\\/g, '/');
+		if (rel.startsWith('services/host/') || rel.startsWith('domains/word-cite/ipc/')) continue;
+		const txt = fs.readFileSync(f, 'utf8');
+		if (/\bruntime\.patch\s*\(/.test(txt)) violations.push(rel);
+	}
+	if (violations.length) throw new Error(`Unfenced runtime.patch outside host adapters: ${violations.join(', ')}`);
+});
+
+// 17. EventBus closure: zero dead event definitions in BridgeFlowEventMap
+check('EventBus zero dead event definitions', () => {
+	const typesTxt = fs.readFileSync(path.join(root, 'src/kernel/types.ts'), 'utf8');
+	const mapMatch = typesTxt.match(/export interface BridgeFlowEventMap \{([\s\S]*?)\n\}/);
+	if (!mapMatch) throw new Error('BridgeFlowEventMap not found');
+	const eventNames = [...mapMatch[1].matchAll(/'([a-z0-9:-]+)'\s*:/g)].map((m) => m[1]);
+	const corpus = srcFiles
+		.filter((f) => !f.endsWith(`${path.sep}types.ts`))
+		.map((f) => fs.readFileSync(f, 'utf8'))
+		.join('\n');
+	const dead = eventNames.filter((ev) => {
+		const esc = ev.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		const hasEmit = new RegExp(`emit\\(\\s*['"]${esc}['"]`).test(corpus);
+		const hasOn = new RegExp(`\\.on\\(\\s*['"]${esc}['"]`).test(corpus);
+		return !hasEmit && !hasOn;
+	});
+	if (dead.length) throw new Error(`Dead EventBus definitions: ${dead.join(', ')}`);
+});
+
 console.log(`\nArchitecture guard summary: ${passed} passed, ${failures.length} failed.`);
 if (failures.length) process.exit(1);

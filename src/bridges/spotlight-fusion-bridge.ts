@@ -1,11 +1,13 @@
-import type { WordSessionRecord } from '../domains/word-cite/ipc/session-tracker.ts';
-import type { WordCiteDomainModule } from '../domains/word-cite/module.ts';
 import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
 import { tLocale } from '../kernel/locale.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
-import type { BridgeModule, SpotlightItemResult } from '../kernel/types.ts';
+import type { BridgeModule, CitationBadgeInfo, CitationSnapshotPayload, SpotlightItemResult } from '../kernel/types.ts';
 import { getCachedPrimaryItemFields } from '../services/item-resolution.ts';
+
+export interface WordSnapshotSource {
+	getSnapshot?(): CitationSnapshotPayload | null;
+}
 
 function matchesCmdQuery(rawTerm: string, title: string, subtitle: string, keywords: string): boolean {
 	const clean = rawTerm.replace(/^>\s*/, '').trim().toLowerCase();
@@ -15,81 +17,116 @@ function matchesCmdQuery(rawTerm: string, title: string, subtitle: string, keywo
 }
 
 /**
- * Bridge 3: Cross-Domain Spotlight Command Hub.
- * Injects active Word cited items, one-click "Group Active Word Citations",
- * and cache management commands into Workspace Spotlight (Ctrl+P / Cmd+P).
+ * Bridge 3: Cross-Domain Word Cite × Workspace Spotlight Fusion.
+ * Injects active Word cited items, orphan citation recovery, one-click
+ * "Group Active Word Citations", and "Word Citations -> Annotation Matrix"
+ * into Workspace Spotlight (Ctrl+P / Cmd+P).
  */
 export class SpotlightFusionBridge implements BridgeModule {
 	public readonly id = 'spotlight-fusion-bridge';
+	public readonly requires = ['workspace', 'word-cite'] as const;
+
 	private readonly disposables = new DisposableStack();
-
-	private sortedBySession = new WeakMap<WordSessionRecord, Array<[number, { ordinal: number; shortText: string }]>>();
-
-	private sortedCitations(session: WordSessionRecord) {
-		let entries = this.sortedBySession.get(session);
-		if (!entries) {
-			entries = [...session.itemCitations.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
-			this.sortedBySession.set(session, entries);
-		}
-		return entries;
-	}
-
 	private readonly kernel: PluginKernel;
 	private readonly workspace: WorkspaceDomainModule;
-	private readonly wordCite: WordCiteDomainModule;
+	private readonly wordCite?: WordSnapshotSource;
+	private latestSnapshot: CitationSnapshotPayload | null = null;
+	private sortedByMap = new WeakMap<ReadonlyMap<number, CitationBadgeInfo>, Array<[number, CitationBadgeInfo]>>();
 
-	constructor(kernel: PluginKernel, workspace: WorkspaceDomainModule, wordCite: WordCiteDomainModule) {
+	constructor(kernel: PluginKernel, workspace: WorkspaceDomainModule, wordCite?: WordSnapshotSource) {
 		this.kernel = kernel;
 		this.workspace = workspace;
 		this.wordCite = wordCite;
 	}
 
+	private sortedCitations(byItemID: ReadonlyMap<number, CitationBadgeInfo>): Array<[number, CitationBadgeInfo]> {
+		let entries = this.sortedByMap.get(byItemID);
+		if (!entries) {
+			entries = [...byItemID.entries()].sort((a, b) => a[1].ordinal - b[1].ordinal);
+			this.sortedByMap.set(byItemID, entries);
+		}
+		return entries;
+	}
+
+	private readSnapshot(): CitationSnapshotPayload | null {
+		return this.kernel.ports.get('word-cite')?.getSnapshot()
+			?? this.wordCite?.getSnapshot?.()
+			?? this.latestSnapshot;
+	}
+
 	start(): void {
 		this.disposables.reset();
 		this.disposables.add(
-			this.workspace.registerSpotlightProvider({
+			this.kernel.bus.on('citation:snapshot-updated', (snapshot) => {
+				this.latestSnapshot = snapshot;
+			}),
+		);
+		this.latestSnapshot = this.kernel.ports.get('word-cite')?.getSnapshot()
+			?? this.wordCite?.getSnapshot?.()
+			?? null;
+		if (!this.latestSnapshot) {
+			this.kernel.bus.emit('word:snapshot-query', { requester: this.id });
+		}
+
+		const workspacePort = this.kernel.ports.get('workspace');
+		const registerProvider = workspacePort
+			? workspacePort.registerSpotlightProvider.bind(workspacePort)
+			: this.workspace.registerSpotlightProvider.bind(this.workspace);
+
+		this.disposables.add(
+			registerProvider({
 				id: 'bridgeflow-cross-domain',
 				priority: 80,
 				query: (term: string, win: Window, mode?: 'commands'): readonly SpotlightItemResult[] => {
 					if (!this.kernel.prefs.get('fusion.spotlightCrossDomain')) return [];
+					const snap = this.readSnapshot();
+					if (!snap) return [];
 					const doc = win?.document ?? null;
 					const out: SpotlightItemResult[] = [];
-					const active = this.wordCite.tracker.getActiveSession();
 
 					const clean = term.trim().toLowerCase();
-					if (mode !== 'commands' && active && active.itemCitations.size > 0 && !clean.startsWith('>')) {
+					const activeID = snap.activeSessionID;
+					const activeDocName = snap.activeDocumentName;
+					const activeByItem = snap.byItemID;
+
+					if (mode !== 'commands' && activeID && activeByItem.size > 0 && !clean.startsWith('>')) {
 						const ordMatch = clean.match(/^(?:#|\[)(\d+)\]?$/);
 						const targetOrd = ordMatch ? Number(ordMatch[1]) : 0;
 						if (targetOrd > 0 || clean.length >= 2) {
 							const hostItems = (globalThis as any).Zotero?.Items;
-							const candidates = targetOrd > 0 ? active.itemCitations : this.sortedCitations(active);
+							const candidates = targetOrd > 0 ? activeByItem : this.sortedCitations(activeByItem);
 							for (const [itemID, info] of candidates) {
 								if (targetOrd > 0 && info.ordinal !== targetOrd) continue;
 								const it = hostItems?.get?.(itemID);
 								const fields = it ? getCachedPrimaryItemFields(it) : null;
 								const title = fields?.title || info.shortText || `Item #${itemID}`;
-								const sub = [fields?.creatorYear, fields?.source, active.displayName].filter(Boolean).join(' · ');
+								const sub = [fields?.creatorYear, fields?.source, activeDocName].filter(Boolean).join(' · ');
 								const match = targetOrd > 0 || `${title} ${sub} [${info.ordinal}]`.toLowerCase().includes(clean);
 								if (!match) continue;
 								out.push({
 									id: `word-cited:${itemID}`,
 									category: 'citation',
 									title,
-									subtitle: sub || active.displayName,
+									subtitle: sub || activeDocName,
 									badge: `Word [${info.ordinal}]`,
-									action: () => { void this.workspace.focusOrOpenItem({ itemID, preferExistingTab: true }, win); },
+									action: () => {
+										const ws = this.kernel.ports.get('workspace');
+										if (ws) void ws.focusOrOpenItem({ itemID, preferExistingTab: true }, win);
+										else void this.workspace.focusOrOpenItem({ itemID, preferExistingTab: true }, win);
+									},
 								});
 								if (out.length >= 8) break;
 							}
 						}
 					}
 
-					for (const ses of this.wordCite.tracker.getAllSessions()) {
-						if (!ses.orphans.length) continue;
-						const ordPreview = ses.orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ') + (ses.orphans.length > 4 ? '…' : '');
+					for (const ses of snap.sessions ?? []) {
+						const orphans = ses.orphans ?? [];
+						if (!orphans.length) continue;
+						const ordPreview = orphans.slice(0, 4).map((o) => `[${o.ordinal}]`).join(' ') + (orphans.length > 4 ? '…' : '');
 						const recoverTitle = tLocale(
-							`> ⚠ 一键找回并重连缺失引文：${ses.displayName} (${ses.orphans.length} 篇)`,
-							`> ⚠ Recover & Relink Broken Citations: ${ses.displayName} (${ses.orphans.length})`,
+							`> ⚠ 一键找回并重连缺失引文：${ses.documentName} (${orphans.length} 篇)`,
+							`> ⚠ Recover & Relink Broken Citations: ${ses.documentName} (${orphans.length})`,
 							doc,
 						);
 						const recoverSub = tLocale(
@@ -105,135 +142,76 @@ export class SpotlightFusionBridge implements BridgeModule {
 								subtitle: recoverSub,
 								badge: tLocale('修复', 'Fix', doc),
 								action: () => {
-									this.kernel.bus.emit('word:recover-orphans-request', {
-										sessionID: ses.sessionID,
-										source: 'spotlight',
-										win,
-									});
+									const wordPort = this.kernel.ports.get('word-cite');
+									if (wordPort) {
+										void wordPort.recoverOrphans({ sessionID: ses.sessionID, source: 'spotlight', win });
+									} else {
+										this.kernel.bus.emit('word:recover-orphans-request', {
+											sessionID: ses.sessionID,
+											source: 'spotlight',
+											win,
+										});
+									}
 								},
 							});
 						}
 					}
 
-					if (active) {
+					if (activeID) {
 						const groupCmdTitle = tLocale(
-							`> 将当前 Word 引用文献归入工作区分组：${active.displayName}`,
-							`> Group Open Tabs Cited in Word: ${active.displayName}`,
+							`> 将当前 Word 引用文献归入工作区分组：${activeDocName}`,
+							`> Group Open Tabs Cited in Word: ${activeDocName}`,
 							doc,
 						);
 						const groupSub = tLocale(
-							`共 ${active.itemCitations.size} 篇已引用文献`,
-							`${active.itemCitations.size} cited items in active document`,
+							`共 ${activeByItem.size} 篇已引用文献`,
+							`${activeByItem.size} cited items in active document`,
 							doc,
 						);
 						if (matchesCmdQuery(term, groupCmdTitle, groupSub, 'word group 分组 归组')) {
 							out.push({
-								id: `cmd:group-word:${active.sessionID}`,
+								id: `cmd:group-word:${activeID}`,
 								category: 'command',
 								title: groupCmdTitle,
 								subtitle: groupSub,
 								badge: 'WORD',
 								action: () => {
-									this.workspace.groupOpenTabsByItemIDs(
-										active.displayName,
-										[...active.itemCitations.keys()],
-										win,
-									);
+									const ws = this.kernel.ports.get('workspace');
+									const ids = [...activeByItem.keys()];
+									if (ws) ws.groupOpenTabsByItemIDs(activeDocName, ids, win);
+									else this.workspace.groupOpenTabsByItemIDs(activeDocName, ids, win);
 								},
 							});
 						}
 
-						if (active.itemCitations.size > 0 && this.kernel.prefs.get('modules.visualNotes.enable') && this.kernel.prefs.get('workspace.enableAnnotationMatrix')) {
+						if (activeByItem.size > 0 && this.kernel.prefs.get('modules.visualNotes.enable') && this.kernel.prefs.get('workspace.enableAnnotationMatrix')) {
 							const matrixTitle = tLocale(
-								`> 为当前 Word 已引文献生成批注对比矩阵：${active.displayName}`,
-								`> Annotation Comparison Matrix for Word Citations: ${active.displayName}`,
+								`> 为当前 Word 已引文献生成批注对比矩阵：${activeDocName}`,
+								`> Annotation Comparison Matrix for Word Citations: ${activeDocName}`,
 								doc,
 							);
 							const matrixSub = tLocale(
-								`汇总「${active.displayName}」正文中已引 ${active.itemCitations.size} 篇文献的颜色批注`,
-								`Synthesize color annotations across ${active.itemCitations.size} items cited in "${active.displayName}"`,
+								`汇总「${activeDocName}」正文中已引 ${activeByItem.size} 篇文献的颜色批注`,
+								`Synthesize color annotations across ${activeByItem.size} items cited in "${activeDocName}"`,
 								doc,
 							);
 							if (matchesCmdQuery(term, matrixTitle, matrixSub, 'word matrix 矩阵 批注 对比')) {
 								out.push({
-									id: `cmd:matrix-word:${active.sessionID}`,
+									id: `cmd:matrix-word:${activeID}`,
 									category: 'command',
 									title: matrixTitle,
 									subtitle: matrixSub,
 									badge: tLocale('矩阵', 'Matrix', doc),
 									action: () => {
-										this.kernel.bus.emit('visual-notes:open-matrix', {
-											win,
-											title: tLocale(`Word 已引：${active.displayName}`, `Cited in Word: ${active.displayName}`, doc),
-											itemIDs: [...active.itemCitations.keys()],
-										});
+										const title = tLocale(`Word 已引：${activeDocName}`, `Cited in Word: ${activeDocName}`, doc);
+										const itemIDs = [...activeByItem.keys()];
+										const visualNotesPort = this.kernel.ports.get('visual-notes');
+										if (visualNotesPort) visualNotesPort.openMatrix(win, title, itemIDs);
+										else this.kernel.bus.emit('visual-notes:open-matrix', { win, title, itemIDs });
 									},
 								});
 							}
 						}
-					}
-
-					if (this.wordCite.isActive()) {
-						const insertLabel = tLocale('> 插入当前文献到 Word 光标处', '> Insert Selected Citation at Word Cursor', doc);
-						const insertSub = tLocale('在当前 Word 光标处生成原生 Zotero 可编辑引文域', 'Insert a native editable Zotero citation field at the Word cursor', doc);
-						if (matchesCmdQuery(term, insertLabel, insertSub, 'word cite insert 插入 引文')) {
-							out.push({
-								id: 'cmd:cite-selected-word',
-								category: 'command',
-								title: insertLabel,
-								subtitle: insertSub,
-								badge: 'Word',
-								action: async () => {
-									await this.wordCite.citeCurrentSelection(win);
-								},
-							});
-						}
-					}
-
-					if (this.kernel.prefs.get('modules.visualNotes.enable')) {
-						const galTitle = tLocale('> 切换文献画廊 / 多维看板视图', '> Toggle Literature Gallery / Kanban Board', doc);
-						const galSub = tLocale('在主文献列表与卡片画廊、状态/星级拖拽看板间切换', 'Switch between item list, card gallery, and status/rating Kanban board', doc);
-						if (this.kernel.prefs.get('visualNotes.gallery.enable') && matchesCmdQuery(term, galTitle, galSub, 'gallery kanban board 画廊 看板 卡片')) {
-							out.push({
-								id: 'cmd:toggle-gallery-board',
-								category: 'command',
-								title: galTitle,
-								subtitle: galSub,
-								badge: tLocale('画廊', 'Gallery', doc),
-								action: () => {
-									this.kernel.bus.emit('visual-notes:toggle-gallery', { win });
-								},
-							});
-						}
-						const hubTitle = tLocale('> 打开当前分类集中笔记与标注管理中心', '> Open Collection Notes & Annotations Hub', doc);
-						const hubSub = tLocale('集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记', 'Browse & filter PDF annotations, child notes, and brief notes in collection', doc);
-						if (this.kernel.prefs.get('visualNotes.collectionHub.enable') && matchesCmdQuery(term, hubTitle, hubSub, 'notes hub annotations 笔记 标注 汇总 简记')) {
-							out.push({
-								id: 'cmd:open-collection-hub',
-								category: 'command',
-								title: hubTitle,
-								subtitle: hubSub,
-								badge: tLocale('汇总', 'Hub', doc),
-								action: () => {
-									this.kernel.bus.emit('visual-notes:open-hub', { win });
-								},
-							});
-						}
-					}
-
-					const clearTitle = tLocale('> 清空引文记忆与反查缓存', '> Clear Citation & Lookup Caches', doc);
-					const clearSub = tLocale('重置已记录的引文复制历史与反查索引', 'Reset copied citation lookup history and formatted preview cache', doc);
-					if (matchesCmdQuery(term, clearTitle, clearSub, 'clear cache 清空缓存 反查')) {
-						out.push({
-							id: 'cmd:clear-citation-cache',
-							category: 'command',
-							title: clearTitle,
-							subtitle: clearSub,
-							badge: tLocale('维护', 'Maint', doc),
-							action: () => {
-								this.kernel.bus.emit('inspector:clear-cache', { target: 'all' });
-							},
-						});
 					}
 
 					return out;
@@ -243,7 +221,8 @@ export class SpotlightFusionBridge implements BridgeModule {
 	}
 
 	stop(): void {
-		this.sortedBySession = new WeakMap();
+		this.latestSnapshot = null;
+		this.sortedByMap = new WeakMap();
 		this.disposables.disposeAll();
 	}
 }

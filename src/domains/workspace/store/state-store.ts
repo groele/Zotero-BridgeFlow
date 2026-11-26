@@ -242,6 +242,24 @@ export class WorkspaceStateStore {
 
 	isSleeping(key: string): boolean { return this.state.sleepingKeys.includes(key); }
 
+	getReadingProgress(itemID: number): TabReadingProgress | undefined {
+		return this.state.readingProgress[`item:${itemID}`];
+	}
+
+	persistBriefNotes(): Promise<boolean> {
+		return this.notesCache.flushNow(this.state);
+	}
+
+	getRemarksSnapshot(): Readonly<Record<string, string>> {
+		return this.state.remarks;
+	}
+
+	resolveRemarkTargetItemID(key: string): number {
+		const vm = this.state.virtualMembers[key];
+		const match = /^item:(\d+)$/.exec(key);
+		return Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
+	}
+
 	getItemRemark(itemID: number): string { return getNormalizedItemRemark(this.state, itemID); }
 
 	setItemRemark(itemID: number, remark: string, silent = false): void {

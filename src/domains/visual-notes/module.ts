@@ -2,6 +2,7 @@ import { closeHubPage } from './hub/hub-page.ts';
 import { closeVisualColumnPopover } from './columns/column-popover-styles.ts';
 import { closeStatusPickerPopover } from './columns/status-rating-popover.ts';
 import { DisposableStack } from '../../kernel/disposable.ts';
+import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
 import { syncNativeStatusTagDots } from '../../services/item-status-rating.ts';
@@ -128,29 +129,41 @@ export class VisualNotesDomainModule implements DomainModule {
 			}),
 		);
 
-		this.disposables.add(
-			this.kernel.bus.on('visual-notes:open-matrix', ({ win, title, itemIDs }) => {
-				if (!this.active || !this.kernel.prefs.get('workspace.enableAnnotationMatrix')) return;
-				openAnnotationMatrixModal({ win, title, itemIDs, prefs: this.kernel.prefs, bus: this.kernel.bus, clipboard: this.services.clipboard });
-			}),
-		);
+		this.disposables.add(this.kernel.ports.register('visual-notes', {
+			openMatrix: (win, title, itemIDs) => this.kernel.bus.emit('visual-notes:open-matrix', { win, title, itemIDs }),
+			openHub: (win, initialTab) => this.openCollectionHub(win, initialTab),
+			toggleGallery: (win, mode) => this.toggleGalleryBoard(win, mode),
+			refreshLibraryViews: (affectedIDs, readingOnly) => this.refreshLibraryViews(affectedIDs, readingOnly),
+		}));
 
-		this.disposables.add(
-			this.kernel.bus.on('visual-notes:open-hub', ({ win, initialTab }) => {
-				if (this.active) this.openCollectionHub(win, initialTab);
-			}),
-		);
+		this.disposables.add(this.kernel.commands.register({
+			id: 'visual-notes-commands',
+			owner: 'visual-notes',
+			priority: 60,
+			isEnabled: () => this.active && Boolean(this.kernel.prefs.get('fusion.spotlightCrossDomain')),
+			build: (win, doc) => [
+				...(this.kernel.prefs.get('visualNotes.gallery.enable') ? [{
+					id: 'cmd:toggle-gallery-board',
+					title: tLocale('> 切换文献画廊 / 多维看板视图', '> Toggle Literature Gallery / Kanban Board', doc),
+					subtitle: tLocale('在主文献列表与卡片画廊、状态/星级拖拽看板间切换', 'Switch between item list, card gallery, and status/rating Kanban board', doc),
+					badge: tLocale('画廊', 'Gallery', doc),
+					keywords: 'gallery kanban board 画廊 看板 卡片',
+					action: () => this.toggleGalleryBoard(win),
+				}] : []),
+				...(this.kernel.prefs.get('visualNotes.collectionHub.enable') ? [{
+					id: 'cmd:open-collection-hub',
+					title: tLocale('> 打开当前分类集中笔记与标注管理中心', '> Open Collection Notes & Annotations Hub', doc),
+					subtitle: tLocale('集中浏览与筛选分类下全部文献的 PDF 批注、独立子笔记与条目简记', 'Browse & filter PDF annotations, child notes, and brief notes in collection', doc),
+					badge: tLocale('汇总', 'Hub', doc),
+					keywords: 'notes hub annotations 笔记 标注 汇总 简记',
+					action: () => this.openCollectionHub(win),
+				}] : []),
+			],
+		}));
 
-		this.disposables.add(
-			this.kernel.bus.on('visual-notes:toggle-gallery', ({ win, mode }) => {
-				if (!this.active || !this.kernel.prefs.get('visualNotes.gallery.enable')) return;
-				this.galleryBoard.toggleWindowGallery(win, mode);
-				if (this.pendingReadingRefresh && this.hasVisibleLibraryView()) {
-					this.pendingReadingRefresh = false;
-					this.refreshLibraryViews(undefined, true);
-				}
-			}),
-		);
+		this.disposables.add(this.kernel.bus.on('visual-notes:open-matrix', ({ win, title, itemIDs }) => { this.openMatrixModal(win, title, itemIDs); }));
+		this.disposables.add(this.kernel.bus.on('visual-notes:open-hub', ({ win, initialTab }) => { if (this.active) this.openCollectionHub(win, initialTab); }));
+		this.disposables.add(this.kernel.bus.on('visual-notes:toggle-gallery', ({ win, mode }) => { this.toggleGalleryBoard(win, mode); }));
 
 		this.disposables.add(
 			this.kernel.notifier.subscribe(['item', 'tab'], ({ event, type, ids }) => {
@@ -246,6 +259,15 @@ export class VisualNotesDomainModule implements DomainModule {
 		this.infoBriefNote.refresh();
 		this.titleHeatmap.refreshWindows();
 		this.galleryBoard.refreshWindows();
+	}
+
+	private toggleGalleryBoard(win: Window, mode?: 'gallery' | 'board'): void {
+		if (!this.active || !this.kernel.prefs.get('visualNotes.gallery.enable')) return;
+		this.galleryBoard.toggleWindowGallery(win, mode);
+		if (this.pendingReadingRefresh && this.hasVisibleLibraryView()) {
+			this.pendingReadingRefresh = false;
+			this.refreshLibraryViews(undefined, true);
+		}
 	}
 
 	openCollectionHub(win: Window, initialTab?: 'annotations' | 'notes'): void {

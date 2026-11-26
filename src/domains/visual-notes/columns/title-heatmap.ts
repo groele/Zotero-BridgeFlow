@@ -1,5 +1,6 @@
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
+import { patchItemsViewRenderCell } from '../../../services/host/tree-view-adapter.ts';
 import type { TabReadingProgress } from '../../../services/reading-stats.ts';
 import {
 	applyTitleHeatmapToCell,
@@ -150,14 +151,9 @@ export class TitleHeatmapController {
 		this.pollTimers.delete(win);
 		if ((win as any).closed || !this.windows.has(win) || !this.cachedEnabled || this.disposers.has(win)) return;
 		const iv = (win as any)?.ZoteroPane?.itemsView;
-		if (!iv || typeof iv._renderCell !== 'function') {
-			if (attempt < 120) this.pollTimers.set(win, setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50));
-			return;
-		}
-		this.ensureWindowStyles(win);
 		const ctrl = this;
 		const resolveProgress = this.resolveProgress;
-		const dispose = this.kernel.runtime.patch(iv, '_renderCell', 'itemsView', (orig) => function (this: any, ...args: unknown[]) {
+		const dispose = patchItemsViewRenderCell(this.kernel.runtime, iv, (orig) => function (this: any, ...args: unknown[]) {
 			const cell = orig.apply(this, args);
 			if (!cell || !ctrl.cachedEnabled) return cell;
 			const [index, , column] = args as [number, unknown, { dataKey?: string; primary?: boolean }?];
@@ -173,6 +169,11 @@ export class TitleHeatmapController {
 			}
 			return cell;
 		});
+		if (!dispose) {
+			if (attempt < 120) this.pollTimers.set(win, setTimeout(() => this.tryPatchWindow(win, attempt + 1), 50));
+			return;
+		}
+		this.ensureWindowStyles(win);
 		this.disposers.set(win, dispose);
 		try { iv.tree?.invalidate?.(); } catch { /* ignore */ }
 	}

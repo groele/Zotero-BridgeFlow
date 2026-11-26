@@ -11,6 +11,7 @@ import { PluginKernel } from './kernel/plugin-kernel.ts';
 import type { HostPrefsAdapter } from './kernel/pref-service.ts';
 import type { PluginInfo } from './kernel/types.ts';
 import { sweepBridgeFlowCacheDirectory } from './services/cache-hygiene.ts';
+import { probeHostCapabilities, type HostCapabilitiesSnapshot } from './services/host/host-capabilities.ts';
 import { ServiceContainer } from './services/service-container.ts';
 
 export class BridgeFlowApp {
@@ -61,6 +62,10 @@ export class BridgeFlowApp {
 
 	onMainWindowUnload(win: Window): void {
 		this.kernel.onMainWindowUnload(win);
+	}
+
+	getHostCapabilities(win?: Window | null): HostCapabilitiesSnapshot {
+		return probeHostCapabilities(win);
 	}
 
 	shutdown(): void {

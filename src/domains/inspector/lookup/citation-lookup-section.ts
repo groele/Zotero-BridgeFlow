@@ -194,7 +194,10 @@ export class CitationLookupSectionController {
 				onOpenPdf: (target: any) => this.openItemPdf(target),
 				onCiteWord: this.kernel.prefs.get('modules.wordCite.enable') && this.kernel.prefs.get('wordCite.tabContextMenu.enable')
 					? (id: number) => {
-						this.kernel.bus.emit('word:insert-items-request', { itemIDs: [id], win: doc.defaultView || undefined });
+						const win = doc.defaultView || undefined;
+						const wordPort = this.kernel.ports.get('word-cite');
+						if (wordPort) void Promise.resolve(wordPort.insertItems([id], win)).catch(() => {});
+						else this.kernel.bus.emit('word:insert-items-request', { itemIDs: [id], win });
 						return true;
 					}
 					: undefined,
@@ -303,11 +306,10 @@ export class CitationLookupSectionController {
 
 	private async locateItem(itemID: number): Promise<boolean> {
 		if (this.kernel.prefs.get('fusion.lookupJumpExistingTab')) {
-			this.kernel.bus.emit('workspace:open-item-request', {
-				itemID,
-				preferExistingTab: true,
-				assignToActiveGroup: false,
-			});
+			const req = { itemID, preferExistingTab: true, assignToActiveGroup: false };
+			const wsPort = this.kernel.ports.get('workspace');
+			if (wsPort) void Promise.resolve(wsPort.focusOrOpenItem(req)).catch(() => {});
+			else this.kernel.bus.emit('workspace:open-item-request', req);
 		}
 		return this.locateInLibrary(itemID);
 	}
@@ -322,12 +324,10 @@ export class CitationLookupSectionController {
 			const first = pdfs[0];
 			if (!first) return false;
 			if (this.kernel.prefs.get('fusion.lookupJumpExistingTab')) {
-				this.kernel.bus.emit('workspace:open-item-request', {
-					itemID: Number(item.id || 0),
-					attachmentID: first.id,
-					preferExistingTab: true,
-					assignToActiveGroup: true,
-				});
+				const req = { itemID: Number(item.id || 0), attachmentID: first.id, preferExistingTab: true, assignToActiveGroup: true };
+				const wsPort = this.kernel.ports.get('workspace');
+				if (wsPort) void Promise.resolve(wsPort.focusOrOpenItem(req)).catch(() => {});
+				else this.kernel.bus.emit('workspace:open-item-request', req);
 				return true;
 			}
 			const reader = (globalThis as any).Zotero?.Reader;

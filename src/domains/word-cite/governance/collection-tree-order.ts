@@ -1,5 +1,6 @@
 import type { NativeRuntime } from '../../../kernel/native-runtime.ts';
 import type { Disposable } from '../../../kernel/types.ts';
+import { patchCollectionsViewHooks } from '../../../services/host/tree-view-adapter.ts';
 
 export const TEMP_COLLECTION_RELATION = 'dc:relation';
 export const TEMP_COLLECTION_MARKER = 'https://github.com/groele/Zotero-BridgeFlow#temporary-collection';
@@ -193,7 +194,6 @@ export function patchCollectionsViewForWindow(
 ): Disposable {
 	const cv = (win as any)?.ZoteroPane?.collectionsView;
 	if (!cv) return () => {};
-	const disposers: Disposable[] = [];
 	const resolvedURI = wordIconURI || WORD_COLLECTION_DATA_URI;
 	const isCiteRow = (row: any): boolean =>
 		Boolean((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
@@ -212,88 +212,76 @@ export function patchCollectionsViewForWindow(
 		return typeof icon.cloneNode === 'function' ? (icon.cloneNode(false) as HTMLImageElement) : icon;
 	};
 
+	const maskRegistry = new WeakMap<object, { depth: number; hasOwn: boolean; original: unknown }>();
 	// Zotero's virtual table captures renderItem at mount time. Its captured
 	// renderer still looks up _getIcon on the collection view for every row.
-	if (typeof cv._getIcon === 'function') {
-		disposers.push(runtime.patch(cv, '_getIcon', 'collectionsView', (orig) => function (this: any, ...args: unknown[]) {
+	const disposeHooks = patchCollectionsViewHooks(runtime, cv, {
+		getIcon: (orig) => function (this: any, ...args: unknown[]) {
 			const index = args[0] as number;
 			const row = this.getRow?.(index) ?? this._rows?.[index];
 			return isCiteRow(row) ? createWordIcon() : orig.apply(this, args);
-		}));
-	}
-
-	if (typeof cv._expandRow === 'function') {
-		disposers.push(
-			runtime.patch(cv, '_expandRow', 'collectionsView', (orig) => async function (this: any, ...args: unknown[]) {
-				const [rows, row] = args as [any[], number];
-				const added = await orig.apply(this, args);
-				if (typeof added === 'number' && added > 0 && rows?.[row]?.isLibrary?.(true)) {
-					const libLevel = typeof this.getLevel === 'function' && rows === this._rows ? this.getLevel(row) : (rows[row]?.level ?? 0);
-					if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys(), getActiveNames?.())) {
-						this._refreshRowMap?.();
-						this.tree?.invalidate?.();
+		},
+		expandRow: (orig) => async function (this: any, ...args: unknown[]) {
+			const [rows, row] = args as [any[], number];
+			const added = await orig.apply(this, args);
+			if (typeof added === 'number' && added > 0 && rows?.[row]?.isLibrary?.(true)) {
+				const libLevel = typeof this.getLevel === 'function' && rows === this._rows ? this.getLevel(row) : (rows[row]?.level ?? 0);
+				if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys(), getActiveNames?.())) {
+					this._refreshRowMap?.();
+					this.tree?.invalidate?.();
+				}
+			}
+			return added;
+		},
+		addSortedRow: (orig) => async function (this: any, ...args: unknown[]) {
+			const [objectType, id] = args as [string, number];
+			const activeKeys = getActiveKeys();
+			const activeNames = getActiveNames?.();
+			if (objectType === 'collection') {
+				const zotCols = (globalThis as any).Zotero?.Collections;
+				const col = zotCols?.get?.(id) || await zotCols?.getAsync?.(id);
+				if (col && !col.parentID && isCitationCollectionRef(col, activeKeys, activeNames)) {
+					const inserted = insertCitationRowAbovePublications(this, col, activeKeys, activeNames);
+					if (inserted !== false) return inserted;
+					const res = await orig.apply(this, args);
+					reorderViewCollections(this, activeKeys, activeNames);
+					return res;
+				}
+			}
+			const touched: any[] = [];
+			for (const row of this._rows || []) {
+				if (!row || typeof row !== 'object') continue;
+				const alreadyMasked = maskRegistry.get(row);
+				if (alreadyMasked) {
+					alreadyMasked.depth += 1;
+					touched.push(row);
+				} else if ((row.isCollection?.() || row.type === 'collection') && isCitationCollectionRef(row.ref, activeKeys, activeNames)) {
+					const hasOwn = Object.prototype.hasOwnProperty.call(row, 'isCollection');
+					const original = row.isCollection;
+					maskRegistry.set(row, { depth: 1, hasOwn, original });
+					row.isCollection = () => false;
+					touched.push(row);
+				}
+			}
+			try {
+				return await orig.apply(this, args);
+			} finally {
+				for (const row of touched) {
+					const entry = maskRegistry.get(row);
+					if (!entry) continue;
+					entry.depth -= 1;
+					if (entry.depth <= 0) {
+						maskRegistry.delete(row);
+						if (entry.hasOwn) row.isCollection = entry.original;
+						else delete row.isCollection;
 					}
 				}
-				return added;
-			}),
-		);
-	}
-
-	if (typeof cv._addSortedRow === 'function') {
-		const maskRegistry = new WeakMap<object, { depth: number; hasOwn: boolean; original: unknown }>();
-		disposers.push(
-			runtime.patch(cv, '_addSortedRow', 'collectionsView', (orig) => async function (this: any, ...args: unknown[]) {
-				const [objectType, id] = args as [string, number];
-				const activeKeys = getActiveKeys();
-				const activeNames = getActiveNames?.();
-				if (objectType === 'collection') {
-					const zotCols = (globalThis as any).Zotero?.Collections;
-					const col = zotCols?.get?.(id) || await zotCols?.getAsync?.(id);
-					if (col && !col.parentID && isCitationCollectionRef(col, activeKeys, activeNames)) {
-						const inserted = insertCitationRowAbovePublications(this, col, activeKeys, activeNames);
-						if (inserted !== false) return inserted;
-						const res = await orig.apply(this, args);
-						reorderViewCollections(this, activeKeys, activeNames);
-						return res;
-					}
-				}
-				const touched: any[] = [];
-				for (const row of this._rows || []) {
-					if (!row || typeof row !== 'object') continue;
-					const alreadyMasked = maskRegistry.get(row);
-					if (alreadyMasked) {
-						alreadyMasked.depth += 1;
-						touched.push(row);
-					} else if ((row.isCollection?.() || row.type === 'collection') && isCitationCollectionRef(row.ref, activeKeys, activeNames)) {
-						const hasOwn = Object.prototype.hasOwnProperty.call(row, 'isCollection');
-						const original = row.isCollection;
-						maskRegistry.set(row, { depth: 1, hasOwn, original });
-						row.isCollection = () => false;
-						touched.push(row);
-					}
-				}
-				try {
-					return await orig.apply(this, args);
-				} finally {
-					for (const row of touched) {
-						const entry = maskRegistry.get(row);
-						if (!entry) continue;
-						entry.depth -= 1;
-						if (entry.depth <= 0) {
-							maskRegistry.delete(row);
-							if (entry.hasOwn) row.isCollection = entry.original;
-							else delete row.isCollection;
-						}
-					}
-				}
-			}),
-		);
-	}
+			}
+		},
+	});
 
 	return () => {
-		for (const fn of disposers.reverse()) {
-			try { fn(); } catch { /* ignore */ }
-		}
+		disposeHooks();
 		cv.tree?.invalidate?.();
 	};
 }

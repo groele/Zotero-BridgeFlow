@@ -60,8 +60,7 @@ export function flushWorkspaceReadingProgress(
 	}
 
 	if (updated) {
-		ctx.store.readingCache.scheduleSave(ctx.store.state);
-		ctx.kernel.bus.emit('visual-notes:reading-updated', {});
+		ctx.store.saveReadingProgress();
 		if (ctx.kernel.prefs.get('workspace.verticalTabSubtitleMode') === 'lastViewed') {
 			ctx.onScheduleRefresh();
 		}

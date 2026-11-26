@@ -14,8 +14,9 @@ import {
 } from './word-cite-panel-ui.ts';
 import { clearReminderFieldsCache, ReminderUiState } from './word-cite-reminders-model.ts';
 import {
-	cycleWordCiteSession, handleWordCiteIgnoreReminder, handleWordCiteLocateReminder,
-	handleWordCiteReceiptAction, type WordCiteActionHost,
+	cycleWordCiteSession, dispatchWordCiteInsert, handleWordCiteIgnoreReminder, handleWordCiteLocateReminder,
+	handleWordCiteReceiptAction, requestWordCiteRecoverOrphans, requestWordCiteRefresh,
+	selectWordCiteCollection, type WordCiteActionHost,
 } from './word-cite-requests.ts';
 
 const WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
@@ -46,18 +47,7 @@ export class WordCiteSectionController {
 	register(): void {
 		if (this.unregisterFn) return;
 		this.disposables.reset();
-		this.disposables.add(this.kernel.bus.on('citation:snapshot-updated', (snap) => {
-			this.snapshot = snap;
-			const autoExpand = Boolean(this.kernel.prefs.get('inspector.wordCite.orphanAutoExpand') && this.kernel.prefs.get('inspector.wordCite.showOrphanRecovery'));
-			if (this.orphanState.syncSnapshot(snap.activeSessionID, snap.orphans, autoExpand)) {
-				for (const st of this.states.values()) {
-					const col = st.root.closest?.('collapsible-section') as (Element & { open?: boolean }) | null;
-					if (col && !col.open) col.open = true;
-				}
-			}
-			this.renderAllBodies();
-			this.hydrateUnloadedCitedItems(snap.citedItemIDs);
-		}));
+		this.disposables.add(this.kernel.bus.on('citation:snapshot-updated', (snap) => this.applySnapshot(snap)));
 		this.disposables.add(this.kernel.bus.on('workspace:groups-updated', ({ groups }) => {
 			this.groups = groups;
 			this.renderAllBodies();
@@ -95,16 +85,44 @@ export class WordCiteSectionController {
 			},
 			onToggle: ({ body, item, setEnabled, setSectionSummary }: { body: HTMLElement; item?: any; setEnabled?: (v: boolean) => void; setSectionSummary?: (s: string) => void }) => {
 				this.updateState(body, item, setEnabled, setSectionSummary);
-				this.kernel.bus.emit('word:snapshot-query', { requester: 'inspector' });
-				this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
+				this.pullSnapshotAndGroups();
 			},
 		});
 		this.unregisterFn = reg.dispose;
 		if (reg.sectionID) {
 			this.services.panePositions.setTarget('word-cite', { sectionID: reg.sectionID, getPosition: () => normalizePanePosition(this.kernel.prefs.get('inspector.wordCite.position'), 'zotero-editpane-related') });
 		}
-		this.kernel.bus.emit('word:snapshot-query', { requester: 'inspector' });
-		this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
+		this.pullSnapshotAndGroups();
+	}
+
+	private applySnapshot(snap: CitationSnapshotPayload): void {
+		this.snapshot = snap;
+		const autoExpand = Boolean(this.kernel.prefs.get('inspector.wordCite.orphanAutoExpand') && this.kernel.prefs.get('inspector.wordCite.showOrphanRecovery'));
+		if (this.orphanState.syncSnapshot(snap.activeSessionID, snap.orphans, autoExpand)) {
+			for (const st of this.states.values()) {
+				const col = st.root.closest?.('collapsible-section') as (Element & { open?: boolean }) | null;
+				if (col && !col.open) col.open = true;
+			}
+		}
+		this.renderAllBodies();
+		this.hydrateUnloadedCitedItems(snap.citedItemIDs);
+	}
+
+	private pullSnapshotAndGroups(): void {
+		const wordPort = this.kernel.ports.get('word-cite');
+		if (wordPort) {
+			const snap = wordPort.getSnapshot();
+			if (snap) this.applySnapshot(snap);
+		} else {
+			this.kernel.bus.emit('word:snapshot-query', { requester: 'inspector' });
+		}
+		const wsPort = this.kernel.ports.get('workspace');
+		if (wsPort) {
+			this.groups = wsPort.getGroupSummaries();
+			this.renderAllBodies();
+		} else {
+			this.kernel.bus.emit('workspace:groups-query', { requester: 'inspector' });
+		}
 	}
 
 	refreshAll(): void { this.renderAllBodies(); }
@@ -132,7 +150,7 @@ export class WordCiteSectionController {
 		const valid = [...new Set(itemIDs.filter((id) => Number.isSafeInteger(id) && id > 0))];
 		if (!valid.length || !this.isSectionEnabled() || this.pendingRequest) return false;
 		const requestId = this.beginRequest('insert', owner);
-		this.kernel.bus.emit('word:insert-items-request', { itemIDs: valid, win, requestId });
+		dispatchWordCiteInsert(this.actionHost, valid, requestId, win);
 		return true;
 	}
 
@@ -194,10 +212,10 @@ export class WordCiteSectionController {
 			button.addEventListener('click', () => { if (!button.disabled && !button.hidden) action(); }, { signal: controller.signal });
 		};
 		click(st.insertBtn, () => this.citeItemsInWord(st.lastItemIDs, win ?? undefined, st));
-		click(st.refreshBtn, () => this.kernel.bus.emit('word:refresh-request', { requestId: this.beginRequest('refresh', st), sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
+		click(st.refreshBtn, () => requestWordCiteRefresh(this.actionHost, this.snapshot?.activeSessionID || undefined, st, win ?? undefined));
 		click(st.docSwitchBtn, () => cycleWordCiteSession(this.kernel, this.snapshot));
 		click(st.groupBtn, () => this.citeItemsInWord(st.lastGroup?.itemIDs || [], win ?? undefined, st));
-		click(st.colBtn, () => this.kernel.bus.emit('word:select-collection-request', { sessionID: this.snapshot?.activeSessionID || undefined, win: win ?? undefined }));
+		click(st.colBtn, () => selectWordCiteCollection(this.kernel, this.snapshot?.activeSessionID || undefined, win ?? undefined));
 		const onActivate = (el: HTMLElement, fn: () => void) => {
 			el.addEventListener('click', fn, { signal: controller.signal });
 			el.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault?.(); fn(); } }, { signal: controller.signal });
@@ -223,11 +241,7 @@ export class WordCiteSectionController {
 		click(st.orphanRefs.toggleBtn, () => { this.orphanState.expanded = !this.orphanState.expanded; this.renderAllBodies(); });
 		click(st.orphanRefs.actionBtn, () => {
 			const keys = this.orphanState.getSelectedRecoverableKeys(this.snapshot?.orphans);
-			if (!keys.length) return;
-			this.kernel.bus.emit('word:recover-orphans-request', {
-				sessionID: this.snapshot?.activeSessionID || undefined, keys, source: 'panel',
-				requestId: this.beginRequest('recover', st), win: win ?? undefined,
-			});
+			requestWordCiteRecoverOrphans(this.actionHost, { sessionID: this.snapshot?.activeSessionID || undefined, keys, win: win ?? undefined }, st);
 		});
 		this.bindDocumentEvents(doc);
 		this.updateState(body, item, setEnabled, setSectionSummary);
@@ -241,6 +255,7 @@ export class WordCiteSectionController {
 			reminderState: this.reminderState,
 			hasPendingRequest: () => Boolean(this.pendingRequest),
 			beginRequest: (kind, owner) => this.beginRequest(kind, owner),
+			finishRequest: (requestId, nextReceipt) => this.finishRequest(requestId, nextReceipt),
 			setReceipt: (receipt, owner) => {
 				this.receipt = receipt;
 				if (owner) this.receiptOwner = owner;

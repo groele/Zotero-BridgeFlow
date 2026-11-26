@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**1.0.0** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**1.1.0** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -107,7 +107,7 @@
 
 - **五层微内核与子域模块化结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（`workspace/{store,tabs,topbar,sidebar,reader,spotlight,styles}`、`visual-notes/{columns,gallery,hub,reader}`、`inspector/{csl-preview,lookup,pdf,word-panel}`、`word-cite/{ipc,orphan,governance}`，4 个独立子域禁止直接横向导入）➔ `src/bridges/`，设置页 `src/preferences.ts` + `src/prefs/` 仅依赖 `kernel` 与 `services`。
 - **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minifyIdentifiers: false` 保持符号与栈帧可读，内联 CSS 与无用空白/注释无损折叠）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **14 项静态守卫**与单元测试。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、Bridge 隔离与 `runtime.patch` 宿主围栏、EventBus 零僵尸事件、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **17 项静态守卫**、单元测试与真实本机 Zotero 宿主契约冒烟脚本（`npm run smoke:host`）。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -123,11 +123,11 @@ npm run build:xpi
 
 在「工作区」设置中，可以选择是否在附件版本菜单中包含网页快照和优先显示文件名。选择其他版本会在当前阅读器标签页内直接原位切换，不会新建额外标签页或窗口。
 
-## 安装包完整性校验 (`v1.0.0`)
+## 安装包完整性校验 (`v1.1.0`)
 
-- 文件名：`Zotero-BridgeFlow-1.0.0.xpi`（`299,965` 字节，19 个条目，确定性构建）
-- SHA-256：`28FC9AD96277AF7B43B1747C36C49DE86F8C84DD5E650A9967BF02F30A8520C8`
-- SHA-512：`7382ECC3A240C399F630A2605E1115994D642DFB9B170CF8BF2209C96038EFCDFE6322D0DC8C370F8EA71A9B9EB1A25F1246DF858E27A113A46D2BB0F7995610`
+- 文件名：`Zotero-BridgeFlow-1.1.0.xpi`（`304,243` 字节，19 个条目，确定性构建）
+- SHA-256：`5AB350FBEEEA11C59F0CBA32F3CE77B0D8A892C61F1BBB12D1400AD1D5B6AFC3`
+- SHA-512：`93DF723BE5C0486C263ACA2EDECB828E0F8A7154EAAAC4AEDB566B605E5A5DF75EBC2499EBE6D4774A3AF259AC79D1299E68C14D9224978DDEBC019005880D5F`
 
 ---
 

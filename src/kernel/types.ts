@@ -140,17 +140,14 @@ export interface BridgeFlowEventMap {
 	'notifier:event': NotifierEventPayload;
 	'citation:snapshot-updated': CitationSnapshotPayload;
 	'citation:copied': CitationCopiedPayload;
-	'workspace:tabs-updated': { readonly windowCount: number; readonly openItemIDs: readonly number[] };
 	'workspace:open-item-request': OpenItemRequestPayload;
 	'workspace:groups-updated': { readonly groups: readonly WorkspaceGroupSummary[] };
 	'workspace:groups-query': { readonly requester?: string };
 	'workspace:reader-neighbors-updated': ReaderNeighborsPayload;
 	'workspace:reader-neighbors-query': { readonly win?: Window };
-	'workspace:remark-changed': { readonly itemID: number; readonly parentItemID: number; readonly remark: string };
 	'visual-notes:open-matrix': { readonly win: Window; readonly title: string; readonly itemIDs: readonly number[] };
 	'visual-notes:open-hub': { readonly win: Window; readonly initialTab?: 'annotations' | 'notes' };
 	'visual-notes:toggle-gallery': { readonly win: Window; readonly mode?: 'gallery' | 'board' };
-	'visual-notes:reading-updated': { readonly keys?: readonly string[] };
 	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
 	'word:insert-result': WordInsertResultPayload;
 	'word:refresh-request': { readonly sessionID?: string; readonly requestId?: string; readonly win?: Window };
@@ -166,8 +163,10 @@ export interface BridgeFlowEventMap {
 
 export type BridgeFlowEventName = keyof BridgeFlowEventMap;
 
+export type DomainId = 'workspace' | 'inspector' | 'word-cite' | 'visual-notes';
+
 export interface DomainModule {
-	readonly id: 'workspace' | 'inspector' | 'word-cite' | 'visual-notes';
+	readonly id: DomainId;
 	readonly enabledPref: string;
 	start(): void | Promise<void>;
 	stop(): void;
@@ -178,6 +177,7 @@ export interface DomainModule {
 
 export interface BridgeModule {
 	readonly id: string;
+	readonly requires?: readonly DomainId[];
 	start(): void;
 	stop(): void;
 }

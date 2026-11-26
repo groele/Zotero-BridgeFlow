@@ -6,8 +6,9 @@
    - 显示名称：`Zotero BridgeFlow`（中文名：桥引）；仓库名：`Zotero-BridgeFlow`；扩展 ID：`bridgeflow@groele`；首选项前缀：`extensions.zotero.bridgeflow.`；宿主门面：`Zotero.zoterobridgeflow`；CSS/DOM/FTL 前缀：`zbf-`。
    - 宿主兼容范围锁定为 Zotero `10.0` ~ `12.*`（Gecko 153+ / Firefox 140+）。
 2. **五层微内核与子域模块化结构（禁止越层依赖）**：
-   - 依赖流向严格单向：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/` ➔ `src/bridges/`（设置页 `src/preferences.ts` + `src/prefs/` 仅依赖 `src/kernel/` 与 `src/services/`）。
-   - **严禁 `src/domains/workspace/`、`src/domains/visual-notes/`、`src/domains/inspector/`、`src/domains/word-cite/` 之间互相直接 `import`**；跨领域协作必须经由 `TypedEventBus` 或 `src/services/` 在 `src/bridges/` 中完成。
+   - 依赖流向严格单向：`bootstrap.js` ➔ `src/kernel/`（含 `CommandRegistry`、`DomainPortRegistry`、Bridge `requires` 生命周期联动）➔ `src/services/`（含 `src/services/host/` 宿主防腐层与能力探针、`shared-reading-notes.ts` 共享门面）➔ `src/domains/` ➔ `src/bridges/`（设置页 `src/preferences.ts` + `src/prefs/` 仅依赖 `src/kernel/` 与 `src/services/`）。
+   - **严禁 `src/domains/workspace/`、`src/domains/visual-notes/`、`src/domains/inspector/`、`src/domains/word-cite/` 之间互相直接 `import`**；跨领域协作优先使用 `kernel.ports` 强类型窄契约与 `kernel.commands` 自注册命令，单向事实广播使用 `TypedEventBus`，`src/bridges/` 禁止穿透子域内部 `.store.` / `.tracker.`。
+   - **宿主私有 API 防腐围栏**：新增 Zotero 宿主 `runtime.patch` 必须收口至 `src/services/host/`（或既定 Word COM 集成层 `src/domains/word-cite/ipc/`），并通过 `npm run smoke:host` 对真实本机 Zotero `omni.ja` 执行契约核验。
    - **子域内部按职责清晰分包**：
      - `src/prefs/`：`color-editor.ts`、`dependencies.ts`、`helpers.ts`（入口 `src/preferences.ts`）
      - `src/domains/workspace/`：`store/`（状态与独立磁盘缓存）、`tabs/`（标签投影/关闭/右键菜单）、`topbar/`（水平栏/固定条/Hub 弹窗）、`sidebar/`（侧边栏/批量操作/悬停预览卡）、`reader/`（阅读器多版本切换器/相邻阅读器/计时）、`spotlight/`（全局命令面板）、`styles/`（样式定义），域根保留 `module.ts`、`workspace-ui.ts` 等门面文件。

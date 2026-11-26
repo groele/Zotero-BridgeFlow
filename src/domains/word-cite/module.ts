@@ -10,7 +10,12 @@ import { DragCiteController } from './ipc/drag-cite-controller.ts';
 import { clearRelinkedItemUris } from './orphan/orphan-identity.ts';
 import { WordSessionTracker } from './ipc/session-tracker.ts';
 import { CitationTagGovernance } from './governance/tag-governance.ts';
-import { registerWordCiteBusHandlers } from './word-cite-bus.ts';
+import {
+	buildWordCitationSnapshot,
+	createWordCitePort,
+	registerWordCiteBusHandlers,
+	type WordCiteBusHost,
+} from './word-cite-bus.ts';
 import { resolveActiveSelectionForWord } from './ipc/word-inserter.ts';
 import { WordIntegrationPoller } from './ipc/word-poller.ts';
 
@@ -47,6 +52,10 @@ export class WordCiteDomainModule implements DomainModule {
 	}
 
 	isActive(): boolean { return this.active; }
+
+	getSnapshot(): CitationSnapshotPayload | null {
+		return this.active ? buildWordCitationSnapshot(this.tracker) : null;
+	}
 
 	async citeCurrentSelection(win?: Window): Promise<void> {
 		const items = resolveActiveSelectionForWord(win);
@@ -94,20 +103,37 @@ export class WordCiteDomainModule implements DomainModule {
 			this.kernel.prefs.observeKeys(['wordCite.collections.enable'], () => this.collections.sync(this.tracker.getAllSessions())),
 		);
 
-		registerWordCiteBusHandlers(
-			{
-				kernel: this.kernel,
-				tracker: this.tracker,
-				collections: this.collections,
-				poller: this.poller,
-				dragCite: this.dragCite,
-				win32: this.win32,
-				isActive: () => this.active,
-				isRecovering: () => this.recoveringOrphans,
-				setRecovering: (v) => { this.recoveringOrphans = v; },
-				resyncNow: () => this.resyncNow(),
-			},
-			this.disposables,
+		const busHost: WordCiteBusHost = {
+			kernel: this.kernel,
+			tracker: this.tracker,
+			collections: this.collections,
+			poller: this.poller,
+			dragCite: this.dragCite,
+			win32: this.win32,
+			isActive: () => this.active,
+			isRecovering: () => this.recoveringOrphans,
+			setRecovering: (v) => { this.recoveringOrphans = v; },
+			resyncNow: () => this.resyncNow(),
+		};
+		registerWordCiteBusHandlers(busHost, this.disposables);
+		this.disposables.add(
+			this.kernel.ports.register('word-cite', createWordCitePort(busHost, (win) => this.citeCurrentSelection(win))),
+		);
+		this.disposables.add(
+			this.kernel.commands.register({
+				id: 'word-cite-commands',
+				owner: 'word-cite',
+				priority: 70,
+				isEnabled: () => this.active && Boolean(this.kernel.prefs.get('fusion.spotlightCrossDomain')),
+				build: (win, doc) => [{
+					id: 'cmd:cite-selected-word',
+					title: tLocale('> 插入当前文献到 Word 光标处', '> Insert Selected Citation at Word Cursor', doc),
+					subtitle: tLocale('在当前 Word 光标处生成原生 Zotero 可编辑引文域', 'Insert a native editable Zotero citation field at the Word cursor', doc),
+					badge: 'Word',
+					keywords: 'word cite insert 插入 引文',
+					action: async () => { await this.citeCurrentSelection(win); },
+				}],
+			}),
 		);
 	}
 

@@ -1,11 +1,12 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { CitationBadgeInfo, Disposable, DomainModule, OpenItemRequestPayload, SpotlightProvider, WorkspaceGroupSummary } from '../../kernel/types.ts';
-import type { ServiceContainer } from '../../services/service-container.ts';
+import type { CitationBadgeInfo, Disposable, DomainModule, OpenItemRequestPayload, ReaderNeighborsPayload, SpotlightProvider, WorkspaceGroupSummary } from '../../kernel/types.ts';
 import { invalidateResolvedItemCache } from '../../services/item-resolution.ts';
+import type { ServiceContainer } from '../../services/service-container.ts';
+import { createWorkspaceReadingNotesFacade, type SharedReadingNotesFacade } from '../../services/shared-reading-notes.ts';
 import { ReaderAttachmentSwitcher } from './reader/reader-attachment-switcher.ts';
 import { WorkspaceSpotlightEngine } from './spotlight/spotlight-engine.ts';
-import { ReaderNeighborPublisher } from './reader/reader-neighbors.ts';
+import { computeReaderNeighbors, ReaderNeighborPublisher } from './reader/reader-neighbors.ts';
 import { WorkspaceStateStore } from './store/state-store.ts';
 import { WorkspaceTabController } from './tabs/tab-controller.ts';
 import { invalidateTabProjectionCache } from './tabs/tab-projection.ts';
@@ -40,6 +41,7 @@ export class WorkspaceDomainModule implements DomainModule {
 
 	private readonly kernel: PluginKernel;
 	private readonly neighbors: ReaderNeighborPublisher;
+	private readonly readingNotesFacade: SharedReadingNotesFacade;
 	private readonly disposables = new DisposableStack();
 	private readonly windows = new Map<Window, WorkspaceWindowUI>();
 	private active = false;
@@ -60,16 +62,25 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.kernel = kernel;
 		this.store = new WorkspaceStateStore(kernel.prefs);
 		this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard, kernel.bus);
-		this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
+		this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs, kernel.commands);
 		this.neighbors = new ReaderNeighborPublisher(kernel.bus);
 		this.attachmentSwitcher = new ReaderAttachmentSwitcher(kernel, this.store);
+		this.readingNotesFacade = createWorkspaceReadingNotesFacade(this.store, () => this.refreshAllWindows());
 	}
 
 	async start(): Promise<void> {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
-		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
+		this.disposables.add(this.kernel.ports.register('workspace', {
+			focusOrOpenItem: (req, win) => this.focusOrOpenItem(req, win),
+			groupOpenTabsByItemIDs: (name, ids, win) => this.groupOpenTabsByItemIDs(name, ids, win),
+			setCitationBadges: (badges) => this.setCitationBadges(badges),
+			getGroupSummaries: () => this.getGroupSummaries(),
+			getReaderNeighbors: (win) => this.getReaderNeighbors(win),
+			registerSpotlightProvider: (provider) => this.registerSpotlightProvider(provider),
+		}));
+		this.disposables.add(this.store.onChange((change) => { if (change !== 'reading') this.queueRefresh(); }));
 		this.disposables.add(this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()));
 		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher', 'workspace.readerSwitcherIncludeSnapshots'], () => this.attachmentSwitcher.syncPref()));
 		this.disposables.add(this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
@@ -146,9 +157,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.disposables.disposeAll();
 	}
 
-	isActive(): boolean {
-		return this.active;
-	}
+	isActive(): boolean { return this.active; }
 
 	onMainWindowLoad(win: Window): void {
 		if (!this.active || this.windows.has(win)) return;
@@ -170,21 +179,12 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	private flushReadingProgress(minElapsed = 1, usePreviousReader = false): void {
-		const res = flushWorkspaceReadingProgress(
-			{
-				windows: this.windows.keys(),
-				tabs: this.tabs,
-				store: this.store,
-				kernel: this.kernel,
-				lastReaderByWin: this.lastReaderByWin,
-				lastReadingTickAt: this.lastReadingTickAt,
-				lastActivityAt: this.lastActivityAt,
-				readingDirty: this.readingDirty,
-				onScheduleRefresh: () => this.queueRefresh(50),
-			},
-			minElapsed,
-			usePreviousReader,
-		);
+		const res = flushWorkspaceReadingProgress({
+			windows: this.windows.keys(), tabs: this.tabs, store: this.store, kernel: this.kernel,
+			lastReaderByWin: this.lastReaderByWin, lastReadingTickAt: this.lastReadingTickAt,
+			lastActivityAt: this.lastActivityAt, readingDirty: this.readingDirty,
+			onScheduleRefresh: () => this.queueRefresh(50),
+		}, minElapsed, usePreviousReader);
 		this.lastReadingTickAt = res.lastReadingTickAt;
 		this.lastActivityAt = res.lastActivityAt;
 		this.readingDirty = res.readingDirty;
@@ -192,26 +192,16 @@ export class WorkspaceDomainModule implements DomainModule {
 
 	private queueRefresh(delayMs = 16): void {
 		if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
-		this.refreshTimer = setTimeout(() => {
-			this.refreshTimer = null;
-			if (this.active) this.refreshAllWindows();
-		}, delayMs);
+		this.refreshTimer = setTimeout(() => { this.refreshTimer = null; if (this.active) this.refreshAllWindows(); }, delayMs);
 	}
 
 	refreshAllWindows(): void {
-		if (this.refreshTimer !== null) {
-			clearTimeout(this.refreshTimer);
-			this.refreshTimer = null;
-		}
+		if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 		const targetWin = this.getTargetWindow();
 		let targetSnapshot: ReturnType<WorkspaceTabController['buildTrackedTabs']> | null = null;
 		const snapshots: ReturnType<WorkspaceTabController['buildTrackedTabs']>[] = [];
 		for (const [win, ui] of [...this.windows.entries()]) {
-			if ((win as any).closed) {
-				ui.destroy();
-				this.windows.delete(win);
-				continue;
-			}
+			if ((win as any).closed) { ui.destroy(); this.windows.delete(win); continue; }
 			try {
 				const snap = ui.render();
 				snapshots.push(snap);
@@ -224,10 +214,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.emitGroupSummaries(false, snapshots);
 	}
 
-	private emitGroupSummaries(
-		force = false,
-		precomputedSnapshots?: ReadonlyArray<ReturnType<WorkspaceTabController['buildTrackedTabs']>>,
-	): void {
+	private emitGroupSummaries(force = false, precomputedSnapshots?: ReadonlyArray<ReturnType<WorkspaceTabController['buildTrackedTabs']>>): void {
 		if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === '') return;
 		const groups: WorkspaceGroupSummary[] = buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store, precomputedSnapshots);
 		const fp = groups.map((g) => `${g.groupId}:${g.groupName}:${g.itemIDs.join(',')}`).join('|');
@@ -236,11 +223,20 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.kernel.bus.emit('workspace:groups-updated', { groups });
 	}
 
+	getReadingNotesFacade(): SharedReadingNotesFacade { return this.readingNotesFacade; }
+
+	getGroupSummaries(): readonly WorkspaceGroupSummary[] {
+		return buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store);
+	}
+
+	getReaderNeighbors(win?: Window): ReaderNeighborsPayload | null {
+		const targetWin = win || this.getTargetWindow();
+		return targetWin ? computeReaderNeighbors(targetWin, this.tabs.buildTrackedTabs(targetWin)) : null;
+	}
+
 	setCitationBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
 		this.latestBadges = new Map(badges);
-		for (const ui of this.windows.values()) {
-			ui.setCitationBadges(badges);
-		}
+		for (const ui of this.windows.values()) ui.setCitationBadges(badges);
 	}
 
 	registerSpotlightProvider(provider: SpotlightProvider): Disposable {

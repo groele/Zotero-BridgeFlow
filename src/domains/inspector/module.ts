@@ -1,4 +1,5 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
+import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
@@ -116,6 +117,29 @@ export class InspectorDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
+			this.kernel.ports.register('inspector', {
+				clearCache: (target) => this.clearCache(target),
+			}),
+		);
+
+		this.disposables.add(
+			this.kernel.commands.register({
+				id: 'inspector-commands',
+				owner: 'inspector',
+				priority: 40,
+				isEnabled: () => this.active && Boolean(this.kernel.prefs.get('fusion.spotlightCrossDomain')),
+				build: (_win, doc) => [{
+					id: 'cmd:clear-citation-cache',
+					title: tLocale('> 清空引文记忆与反查缓存', '> Clear Citation & Lookup Caches', doc),
+					subtitle: tLocale('重置已记录的引文复制历史与反查索引', 'Reset copied citation lookup history and formatted preview cache', doc),
+					badge: tLocale('维护', 'Maint', doc),
+					keywords: 'clear cache 清空缓存 反查',
+					action: () => { this.clearCache('all'); },
+				}],
+			}),
+		);
+
+		this.disposables.add(
 			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
 				if (!this.active) return;
 				const itemIDs = ids.map(Number).filter((n) => Number.isFinite(n) && n > 0);
@@ -127,6 +151,13 @@ export class InspectorDomainModule implements DomainModule {
 				void this.cslPreview.refreshModifiedItems(itemIDs);
 			}),
 		);
+	}
+
+	clearCache(target: 'memory' | 'disk' | 'all' = 'all'): void {
+		if (target === 'memory' || target === 'all') this.services.csl.clearCache();
+		if (target === 'disk' || target === 'all') this.services.history.clear();
+		this.lookupEngine.clearCache();
+		clearReminderFieldsCache();
 	}
 
 	async lookupQuery(query: string, libraryItems?: readonly any[]): Promise<LookupCandidate[]> {

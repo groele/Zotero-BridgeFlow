@@ -1,23 +1,28 @@
 import type { VisualNotesDomainModule } from '../domains/visual-notes/module.ts';
-import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
-import type { BridgeModule } from '../kernel/types.ts';
+import type { BridgeModule, Disposable } from '../kernel/types.ts';
 import { syncItemRemarkToExtra } from '../services/item-remark-sync.ts';
+import {
+	resolveReadingNotesFacade,
+	type ReadingNotesFacadeProvider,
+	type SharedReadingNotesFacade,
+} from '../services/shared-reading-notes.ts';
 
 export class VisualNotesBridge implements BridgeModule {
 	public readonly id = 'visual-notes-bridge';
+	public readonly requires = ['workspace', 'visual-notes'] as const;
+
 	private readonly kernel: PluginKernel;
-	private readonly workspace: WorkspaceDomainModule;
+	private readonly workspace: ReadingNotesFacadeProvider;
 	private readonly visualNotes: VisualNotesDomainModule;
-	private prevRemarks = new Map<string, string>();
-	private disposeStoreListener: (() => void) | null = null;
+	private disposeFacadeListener: Disposable | null = null;
 	private readingRevision = 1;
 	private remarksRevision = 1;
 	private active = false;
 
 	constructor(
 		kernel: PluginKernel,
-		workspace: WorkspaceDomainModule,
+		workspace: ReadingNotesFacadeProvider,
 		visualNotes: VisualNotesDomainModule,
 	) {
 		this.kernel = kernel;
@@ -28,82 +33,55 @@ export class VisualNotesBridge implements BridgeModule {
 	start(): void {
 		if (this.active) return;
 		this.active = true;
-		this.seedRemarks();
+		const facade: SharedReadingNotesFacade = resolveReadingNotesFacade(this.workspace);
 
 		this.visualNotes.setDataSource({
-			getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
+			getReadingProgress: (itemID) => facade.getReadingProgress(itemID),
 			getReadingRevision: () => this.readingRevision,
-			getRemark: (itemID) => this.workspace.store.getItemRemark(itemID),
+			getRemark: (itemID) => facade.getRemark(itemID),
 			getRemarksRevision: () => this.remarksRevision,
-			persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
+			persistRemarks: () => facade.persistRemarks(),
 			setRemark: (itemID, remark, skipExtraObserver) => {
-				if (skipExtraObserver) {
-					this.workspace.store.setItemRemark(itemID, remark, true);
-					this.seedRemarks();
-					this.workspace.store.notifyNotesChanged();
-				} else {
-					this.workspace.store.setItemRemark(itemID, remark);
-				}
-				this.workspace.refreshAllWindows();
+				facade.setRemark(itemID, remark, skipExtraObserver);
+				facade.refreshWorkspaceViews();
 			},
 		});
 
-		this.disposeStoreListener = this.workspace.store.onChange((change) => {
-			if (!this.active || change === 'session' || change === 'layout') return;
-			if (change === 'reading') {
+		this.disposeFacadeListener = facade.subscribe((ev) => {
+			if (!this.active) return;
+			if (ev.kind === 'reading') {
 				this.readingRevision += 1;
-				this.visualNotes.refreshLibraryViews(undefined, true);
+				this.refreshVisualNotes(undefined, true);
 				return;
 			}
 			this.remarksRevision += 1;
-			if (change === 'notes-local-clear' || change === 'import') {
+			if (ev.kind === 'notes-local-clear' || ev.kind === 'import') {
 				this.readingRevision += 1;
-				this.seedRemarks();
-				this.visualNotes.refreshLibraryViews();
+				this.refreshVisualNotes();
 				return;
 			}
-			const affected = this.syncChangedRemarksToExtra();
-			if (affected.size > 0) this.visualNotes.refreshLibraryViews(affected);
+			if (this.kernel.prefs.get('workspace.syncRemarkToExtra') && ev.syncExtraEntries?.length) {
+				for (const entry of ev.syncExtraEntries) {
+					void syncItemRemarkToExtra(entry.itemID, entry.remark).catch(() => {});
+				}
+			}
+			if (ev.changedItemIDs && ev.changedItemIDs.size > 0) {
+				this.refreshVisualNotes(ev.changedItemIDs);
+			}
 		});
 	}
 
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
-		this.disposeStoreListener?.();
-		this.disposeStoreListener = null;
+		this.disposeFacadeListener?.();
+		this.disposeFacadeListener = null;
 		this.visualNotes.setDataSource(undefined);
 	}
 
-	private seedRemarks(): void {
-		this.prevRemarks.clear();
-		for (const [k, v] of Object.entries(this.workspace.store.state.remarks)) {
-			this.prevRemarks.set(k, v);
-		}
-	}
-
-	private syncChangedRemarksToExtra(): Set<number> {
-		const current = this.workspace.store.state.remarks;
-		const changedKeys: Array<{ key: string; value: string }> = [];
-		for (const [k, v] of Object.entries(current)) {
-			if (this.prevRemarks.get(k) !== v) changedKeys.push({ key: k, value: v });
-		}
-		for (const k of this.prevRemarks.keys()) {
-			if (!(k in current)) changedKeys.push({ key: k, value: '' });
-		}
-		const affected = new Set<number>();
-		if (!changedKeys.length) return affected;
-		this.seedRemarks();
-		const syncExtra = this.kernel.prefs.get('workspace.syncRemarkToExtra');
-		for (const entry of changedKeys) {
-			const vm = this.workspace.store.state.virtualMembers[entry.key];
-			const match = entry.key.match(/^item:(\d+)$/);
-			const itemID = Number(vm?.parentItemID || vm?.itemID || (match ? match[1] : 0));
-			if (itemID > 0) {
-				affected.add(itemID);
-				if (syncExtra) void syncItemRemarkToExtra(itemID, entry.value).catch(() => {});
-			}
-		}
-		return affected;
+	private refreshVisualNotes(affectedIDs?: Iterable<number>, readingOnly = false): void {
+		const port = this.kernel.ports.get('visual-notes');
+		if (port) port.refreshLibraryViews(affectedIDs, readingOnly);
+		else this.visualNotes.refreshLibraryViews(affectedIDs, readingOnly);
 	}
 }

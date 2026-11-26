@@ -1,16 +1,20 @@
+import { CommandRegistry } from './command-registry.ts';
 import { DisposableStack } from './disposable.ts';
+import { DomainPortRegistry } from './domain-ports.ts';
 import { TypedEventBus } from './event-bus.ts';
 import { KernelLogger } from './logger.ts';
 import { NativeRuntime } from './native-runtime.ts';
 import { UnifiedNotifierHub } from './notifier-hub.ts';
 import { PREF_PREFIX, PREF_SCHEMA, type PrefKey } from './pref-schema.ts';
 import { UnifiedPrefService, type HostPrefsAdapter } from './pref-service.ts';
-import type { BridgeModule, DomainModule, PluginInfo } from './types.ts';
+import type { BridgeModule, DomainId, DomainModule, PluginInfo } from './types.ts';
 
 export class PluginKernel {
 	public info: PluginInfo = { id: 'bridgeflow@groele', version: typeof __BRIDGEFLOW_VERSION__ === 'string' ? __BRIDGEFLOW_VERSION__ : '', rootURI: '' };
 	public readonly logger = new KernelLogger();
 	public readonly bus: TypedEventBus;
+	public readonly commands: CommandRegistry;
+	public readonly ports = new DomainPortRegistry();
 	public readonly prefs: UnifiedPrefService;
 	public readonly runtime = new NativeRuntime();
 	public readonly notifier: UnifiedNotifierHub;
@@ -19,8 +23,9 @@ export class PluginKernel {
 	public readonly prefSchema = PREF_SCHEMA;
 	public _ftlRegistered = false;
 
-	private readonly domains = new Map<DomainModule['id'], DomainModule>();
+	private readonly domains = new Map<DomainId, DomainModule>();
 	private readonly bridges: BridgeModule[] = [];
+	private readonly activeBridges = new Set<BridgeModule>();
 	private readonly openWindows = new Set<Window>();
 	private initialized = false;
 	private started = false;
@@ -30,6 +35,7 @@ export class PluginKernel {
 
 	constructor(options: { prefAdapter?: HostPrefsAdapter } = {}) {
 		this.bus = new TypedEventBus((event, err) => this.logger.error(`bus:${event}`, err));
+		this.commands = new CommandRegistry((id, err) => this.logger.error(`command:${id}`, err));
 		this.prefs = new UnifiedPrefService({ bus: this.bus, adapter: options.prefAdapter });
 		this.notifier = new UnifiedNotifierHub(this.bus);
 	}
@@ -77,13 +83,6 @@ export class PluginKernel {
 
 		await this.syncDomainStates();
 		if (this.disposed) return;
-		for (const bridge of this.bridges) {
-			try {
-				bridge.start();
-			} catch (err) {
-				this.logger.error(`bridge:${bridge.id}`, err);
-			}
-		}
 
 		// Attach to already-open main windows
 		const zot = (globalThis as any).Zotero;
@@ -96,10 +95,47 @@ export class PluginKernel {
 		}
 	}
 
+	isBridgeActive(bridgeId: string): boolean {
+		for (const bridge of this.activeBridges) {
+			if (bridge.id === bridgeId) return true;
+		}
+		return false;
+	}
+
 	syncDomainStates(): Promise<void> {
 		const next = this.syncQueue.then(() => this.runSyncDomainStates());
 		this.syncQueue = next.catch(() => {});
 		return next;
+	}
+
+	private shouldBridgeBeActive(bridge: BridgeModule): boolean {
+		if (!this.started || this.disposed) return false;
+		if (!bridge.requires?.length) return true;
+		return bridge.requires.every((id) => Boolean(this.domains.get(id)?.isActive()));
+	}
+
+	private syncBridgeStates(): void {
+		// Stop bridges whose required domains are no longer active first.
+		for (const bridge of [...this.bridges].reverse()) {
+			if (this.activeBridges.has(bridge) && !this.shouldBridgeBeActive(bridge)) {
+				this.activeBridges.delete(bridge);
+				try {
+					bridge.stop();
+				} catch (err) {
+					this.logger.error(`bridge:stop:${bridge.id}`, err);
+				}
+			}
+		}
+		for (const bridge of this.bridges) {
+			if (!this.activeBridges.has(bridge) && this.shouldBridgeBeActive(bridge)) {
+				try {
+					bridge.start();
+					this.activeBridges.add(bridge);
+				} catch (err) {
+					this.logger.error(`bridge:${bridge.id}`, err);
+				}
+			}
+		}
 	}
 
 	private async runSyncDomainStates(): Promise<void> {
@@ -131,6 +167,7 @@ export class PluginKernel {
 				}
 			}
 		}
+		if (!this.disposed) this.syncBridgeStates();
 	}
 
 	onMainWindowLoad(win: Window): void {
@@ -163,6 +200,8 @@ export class PluginKernel {
 		if (this.disposed) return;
 		this.disposed = true;
 		for (const bridge of [...this.bridges].reverse()) {
+			if (!this.activeBridges.has(bridge)) continue;
+			this.activeBridges.delete(bridge);
 			try { bridge.stop(); } catch (err) { this.logger.error(`bridge:stop:${bridge.id}`, err); }
 		}
 		for (const win of [...this.openWindows]) {
@@ -176,6 +215,8 @@ export class PluginKernel {
 		this.disposables.disposeAll((err) => this.logger.error('dispose', err));
 		this.runtime.unregisterAll();
 		this.prefs.dispose();
+		this.commands.clear();
+		this.ports.clear();
 		this.bus.clear();
 		this.started = false;
 		this.initialized = false;

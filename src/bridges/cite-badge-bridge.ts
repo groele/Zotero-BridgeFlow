@@ -1,13 +1,14 @@
 import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
-import type { BridgeModule, CitationSnapshotPayload } from '../kernel/types.ts';
+import type { BridgeModule, CitationBadgeInfo, CitationSnapshotPayload } from '../kernel/types.ts';
 
 /**
  * Bridge 2: Word Citation State -> Workspace Sidebar Live Ordinal Badges.
  */
 export class CiteBadgeBridge implements BridgeModule {
 	public readonly id = 'cite-badge-bridge';
+	public readonly requires = ['workspace', 'word-cite'] as const;
 	private readonly disposables = new DisposableStack();
 	private lastSnapshot: CitationSnapshotPayload | null = null;
 
@@ -30,19 +31,30 @@ export class CiteBadgeBridge implements BridgeModule {
 		this.disposables.add(
 			this.kernel.prefs.observeKeys(['fusion.sidebarCiteBadge'], () => this.pushBadges()),
 		);
+		const initial = this.kernel.ports.get('word-cite')?.getSnapshot() ?? null;
+		if (initial) {
+			this.lastSnapshot = initial;
+			this.pushBadges();
+		}
 	}
 
 	stop(): void {
 		this.disposables.disposeAll();
-		this.workspace.setCitationBadges(new Map());
+		this.applyBadges(new Map());
 		this.lastSnapshot = null;
 	}
 
 	private pushBadges(): void {
 		if (!this.kernel.prefs.get('fusion.sidebarCiteBadge') || !this.lastSnapshot) {
-			this.workspace.setCitationBadges(new Map());
+			this.applyBadges(new Map());
 			return;
 		}
-		this.workspace.setCitationBadges(this.lastSnapshot.byItemID);
+		this.applyBadges(this.lastSnapshot.byItemID);
+	}
+
+	private applyBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
+		const port = this.kernel.ports.get('workspace');
+		if (port) port.setCitationBadges(badges);
+		else this.workspace.setCitationBadges(badges);
 	}
 }
