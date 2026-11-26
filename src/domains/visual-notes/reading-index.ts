@@ -1,5 +1,5 @@
-import { renderRichTitleNodes } from './gallery-icons.ts';
-import { galEl } from './gallery-styles.ts';
+import { renderRichTitleNodes } from './gallery/gallery-icons.ts';
+import { galEl } from './gallery/gallery-styles.ts';
 
 export interface ReadingSelection { itemID: number }
 

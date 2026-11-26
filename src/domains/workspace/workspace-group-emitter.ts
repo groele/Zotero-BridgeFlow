@@ -1,18 +1,29 @@
 import type { WorkspaceGroupSummary } from '../../kernel/types.ts';
 import { normalizeToRegularItem } from '../../services/item-resolution.ts';
-import type { WorkspaceStateStore } from './state-store.ts';
-import type { WorkspaceTabController } from './tab-controller.ts';
+import type { WorkspaceStateStore } from './store/state-store.ts';
+import type { WorkspaceTabController } from './tabs/tab-controller.ts';
+import type { TrackedTab } from './types.ts';
 
 export function buildWorkspaceGroupSummaries(
 	windows: Iterable<Window>,
 	tabs: WorkspaceTabController,
 	store: WorkspaceStateStore,
+	precomputedSnapshots?: ReadonlyArray<readonly TrackedTab[]>,
 ): WorkspaceGroupSummary[] {
 	const tabParentByKey = new Map<string, number>();
-	for (const win of windows) {
-		for (const tab of tabs.buildTrackedTabs(win)) {
-			const pid = Number(tab.parentItemID || tab.itemID || 0);
-			if (pid > 0) tabParentByKey.set(tab.key, pid);
+	if (precomputedSnapshots) {
+		for (const list of precomputedSnapshots) {
+			for (const tab of list) {
+				const pid = Number(tab.parentItemID || tab.itemID || 0);
+				if (pid > 0) tabParentByKey.set(tab.key, pid);
+			}
+		}
+	} else {
+		for (const win of windows) {
+			for (const tab of tabs.buildTrackedTabs(win)) {
+				const pid = Number(tab.parentItemID || tab.itemID || 0);
+				if (pid > 0) tabParentByKey.set(tab.key, pid);
+			}
 		}
 	}
 	const hostItems = (globalThis as any).Zotero?.Items;

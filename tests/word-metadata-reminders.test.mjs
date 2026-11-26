@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { BridgeFlowApp } from '../src/index.ts';
-import { inspectItemMetadataFields } from '../src/domains/inspector/word-cite-reminders-model.ts';
-import { REMINDERS_CARD_CSS } from '../src/domains/inspector/word-cite-reminders-ui.ts';
-import { WORD_CITE_SCHEME_C_CSS } from '../src/domains/inspector/word-cite-styles.ts';
+import { inspectItemMetadataFields } from '../src/domains/inspector/word-panel/word-cite-reminders-model.ts';
+import { REMINDERS_CARD_CSS } from '../src/domains/inspector/word-panel/word-cite-reminders-ui.ts';
+import { WORD_CITE_SCHEME_C_CSS } from '../src/domains/inspector/word-panel/word-cite-styles.ts';
 import { sweepBridgeFlowCacheDirectory } from '../src/services/cache-hygiene.ts';
 import { MetadataRemindersDiskCache } from '../src/services/metadata-reminders-cache.ts';
 

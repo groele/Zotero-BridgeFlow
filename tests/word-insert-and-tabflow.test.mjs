@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { normalizeWordTitleForMatch, Win32BridgeService } from '../src/services/win32-bridge.ts';
-import { insertItemsIntoWord, refreshActiveWordDocument } from '../src/domains/word-cite/word-inserter.ts';
-import { WordSessionTracker } from '../src/domains/word-cite/session-tracker.ts';
-import { WordIntegrationPoller } from '../src/domains/word-cite/word-poller.ts';
-import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
-import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
-import { WorkspaceSpotlightEngine } from '../src/domains/workspace/spotlight-engine.ts';
+import { insertItemsIntoWord, refreshActiveWordDocument } from '../src/domains/word-cite/ipc/word-inserter.ts';
+import { WordSessionTracker } from '../src/domains/word-cite/ipc/session-tracker.ts';
+import { WordIntegrationPoller } from '../src/domains/word-cite/ipc/word-poller.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
+import { WorkspaceTabController } from '../src/domains/workspace/tabs/tab-controller.ts';
+import { WorkspaceSpotlightEngine } from '../src/domains/workspace/spotlight/spotlight-engine.ts';
 
 function createMemoryPrefs(initial = {}) {
 	const store = new Map(Object.entries(initial));
@@ -338,7 +338,7 @@ test('WordCite: multi-window target verification, numeric index sorting & transi
 		tree: { invalidate() {} },
 	};
 	mockCv._refreshRowMap();
-	const { reorderViewCollections } = await import('../src/domains/word-cite/collection-tree-order.ts');
+	const { reorderViewCollections } = await import('../src/domains/word-cite/governance/collection-tree-order.ts');
 	assert.equal(reorderViewCollections(mockCv, new Set(['K_WORD'])), true);
 	assert.equal(refreshCalled, false);
 	// Word collection moved right above V-pub, C-parent and its level-2 C-child stay intact, and Feeds stay at the bottom

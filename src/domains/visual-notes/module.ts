@@ -1,6 +1,6 @@
-import { closeHubPage } from './hub-page.ts';
-import { closeVisualColumnPopover } from './column-popover-styles.ts';
-import { closeStatusPickerPopover } from './status-rating-popover.ts';
+import { closeHubPage } from './hub/hub-page.ts';
+import { closeVisualColumnPopover } from './columns/column-popover-styles.ts';
+import { closeStatusPickerPopover } from './columns/status-rating-popover.ts';
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
@@ -8,17 +8,18 @@ import { syncNativeStatusTagDots } from '../../services/item-status-rating.ts';
 import { invalidatePdfCover } from '../../services/pdf-cover-service.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { bindCustomStatusColorPersistence, loadCustomStatusColors } from '../../services/status-tag-colors.ts';
-import { openAnnotationMatrixModal } from './annotation-matrix-modal.ts';
-import { ReaderAnnotationTools } from './annotation-tools.ts';
-import { openCollectionNotesHubModal } from './collection-notes-hub.ts';
+import { openAnnotationMatrixModal } from './hub/annotation-matrix-modal.ts';
+import { ReaderAnnotationTools } from './reader/annotation-tools.ts';
+import { openCollectionNotesHubModal } from './hub/collection-notes-hub.ts';
 import { clearExtraRemarkCache, type VisualNotesDataSource } from './data-source.ts';
-import { clearGalleryCardCache } from './gallery-board-helpers.ts';
-import { GalleryBoardController } from './gallery-view.ts';
-import { resolveAffectedVisualItemIDs } from './hub-cache.ts';
-import { InfoBriefNoteController } from './info-brief-note.ts';
-import { ReadingColumnsController, RemarkColumnController } from './library-columns.ts';
-import { StatusRatingColumnsController } from './status-rating-columns.ts';
-import { TitleHeatmapController } from './title-heatmap.ts';
+import { clearGalleryCardCache } from './gallery/gallery-board-helpers.ts';
+import { GalleryBoardController } from './gallery/gallery-view.ts';
+import { resolveAffectedVisualItemIDs } from './hub/hub-cache.ts';
+import { InfoBriefNoteController } from './reader/info-brief-note.ts';
+import { ReadingColumnsController, RemarkColumnController } from './columns/library-columns.ts';
+import { StatusRatingColumnsController } from './columns/status-rating-columns.ts';
+import { TitleHeatmapController } from './columns/title-heatmap.ts';
+import { handleVisualNotesPrefChange, VISUAL_NOTES_WATCHED_PREFS } from './visual-notes-prefs.ts';
 
 export class VisualNotesDomainModule implements DomainModule {
 	public readonly id = 'visual-notes' as const;
@@ -39,6 +40,8 @@ export class VisualNotesDomainModule implements DomainModule {
 	private dataSource?: VisualNotesDataSource;
 	private active = false;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	private readingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+	private pendingReadingRefresh = false;
 	private dirtyItemIDs: Set<number> | null = new Set();
 
 	constructor(kernel: PluginKernel, services: ServiceContainer) {
@@ -107,65 +110,28 @@ export class VisualNotesDomainModule implements DomainModule {
 		}
 
 		this.disposables.add(
-			this.kernel.prefs.observeKeys(
-				[
-					'visualNotes.infoBriefNote.enable', 'visualNotes.showTitleTagDots', 'visualNotes.statusColumn.enable',
-					'visualNotes.statusSyncZoteroTagColor', 'visualNotes.statusCustomColors', 'visualNotes.ratingColumn.enable',
-					'visualNotes.ratingStorage', 'visualNotes.gallery.enable', 'visualNotes.gallery.defaultMode',
-					'visualNotes.gallery.groupBy', 'visualNotes.gallery.cardDensity', 'visualNotes.gallery.cardWidth',
-					'visualNotes.gallery.coverHeight', 'visualNotes.gallery.showBriefNote', 'visualNotes.collectionHub.enable',
-					'visualNotes.collectionHub.ignoreFigureTable', 'visualNotes.collectionHub.preferCommentOverQuote',
-					'workspace.remarkColumn.enable', 'workspace.readingColumn.enable', 'workspace.readingTitleHeatmap.enable',
-					'workspace.readingHeatmap.color', 'workspace.readingHeatmap.opacity', 'workspace.annotationColumn.enable',
-					'inspector.annotations.popupLabelsEnable', 'inspector.annotations.colorLabels',
-					'inspector.annotations.enabledColors', 'wordCite.citationTags.text',
-				],
-				(key) => {
-					if (!this.active) return;
-					this.syncFeatureStates();
-					if (key === 'visualNotes.statusCustomColors') {
-						loadCustomStatusColors(this.kernel.prefs.get('visualNotes.statusCustomColors'));
-						clearGalleryCardCache();
-						this.statusRatingColumns.refreshColumns();
-						this.galleryBoard.refreshWindows();
-					}
-					if (key === 'visualNotes.statusSyncZoteroTagColor') {
-						this.runStatusTagDotSync(Boolean(this.kernel.prefs.get('visualNotes.statusSyncZoteroTagColor')));
-					}
-					if (key === 'inspector.annotations.popupLabelsEnable' || key === 'inspector.annotations.colorLabels' || key === 'inspector.annotations.enabledColors') {
-						this.annotationTools.popupLabels.sync();
-					}
-					if (key === 'inspector.annotations.colorLabels') this.readingColumns.refreshColumns();
-					if (key === 'workspace.readingHeatmap.color') this.readingColumns.syncPrefs();
-					if (key === 'visualNotes.collectionHub.enable' && !this.kernel.prefs.get(key)) {
-						for (const win of this.windows) closeHubPage(win);
-					}
-					if (key === 'visualNotes.ratingStorage' || key === 'wordCite.citationTags.text' || key === 'visualNotes.statusSyncZoteroTagColor') {
-						this.statusRatingColumns.refreshPrefs();
-					}
-					if (key === 'visualNotes.ratingStorage' || key === 'wordCite.citationTags.text') {
-						clearGalleryCardCache();
-						this.statusRatingColumns.refreshColumns();
-						this.galleryBoard.refreshWindows();
-					}
-					if (key === 'visualNotes.collectionHub.ignoreFigureTable' || key === 'visualNotes.collectionHub.preferCommentOverQuote') {
-						this.galleryBoard.refreshWindows();
-					}
-				},
-			),
+			this.kernel.prefs.observeKeys([...VISUAL_NOTES_WATCHED_PREFS], (key) => {
+				if (!this.active) return;
+				handleVisualNotesPrefChange(
+					{
+						kernel: this.kernel,
+						windows: this.windows,
+						readingColumns: this.readingColumns,
+						statusRatingColumns: this.statusRatingColumns,
+						galleryBoard: this.galleryBoard,
+						annotationTools: this.annotationTools,
+						syncFeatureStates: () => this.syncFeatureStates(),
+						runStatusTagDotSync: (enable) => this.runStatusTagDotSync(enable),
+					},
+					key,
+				);
+			}),
 		);
 
 		this.disposables.add(
 			this.kernel.bus.on('visual-notes:open-matrix', ({ win, title, itemIDs }) => {
 				if (!this.active || !this.kernel.prefs.get('workspace.enableAnnotationMatrix')) return;
-				openAnnotationMatrixModal({
-					win,
-					title,
-					itemIDs,
-					prefs: this.kernel.prefs,
-					bus: this.kernel.bus,
-					clipboard: this.services.clipboard,
-				});
+				openAnnotationMatrixModal({ win, title, itemIDs, prefs: this.kernel.prefs, bus: this.kernel.bus, clipboard: this.services.clipboard });
 			}),
 		);
 
@@ -177,19 +143,25 @@ export class VisualNotesDomainModule implements DomainModule {
 
 		this.disposables.add(
 			this.kernel.bus.on('visual-notes:toggle-gallery', ({ win, mode }) => {
-				if (this.active && this.kernel.prefs.get('visualNotes.gallery.enable')) {
-					this.galleryBoard.toggleWindowGallery(win, mode);
+				if (!this.active || !this.kernel.prefs.get('visualNotes.gallery.enable')) return;
+				this.galleryBoard.toggleWindowGallery(win, mode);
+				if (this.pendingReadingRefresh && this.hasVisibleLibraryView()) {
+					this.pendingReadingRefresh = false;
+					this.refreshLibraryViews(undefined, true);
 				}
 			}),
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('visual-notes:reading-updated', () => this.refreshLibraryViews(undefined, true)),
-		);
-
-		this.disposables.add(
-			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
+			this.kernel.notifier.subscribe(['item', 'tab'], ({ event, type, ids }) => {
 				if (!this.active) return;
+				if (type === 'tab') {
+					if (event === 'select' && this.pendingReadingRefresh && this.hasVisibleLibraryView()) {
+						this.pendingReadingRefresh = false;
+						this.refreshLibraryViews(undefined, true);
+					}
+					return;
+				}
 				if (event === 'modify' || event === 'trash' || event === 'delete') {
 					for (const raw of ids) { const n = Number(raw); if (n > 0) invalidatePdfCover(n); }
 				}
@@ -235,20 +207,38 @@ export class VisualNotesDomainModule implements DomainModule {
 			if (this.active) this.refreshLibraryViews(scoped);
 		}, delayMs);
 	}
+	private hasVisibleLibraryView(): boolean {
+		if (!this.windows.size || this.galleryBoard.hasOpenGallery()) return true;
+		for (const w of this.windows) {
+			const sel = (w as any)?.Zotero_Tabs?.selectedID;
+			if (!sel || sel === 'zotero-pane') return true;
+		}
+		return false;
+	}
+
+	private flushReadingRefresh(): void {
+		if (this.readingColumns.isReadTimeActive()) {
+			try { (globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.(); } catch { /* ignore */ }
+		}
+		this.titleHeatmap.refreshWindows();
+		this.galleryBoard.refreshWindows(true);
+	}
+
 	refreshLibraryViews(affectedIDs?: Iterable<number>, readingOnly = false): void {
 		if (!this.active) return;
 		if (readingOnly) {
-			if (this.readingColumns.isReadTimeActive()) {
-				try { (globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.(); } catch { /* ignore */ }
-			}
-			this.titleHeatmap.refreshWindows();
-			this.galleryBoard.refreshWindows(true);
+			this.readingColumns.bumpReadingRevision();
+			if (!this.hasVisibleLibraryView()) { this.pendingReadingRefresh = true; return; }
+			if (this.readingRefreshTimer !== null) return;
+			this.readingRefreshTimer = setTimeout(() => {
+				this.readingRefreshTimer = null;
+				if (this.active) this.flushReadingRefresh();
+			}, 60);
 			return;
 		}
-		if (this.refreshTimer !== null) {
-			clearTimeout(this.refreshTimer);
-			this.refreshTimer = null;
-		}
+		if (this.hasVisibleLibraryView()) this.pendingReadingRefresh = false;
+		if (this.readingRefreshTimer !== null) { clearTimeout(this.readingRefreshTimer); this.readingRefreshTimer = null; }
+		if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 		this.readingColumns.clearCache(affectedIDs);
 		this.statusRatingColumns.clearCache(affectedIDs);
 		clearGalleryCardCache(affectedIDs);
@@ -261,30 +251,14 @@ export class VisualNotesDomainModule implements DomainModule {
 	openCollectionHub(win: Window, initialTab?: 'annotations' | 'notes'): void {
 		if (!this.active || !win || !this.kernel.prefs.get('visualNotes.collectionHub.enable')) return;
 		openCollectionNotesHubModal({
-			win,
-			prefs: this.kernel.prefs,
-			bus: this.kernel.bus,
-			clipboard: this.services.clipboard,
-			dataSource: this.dataSource,
-			initialTab,
-			onRemarkMutated: () => {
-				this.remarkColumn.refresh();
-				this.infoBriefNote.refresh();
-				this.galleryBoard.refreshWindows();
-			},
+			win, prefs: this.kernel.prefs, bus: this.kernel.bus, clipboard: this.services.clipboard, dataSource: this.dataSource, initialTab,
+			onRemarkMutated: () => { this.remarkColumn.refresh(); this.infoBriefNote.refresh(); this.galleryBoard.refreshWindows(); },
 		});
 	}
 
 	openMatrixModal(win: Window, title: string, itemIDs: readonly number[]): void {
 		if (!this.active || !this.kernel.prefs.get('workspace.enableAnnotationMatrix')) return;
-		openAnnotationMatrixModal({
-			win,
-			title,
-			itemIDs,
-			prefs: this.kernel.prefs,
-			bus: this.kernel.bus,
-			clipboard: this.services.clipboard,
-		});
+		openAnnotationMatrixModal({ win, title, itemIDs, prefs: this.kernel.prefs, bus: this.kernel.bus, clipboard: this.services.clipboard });
 	}
 
 	openCurrentMatrix(win: Window): void {
@@ -310,11 +284,10 @@ export class VisualNotesDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		this.pendingReadingRefresh = false;
 		bindCustomStatusColorPersistence(null);
-		if (this.refreshTimer !== null) {
-			clearTimeout(this.refreshTimer);
-			this.refreshTimer = null;
-		}
+		if (this.readingRefreshTimer !== null) { clearTimeout(this.readingRefreshTimer); this.readingRefreshTimer = null; }
+		if (this.refreshTimer !== null) { clearTimeout(this.refreshTimer); this.refreshTimer = null; }
 		this.infoBriefNote.unregister();
 		this.remarkColumn.unregister();
 		this.readingColumns.unregisterAll();

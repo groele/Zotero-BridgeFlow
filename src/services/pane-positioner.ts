@@ -70,10 +70,13 @@ export class ItemPanePositionCoordinator {
 	}
 
 	observeAndQueue(body: HTMLElement | null): void {
-		this.pruneDisconnected();
 		const owner = body?.closest?.('item-details') as PositionOwner | null;
-		if (!owner?.getPanes || (owner as { isConnected?: boolean }).isConnected === false) return;
+		if (!owner?.getPanes || (owner as { isConnected?: boolean }).isConnected === false) {
+			if (this.observers.size > 0) this.pruneDisconnected();
+			return;
+		}
 		if (!this.observers.has(owner)) {
+			if (this.observers.size > 0) this.pruneDisconnected();
 			const parent = owner.getPanes().find((p) => p.contains?.(body!))?.parentNode;
 			const Observer = owner.ownerDocument?.defaultView?.MutationObserver;
 			if (parent && Observer) {

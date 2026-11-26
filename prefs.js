@@ -54,6 +54,7 @@ pref("extensions.zotero.bridgeflow.workspace.verticalTabFontSize", 13);
 pref("extensions.zotero.bridgeflow.workspace.verticalSidebarWidth", 276);
 pref("extensions.zotero.bridgeflow.workspace.verticalSidebarCollapsed", false);
 pref("extensions.zotero.bridgeflow.workspace.enableHoverPreview", true);
+pref("extensions.zotero.bridgeflow.workspace.enableReaderAttachmentSwitcher", true);
 pref("extensions.zotero.bridgeflow.workspace.enableSpotlight", true);
 pref("extensions.zotero.bridgeflow.workspace.enableAnnotationMatrix", true);
 pref("extensions.zotero.bridgeflow.workspace.enableSessions", true);

@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { TypedEventBus } from '../src/kernel/event-bus.ts';
-import { computeReaderNeighbors, ReaderNeighborPublisher } from '../src/domains/workspace/reader-neighbors.ts';
-import { RemarkColumnController } from '../src/domains/visual-notes/library-columns.ts';
-import { InfoBriefNoteController } from '../src/domains/visual-notes/info-brief-note.ts';
-import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
+import { computeReaderNeighbors, ReaderNeighborPublisher } from '../src/domains/workspace/reader/reader-neighbors.ts';
+import { RemarkColumnController } from '../src/domains/visual-notes/columns/library-columns.ts';
+import { InfoBriefNoteController } from '../src/domains/visual-notes/reader/info-brief-note.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
 import { readRemarkFromExtra, syncItemRemarkToExtra, upsertRemarkInExtra } from '../src/services/item-remark-sync.ts';
-import { createCompareBar, syncCompareBar } from '../src/domains/inspector/pdf-preview-ui.ts';
-import { attachNeighborCompareButtons, syncNeighborCompareButtons } from '../src/domains/inspector/pdf-compare-helpers.ts';
+import { createCompareBar, syncCompareBar } from '../src/domains/inspector/pdf/pdf-preview-ui.ts';
+import { attachNeighborCompareButtons, syncNeighborCompareButtons } from '../src/domains/inspector/pdf/pdf-compare-helpers.ts';
 import { UnifiedPrefService } from '../src/kernel/pref-service.ts';
 import { BridgeFlowApp } from '../src/index.ts';
 

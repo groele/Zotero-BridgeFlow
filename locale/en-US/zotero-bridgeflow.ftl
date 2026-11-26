@@ -2,11 +2,9 @@ zbf-prefs-title = Zotero BridgeFlow
 zbf-prefs-subtitle = Unified reading workspace, citation preview & reverse lookup, and Word citation tracking.
 zbf-prefs-version = Version v{ $version }
 zbf-prefs-footer = Compatible with Zotero 10–12
-
 zbf-sec-master-modules = Enabled modules
 zbf-sec-fusion = Connections between modules
 zbf-sec-maintenance = Diagnostics & Maintenance
-
 zbf-pref-mod-workspace =
     .label = ① Workspace
 zbf-pref-mod-visualnotes =
@@ -15,7 +13,6 @@ zbf-pref-mod-inspector =
     .label = ③ Inspector & PDF
 zbf-pref-mod-wordcite =
     .label = ④ Word Citation
-
 zbf-pref-fusion-copy-history =
     .label = Save copied citations for reverse lookup
 zbf-pref-fusion-sidebar-badge =
@@ -24,7 +21,6 @@ zbf-pref-fusion-spotlight =
     .label = Include Word actions in quick search commands
 zbf-pref-fusion-lookup-jump =
     .label = Switch to an open tab when a citation matches
-
 zbf-pref-debug =
     .label = Enable verbose debug logging (Zotero Debug Output)
 zbf-maint-reading-title = Reading Progress & Heatmaps
@@ -89,10 +85,8 @@ zbf-prefs-status-covers-clear-failed = The Gallery PDF cover thumbnail cache cou
 zbf-prefs-status-covers-cleared = ✓ Cleared Gallery PDF cover thumbnail cache
 zbf-prefs-status-word-tags-cleared = ✓ Cleared all managed Word citation tags
 zbf-prefs-status-reminders-restored = ✓ Restored all ignored metadata reminders
-
 zbf-sec-tab-layout = Layout, Pinning & Virtual Members
 zbf-sec-grouping-sleep = Auto-Grouping, Sessions & Tab Sleep
-
 zbf-pref-ws-horizontal =
     .label = Enable top Edge-style horizontal colored tab groups
 zbf-pref-ws-hcompact = Compact tab mode
@@ -111,7 +105,6 @@ zbf-pref-ws-batch =
 zbf-pref-ws-sidebar-width = Vertical sidebar width (px)
 zbf-btn-ws-reset-width =
     .label = Reset width
-zbf-sec-ws-actions = Workspace Quick Actions
 zbf-btn-ws-save-session =
     .label = Save Workspace Snapshot Now
 zbf-btn-csl-refresh =
@@ -124,7 +117,6 @@ zbf-pref-ws-pinned-icon =
     .label = Show pinned tabs as icon-only
 zbf-pref-ws-virtual =
     .label = Preserve virtual members when closing grouped tabs
-
 zbf-pref-ws-newtab-mode = New tab grouping
 zbf-opt-independent =
     .label = Independent (manual drag to group)
@@ -148,11 +140,6 @@ zbf-pref-ws-budget = Active reader budget (0 unlimited)
 zbf-pref-ws-stale =
     .label = Enable stale tab cleanup suggestions
 zbf-pref-ws-stale-days = Stale threshold (days)
-
-zbf-sec-remarks-typo = Remarks, Hover Preview & Typography
-zbf-sec-library-cols = Library columns
-zbf-sec-menus = Context Menu Enhancements
-
 zbf-pref-ws-remarks =
     .label = Enable custom tab remark aliases (≤300 chars)
 zbf-pref-ws-remark-sync =
@@ -174,6 +161,8 @@ zbf-opt-title-only =
     .label = Original title only
 zbf-pref-ws-hover =
     .label = Enable hover metadata preview card
+zbf-pref-ws-reader-att-switcher =
+    .label = Show sibling version/attachment switcher button in Reader toolbar (N versions)
 zbf-pref-ws-spotlight =
     .label = Enable Spotlight command palette (Ctrl+P)
 zbf-pref-ws-matrix =
@@ -208,10 +197,8 @@ zbf-pref-ws-showfs =
     .label = Menu: Reveal Attachment in Folder
 zbf-pref-ws-reload =
     .label = Menu: Reload Tab
-
 zbf-sec-csl-preview = CSL Citation Preview
 zbf-sec-lookup = Compact Citation Reverse Lookup & History Cache
-
 zbf-pref-ins-csl-enable =
     .label = Enable live CSL citation preview
 zbf-pref-ins-what-to-show = Preview content
@@ -249,11 +236,8 @@ zbf-pref-ins-lookup-history =
 zbf-pref-ins-cache-dir = BridgeFlow cache root (citations, workspace, reading, ratings, and covers use separate folders. Restart to apply. Leave blank for the default location.)
 zbf-pref-ins-cache-max = Max cache entries
 zbf-pref-ins-cache-ttl = Cache TTL (days)
-
 zbf-sec-pdf-preview = PDF Preview & Compare
 zbf-sec-annotations-matrix = PDF Annotation Merge & Color Semantics
-zbf-sec-pdf-folder = PDF Folder Jump
-
 zbf-pref-ins-pdf-preview =
     .label = Enable right-hand PDF preview & compare section
 zbf-pref-ins-pdf-mode = Preview layout
@@ -292,13 +276,10 @@ zbf-opt-folder-open =
 zbf-pref-ins-word-cite =
     .label = Enable panel
 zbf-pref-ins-word-position = Sidebar position
-
 zbf-sec-word-sync = Citation Triggers, Library Column & Temp Collections
 zbf-sec-word-panel = Word Citation Collaboration Panel
 zbf-sec-word-reminders = Cited Document Metadata Completeness Check
 zbf-sec-word-tags-ops = Citation Tag Governance & Maintenance Actions
-zbf-sec-word-perf = Debounce & Performance Thresholds
-
 zbf-pref-wc-column =
     .label = Show native "Citation" ordinal column in library item tree
 zbf-pref-wc-drag =
@@ -361,7 +342,6 @@ zbf-pref-wc-tag-debounce = Tag sync debounce (ms)
 zbf-pref-wc-view-debounce = List refresh debounce (ms)
 zbf-pref-wc-health-win = Health stats window (ms)
 zbf-pref-wc-slow-ms = Slow operation threshold (ms)
-
 zbf-pane-csl-preview-header =
     .label = BridgeFlow Citation Preview
 zbf-pane-csl-preview-sidenav =
@@ -382,26 +362,15 @@ zbf-pane-word-cite-header =
     .label = Word Citation Collaboration Panel
 zbf-pane-word-cite-sidenav =
     .tooltiptext = Open & Scroll to Word Citation Panel
-zbf-word-cite-insert-btn = Insert Citation at Word Cursor
-zbf-word-cite-unavailable = Select an item to insert a Word citation
-zbf-col-citation-title = Citation
-
 zbf-preview-select-items = Select one or more items to preview.
 zbf-preview-loading = Loading preview…
 zbf-preview-truncated = { $count } additional items omitted.
-zbf-preview-copy-bibliography =
-    .title = Copy bibliography
-    .aria-label = Copy bibliography
-zbf-preview-copy-citation =
-    .title = Copy in-text citation
-    .aria-label = Copy in-text citation
 zbf-preview-no-style = No bibliography style configured in BridgeFlow or Quick Copy settings.
 zbf-preview-style-missing = Selected citation style is not installed. Install it or choose another style in settings.
 zbf-preview-quickcopy-unavailable = Quick Copy could not format these items. Check the style and retry.
 zbf-preview-unavailable = Preview unavailable. Please reselect an item.
 zbf-preview-retry = Retry preview
 zbf-preview-copy-unavailable = Copy unavailable. Please try again.
-
 zbf-lookup-input =
     .title = Supports compact references, DOI, arXiv IDs or links, and local copy history. Enter to search; Esc to clear.
     .placeholder = Paste a reference or DOI
@@ -422,7 +391,6 @@ zbf-lookup-state-matched = Matched reference
 zbf-lookup-state-located = Located reference
 zbf-lookup-state-candidate = Candidate reference; verify and locate
 zbf-lookup-candidates-heading = Found { $count } matching references, click to select:
-
 zbf-pdf-preview-prev =
     .title = Previous Page
 zbf-pdf-preview-next =
@@ -444,20 +412,12 @@ zbf-pdf-compare-select =
     .title = Switch between sibling PDF attachments for side-by-side comparison
 zbf-pdf-folder-open = Reveal PDF in folder
 zbf-pdf-folder-unavailable = No file attachment for this item
-
-zbf-nav-modules = General
 zbf-tab-overview = Overview
 zbf-tab-workspace = Workspace
 zbf-tab-visualnotes = Visual & Notes
 zbf-tab-inspector = Inspector
 zbf-tab-wordcite = Word Cite
 zbf-tab-maintenance = Storage
-zbf-nav-workspace = Workspace
-zbf-nav-reading = Visual & Notes
-zbf-nav-writing = Citations & Word
-zbf-nav-storage = Storage & maintenance
-zbf-sec-search = Quick search and hover previews
-zbf-sec-matrix = Annotation comparison matrix
 zbf-sec-storage = Shared storage and citation history
 zbf-sec-vn-heatmap = Reading Heatmap & Library Columns
 zbf-pref-vn-heatmap-color = Title heatmap block color
@@ -468,38 +428,16 @@ zbf-pref-vn-info-note =
 zbf-pref-ins-ann-popup =
     .label = Show semantic color labels inside PDF reader selection popup
 zbf-info-brief-note-label = Brief Note
-
 zbf-banner-overview-title = Modular Research Workspace Control Center
 zbf-banner-overview-desc = All four subsystems can be hot-toggled independently. Cross-domain fusion links tab management, visualization & notes, inspector lookup, and Word writing into one seamless loop.
 zbf-step-sub-1 = ① Workspace
 zbf-step-sub-2 = ② Visual & Brief Notes
 zbf-step-sub-3 = ③ Inspector & PDF
 zbf-step-sub-4 = ④ Word Citation
-zbf-card-overview-title = Overview & Cross-Subsystem Links
-zbf-card-overview-hint = Toggle all four subsystems and cross-domain bridges (expanded by default)
-zbf-card-workspace-title = Subsystem 1 · Reading Workspace & Quick Search
-zbf-card-workspace-hint = Tab groups, vertical sidebar, auto-grouping, snapshots, sleep & Spotlight
-zbf-card-visualnotes-title = Subsystem 2 · Visualization & Brief Notes
-zbf-card-visualnotes-hint = Title heatmap color/opacity, Info pane Brief Note, PDF popup color labels & matrix
-zbf-card-inspector-title = Subsystem 3 · Item Pane Previews, Lookup & PDF
-zbf-card-inspector-hint = Live CSL preview, reverse citation lookup, PDF sidebar compare, folder reveal & Word panel
-zbf-card-wordcite-title = Subsystem 4 · Word Citation Tracking & Governance
-zbf-card-wordcite-hint = Citation column, native drag-insert, temporary collections, tag governance & debounce
-zbf-card-maintenance-title = Shared Storage, Diagnostics & Maintenance
-zbf-card-maintenance-hint = bridgeflow-cache directory, quota settings, debug logging & reset actions
-zbf-banner-workspace-title = Tabs, layout and search
-zbf-banner-workspace-desc = Configure tab groups, the vertical sidebar, workspace snapshots and quick search.
-zbf-banner-reading-title = Visualization, Brief Notes & PDF
-zbf-banner-reading-desc = Customize title heatmap color and opacity, Info pane brief notes, PDF popup color labels and annotation matrices.
-zbf-banner-writing-title = Citations and Word
-zbf-banner-writing-desc = Manage CSL formats, reverse lookup, Word insertion and citation tracking.
-zbf-banner-storage-title = Local storage and maintenance
-zbf-banner-storage-desc = Choose the shared cache folder, history retention and refresh intervals, or run maintenance actions.
 zbf-off-notice = This subsystem is disabled in Overview; its options are paused.
 zbf-btn-enable-mod = Enable Subsystem
 zbf-sec-ws-experience = Typography, Previews & Context Menu
 zbf-sec-word-adv-perf = Advanced Performance & Health Thresholds (expand)
-
 zbf-pref-vn-show-title-dots =
     .label = Show colored tag dot markers before item titles (hide ● dots when off)
 zbf-pref-vn-status-col =
@@ -515,7 +453,6 @@ zbf-opt-rating-extra =
     .label = Store in Extra field (Rating: 1–5)
 zbf-opt-rating-tag =
     .label = Store as star tags (⭐–⭐⭐⭐⭐⭐)
-
 zbf-sec-vn-gallery = Gallery View & Multi-Dimensional Kanban Board
 zbf-pref-vn-gallery-enable =
     .label = Show Gallery / Kanban view toggle button on main items toolbar
@@ -546,7 +483,6 @@ zbf-pref-vn-gallery-brief =
     .label = Show Brief Note snippet inside Gallery & Kanban cards
 zbf-btn-open-gallery =
     .label = Toggle Gallery / Kanban View in Main Window
-
 zbf-pref-vn-hub-enable =
     .label = Enable Collection-Level Notes & Annotations Hub (main toolbar button)
 zbf-pref-vn-hub-ignore-fig =
@@ -555,9 +491,7 @@ zbf-pref-vn-hub-prefer-comment =
     .label = Prefer personal comment over quote when comment exists
 zbf-btn-open-collection-hub =
     .label = Open Collection Notes & Annotations Hub
-
 zbf-pref-hub-window =
     .label = Open the hub in a separate window (default: Zotero tab)
-
 zbf-pref-gallery-width = Minimum card width (140–440 px)
 zbf-pref-gallery-height = Cover height (0 for automatic, up to 360 px)

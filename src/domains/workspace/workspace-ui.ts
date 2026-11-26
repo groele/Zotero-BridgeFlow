@@ -2,17 +2,17 @@ import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
 import type { TrackedTab } from './types.ts';
-import { WorkspaceHorizontalBar } from './horizontal-bar.ts';
-import { WorkspaceToolbarActions } from './horizontal-toolbar.ts';
-import { WorkspaceHoverCard } from './hover-card.ts';
-import type { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
-import { WorkspaceSpotlightPanel } from './spotlight-panel.ts';
-import type { WorkspaceStateStore } from './state-store.ts';
-import { WorkspaceTabContextMenu } from './tab-context-menu.ts';
-import type { WorkspaceTabController } from './tab-controller.ts';
-import { WorkspaceVerticalSidebar } from './vertical-sidebar.ts';
-import { WorkspacePopover } from './workspace-popover.ts';
-import { WORKSPACE_CSS } from './workspace-styles.ts';
+import { WorkspaceHorizontalBar } from './topbar/horizontal-bar.ts';
+import { WorkspaceToolbarActions } from './topbar/horizontal-toolbar.ts';
+import { WorkspaceHoverCard } from './sidebar/hover-card.ts';
+import type { WorkspaceSpotlightEngine } from './spotlight/spotlight-engine.ts';
+import { WorkspaceSpotlightPanel } from './spotlight/spotlight-panel.ts';
+import type { WorkspaceStateStore } from './store/state-store.ts';
+import { WorkspaceTabContextMenu } from './tabs/tab-context-menu.ts';
+import type { WorkspaceTabController } from './tabs/tab-controller.ts';
+import { WorkspaceVerticalSidebar } from './sidebar/vertical-sidebar.ts';
+import { WorkspacePopover } from './topbar/workspace-popover.ts';
+import { WORKSPACE_CSS } from './styles/workspace-styles.ts';
 
 export class WorkspaceWindowUI {
 	private readonly win: Window;
@@ -34,6 +34,7 @@ export class WorkspaceWindowUI {
 	private readonly onActivity?: () => void;
 	private readonly onWindowBlur?: () => void;
 	private readonly boundReaderDocs = new WeakSet<Document>();
+	private readonly boundReaderTabIDs = new Set<string>();
 	private lastActivitySentAt = 0;
 
 	private readonly onInputActivity = () => {
@@ -114,6 +115,10 @@ export class WorkspaceWindowUI {
 
 	render(): TrackedTab[] {
 		if (this.destroyed || !this.doc) return [];
+		if (this.renderTimer && typeof this.win.clearTimeout === 'function') {
+			this.win.clearTimeout(this.renderTimer);
+			this.renderTimer = 0;
+		}
 		try {
 			this.bindOpenReaderDocs();
 			const snapshot = this.tabs.buildTrackedTabs(this.win);
@@ -129,17 +134,25 @@ export class WorkspaceWindowUI {
 	private bindOpenReaderDocs(): void {
 		if (!this.lifetime) return;
 		const nativeTabs: any[] = (this.win as any).Zotero_Tabs?._tabs ?? [];
+		const openIds = new Set<string>();
 		for (const tab of nativeTabs) {
 			if (!tab?.id || tab.type === 'library') continue;
+			openIds.add(tab.id);
+			if (this.boundReaderTabIDs.has(tab.id)) continue;
 			const iframeDoc = (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.id)
 				?._internalReader?._primaryView?._iframeWindow?.document as Document | undefined;
-			if (!iframeDoc || this.boundReaderDocs.has(iframeDoc)) continue;
+			if (!iframeDoc) continue;
+			this.boundReaderTabIDs.add(tab.id);
+			if (this.boundReaderDocs.has(iframeDoc)) continue;
 			this.boundReaderDocs.add(iframeDoc);
 			const sig = this.lifetime.signal;
 			iframeDoc.addEventListener('keydown', this.onKeydown, { capture: true, signal: sig });
 			iframeDoc.addEventListener('pointerdown', this.onInputActivity, { capture: true, passive: true, signal: sig });
 			iframeDoc.addEventListener('keydown', this.onInputActivity, { capture: true, passive: true, signal: sig });
 			iframeDoc.addEventListener('wheel', this.onInputActivity, { capture: true, passive: true, signal: sig });
+		}
+		for (const prevId of this.boundReaderTabIDs) {
+			if (!openIds.has(prevId)) this.boundReaderTabIDs.delete(prevId);
 		}
 	}
 

@@ -1,19 +1,18 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { CitationSnapshotPayload, DomainModule, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
-import { deduplicateRegularItems, normalizeToRegularItem } from '../../services/item-resolution.ts';
+import type { CitationSnapshotPayload, DomainModule } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
-import { WordCitationCollectionManager } from './citation-collections.ts';
-import { CitationColumnController } from './citation-column.ts';
-import { DragCiteController } from './drag-cite-controller.ts';
-import { clearRelinkedItemUris } from './orphan-identity.ts';
-import { recoverOrphanCitations } from './orphan-recovery.ts';
-import { extractDocumentBaseName, WordSessionTracker } from './session-tracker.ts';
-import { CitationTagGovernance } from './tag-governance.ts';
-import { refreshActiveWordDocument, resolveActiveSelectionForWord } from './word-inserter.ts';
-import { WordIntegrationPoller } from './word-poller.ts';
+import { WordCitationCollectionManager } from './governance/citation-collections.ts';
+import { CitationColumnController } from './governance/citation-column.ts';
+import { DragCiteController } from './ipc/drag-cite-controller.ts';
+import { clearRelinkedItemUris } from './orphan/orphan-identity.ts';
+import { WordSessionTracker } from './ipc/session-tracker.ts';
+import { CitationTagGovernance } from './governance/tag-governance.ts';
+import { registerWordCiteBusHandlers } from './word-cite-bus.ts';
+import { resolveActiveSelectionForWord } from './ipc/word-inserter.ts';
+import { WordIntegrationPoller } from './ipc/word-poller.ts';
 
 export class WordCiteDomainModule implements DomainModule {
 	public readonly id = 'word-cite' as const;
@@ -47,9 +46,7 @@ export class WordCiteDomainModule implements DomainModule {
 		this.column = new CitationColumnController(kernel, this.tracker, this.collections);
 	}
 
-	isActive(): boolean {
-		return this.active;
-	}
+	isActive(): boolean { return this.active; }
 
 	async citeCurrentSelection(win?: Window): Promise<void> {
 		const items = resolveActiveSelectionForWord(win);
@@ -89,146 +86,27 @@ export class WordCiteDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.prefs.observeKeys(
-				['wordCite.citationTags.enable', 'wordCite.citationTags.text'],
-				() => this.scheduleTagSync(),
-			),
+			this.kernel.prefs.observeKeys(['wordCite.citationTags.enable', 'wordCite.citationTags.text'], () => this.scheduleTagSync()),
 		);
 
 		this.disposables.add(
-			this.kernel.prefs.observeKeys(
-				['wordCite.collections.enable'],
-				() => this.collections.sync(this.tracker.getAllSessions()),
-			),
+			this.kernel.prefs.observeKeys(['wordCite.collections.enable'], () => this.collections.sync(this.tracker.getAllSessions())),
 		);
 
-		this.disposables.add(
-			this.kernel.bus.on('word:insert-items-request', async ({ itemIDs, requestId }) => {
-				if (!this.active) return;
-				let itemCount = 0;
-				let documentName = '';
-				let status: Awaited<ReturnType<DragCiteController['insertItems']>> = 'unavailable';
-				try {
-					const hostItems = (globalThis as any).Zotero?.Items;
-					const ids = [...new Set(itemIDs)];
-					const loaded = hostItems?.getAsync ? await hostItems.getAsync(ids) : ids.map(id => hostItems?.get?.(id));
-					const byID = new Map((Array.isArray(loaded) ? loaded : [loaded]).filter(Boolean).map(item => [item.id, item]));
-					const regular = ids.map(id => normalizeToRegularItem(byID.get(id)));
-					if (!this.active || !regular.length || regular.some(item => !item)) throw new Error('Word selection is no longer available');
-					const { items } = deduplicateRegularItems(regular);
-					itemCount = items.length;
-					status = await this.dragCite.insertItems(items, (sessionID) => {
-						documentName = this.tracker.getAllSessions().find((session) => session.sessionID === sessionID)?.displayName || '';
-					});
-				} catch (err) {
-					this.kernel.logger.error('word-cite:insert-request', err);
-				}
-				this.kernel.bus.emit('word:insert-result', { requestId, status, documentName, itemCount });
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('word:refresh-request', async ({ requestId, sessionID }) => {
-				if (!this.active) return;
-				const session = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
-				const docName = session?.displayName || '';
-				const ok = (!sessionID || !!session) && await refreshActiveWordDocument(this.kernel, sessionID);
-				if (ok) {
-					void this.poller.notifyCommittedSession().catch((err) => this.kernel.logger.error('word-cite:poll', err));
-				}
-				this.kernel.bus.emit('word:refresh-result', { requestId, ok, documentName: docName });
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('word:snapshot-query', () => {
-				if (this.active) this.tracker.emitCurrentSnapshot();
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('word:switch-session-request', ({ sessionID }) => {
-				if (this.active && !this.tracker.setActiveSession(sessionID)) {
-					this.tracker.emitCurrentSnapshot();
-				}
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('word:select-collection-request', ({ sessionID, win }) => {
-				if (!this.active) return;
-				const sid = sessionID || this.tracker.getActiveSession()?.sessionID || null;
-				this.collections.selectSessionCollection(win, sid);
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('word:recover-orphans-request', async ({ sessionID, keys, requestId, source }) => {
-				if (!this.active) return;
-				if (this.recoveringOrphans) {
-					this.kernel.bus.emit('word:recover-orphans-result', {
-						requestId,
-						restoredCount: 0,
-						importedCount: 0,
-						skippedCount: 0,
-						error: tLocale('正在执行缺失引文恢复，请稍候重试。', 'Citation recovery is already in progress.'),
-					});
-					return;
-				}
-				const targetSession = sessionID ? this.tracker.getSession(sessionID) : this.tracker.getActiveSession();
-				if (!targetSession || !targetSession.orphans.length) {
-					this.kernel.bus.emit('word:recover-orphans-result', {
-						requestId,
-						restoredCount: 0,
-						importedCount: 0,
-						skippedCount: 0,
-					});
-					return;
-				}
-				this.recoveringOrphans = true;
-				try {
-					const col = this.collections.getSessionCollection(targetSession.sessionID);
-					const result = await recoverOrphanCitations(targetSession.orphans, {
-						targetCollectionID: typeof col?.id === 'number' ? col.id : undefined,
-						collectionName: col?.name ? String(col.name) : undefined,
-						keys,
-					});
-					const changed = result.restoredCount > 0
-						|| result.importedCount > 0
-						|| (result.existingCount ?? 0) > 0
-						|| (result.relinkedCount ?? 0) > 0;
-					let refreshed = false;
-					if (changed) {
-						if (this.kernel.prefs.get('wordCite.orphans.autoRefreshWord') && this.canSafelyAutoRefreshSession(targetSession.sessionID)) {
-							refreshed = await refreshActiveWordDocument(this.kernel, targetSession.sessionID).catch((err) => {
-								this.kernel.logger.error('word-cite:recover-refresh', err);
-								return false;
-							});
-						}
-						await this.resyncNow().catch((err) => this.kernel.logger.error('word-cite:recover-resync', err));
-					}
-					const payload: WordRecoverOrphansResultPayload = {
-						...result,
-						sessionID: targetSession.sessionID,
-						...(refreshed ? { refreshed: true } : {}),
-						requestId,
-					};
-					if (source === 'spotlight') this.showSpotlightRecoverToast(targetSession.displayName, payload);
-					this.kernel.bus.emit('word:recover-orphans-result', payload);
-				} catch (err) {
-					this.kernel.logger.error('word-cite:recover-orphans', err);
-					this.kernel.bus.emit('word:recover-orphans-result', {
-						requestId,
-						sessionID: targetSession.sessionID,
-						restoredCount: 0,
-						importedCount: 0,
-						skippedCount: targetSession.orphans.length,
-						error: tLocale('恢复未完成，请重新检查文库和缺失引文后重试。', 'Recovery did not complete. Recheck the library and remaining citations before retrying.'),
-					});
-				} finally {
-					this.recoveringOrphans = false;
-				}
-			}),
+		registerWordCiteBusHandlers(
+			{
+				kernel: this.kernel,
+				tracker: this.tracker,
+				collections: this.collections,
+				poller: this.poller,
+				dragCite: this.dragCite,
+				win32: this.win32,
+				isActive: () => this.active,
+				isRecovering: () => this.recoveringOrphans,
+				setRecovering: (v) => { this.recoveringOrphans = v; },
+				resyncNow: () => this.resyncNow(),
+			},
+			this.disposables,
 		);
 	}
 
@@ -262,54 +140,6 @@ export class WordCiteDomainModule implements DomainModule {
 			void this.tagGovernance.stripAllManagedTags();
 		}
 		this.tracker.clear();
-	}
-
-	/** Prevents auto-refreshing the wrong open Word window when multiple Word sessions exist. */
-	private canSafelyAutoRefreshSession(targetSessionID: string): boolean {
-		if (this.tracker.getActiveSession()?.sessionID !== targetSessionID) return false;
-		const all = this.tracker.getAllSessions();
-		if (all.length <= 1) return true;
-		const docExtRe = /\.(?:docx|docm|doc|dotx|dotm|rtf|odt)$/i;
-		const matchTitle = (rawTitle: string): WordSessionRecordLike[] => {
-			const title = extractDocumentBaseName(`window-title:${rawTitle}`).toLowerCase();
-			if (!title || title === 'untitled word document') return [];
-			const titleStem = title.replace(docExtRe, '');
-			return all.filter((ses) => {
-				const base = extractDocumentBaseName(ses.documentPath).toLowerCase();
-				const stem = base.replace(docExtRe, '');
-				return title === base || title === stem || titleStem === stem;
-			});
-		};
-		type WordSessionRecordLike = (typeof all)[number];
-		const fgRaw = this.win32.probeForegroundWordTitle().trim();
-		if (fgRaw) {
-			const matches = matchTitle(fgRaw);
-			return matches.length === 1 && matches[0].sessionID === targetSessionID;
-		}
-		const visible = this.win32.probeWordWindowTitles().visibleTitles;
-		if (visible.length === 1) {
-			const matches = matchTitle(visible[0]);
-			return matches.length === 1 && matches[0].sessionID === targetSessionID;
-		}
-		return false;
-	}
-
-	private showSpotlightRecoverToast(docName: string, res: WordRecoverOrphansResultPayload): void {
-		try {
-			const PW = (globalThis as any).Zotero?.ProgressWindow;
-			if (typeof PW !== 'function') return;
-			const total = res.restoredCount + res.importedCount + (res.existingCount ?? 0);
-			const pw = new PW();
-			pw.changeHeadline(tLocale('Zotero BridgeFlow · 缺失引文找回', 'Zotero BridgeFlow · Citation Recovery'));
-			pw.addDescription(total > 0
-				? tLocale(
-					`「${docName}」已成功找回 ${total} 篇引文${res.refreshed ? '，已执行 Word 刷新' : '（请在目标 Word 文档核对并刷新引文）'}。`,
-					`Recovered ${total} citation(s) for "${docName}"${res.refreshed ? ' and refreshed Word' : ''}.`,
-				)
-				: tLocale('未能自动恢复缺失引文（缺少内嵌备份元数据）。', 'No orphan citations could be recovered.'));
-			pw.show();
-			pw.startCloseTimer(4500);
-		} catch { /* headless safe */ }
 	}
 
 	private scheduleTagSync(): void {

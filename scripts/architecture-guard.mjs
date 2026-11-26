@@ -89,6 +89,9 @@ check('Strict 5-layer dependency boundaries', () => {
 			if (rel.startsWith('services/') && (resolved.startsWith('domains/') || resolved.startsWith('bridges/'))) {
 				violations.push(`${rel} -> ${resolved} (services cannot import domains/bridges)`);
 			}
+			if ((rel.startsWith('prefs/') || rel === 'preferences.ts') && (resolved.startsWith('domains/') || resolved.startsWith('bridges/'))) {
+				violations.push(`${rel} -> ${resolved} (prefs cannot import domains/bridges)`);
+			}
 			const domainMatch = rel.match(/^domains\/([^/]+)\//);
 			const targetDomainMatch = resolved.match(/^domains\/([^/]+)\//);
 			if (domainMatch && targetDomainMatch && domainMatch[1] !== targetDomainMatch[1]) {
@@ -227,8 +230,8 @@ check('Debt baseline stays cleared', () => {
 	if (baseline.debtCleared !== true) throw Error('Debt baseline reopened');
 });
 check('Workspace HTML controls use the XHTML namespace', () => {
-	for (const f of srcFiles.filter(f => path.dirname(f).endsWith('workspace'))) {
-		if (/\.createElement\(/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+	for (const f of srcFiles.filter(f => /[\\/]domains[\\/]workspace[\\/]/.test(f))) {
+		if (/\.createElement\(/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.relative(root, f));
 	}
 });
 check('Workspace 16px content and 24px subordinate indent', () => {

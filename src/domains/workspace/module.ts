@@ -1,20 +1,14 @@
 import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type {
-	CitationBadgeInfo,
-	Disposable,
-	DomainModule,
-	OpenItemRequestPayload,
-	SpotlightProvider,
-	WorkspaceGroupSummary,
-} from '../../kernel/types.ts';
+import type { CitationBadgeInfo, Disposable, DomainModule, OpenItemRequestPayload, SpotlightProvider, WorkspaceGroupSummary } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import { invalidateResolvedItemCache } from '../../services/item-resolution.ts';
-import { WorkspaceSpotlightEngine } from './spotlight-engine.ts';
-import { ReaderNeighborPublisher } from './reader-neighbors.ts';
-import { WorkspaceStateStore } from './state-store.ts';
-import { WorkspaceTabController } from './tab-controller.ts';
-import { invalidateTabProjectionCache } from './tab-projection.ts';
+import { ReaderAttachmentSwitcher } from './reader/reader-attachment-switcher.ts';
+import { WorkspaceSpotlightEngine } from './spotlight/spotlight-engine.ts';
+import { ReaderNeighborPublisher } from './reader/reader-neighbors.ts';
+import { WorkspaceStateStore } from './store/state-store.ts';
+import { WorkspaceTabController } from './tabs/tab-controller.ts';
+import { invalidateTabProjectionCache } from './tabs/tab-projection.ts';
 import { buildWorkspaceGroupSummaries } from './workspace-group-emitter.ts';
 import { flushWorkspaceReadingProgress, runWorkspaceMaintenance, type ReaderSnapshot } from './workspace-maintenance.ts';
 import { WorkspaceWindowUI } from './workspace-ui.ts';
@@ -39,6 +33,7 @@ export class WorkspaceDomainModule implements DomainModule {
 	public readonly store: WorkspaceStateStore;
 	public readonly tabs: WorkspaceTabController;
 	public readonly spotlight: WorkspaceSpotlightEngine;
+	public readonly attachmentSwitcher: ReaderAttachmentSwitcher;
 
 	private readonly kernel: PluginKernel;
 	private readonly neighbors: ReaderNeighborPublisher;
@@ -64,54 +59,57 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.tabs = new WorkspaceTabController(kernel.prefs, this.store, services.clipboard, kernel.bus);
 		this.spotlight = new WorkspaceSpotlightEngine(kernel.prefs, this.store, this.tabs);
 		this.neighbors = new ReaderNeighborPublisher(kernel.bus);
+		this.attachmentSwitcher = new ReaderAttachmentSwitcher(kernel, this.store);
 	}
 
 	async start(): Promise<void> {
 		if (this.active) return;
 		this.active = true;
 		this.disposables.reset();
-		this.disposables.add(this.store.onChange(() => {
-			this.queueRefresh();
+		this.disposables.add(this.store.onChange(() => this.queueRefresh()));
+		this.disposables.add(this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()));
+		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher'], () => this.attachmentSwitcher.syncPref()));
+		this.disposables.add(this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
+			const targetWin = win || this.getTargetWindow();
+			if (targetWin && this.active) this.windows.get(targetWin)?.openSpotlightWithQuery('');
 		}));
-
-		this.disposables.add(
-			this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
-				const targetWin = win || this.getTargetWindow();
-				if (targetWin && this.active) {
-					this.windows.get(targetWin)?.openSpotlightWithQuery('');
-				}
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('workspace:groups-query', () => {
-				if (this.active) this.emitGroupSummaries(true);
-			}),
-		);
-
-		this.disposables.add(
-			this.kernel.bus.on('workspace:reader-neighbors-query', ({ win }) => {
-				const targetWin = win || this.getTargetWindow();
-				if (this.active && targetWin) this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin), true);
-			}),
-		);
+		this.disposables.add(this.kernel.bus.on('workspace:groups-query', () => {
+			if (this.active) this.emitGroupSummaries(true);
+		}));
+		this.disposables.add(this.kernel.bus.on('workspace:reader-neighbors-query', ({ win }) => {
+			const targetWin = win || this.getTargetWindow();
+			if (this.active && targetWin) this.neighbors.publish(targetWin, this.tabs.buildTrackedTabs(targetWin), true);
+		}));
 
 		this.disposables.add(
 			this.kernel.notifier.subscribe(['tab', 'collection', 'item'], ({ event, type, ids }) => {
 				if (type === 'tab') {
 					this.handleTabEvent(event, ids.map(String));
 				} else if (event === 'modify' || event === 'add' || event === 'delete' || event === 'trash' || event === 'restore') {
-					invalidateResolvedItemCache(ids.map((v) => Number(v)).filter((n) => Number.isFinite(n) && n > 0));
-					invalidateTabProjectionCache();
+					const affectedIds = new Set<number>();
+					const hostItems = (globalThis as any).Zotero?.Items;
+					let hasNonAnnotation = event === 'delete' || type !== 'item' || !ids.length || !hostItems?.get;
+					for (const raw of ids) {
+						const id = Number(raw);
+						if (!Number.isFinite(id) || id <= 0) continue;
+						affectedIds.add(id);
+						if (type === 'item' && hostItems?.get) {
+							const it = hostItems.get(id);
+							if (!it || (!it.isAnnotation?.() && it.itemType !== 'annotation')) hasNonAnnotation = true;
+							const pid = Number(it?.parentItemID || 0);
+							if (pid > 0) affectedIds.add(pid);
+						}
+					}
+					if (!hasNonAnnotation) return;
+					const idList = [...affectedIds];
+					invalidateResolvedItemCache(idList);
+					invalidateTabProjectionCache(type === 'item' ? idList : undefined);
 					this.queueRefresh(32);
 				}
 			}),
 		);
 
+		this.attachmentSwitcher.start();
 		for (const win of this.getMainWindows()) {
 			this.onMainWindowLoad(win);
 		}
@@ -140,6 +138,7 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.store.readingCache.dispose();
 		this.store.notesCache.dispose();
 		this.store.diskCache.dispose();
+		this.attachmentSwitcher.stop();
 		this.neighbors.reset();
 		this.disposables.disposeAll();
 	}
@@ -197,8 +196,13 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	refreshAllWindows(): void {
+		if (this.refreshTimer !== null) {
+			clearTimeout(this.refreshTimer);
+			this.refreshTimer = null;
+		}
 		const targetWin = this.getTargetWindow();
 		let targetSnapshot: ReturnType<WorkspaceTabController['buildTrackedTabs']> | null = null;
+		const snapshots: ReturnType<WorkspaceTabController['buildTrackedTabs']>[] = [];
 		for (const [win, ui] of [...this.windows.entries()]) {
 			if ((win as any).closed) {
 				ui.destroy();
@@ -207,18 +211,22 @@ export class WorkspaceDomainModule implements DomainModule {
 			}
 			try {
 				const snap = ui.render();
+				snapshots.push(snap);
 				if (win === targetWin) targetSnapshot = snap;
 			} catch (err) { this.kernel.logger.error('workspace:render', err); }
 		}
 		if (targetWin && !(targetWin as any).closed) {
 			try { this.neighbors.publish(targetWin, targetSnapshot ?? this.tabs.buildTrackedTabs(targetWin)); } catch { /* ignore */ }
 		}
-		this.emitGroupSummaries();
+		this.emitGroupSummaries(false, snapshots);
 	}
 
-	private emitGroupSummaries(force = false): void {
+	private emitGroupSummaries(
+		force = false,
+		precomputedSnapshots?: ReadonlyArray<ReturnType<WorkspaceTabController['buildTrackedTabs']>>,
+	): void {
 		if (!this.store.state.groups.length && !force && this.lastGroupFingerprint === '') return;
-		const groups: WorkspaceGroupSummary[] = buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store);
+		const groups: WorkspaceGroupSummary[] = buildWorkspaceGroupSummaries(this.windows.keys(), this.tabs, this.store, precomputedSnapshots);
 		const fp = groups.map((g) => `${g.groupId}:${g.groupName}:${g.itemIDs.join(',')}`).join('|');
 		if (!force && fp === this.lastGroupFingerprint) return;
 		this.lastGroupFingerprint = fp;

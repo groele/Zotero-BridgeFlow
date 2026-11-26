@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { nearestPreviewPage } from '../src/domains/inspector/pdf-viewport-manager.ts';
-import { WordIntegrationPoller } from '../src/domains/word-cite/word-poller.ts';
+import { nearestPreviewPage } from '../src/domains/inspector/pdf/pdf-viewport-manager.ts';
+import { WordIntegrationPoller } from '../src/domains/word-cite/ipc/word-poller.ts';
 
 test('Long PDF scroll locates the nearest page with bounded layout reads', () => {
 	let reads = 0;

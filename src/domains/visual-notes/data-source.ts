@@ -9,7 +9,9 @@ import {
 
 export interface VisualNotesDataSource {
 	getReadingProgress(itemID: number): TabReadingProgress | undefined;
+	getReadingRevision?(): number;
 	getRemark(itemID: number): string;
+	getRemarksRevision?(): number;
 	setRemark(itemID: number, remark: string, skipExtraObserver?: boolean): void;
 	persistRemarks?(): Promise<boolean>;
 }
@@ -21,7 +23,7 @@ export function resolveParentItemID(item: any): number {
 }
 
 const EXTRA_REMARK_CACHE_LIMIT = 5000;
-const extraRemarkCache = new Map<number, { stamp: string; remark: string }>();
+const extraRemarkCache = new Map<number, { stamp: string; remark: string; attRev?: number; attRemark?: string }>();
 
 export function clearExtraRemarkCache(itemIDs?: Iterable<number>): void {
 	if (!itemIDs) {
@@ -49,14 +51,32 @@ export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDa
 	const stamp = String(targetItem?.version ?? targetItem?.dateModified ?? '');
 	const cacheable = targetID > 0 && Boolean(stamp);
 	const cached = cacheable ? extraRemarkCache.get(targetID) : undefined;
-	if (cached?.stamp === stamp && (cached.remark || !dataSource)) return cached.remark;
+	const remarksRev = typeof dataSource?.getRemarksRevision === 'function' ? dataSource.getRemarksRevision() : -1;
+	if (cached?.stamp === stamp) {
+		if (cached.remark || !dataSource) return cached.remark;
+		if (remarksRev >= 0 && cached.attRev === remarksRev) return cached.attRemark ?? '';
+	}
+	let attRemark = '';
 	if (dataSource && isRegularValidItem(item) && typeof item.getAttachments === 'function') {
 		for (const attID of item.getAttachments() || []) {
 			const attCached = dataSource.getRemark(attID);
-			if (attCached) return attCached;
+			if (attCached) { attRemark = attCached; break; }
 		}
 	}
-	if (cached?.stamp === stamp) return cached.remark;
+	if (attRemark) {
+		if (cacheable && cached?.stamp === stamp && remarksRev >= 0) {
+			cached.attRev = remarksRev;
+			cached.attRemark = attRemark;
+		}
+		return attRemark;
+	}
+	if (cached?.stamp === stamp) {
+		if (remarksRev >= 0) {
+			cached.attRev = remarksRev;
+			cached.attRemark = '';
+		}
+		return cached.remark;
+	}
 	const resolved = getItemBriefNote(targetItem);
 	if (cacheable) {
 		extraRemarkCache.delete(targetID);
@@ -64,7 +84,9 @@ export function readItemRemarkWithFallback(item: any, dataSource?: VisualNotesDa
 			const oldest = extraRemarkCache.keys().next().value;
 			if (oldest !== undefined) extraRemarkCache.delete(oldest);
 		}
-		extraRemarkCache.set(targetID, { stamp, remark: resolved });
+		extraRemarkCache.set(targetID, remarksRev >= 0
+			? { stamp, remark: resolved, attRev: remarksRev, attRemark: '' }
+			: { stamp, remark: resolved });
 	}
 	return resolved;
 }

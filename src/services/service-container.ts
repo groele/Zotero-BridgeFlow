@@ -7,7 +7,7 @@ import { ItemRatingsDiskCache, setActiveRatingsCache } from './item-ratings-cach
 import { MetadataRemindersDiskCache } from './metadata-reminders-cache.ts';
 import { ItemPanePositionCoordinator } from './pane-positioner.ts';
 import { ItemPaneRegistryService } from './item-pane-registry.ts';
-import { configurePdfCoverCacheDirectory } from './pdf-cover-service.ts';
+import { clearPdfCoverCache, configurePdfCoverCacheDirectory } from './pdf-cover-service.ts';
 import { Win32BridgeService } from './win32-bridge.ts';
 
 export class ServiceContainer {
@@ -90,5 +90,9 @@ export class ServiceContainer {
 		this.reminders.dispose();
 		this.csl.clearCache();
 		this.win32.dispose();
+	}
+
+	clearPdfCoverCache(): Promise<boolean> {
+		return clearPdfCoverCache();
 	}
 }

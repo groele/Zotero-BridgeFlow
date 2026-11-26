@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BridgeFlowApp } from '../src/index.ts';
 import { PREF_PREFIX, PREF_SCHEMA } from '../src/kernel/pref-schema.ts';
-import { disambiguateDocumentNames } from '../src/domains/word-cite/session-tracker.ts';
+import { disambiguateDocumentNames } from '../src/domains/word-cite/ipc/session-tracker.ts';
 
 function createMemoryPrefs(initial = {}) {
 	const store = new Map(Object.entries(initial).map(([k, v]) => [k.startsWith('extensions.') ? k : PREF_PREFIX + k, v]));

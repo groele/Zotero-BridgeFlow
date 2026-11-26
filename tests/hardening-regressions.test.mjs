@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { isChineseLocale, tLocale } from '../src/kernel/locale.ts';
-import { runWordCommand } from '../src/domains/word-cite/word-command.ts';
-import { WordIntegrationPoller } from '../src/domains/word-cite/word-poller.ts';
-import { WordSessionTracker } from '../src/domains/word-cite/session-tracker.ts';
-import { isJournalMatch, parseCompactCitation } from '../src/domains/inspector/citation-lookup-parser.ts';
+import { runWordCommand } from '../src/domains/word-cite/ipc/word-command.ts';
+import { WordIntegrationPoller } from '../src/domains/word-cite/ipc/word-poller.ts';
+import { WordSessionTracker } from '../src/domains/word-cite/ipc/session-tracker.ts';
+import { isJournalMatch, parseCompactCitation } from '../src/domains/inspector/lookup/citation-lookup-parser.ts';
 import { clearPdfCoverCache, configurePdfCoverCacheDirectory } from '../src/services/pdf-cover-service.ts';
 
 test('tLocale switches between Chinese and English based on Zotero.locale', () => {

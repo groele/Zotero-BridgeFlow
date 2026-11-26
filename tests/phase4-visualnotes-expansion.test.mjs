@@ -1,8 +1,8 @@
-import { captureGalleryScroll } from '../src/domains/visual-notes/gallery-scroll.ts';
+import { captureGalleryScroll } from '../src/domains/visual-notes/gallery/gallery-scroll.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { StatusRatingColumnsController } from '../src/domains/visual-notes/status-rating-columns.ts';
+import { StatusRatingColumnsController } from '../src/domains/visual-notes/columns/status-rating-columns.ts';
 import {
 	captureBatchTargets,
 	clearNativeStatusTagDots,
@@ -26,10 +26,10 @@ import {
 	findPeakReadingPage,
 	formatSubMinuteDuration,
 	openItemPdfAtPage,
-} from '../src/domains/visual-notes/column-popover-styles.ts';
+} from '../src/domains/visual-notes/columns/column-popover-styles.ts';
 import { loadCustomStatusColors, serializeCustomStatusColors } from '../src/services/status-tag-colors.ts';
-import { STATUS_RATING_CSS } from '../src/domains/visual-notes/status-rating-popover.ts';
-import { formatTitleHeatmapTooltip, TITLE_TAG_DOTS_HIDE_CSS } from '../src/domains/visual-notes/title-heatmap.ts';
+import { STATUS_RATING_CSS } from '../src/domains/visual-notes/columns/status-rating-popover.ts';
+import { formatTitleHeatmapTooltip, TITLE_TAG_DOTS_HIDE_CSS } from '../src/domains/visual-notes/columns/title-heatmap.ts';
 import {
 	collectHubAnnotations,
 	collectHubNotes,
@@ -43,25 +43,25 @@ import {
 	buildKanbanColumns,
 	extractGalleryCards,
 	filterAndSortGalleryCards,
-} from '../src/domains/visual-notes/gallery-board-helpers.ts';
+} from '../src/domains/visual-notes/gallery/gallery-board-helpers.ts';
 import {
 	renderRichTitleNodes,
 	resolvePastelTagStyle,
-} from '../src/domains/visual-notes/gallery-icons.ts';
-import { GALLERY_BOARD_CSS } from '../src/domains/visual-notes/gallery-styles.ts';
-import { closeHubPage, openHubPage } from '../src/domains/visual-notes/hub-page.ts';
+} from '../src/domains/visual-notes/gallery/gallery-icons.ts';
+import { GALLERY_BOARD_CSS } from '../src/domains/visual-notes/gallery/gallery-styles.ts';
+import { closeHubPage, openHubPage } from '../src/domains/visual-notes/hub/hub-page.ts';
 import { READING_LAYOUT_CSS } from '../src/domains/visual-notes/reading-layout.ts';
 import { parseEnabledAnnotationColors, serializeEnabledAnnotationColors } from '../src/services/annotation-utils.ts';
 import {
 	computeMasonryColumnCount,
 	GalleryHeightIndex,
 	moveGalleryKeys,
-} from '../src/domains/visual-notes/gallery-height-index.ts';
+} from '../src/domains/visual-notes/gallery/gallery-height-index.ts';
 import {
 	getGallerySourceSnapshot,
 	createGalleryVisibilityGuard,
 	sameGallerySourceSnapshot,
-} from '../src/domains/visual-notes/gallery-pane-adapter.ts';
+} from '../src/domains/visual-notes/gallery/gallery-pane-adapter.ts';
 import {
 	COVER_RENDER_SPEC,
 	clearPdfCoverCache,

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkspaceSpotlightEngine } from '../src/domains/workspace/spotlight-engine.ts';
-import { WorkspaceDiskCache } from '../src/domains/workspace/workspace-disk-cache.ts';
+import { WorkspaceSpotlightEngine } from '../src/domains/workspace/spotlight/spotlight-engine.ts';
+import { WorkspaceDiskCache } from '../src/domains/workspace/store/workspace-disk-cache.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 
 test('shared custom root recovers a legacy default snapshot and writes a compact primary there', async t => {

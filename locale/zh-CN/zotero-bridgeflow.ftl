@@ -2,11 +2,9 @@ zbf-prefs-title = Zotero BridgeFlow（桥引）
 zbf-prefs-subtitle = 一体化阅读工作区、侧栏引文预览反查与 Word 写作引用追踪。
 zbf-prefs-version = 版本 v{ $version }
 zbf-prefs-footer = 兼容 Zotero 10–12
-
 zbf-sec-master-modules = 启用模块
 zbf-sec-fusion = 模块间联动
 zbf-sec-maintenance = 诊断与系统维护
-
 zbf-pref-mod-workspace =
     .label = ① 阅读工作区
 zbf-pref-mod-visualnotes =
@@ -15,7 +13,6 @@ zbf-pref-mod-inspector =
     .label = ③ 检阅与反查
 zbf-pref-mod-wordcite =
     .label = ④ Word 引用
-
 zbf-pref-fusion-copy-history =
     .label = 保存复制过的引文，供反查使用
 zbf-pref-fusion-sidebar-badge =
@@ -24,7 +21,6 @@ zbf-pref-fusion-spotlight =
     .label = 在快速查找的命令中提供 Word 操作
 zbf-pref-fusion-lookup-jump =
     .label = 反查命中时优先切换到已打开的标签页
-
 zbf-pref-debug =
     .label = 启用详细调试日志（Zotero Debug Output）
 zbf-maint-reading-title = 阅读时长与热力图
@@ -89,10 +85,8 @@ zbf-prefs-status-covers-clear-failed = 无法完全清理画廊 PDF 封面缩略
 zbf-prefs-status-covers-cleared = ✓ 已清空画廊 PDF 封面缩略图缓存
 zbf-prefs-status-word-tags-cleared = ✓ 已清理全部插件托管引用标签
 zbf-prefs-status-reminders-restored = ✓ 已恢复全部已忽略的文献信息提醒
-
 zbf-sec-tab-layout = 布局、固定与虚拟保留
 zbf-sec-grouping-sleep = 自动归组、工作区快照与休眠
-
 zbf-pref-ws-horizontal =
     .label = 启用顶部 Edge 风格水平彩色分组栏
 zbf-pref-ws-hcompact = 水平标签紧凑模式
@@ -111,7 +105,6 @@ zbf-pref-ws-batch =
 zbf-pref-ws-sidebar-width = 垂直标签侧栏宽度（px）
 zbf-btn-ws-reset-width =
     .label = 重置侧栏宽度
-zbf-sec-ws-actions = 工作区快捷操作
 zbf-btn-ws-save-session =
     .label = 立即保存当前工作区快照
 zbf-btn-csl-refresh =
@@ -124,7 +117,6 @@ zbf-pref-ws-pinned-icon =
     .label = 固定标签仅显示图标
 zbf-pref-ws-virtual =
     .label = 关闭已分组标签后保留为虚拟成员
-
 zbf-pref-ws-newtab-mode = 新标签归组方式
 zbf-opt-independent =
     .label = 独立标签（手动归组）
@@ -148,11 +140,6 @@ zbf-pref-ws-budget = 活跃阅读器预算上限（0 不限）
 zbf-pref-ws-stale =
     .label = 启用久未查看标签清理建议
 zbf-pref-ws-stale-days = 久未查看天数阈值
-
-zbf-sec-remarks-typo = 备注别名、悬停预览与排版
-zbf-sec-library-cols = 文献列表列
-zbf-sec-menus = 右键菜单增强
-
 zbf-pref-ws-remarks =
     .label = 启用标签自定义备注别名（≤300 字）
 zbf-pref-ws-remark-sync =
@@ -174,6 +161,8 @@ zbf-opt-title-only =
     .label = 仅显示原标题
 zbf-pref-ws-hover =
     .label = 启用悬停阅读信息预览卡片
+zbf-pref-ws-reader-att-switcher =
+    .label = 在阅读器顶部工具栏显示同条目多版本/附件快速切换按钮（共 N 个版本）
 zbf-pref-ws-spotlight =
     .label = 启用 Spotlight 全局搜索面板（Ctrl+P）
 zbf-pref-ws-matrix =
@@ -208,10 +197,8 @@ zbf-pref-ws-showfs =
     .label = 右键菜单：在文件管理器中定位附件
 zbf-pref-ws-reload =
     .label = 右键菜单：重新加载标签页
-
 zbf-sec-csl-preview = CSL 引文预览设置
 zbf-sec-lookup = 紧凑引文反向逆查与本地历史缓存
-
 zbf-pref-ins-csl-enable =
     .label = 启用右侧 CSL 引文实时预览
 zbf-pref-ins-what-to-show = 预览内容
@@ -249,11 +236,8 @@ zbf-pref-ins-lookup-history =
 zbf-pref-ins-cache-dir = BridgeFlow 缓存根目录（引文、工作区、阅读、评分和封面分子目录保存，重启后生效。留空使用默认目录）
 zbf-pref-ins-cache-max = 缓存容量上限（条）
 zbf-pref-ins-cache-ttl = 缓存保留天数
-
 zbf-sec-pdf-preview = PDF 侧栏预览与对照
 zbf-sec-annotations-matrix = PDF 标注合并与颜色语义
-zbf-sec-pdf-folder = PDF 附件文件夹跳转
-
 zbf-pref-ins-pdf-preview =
     .label = 启用右侧栏 PDF 预览与同条目对照面板
 zbf-pref-ins-pdf-mode = 预览展开模式
@@ -292,13 +276,10 @@ zbf-opt-folder-open =
 zbf-pref-ins-word-cite =
     .label = 启用面板
 zbf-pref-ins-word-position = 侧栏位置
-
 zbf-sec-word-sync = 多入口引文插入、引用列与临时分类
 zbf-sec-word-panel = Word 引文协同面板
 zbf-sec-word-reminders = 引用文献信息完整性检查
 zbf-sec-word-tags-ops = 引用标签治理与即时维护操作
-zbf-sec-word-perf = 轮询防抖与性能阈值
-
 zbf-pref-wc-column =
     .label = 在文献库列表显示原生「引用」序数列
 zbf-pref-wc-drag =
@@ -361,7 +342,6 @@ zbf-pref-wc-tag-debounce = 标签同步防抖延迟（ms）
 zbf-pref-wc-view-debounce = 列表刷新防抖延迟（ms）
 zbf-pref-wc-health-win = 诊断统计时间窗（ms）
 zbf-pref-wc-slow-ms = 慢操作记录阈值（ms）
-
 zbf-pane-csl-preview-header =
     .label = BridgeFlow 引文预览
 zbf-pane-csl-preview-sidenav =
@@ -382,26 +362,15 @@ zbf-pane-word-cite-header =
     .label = Word 引文协同面板
 zbf-pane-word-cite-sidenav =
     .tooltiptext = 定位并展开 Word 引文面板
-zbf-word-cite-insert-btn = 插入引文到 Word 光标处
-zbf-word-cite-unavailable = 请选择文献条目以插入 Word 引文
-zbf-col-citation-title = 引用
-
 zbf-preview-select-items = 请选择一个或多个条目以预览引用。
 zbf-preview-loading = 正在生成预览…
 zbf-preview-truncated = 另有 { $count } 个条目未显示。
-zbf-preview-copy-bibliography =
-    .title = 复制参考文献
-    .aria-label = 复制参考文献
-zbf-preview-copy-citation =
-    .title = 复制正文引用
-    .aria-label = 复制正文引用
 zbf-preview-no-style = QuickCopy 未选择参考文献样式，请在 Zotero 或 BridgeFlow 设置中配置预览样式。
 zbf-preview-style-missing = 所选引用样式尚未安装。请在 Zotero 中安装，或在 BridgeFlow 设置中选择其他样式。
 zbf-preview-quickcopy-unavailable = QuickCopy 无法格式化当前条目，请检查引用样式后重试。
 zbf-preview-unavailable = 预览不可用。请重新选择条目。
 zbf-preview-retry = 重新生成预览
 zbf-preview-copy-unavailable = 复制不可用。请尝试 Zotero 复制快捷键，或重新选择条目。
-
 zbf-lookup-input =
     .title = 支持紧凑引文、DOI、arXiv:编号或链接，以及本机复制历史。Enter 查找，Esc 清空。
     .placeholder = 粘贴完整参考文献或 DOI
@@ -422,7 +391,6 @@ zbf-lookup-state-matched = 已匹配文献
 zbf-lookup-state-located = 已定位文献
 zbf-lookup-state-candidate = 候选文献，请核对后定位
 zbf-lookup-candidates-heading = 找到 { $count } 篇可能匹配的文献，请点击选择：
-
 zbf-pdf-preview-prev =
     .title = 上一页
 zbf-pdf-preview-next =
@@ -444,20 +412,12 @@ zbf-pdf-compare-select =
     .title = 切换同条目下的其他 PDF 附件（如支撑材料）进行并排对照
 zbf-pdf-folder-open = 打开文件夹并选中 PDF
 zbf-pdf-folder-unavailable = 当前条目没有文件附件
-
-zbf-nav-modules = 常规
 zbf-tab-overview = 总览
 zbf-tab-workspace = 工作区
 zbf-tab-visualnotes = 可视化与简记
 zbf-tab-inspector = 检阅与反查
 zbf-tab-wordcite = Word 引用
 zbf-tab-maintenance = 存储维护
-zbf-nav-workspace = 工作区
-zbf-nav-reading = 可视化与简记
-zbf-nav-writing = 引文与 Word
-zbf-nav-storage = 存储与维护
-zbf-sec-search = 快速查找与悬停预览
-zbf-sec-matrix = 文献批注对比矩阵
 zbf-sec-storage = 共享缓存与引文历史
 zbf-sec-vn-heatmap = 阅读热图与文献列表可视化
 zbf-pref-vn-heatmap-color = 题名热图色块颜色
@@ -468,38 +428,16 @@ zbf-pref-vn-info-note =
 zbf-pref-ins-ann-popup =
     .label = 在 PDF 阅读器选词弹窗中显示颜色语义标签
 zbf-info-brief-note-label = 简记
-
 zbf-banner-overview-title = 模块化科研工作台总控中心
 zbf-banner-overview-desc = 四大子系统均可独立热启停；开启跨模块联动后，标签、可视化简记、侧栏检阅与 Word 写作将实现无缝数据闭环。
 zbf-step-sub-1 = ① 阅读工作区
 zbf-step-sub-2 = ② 可视化与简记
 zbf-step-sub-3 = ③ 侧栏预览与反查
 zbf-step-sub-4 = ④ Word 引用追踪
-zbf-card-overview-title = 总览与跨子系统联动
-zbf-card-overview-hint = 统一控制四大子系统热启停与跨模块数据闭环（默认展开）
-zbf-card-workspace-title = 子系统一 · 阅读工作区与快速查找
-zbf-card-workspace-hint = 分组标签栏、垂直侧栏、自动归组、会话快照、休眠与 Spotlight
-zbf-card-visualnotes-title = 子系统二 · 可视化与简记笔记
-zbf-card-visualnotes-hint = 题名阅读热图配色/透明度、信息面板「简记」、PDF 弹窗颜色语义与对比矩阵
-zbf-card-inspector-title = 子系统三 · 侧栏引文预览、反查与 PDF
-zbf-card-inspector-hint = CSL 引文实时预览、粘贴逆查、PDF 侧栏对照、文件夹定位与 Word 协同面板
-zbf-card-wordcite-title = 子系统四 · Word 引用插入与追踪
-zbf-card-wordcite-hint = 原生引用序数列、拖拽插入、临时分类、引用标签治理与轮询阈值
-zbf-card-maintenance-title = 共享存储目录、诊断与系统维护
-zbf-card-maintenance-hint = bridgeflow-cache 共享目录、历史配额、调试日志与恢复默认设置
-zbf-banner-workspace-title = 标签、布局与查找
-zbf-banner-workspace-desc = 设置顶部标签栏、垂直侧栏、工作区快照和快速查找。
-zbf-banner-reading-title = 可视化、简记与 PDF 批注
-zbf-banner-reading-desc = 配置题名阅读热图配色与透明度、信息面板简记、PDF 弹窗标注语义与跨文献对比矩阵。
-zbf-banner-writing-title = 引文预览与 Word 写作
-zbf-banner-writing-desc = 管理 CSL 格式、引文反查、Word 插入与引用追踪。
-zbf-banner-storage-title = 本地存储与维护
-zbf-banner-storage-desc = 设置共享缓存目录、历史保留期限和刷新参数，或执行诊断与重置。
 zbf-off-notice = 当前子系统已在「总览」中停用，以下配置项暂不生效。
 zbf-btn-enable-mod = 立即启用此子系统
 zbf-sec-ws-experience = 侧栏排版、悬停预览与快捷菜单
 zbf-sec-word-adv-perf = 高级性能阈值与健康检查参数（点击展开）
-
 zbf-pref-vn-show-title-dots =
     .label = 在文献题名前显示彩色标签圆点标记（关闭后隐藏题名前 ● 彩色圆点）
 zbf-pref-vn-status-col =
@@ -515,7 +453,6 @@ zbf-opt-rating-extra =
     .label = 写入 Extra 字段（Rating: 1–5）
 zbf-opt-rating-tag =
     .label = 写入星标标签（⭐–⭐⭐⭐⭐⭐）
-
 zbf-sec-vn-gallery = 画廊视图与多维度拖拽看板
 zbf-pref-vn-gallery-enable =
     .label = 在主文献库工具栏启用「画廊/看板」视图切换按钮
@@ -546,7 +483,6 @@ zbf-pref-vn-gallery-brief =
     .label = 在画廊与看板卡片内显示条目简记摘要
 zbf-btn-open-gallery =
     .label = 在主窗口切换画廊 / 多维看板视图
-
 zbf-pref-vn-hub-enable =
     .label = 启用分类级集中笔记与标注管理中心（主工具栏入口）
 zbf-pref-vn-hub-ignore-fig =
@@ -555,9 +491,7 @@ zbf-pref-vn-hub-prefer-comment =
     .label = 标注有个人评注时优先仅显示评注内容
 zbf-btn-open-collection-hub =
     .label = 打开当前分类集中笔记与标注中心
-
 zbf-pref-hub-window =
     .label = 在独立窗口打开中心（默认在 Zotero 标签页中打开）
-
 zbf-pref-gallery-width = 卡片最小宽度（140–440 px）
 zbf-pref-gallery-height = 封面高度（0 为自动，最高 360 px）

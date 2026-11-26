@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { ServiceContainer } from '../src/services/service-container.ts';
 import { WordCiteDomainModule } from '../src/domains/word-cite/module.ts';
-import { extractSessionCitationsWithOrphans } from '../src/domains/word-cite/orphan-extraction.ts';
-import { clearRelinkedItemUris, classifySyncSafeRelinkUris, resolveItemIdFromUris } from '../src/domains/word-cite/orphan-identity.ts';
-import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery.ts';
+import { extractSessionCitationsWithOrphans } from '../src/domains/word-cite/orphan/orphan-extraction.ts';
+import { clearRelinkedItemUris, classifySyncSafeRelinkUris, resolveItemIdFromUris } from '../src/domains/word-cite/orphan/orphan-identity.ts';
+import { recoverOrphanCitations } from '../src/domains/word-cite/orphan/orphan-recovery.ts';
 import { SpotlightFusionBridge } from '../src/bridges/spotlight-fusion-bridge.ts';
 import { WorkspaceDomainModule } from '../src/domains/workspace/module.ts';
-import { buildOrphanBannerModel, formatRecoverReceipt, OrphanSelectionState } from '../src/domains/inspector/word-cite-panel-ui.ts';
+import { buildOrphanBannerModel, formatRecoverReceipt, OrphanSelectionState } from '../src/domains/inspector/word-panel/word-cite-panel-ui.ts';
 
 function createItemStub(id, { title = `Paper ${id}`, inTrash = false, deleted = false, libraryID = 1, key = `K${id}` } = {}) {
 	return {
@@ -861,8 +861,8 @@ test('Empty selection, conflicting DOIs and transaction commit failures preserve
 });
 
 test('Startup cleanup only erases recorded BridgeFlow leaf collections', async () => {
-	const { WordCitationCollectionManager } = await import('../src/domains/word-cite/citation-collections.ts');
-	const { TEMP_COLLECTION_MARKER } = await import('../src/domains/word-cite/collection-tree-order.ts');
+	const { WordCitationCollectionManager } = await import('../src/domains/word-cite/governance/citation-collections.ts');
+	const { TEMP_COLLECTION_MARKER } = await import('../src/domains/word-cite/governance/collection-tree-order.ts');
 	const prev = globalThis.Zotero;
 	const erased = [], visited = [];
 	const lookup = (key, markers, children) => ({

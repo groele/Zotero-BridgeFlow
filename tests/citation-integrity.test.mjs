@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CitationLookupEngine } from '../src/domains/inspector/citation-lookup-engine.ts';
+import { CitationLookupEngine } from '../src/domains/inspector/lookup/citation-lookup-engine.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 import { UnifiedClipboardService } from '../src/services/clipboard-service.ts';
 import { CslFormattingEngine } from '../src/services/csl-engine.ts';

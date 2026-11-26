@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WorkspaceDiskCache } from '../src/domains/workspace/workspace-disk-cache.ts';
+import { WorkspaceDiskCache } from '../src/domains/workspace/store/workspace-disk-cache.ts';
 import { CslFormattingEngine } from '../src/services/csl-engine.ts';
-import { displayAttachmentName } from '../src/domains/inspector/pdf-folder-section.ts';
+import { displayAttachmentName } from '../src/domains/inspector/pdf/pdf-folder-section.ts';
 
 test('queued workspace writes preserve a fast revert and deduplicate adjacent identical states', async (t) => {
 	const writes = [];
@@ -37,7 +37,7 @@ test('filename labels decode valid sequences while retaining malformed escapes',
 	assert.equal(displayAttachmentName('Atomic%E2%80%90Scale%20A.pdf'), 'Atomic‐Scale A.pdf');
 	assert.equal(displayAttachmentName('10% - %FF.pdf'), '10% - %FF.pdf');
 });
-import { bindPreviewSidenavClick, PreviewFocus } from '../src/domains/inspector/pdf-preview-ui.ts';
+import { bindPreviewSidenavClick, PreviewFocus } from '../src/domains/inspector/pdf/pdf-preview-ui.ts';
 
 test('PDF icon selects only its own pane and opens a previously empty section', () => {
 	let click;
@@ -71,7 +71,7 @@ test('PDF focus survives section replacement within the same item pane', () => {
 	assert.equal(focus.isActive(replacement), false);
 });
 import { ItemPanePositionCoordinator } from '../src/services/pane-positioner.ts';
-import { patchCollectionsViewForWindow } from '../src/domains/word-cite/collection-tree-order.ts';
+import { patchCollectionsViewForWindow } from '../src/domains/word-cite/governance/collection-tree-order.ts';
 import { NativeRuntime } from '../src/kernel/native-runtime.ts';
 
 test('Word panel moves beside each native anchor without shifting other plugin panels', async () => {

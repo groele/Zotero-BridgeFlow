@@ -1,7 +1,7 @@
 import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
-import type { WorkspaceStateStore } from './state-store.ts';
-import type { WorkspaceTabController } from './tab-controller.ts';
+import type { WorkspaceStateStore } from './store/state-store.ts';
+import type { WorkspaceTabController } from './tabs/tab-controller.ts';
 
 export interface ReaderSnapshot {
 	tabID: string;

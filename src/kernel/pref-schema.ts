@@ -98,6 +98,7 @@ export const PREF_SCHEMA = {
 	'workspace.verticalSidebarWidth': { defaultValue: 276, min: 200, max: 440 },
 	'workspace.verticalSidebarCollapsed': { defaultValue: false },
 	'workspace.enableHoverPreview': { defaultValue: true },
+	'workspace.enableReaderAttachmentSwitcher': { defaultValue: true },
 	'workspace.enableSpotlight': { defaultValue: true },
 	'workspace.enableAnnotationMatrix': { defaultValue: true },
 	'workspace.enableSessions': { defaultValue: true },

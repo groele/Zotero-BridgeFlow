@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**0.8.9** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
+> 当前版本：**0.9.1** · 兼容范围：**Zotero `10.0` ~ `12.*`** · 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -20,6 +20,7 @@
   - 顶部水平分组标签栏（支持滚轮横向滚动、`compact` / `auto` / `normal` 三态紧缩、分组双击内联改名、颜色切换、拖拽成组与 `Compact Top Bar`）；
   - 左侧可调宽垂直侧边栏（支持 `分组` / `集合` / `状态` 三视图切换、快捷键导航、批量管理、拖拽排序、Word 引用序数徽标 `[1]` 与阅读进度条）。
 - **三态标签生命周期与会话快照**：支持固定标签页、空闲自动/手动休眠标签释放内存、保留分组虚拟成员；支持手动快照、模板快照与自动滚动快照，并通过中心弹窗（Hub）执行期刊/会议智能归组与工作区 JSON 导出/导入。
+- **阅读器同条目多版本/附件切换器**：当条目包含多个附件（如主 PDF、补充材料、翻译 PDF、网页快照或 EPUB）时，在阅读器顶部工具栏自动显示 `共 N 个版本 ⌄` 按钮，一键切换兄弟附件并保留当前工作区分组归属。
 - **Spotlight 全局命令与快速查找 (`Ctrl+P` / `Cmd+P`)**：
   - 打开即展示最近标签、Word 正在引用的文献、最近关闭标签、会话快照与分组；输入后按标题、作者、备注、分组检索，输入 `>` 进入命令模式（如直达分组、一键将 Word 正在引用的打开文献生成对比矩阵等）。
   - 列表高度自适应当前窗口剩余可视空间，防按键清空白闪。
@@ -104,9 +105,9 @@
 
 ## 开发、架构守卫与构建验证
 
-- **五层微内核结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（4 个独立子域禁止直接横向导入）➔ `src/bridges/`。
-- **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minify: false` 保持源码可审计）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **14 项静态守卫**与 **126 项单元测试**。
+- **五层微内核与子域模块化结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（`workspace/{store,tabs,topbar,sidebar,reader,spotlight,styles}`、`visual-notes/{columns,gallery,hub,reader}`、`inspector/{csl-preview,lookup,pdf,word-panel}`、`word-cite/{ipc,orphan,governance}`，4 个独立子域禁止直接横向导入）➔ `src/bridges/`，设置页 `src/preferences.ts` + `src/prefs/` 仅依赖 `kernel` 与 `services`。
+- **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minifyIdentifiers: false` 保持符号与栈帧可读，内联 CSS 与无用空白/注释无损折叠）、Valibot `1.5.0`。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **14 项静态守卫**与单元测试。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -118,11 +119,11 @@ npm run build:xpi
 
 ---
 
-## 安装包完整性校验 (`v0.8.9`)
+## 安装包完整性校验 (`v0.9.1`)
 
-- 文件名：`Zotero-BridgeFlow-0.8.9.xpi`（`323,702` 字节，19 个条目，确定性构建）
-- SHA-256：`D8858BF94787D9AF7DAEE08DB9CEE2CF1C533B1A63BA1180013D96A5B2BC3DEB`
-- SHA-512：`2289A0F658DEBF3FF4058E74D217A2E34A793E6C07FE3564A8BC1D36E692E3FB67CD26819B2E6E2AED33D8513E5A5EA01BD4D90372B4F0363F34B2641DCBD49F`
+- 文件名：`Zotero-BridgeFlow-0.9.1.xpi`（`292,925` 字节，19 个条目，确定性构建）
+- SHA-256：`F6911AC326C6EE0CB3A6FDDCBE67F2FB2BC879AC822D9A7870C50F31F8749267`
+- SHA-512：`21CF7C067ADFA435A3DBCBA99CA44E469EC88270B736DC699933825E24F5C10CE09AA40494BFB0EAAE8DEBF146F16CD442C3DDD29D5CA35FF3C34FB9393E164F`
 
 ---
 

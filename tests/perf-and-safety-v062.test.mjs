@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { UnifiedPrefService } from '../src/kernel/pref-service.ts';
-import { CitationTagGovernance } from '../src/domains/word-cite/tag-governance.ts';
-import { recoverOrphanCitations } from '../src/domains/word-cite/orphan-recovery.ts';
+import { CitationTagGovernance } from '../src/domains/word-cite/governance/tag-governance.ts';
+import { recoverOrphanCitations } from '../src/domains/word-cite/orphan/orphan-recovery.ts';
 import { clearExtraRemarkCache, readItemRemarkWithFallback } from '../src/domains/visual-notes/data-source.ts';
-import { clearGalleryCardCache, extractGalleryCards, filterAndSortGalleryCards } from '../src/domains/visual-notes/gallery-board-helpers.ts';
-import { createHubScopeMemo, resolveAffectedVisualItemIDs } from '../src/domains/visual-notes/hub-cache.ts';
+import { clearGalleryCardCache, extractGalleryCards, filterAndSortGalleryCards } from '../src/domains/visual-notes/gallery/gallery-board-helpers.ts';
+import { createHubScopeMemo, resolveAffectedVisualItemIDs } from '../src/domains/visual-notes/hub/hub-cache.ts';
 import { DurableCacheFile } from '../src/services/durable-cache-file.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 import { escapeHtmlText, sanitizeCitationHtml } from '../src/services/html-sanitizer.ts';

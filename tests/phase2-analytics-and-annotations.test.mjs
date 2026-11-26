@@ -1,20 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
 import { buildReadingHeatmapBuckets } from '../src/services/reading-stats.ts';
-import { ReadingColumnsController } from '../src/domains/visual-notes/library-columns.ts';
+import { ReadingColumnsController } from '../src/domains/visual-notes/columns/library-columns.ts';
 import {
 	applyTitleHeatmapToCell,
 	buildTitleHeatmapGradient,
 	clearTitleHeatmapFromCell,
 	TitleHeatmapController,
-} from '../src/domains/visual-notes/title-heatmap.ts';
-import { ReaderAnnotationTools } from '../src/domains/visual-notes/annotation-tools.ts';
-import { decorateSelectionPopupDoc } from '../src/domains/visual-notes/annotation-popup-labels.ts';
-import { trackActiveReaderProgress } from '../src/domains/workspace/tab-actions-helpers.ts';
-import { WorkspaceDiskCache } from '../src/domains/workspace/workspace-disk-cache.ts';
-import { readWorkspace } from '../src/domains/workspace/workspace-schema.ts';
+} from '../src/domains/visual-notes/columns/title-heatmap.ts';
+import { ReaderAnnotationTools } from '../src/domains/visual-notes/reader/annotation-tools.ts';
+import { decorateSelectionPopupDoc } from '../src/domains/visual-notes/reader/annotation-popup-labels.ts';
+import { trackActiveReaderProgress } from '../src/domains/workspace/tabs/tab-actions-helpers.ts';
+import { WorkspaceDiskCache } from '../src/domains/workspace/store/workspace-disk-cache.ts';
+import { readWorkspace } from '../src/domains/workspace/store/workspace-schema.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
 import { NativeRuntime } from '../src/kernel/native-runtime.ts';
 import {
@@ -442,7 +442,7 @@ test('Phase 2.4: reading-progress.json & brief-notes.json strict isolation, lega
 });
 
 test('Phase 2.5: hover card sub-60s duration formatting & ReadingColumnsController annotation summary cache invalidation', async (t) => {
-	const { WorkspaceHoverCard } = await import('../src/domains/workspace/hover-card.ts');
+	const { WorkspaceHoverCard } = await import('../src/domains/workspace/sidebar/hover-card.ts');
 	const oldZ = globalThis.Zotero;
 	t.after(() => { globalThis.Zotero = oldZ; });
 
@@ -513,7 +513,7 @@ test('Phase 2.5: hover card sub-60s duration formatting & ReadingColumnsControll
 	assert.equal(cols.getAnnotationSummaryDisplay(item310), '1 (Method:1)');
 	assert.equal(annQueries, 2);
 
-	const { getHeatmapGradientCacheSize } = await import('../src/domains/visual-notes/title-heatmap.ts');
+	const { getHeatmapGradientCacheSize } = await import('../src/domains/visual-notes/columns/title-heatmap.ts');
 	for (let k = 1; k <= 5010; k++) {
 		buildTitleHeatmapGradient({ readSeconds: k * 10, totalPages: 10, pageSeconds: { [String((k % 10) + 1)]: k * 10 } });
 	}

@@ -11,6 +11,8 @@ export class VisualNotesBridge implements BridgeModule {
 	private readonly visualNotes: VisualNotesDomainModule;
 	private prevRemarks = new Map<string, string>();
 	private disposeStoreListener: (() => void) | null = null;
+	private readingRevision = 1;
+	private remarksRevision = 1;
 	private active = false;
 
 	constructor(
@@ -30,7 +32,9 @@ export class VisualNotesBridge implements BridgeModule {
 
 		this.visualNotes.setDataSource({
 			getReadingProgress: (itemID) => this.workspace.store.state.readingProgress[`item:${itemID}`],
+			getReadingRevision: () => this.readingRevision,
 			getRemark: (itemID) => this.workspace.store.getItemRemark(itemID),
+			getRemarksRevision: () => this.remarksRevision,
 			persistRemarks: () => this.workspace.store.notesCache.flushNow(this.workspace.store.state),
 			setRemark: (itemID, remark, skipExtraObserver) => {
 				if (skipExtraObserver) {
@@ -47,10 +51,13 @@ export class VisualNotesBridge implements BridgeModule {
 		this.disposeStoreListener = this.workspace.store.onChange((change) => {
 			if (!this.active || change === 'session' || change === 'layout') return;
 			if (change === 'reading') {
+				this.readingRevision += 1;
 				this.visualNotes.refreshLibraryViews(undefined, true);
 				return;
 			}
+			this.remarksRevision += 1;
 			if (change === 'notes-local-clear' || change === 'import') {
+				this.readingRevision += 1;
 				this.seedRemarks();
 				this.visualNotes.refreshLibraryViews();
 				return;

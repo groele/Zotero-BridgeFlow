@@ -1,13 +1,13 @@
-import { PREF_PREFIX, PREF_SCHEMA, type PrefKey } from './kernel/pref-schema.ts';
+import type { PREF_SCHEMA, PrefKey } from './kernel/pref-schema.ts';
 import { tLocale } from './kernel/locale.ts';
-import { UnifiedPrefService } from './kernel/pref-service.ts';
+import type { UnifiedPrefService } from './kernel/pref-service.ts';
 import {
 	bindPreferenceActions,
 	setStatusFeedback,
 	syncMenulistLabels,
 	updatePreferenceDependencies,
-} from './prefs-helpers.ts';
-import { syncAnnotationColorInputs } from './prefs-color-editor.ts';
+} from './prefs/helpers.ts';
+import { syncAnnotationColorInputs } from './prefs/color-editor.ts';
 
 declare const document: Document | undefined;
 declare const window: Window | undefined;
@@ -22,12 +22,26 @@ function resolveWin(doc?: Document | null, win?: Window): Window | null {
 	return win || doc?.defaultView || (typeof window !== 'undefined' && window ? window : ((globalThis as any).window as Window | undefined) ?? null);
 }
 
-function extractPrefKey(el: Element): PrefKey | null {
+type PrefSchemaRecord = typeof PREF_SCHEMA;
+
+function resolveKernel(doc?: Document | null, win?: Window | null): {
+	prefPrefix: string;
+	prefSchema: PrefSchemaRecord;
+	info?: { rootURI?: string };
+	createScopedPrefs: () => UnifiedPrefService;
+} | null {
+	return (win as any)?.Zotero?.zoterobridgeflow?.kernel
+		|| (doc?.defaultView as any)?.Zotero?.zoterobridgeflow?.kernel
+		|| (globalThis as any).Zotero?.zoterobridgeflow?.kernel
+		|| null;
+}
+
+function extractPrefKey(el: Element, prefPrefix: string, prefSchema: PrefSchemaRecord): PrefKey | null {
 	const direct = el.getAttribute('data-zbf-pref');
-	if (direct && direct in PREF_SCHEMA) return direct as PrefKey;
+	if (direct && direct in prefSchema) return direct as PrefKey;
 	const full = el.getAttribute('preference') || el.getAttribute('data-preference') || '';
-	const shortKey = full.startsWith(PREF_PREFIX) ? full.slice(PREF_PREFIX.length) : '';
-	return shortKey in PREF_SCHEMA ? (shortKey as PrefKey) : null;
+	const shortKey = full.startsWith(prefPrefix) ? full.slice(prefPrefix.length) : '';
+	return shortKey in prefSchema ? (shortKey as PrefKey) : null;
 }
 
 async function populateCslStyles(doc: Document, prefs: UnifiedPrefService): Promise<void> {
@@ -70,11 +84,14 @@ const BridgeFlowPreferences = {
 		const doc = resolveDoc(win);
 		const targetWin = resolveWin(doc, win);
 		const pane = doc?.getElementById('zotero-prefpane-zotero-bridgeflow') ?? null;
-		if (!doc || !pane) return false;
+		const kernel = resolveKernel(doc, targetWin);
+		if (!doc || !pane || !kernel) return false;
 		if (initializedPanes.has(pane)) return true;
 		initializedPanes.add(pane);
 
-		const prefs = new UnifiedPrefService();
+		const prefPrefix = kernel.prefPrefix;
+		const prefSchema = kernel.prefSchema;
+		const prefs = kernel.createScopedPrefs();
 		prefs.seedDefaults();
 
 		const versionEl = doc.getElementById('zbf-version-badge');
@@ -83,7 +100,7 @@ const BridgeFlowPreferences = {
 			versionEl.textContent = `v${__BRIDGEFLOW_VERSION__}`;
 		}
 		const brandIcon = doc.querySelector('.zbf-brand-icon') as HTMLImageElement | null;
-		const rootURI = String((doc.defaultView as any)?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || (globalThis as any).Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || '');
+		const rootURI = String(kernel.info?.rootURI || '');
 		if (brandIcon && rootURI) brandIcon.src = `${rootURI}assets/bridgeflow.svg`;
 
 		const checkboxes = Array.from(pane.querySelectorAll('checkbox[preference]')) as Element[];
@@ -107,7 +124,7 @@ const BridgeFlowPreferences = {
 				if (!doc.defaultView || (doc.defaultView as any).closed || !pane.isConnected) { cleanup(); return; }
 				prefs.invalidate();
 				for (const cb of checkboxes) {
-					const key = extractPrefKey(cb);
+					const key = extractPrefKey(cb, prefPrefix, prefSchema);
 					if (!key) continue;
 					const checked = Boolean(prefs.get(key));
 					try { (cb as any).checked = checked; } catch { /* ignore */ }
@@ -115,17 +132,17 @@ const BridgeFlowPreferences = {
 					else cb.removeAttribute('checked');
 				}
 				for (const ml of menulists) {
-					const key = extractPrefKey(ml);
+					const key = extractPrefKey(ml, prefPrefix, prefSchema);
 					if (!key) continue;
 					const val = String(prefs.get(key));
 					try { (ml as any).value = val; } catch { /* ignore */ }
 					ml.setAttribute('value', val);
 				}
 				for (const input of inputs) {
-					const key = extractPrefKey(input);
+					const key = extractPrefKey(input, prefPrefix, prefSchema);
 					if (!key) continue;
 					const val = prefs.get(key);
-					const strVal = val == null || val === 'undefined' ? String(PREF_SCHEMA[key].defaultValue) : String(val);
+					const strVal = val == null || val === 'undefined' ? String(prefSchema[key].defaultValue) : String(val);
 					input.value = strVal;
 					input.setAttribute('value', strVal);
 				}
@@ -150,7 +167,7 @@ const BridgeFlowPreferences = {
 		};
 
 		for (const cb of checkboxes) {
-			const key = extractPrefKey(cb);
+			const key = extractPrefKey(cb, prefPrefix, prefSchema);
 			if (!key) continue;
 			cb.addEventListener('command', () => {
 				const next = Boolean((cb as any).checked ?? cb.hasAttribute('checked'));
@@ -161,7 +178,7 @@ const BridgeFlowPreferences = {
 		}
 
 		for (const ml of menulists) {
-			const key = extractPrefKey(ml);
+			const key = extractPrefKey(ml, prefPrefix, prefSchema);
 			if (!key) continue;
 			const onSelect = () => {
 				const hostMl = ml as any;
@@ -175,7 +192,7 @@ const BridgeFlowPreferences = {
 		}
 
 		for (const input of inputs) {
-			const key = extractPrefKey(input);
+			const key = extractPrefKey(input, prefPrefix, prefSchema);
 			if (!key) continue;
 			const commitInput = () => {
 				const raw = input.type === 'number' ? Number(input.value) : input.value.trim();
@@ -263,7 +280,7 @@ const BridgeFlowPreferences = {
 		});
 		pane.querySelectorAll('[data-zbf-enable-mod]').forEach((btn) => {
 			const modKey = btn.getAttribute('data-zbf-enable-mod') as PrefKey | null;
-			if (!modKey || !(modKey in PREF_SCHEMA)) return;
+			if (!modKey || !(modKey in prefSchema)) return;
 			const enableMod = () => {
 				prefs.set(modKey, true as never);
 				syncAll();
@@ -285,9 +302,9 @@ const BridgeFlowPreferences = {
 		};
 
 		if ((globalThis as any).Zotero?.Prefs?.registerObserver) {
-			const keys = (Object.keys(PREF_SCHEMA) as PrefKey[]).filter((k) => k !== 'workspace.document');
+			const keys = (Object.keys(prefSchema) as PrefKey[]).filter((k) => k !== 'workspace.document');
 			for (const k of keys) {
-				localObservers.push((globalThis as any).Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => scheduleSync(), true));
+				localObservers.push((globalThis as any).Zotero.Prefs.registerObserver(prefPrefix + k, () => scheduleSync(), true));
 			}
 			targetWin?.addEventListener?.('pagehide', cleanup, { once: true });
 			targetWin?.addEventListener?.('unload', cleanup, { once: true });

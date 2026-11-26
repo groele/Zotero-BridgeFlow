@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BridgeFlowApp } from '../src/index.ts';
-import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
-import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
+import { WorkspaceTabController } from '../src/domains/workspace/tabs/tab-controller.ts';
 
 function setup(state = '') {
 	const values = new Map([['workspace.document', state]]);
@@ -121,7 +121,7 @@ test('cross-domain fusion: shared primary item field cache, multi-item copy hist
 	const { TypedEventBus } = await import('../src/kernel/event-bus.ts');
 	const { CopyHistoryBridge } = await import('../src/bridges/copy-history-bridge.ts');
 	const { CitationHistoryStore } = await import('../src/services/citation-history-store.ts');
-	const { WorkspaceSpotlightEngine } = await import('../src/domains/workspace/spotlight-engine.ts');
+	const { WorkspaceSpotlightEngine } = await import('../src/domains/workspace/spotlight/spotlight-engine.ts');
 
 	// 1. HTML tag stripping & cached primary item fields
 	assert.equal(stripItemTitleMarkup('Exciton in MoS<sub>2</sub> and WS<sup>2+</sup>'), 'Exciton in MoS2 and WS2+');

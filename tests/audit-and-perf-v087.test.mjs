@@ -21,14 +21,14 @@ import { buildAnnotationMatrixFromCollected } from '../src/services/annotation-m
 import { collectHubNotes } from '../src/services/collection-notes.ts';
 import { syncItemRemarkToExtra } from '../src/services/item-remark-sync.ts';
 import { CitationHistoryStore } from '../src/services/citation-history-store.ts';
-import { CitationLookupEngine } from '../src/domains/inspector/citation-lookup-engine.ts';
+import { CitationLookupEngine } from '../src/domains/inspector/lookup/citation-lookup-engine.ts';
 import {
 	buildMetadataRemindersModel,
 	clearReminderFieldsCache,
 	DEFAULT_REMINDER_RULE_CONFIG,
-} from '../src/domains/inspector/word-cite-reminders-model.ts';
-import { ReaderPopupLabelsController } from '../src/domains/visual-notes/annotation-popup-labels.ts';
-import { patchCollectionsViewForWindow } from '../src/domains/word-cite/collection-tree-order.ts';
+} from '../src/domains/inspector/word-panel/word-cite-reminders-model.ts';
+import { ReaderPopupLabelsController } from '../src/domains/visual-notes/reader/annotation-popup-labels.ts';
+import { patchCollectionsViewForWindow } from '../src/domains/word-cite/governance/collection-tree-order.ts';
 
 function createMemoryPrefs(initial = {}) {
 	const store = new Map(Object.entries(initial));

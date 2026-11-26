@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { collectItemAnnotations } from '../src/services/annotation-utils.ts';
-import { clearGalleryCardCache, resolveCachedCardStatic } from '../src/domains/visual-notes/gallery-card-cache.ts';
+import { clearGalleryCardCache, resolveCachedCardStatic } from '../src/domains/visual-notes/gallery/gallery-card-cache.ts';
 import { clearExtraRemarkCache, readItemRemarkWithFallback } from '../src/domains/visual-notes/data-source.ts';
-import { ReadingColumnsController } from '../src/domains/visual-notes/library-columns.ts';
+import { ReadingColumnsController } from '../src/domains/visual-notes/columns/library-columns.ts';
 
-import { getNormalizedItemRemark, setNormalizedItemRemark } from '../src/domains/workspace/workspace-session-ops.ts';
+import { getNormalizedItemRemark, setNormalizedItemRemark } from '../src/domains/workspace/store/workspace-session-ops.ts';
 
 test('library columns render standalone attachment rows without enumerating child attachments', () => {
 	const item = {

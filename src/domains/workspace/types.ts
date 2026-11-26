@@ -1,4 +1,4 @@
-export type { TabGroup, VirtualMemberMeta, WorkspaceSession, WorkspaceState, RemarkDisplayMode, TabReadingProgress } from './workspace-schema.ts';
+export type { TabGroup, VirtualMemberMeta, WorkspaceSession, WorkspaceState, RemarkDisplayMode, TabReadingProgress } from './store/workspace-schema.ts';
 
 export interface TrackedTab {
 	tabID: string;

@@ -11,15 +11,15 @@ import {
 	renderMatrixMarkdown,
 	saveMatrixAsZoteroNote,
 } from '../src/services/annotation-matrix.ts';
-import { openAnnotationMatrixModal } from '../src/domains/visual-notes/annotation-matrix-modal.ts';
-import { extractQueryTerms } from '../src/domains/visual-notes/annotation-matrix-ui.ts';
-import { resolvePopupButtonColor } from '../src/domains/visual-notes/annotation-popup-labels.ts';
+import { openAnnotationMatrixModal } from '../src/domains/visual-notes/hub/annotation-matrix-modal.ts';
+import { extractQueryTerms } from '../src/domains/visual-notes/hub/annotation-matrix-ui.ts';
+import { resolvePopupButtonColor } from '../src/domains/visual-notes/reader/annotation-popup-labels.ts';
 import {
 	buildColorLabelsJsonFromInputs,
 	initAnnotationColorEditor,
 	syncAnnotationColorInputs,
-} from '../src/prefs-color-editor.ts';
-import { updatePreferenceDependencies } from '../src/prefs-helpers.ts';
+} from '../src/prefs/color-editor.ts';
+import { updatePreferenceDependencies } from '../src/prefs/helpers.ts';
 import { PREF_SCHEMA } from '../src/kernel/pref-schema.ts';
 import { TypedEventBus } from '../src/kernel/event-bus.ts';
 import { UnifiedPrefService } from '../src/kernel/pref-service.ts';

@@ -2,14 +2,14 @@ import { DisposableStack } from '../../kernel/disposable.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
-import { CitationLookupEngine, type LookupCandidate } from './citation-lookup-engine.ts';
-import { CitationLookupSectionController } from './citation-lookup-section.ts';
-import { CslPreviewSectionController } from './csl-preview-section.ts';
-import { PdfFolderSectionController } from './pdf-folder-section.ts';
-import { PdfPreviewSectionController } from './pdf-preview-section.ts';
-import { WordCiteSectionController } from './word-cite-section.ts';
+import { CitationLookupEngine, type LookupCandidate } from './lookup/citation-lookup-engine.ts';
+import { CitationLookupSectionController } from './lookup/citation-lookup-section.ts';
+import { CslPreviewSectionController } from './csl-preview/csl-preview-section.ts';
+import { PdfFolderSectionController } from './pdf/pdf-folder-section.ts';
+import { PdfPreviewSectionController } from './pdf/pdf-preview-section.ts';
+import { WordCiteSectionController } from './word-panel/word-cite-section.ts';
 
-import { clearReminderFieldsCache } from './word-cite-reminders-model.ts';
+import { clearReminderFieldsCache } from './word-panel/word-cite-reminders-model.ts';
 
 export class InspectorDomainModule implements DomainModule {
 	public readonly id = 'inspector' as const;

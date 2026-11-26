@@ -3,7 +3,7 @@ import { TypedEventBus } from './event-bus.ts';
 import { KernelLogger } from './logger.ts';
 import { NativeRuntime } from './native-runtime.ts';
 import { UnifiedNotifierHub } from './notifier-hub.ts';
-import type { PrefKey } from './pref-schema.ts';
+import { PREF_PREFIX, PREF_SCHEMA, type PrefKey } from './pref-schema.ts';
 import { UnifiedPrefService, type HostPrefsAdapter } from './pref-service.ts';
 import type { BridgeModule, DomainModule, PluginInfo } from './types.ts';
 
@@ -15,6 +15,8 @@ export class PluginKernel {
 	public readonly runtime = new NativeRuntime();
 	public readonly notifier: UnifiedNotifierHub;
 	public readonly disposables = new DisposableStack();
+	public readonly prefPrefix = PREF_PREFIX;
+	public readonly prefSchema = PREF_SCHEMA;
 	public _ftlRegistered = false;
 
 	private readonly domains = new Map<DomainModule['id'], DomainModule>();
@@ -177,6 +179,10 @@ export class PluginKernel {
 		this.bus.clear();
 		this.started = false;
 		this.initialized = false;
+	}
+
+	createScopedPrefs(): UnifiedPrefService {
+		return new UnifiedPrefService();
 	}
 
 	private syncLoggerConfig(): void {

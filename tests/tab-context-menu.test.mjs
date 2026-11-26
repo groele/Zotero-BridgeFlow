@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { WorkspaceTabContextMenu } from '../src/domains/workspace/tab-context-menu.ts';
+import { WorkspaceTabContextMenu } from '../src/domains/workspace/tabs/tab-context-menu.ts';
 import { resolveNativeTabFromElement } from '../src/domains/workspace/workspace-ui.ts';
 
 function makeMockPrefs(overrides = {}) {

@@ -12,17 +12,17 @@ import {
 	disambiguateDocumentNames,
 	extractDocumentBaseName,
 	WordSessionTracker,
-} from '../src/domains/word-cite/session-tracker.ts';
-import { WordCitationCollectionManager } from '../src/domains/word-cite/citation-collections.ts';
-import { CitationTagGovernance } from '../src/domains/word-cite/tag-governance.ts';
-import { WorkspaceStateStore } from '../src/domains/workspace/state-store.ts';
-import { WorkspaceTabController } from '../src/domains/workspace/tab-controller.ts';
-import { disambiguateSameParentTabs, formatReadingProgress } from '../src/domains/workspace/tab-actions-helpers.ts';
+} from '../src/domains/word-cite/ipc/session-tracker.ts';
+import { WordCitationCollectionManager } from '../src/domains/word-cite/governance/citation-collections.ts';
+import { CitationTagGovernance } from '../src/domains/word-cite/governance/tag-governance.ts';
+import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
+import { WorkspaceTabController } from '../src/domains/workspace/tabs/tab-controller.ts';
+import { disambiguateSameParentTabs, formatReadingProgress } from '../src/domains/workspace/tabs/tab-actions-helpers.ts';
 import {
 	pickCompareAttachment,
 	resolveAllPdfAttachments,
 	resolveSameItemPdfContext,
-} from '../src/domains/inspector/pdf-renderer.ts';
+} from '../src/domains/inspector/pdf/pdf-renderer.ts';
 
 function createMemoryPrefs(initial = {}) {
 	const store = new Map(Object.entries(initial));
