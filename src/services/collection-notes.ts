@@ -1,5 +1,5 @@
 import { filterCollectedAnnotations, matchesAnnotationQuery } from './annotation-matrix.ts';
-import { collectItemAnnotations, parseColorSemantics, type CollectedAnnotation } from './annotation-utils.ts';
+import { collectItemAnnotations, extractFourDigitYear, parseColorSemantics, type CollectedAnnotation } from './annotation-utils.ts';
 
 export type HubScopeMode = 'collection' | 'selected' | 'tabs';
 
@@ -190,7 +190,7 @@ export function collectHubNotes(
 		if (!itemID || item?.deleted) continue;
 		const title = String(item.getField?.('title') || item.title || `#${itemID}`);
 		const creator = String(item.firstCreator || '').trim();
-		const year = String(item.getField?.('year') || item.getField?.('date') || '').slice(0, 4);
+		const year = extractFourDigitYear(item.getField?.('year') || item.getField?.('date'));
 		const creatorYear = [creator, year].filter(Boolean).join(' ');
 		const briefNote = String(getBriefNote(item) || '').trim();
 

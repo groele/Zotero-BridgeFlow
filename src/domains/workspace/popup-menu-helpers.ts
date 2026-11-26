@@ -27,7 +27,7 @@ export function createFloatingPopup(doc: Document, anchor: HTMLElement, event?: 
 		pop.style.top = `${Math.max(8, Math.min(rawY, winH - popH - 8))}px`;
 	};
 	positionPopup();
-	queueMicrotask(positionPopup);
+	void Promise.resolve().then(positionPopup);
 	return pop;
 }
 

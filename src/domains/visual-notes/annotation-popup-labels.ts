@@ -122,6 +122,10 @@ export class ReaderPopupLabelsController {
 	private readonly pendingReaders = new Set<object>();
 	private notifierSub: Disposable | null = null;
 	private active = false;
+	private cachedRawLabels: string | null = null;
+	private cachedSemantics: Record<string, string> | null = null;
+	private cachedRawEnabled: string | null = null;
+	private cachedEnabled: Set<string> | null = null;
 
 	constructor(kernel: PluginKernel) {
 		this.kernel = kernel;
@@ -132,11 +136,19 @@ export class ReaderPopupLabelsController {
 	}
 
 	private getSemantics(): Record<string, string> {
-		return parseColorSemantics(String(this.kernel.prefs.get('inspector.annotations.colorLabels') || ''));
+		const raw = String(this.kernel.prefs.get('inspector.annotations.colorLabels') || '');
+		if (this.cachedSemantics && this.cachedRawLabels === raw) return this.cachedSemantics;
+		this.cachedRawLabels = raw;
+		this.cachedSemantics = parseColorSemantics(raw);
+		return this.cachedSemantics;
 	}
 
 	private getEnabledColors(): Set<string> {
-		return parseEnabledAnnotationColors(String(this.kernel.prefs.get('inspector.annotations.enabledColors') || ''));
+		const raw = String(this.kernel.prefs.get('inspector.annotations.enabledColors') || '');
+		if (this.cachedEnabled && this.cachedRawEnabled === raw) return this.cachedEnabled;
+		this.cachedRawEnabled = raw;
+		this.cachedEnabled = parseEnabledAnnotationColors(raw);
+		return this.cachedEnabled;
 	}
 
 	start(): void {

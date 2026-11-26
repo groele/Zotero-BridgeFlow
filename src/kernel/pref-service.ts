@@ -60,10 +60,12 @@ export function normalizePrefValue<K extends PrefKey>(key: K, raw: unknown): Pre
 
 export class UnifiedPrefService {
 	private readonly cache = new Map<PrefKey, unknown>();
-	private readonly cacheWatchedKeys = new Set<PrefKey>();
+	private readonly hostObserverByKey = new Map<PrefKey, symbol | string | number>();
+	private readonly keyListeners = new Map<PrefKey, Set<(value: unknown) => void>>();
 	private readonly observerIDs: Array<symbol | string | number> = [];
 	private readonly bus?: TypedEventBus;
 	private readonly adapterOverride?: HostPrefsAdapter;
+	private writingKey: PrefKey | null = null;
 
 	constructor(options: { bus?: TypedEventBus; adapter?: HostPrefsAdapter } = {}) {
 		this.bus = options.bus;
@@ -74,18 +76,29 @@ export class UnifiedPrefService {
 		return this.adapterOverride ?? resolveDefaultAdapter();
 	}
 
-	private ensureCacheInvalidationObserver(key: PrefKey): void {
-		if (this.cacheWatchedKeys.has(key)) return;
+	private ensureHostObserver(key: PrefKey): void {
+		if (this.hostObserverByKey.has(key)) return;
 		const adapter = this.adapter;
 		if (!adapter?.registerObserver) return;
-		this.cacheWatchedKeys.add(key);
+		const placeholder = Symbol(key);
+		this.hostObserverByKey.set(key, placeholder);
 		try {
 			const token = adapter.registerObserver(this.fullKey(key), () => {
 				this.invalidate(key);
+				const listeners = this.keyListeners.get(key);
+				const emitBus = Boolean(this.bus && this.writingKey !== key);
+				if ((listeners && listeners.size > 0) || emitBus) {
+					const next = this.get(key);
+					if (emitBus) this.bus?.emit('prefs:changed', { key, value: next });
+					if (listeners) {
+						for (const fn of [...listeners]) fn(next);
+					}
+				}
 			}, true);
+			this.hostObserverByKey.set(key, token);
 			this.observerIDs.push(token);
 		} catch {
-			this.cacheWatchedKeys.delete(key);
+			this.hostObserverByKey.delete(key);
 		}
 	}
 
@@ -94,7 +107,7 @@ export class UnifiedPrefService {
 	}
 
 	get<K extends PrefKey>(key: K): PrefValue<K> {
-		this.ensureCacheInvalidationObserver(key);
+		this.ensureHostObserver(key);
 		if (this.cache.has(key)) return this.cache.get(key) as PrefValue<K>;
 		const raw = this.readRaw(this.fullKey(key));
 		const normalized = normalizePrefValue(key, raw);
@@ -103,12 +116,16 @@ export class UnifiedPrefService {
 	}
 
 	set<K extends PrefKey>(key: K, value: PrefValue<K>): PrefValue<K> {
-		this.ensureCacheInvalidationObserver(key);
+		this.ensureHostObserver(key);
 		const normalized = normalizePrefValue(key, value);
 		this.cache.set(key, normalized);
+		const prevWriting = this.writingKey;
+		this.writingKey = key;
 		try {
 			this.adapter?.set(this.fullKey(key), normalized, true);
-		} catch { /* ignore in mock/headless env */ }
+		} catch { /* ignore in mock/headless env */ } finally {
+			this.writingKey = prevWriting;
+		}
 		this.bus?.emit('prefs:changed', { key, value: normalized });
 		return normalized;
 	}
@@ -151,26 +168,25 @@ export class UnifiedPrefService {
 	}
 
 	observeKeys(keys: readonly PrefKey[], onChange: (key: PrefKey, value: unknown) => void): Disposable {
-		const localTokens: Array<symbol | string | number> = [];
-		const adapter = this.adapter;
-		if (adapter?.registerObserver) {
-			for (const key of keys) {
-				const token = adapter.registerObserver(this.fullKey(key), () => {
-					this.invalidate(key);
-					const next = this.get(key);
-					this.bus?.emit('prefs:changed', { key, value: next });
-					onChange(key, next);
-				}, true);
-				this.observerIDs.push(token);
-				localTokens.push(token);
+		const entries: Array<[PrefKey, (value: unknown) => void]> = [];
+		for (const key of keys) {
+			const fn = (value: unknown) => onChange(key, value);
+			let set = this.keyListeners.get(key);
+			if (!set) {
+				set = new Set();
+				this.keyListeners.set(key, set);
 			}
+			set.add(fn);
+			entries.push([key, fn]);
+			this.ensureHostObserver(key);
 		}
 		return () => {
-			if (!adapter?.unregisterObserver) return;
-			for (const token of localTokens) {
-				try { adapter.unregisterObserver(token); } catch { /* ignore */ }
-				const idx = this.observerIDs.indexOf(token);
-				if (idx >= 0) this.observerIDs.splice(idx, 1);
+			for (const [key, fn] of entries) {
+				const set = this.keyListeners.get(key);
+				if (set) {
+					set.delete(fn);
+					if (set.size === 0) this.keyListeners.delete(key);
+				}
 			}
 		};
 	}
@@ -183,7 +199,8 @@ export class UnifiedPrefService {
 			}
 		}
 		this.observerIDs.length = 0;
-		this.cacheWatchedKeys.clear();
+		this.hostObserverByKey.clear();
+		this.keyListeners.clear();
 		this.cache.clear();
 	}
 }

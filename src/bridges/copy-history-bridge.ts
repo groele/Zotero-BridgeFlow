@@ -1,3 +1,4 @@
+import { extractIdentifier } from '../services/citation-identifier.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule } from '../kernel/types.ts';
@@ -8,22 +9,18 @@ function normalizeProbe(s: string): string {
 	return stripItemTitleMarkup(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
-function scoreLineForItem(line: string, item: any): number {
-	const lowerLine = line.toLowerCase();
-	const doi = safeGetItemField(item, 'DOI').trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').toLowerCase();
-	if (doi.length >= 7 && lowerLine.includes(doi)) return 100;
-	const normLine = normalizeProbe(line);
-	const rawTitle = safeGetItemField(item, 'title') || String(item?.title || '');
-	const normTitle = normalizeProbe(rawTitle);
-	if (normTitle.length >= 10 && normLine.includes(normTitle.slice(0, Math.min(normTitle.length, 42)))) {
-		return 65;
-	}
+function describeItem(item: any) {
+	const doi = extractIdentifier(safeGetItemField(item, 'DOI')).doi;
+	const title = normalizeProbe(safeGetItemField(item, 'title') || String(item?.title || ''));
 	const creator = String(item?.firstCreator || item?.getCreators?.()?.[0]?.lastName || '').trim().toLowerCase();
-	const year = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).match(/\b(19|20)\d{2}\b/)?.[0] || '';
-	const surname = creator.split(/\s+|,/)[0] || '';
-	if (surname.length >= 2 && year && lowerLine.includes(surname) && lowerLine.includes(year)) {
-		return 40;
-	}
+	const year = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).match(/\b(?:18|19|20)\d{2}\b/)?.[0];
+	return { doi, title, surname: creator.split(/[\s,]+/)[0], year };
+}
+
+function scoreLineForItem(line: string, normalized: string, doi: string | undefined, item: ReturnType<typeof describeItem>): number {
+	if (doi) return doi === item.doi ? 100 : 0;
+	if (item.title.length >= 10 && normalized.includes(item.title)) return 65;
+	if (item.surname.length >= 2 && item.year && line.includes(item.surname) && line.includes(item.year)) return 40;
 	return 0;
 }
 
@@ -67,20 +64,20 @@ export class CopyHistoryBridge implements BridgeModule {
 					const itemID = ev.itemIDs[0];
 					if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
 					const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
-					if (item && isItemTrashedOrDeleted(item)) return;
+					if (isItemTrashedOrDeleted(item)) return;
 					recordItemLine(ev.text, itemID, item);
 					return;
 				}
 
 				const lines = ev.text.split(/\r?\n+/).map((l) => l.trim()).filter((l) => l.length >= 12);
-				const candidates: Array<{ itemID: number; item: any }> = [];
+				const candidates: Array<{ itemID: number; item: any; info: ReturnType<typeof describeItem> }> = [];
 				const seenIDs = new Set<number>();
 				for (const itemID of ev.itemIDs) {
 					if (!Number.isSafeInteger(itemID) || itemID <= 0 || seenIDs.has(itemID)) continue;
 					const item = (globalThis as any).Zotero?.Items?.get?.(itemID);
-					if (item && isItemTrashedOrDeleted(item)) continue;
+					if (isItemTrashedOrDeleted(item)) continue;
 					seenIDs.add(itemID);
-					candidates.push({ itemID, item });
+					candidates.push({ itemID, item, info: describeItem(item) });
 				}
 				if (!lines.length || !candidates.length) return;
 
@@ -88,11 +85,14 @@ export class CopyHistoryBridge implements BridgeModule {
 				const usedCands = new Set<number>();
 				const scoredPairs: Array<{ li: number; ci: number; score: number }> = [];
 				for (let li = 0; li < lines.length; li++) {
+					const line = lines[li].toLowerCase();
+					const normalized = normalizeProbe(line);
+					const doi = extractIdentifier(line).doi;
 					let bestCi = -1;
 					let bestScore = 0;
 					let tied = false;
 					for (let ci = 0; ci < candidates.length; ci++) {
-						const sc = scoreLineForItem(lines[li], candidates[ci].item);
+						const sc = scoreLineForItem(line, normalized, doi, candidates[ci].info);
 						if (sc > bestScore) { bestScore = sc; bestCi = ci; tied = false; }
 						else if (sc > 0 && sc === bestScore) tied = true;
 					}
@@ -106,15 +106,6 @@ export class CopyHistoryBridge implements BridgeModule {
 					usedLines.add(p.li);
 					usedCands.add(p.ci);
 					recordItemLine(lines[p.li], candidates[p.ci].itemID, candidates[p.ci].item);
-				}
-
-				const remLines = lines.map((_, i) => i).filter((i) => !usedLines.has(i));
-				const remCands = candidates.map((_, i) => i).filter((i) => !usedCands.has(i));
-				if (remLines.length === remCands.length && (usedLines.size === 0 || remLines.length === 1)) {
-					for (let i = 0; i < remLines.length; i++) {
-						const cand = candidates[remCands[i]];
-						recordItemLine(lines[remLines[i]], cand.itemID, cand.item);
-					}
 				}
 			}),
 		);

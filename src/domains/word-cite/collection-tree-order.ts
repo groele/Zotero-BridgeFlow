@@ -144,6 +144,7 @@ export function insertCitationRowAbovePublications(
 	cv: any,
 	col: any,
 	activeKeys: ReadonlySet<string>,
+	activeNames?: ReadonlySet<string>,
 ): number | false {
 	const startRow = cv?._rowMap?.['L' + col?.libraryID];
 	if (startRow === undefined || (typeof cv.isContainerOpen === 'function' && !cv.isContainerOpen(startRow))) {
@@ -160,7 +161,7 @@ export function insertCitationRowAbovePublications(
 				const treeRow = cv.getRow?.(i) ?? cv._rows[i];
 				if (isBottomVirtualRow(treeRow)) { beforeRow = i; break; }
 				if ((treeRow?.isCollection?.() || treeRow?.type === 'collection')
-					&& isCitationCollectionRef(treeRow.ref, activeKeys)
+					&& isCitationCollectionRef(treeRow.ref, activeKeys, activeNames)
 					&& compareCollectionNames(treeRow.ref?.name, col.name) > 0) {
 					beforeRow = i;
 					break;
@@ -197,13 +198,18 @@ export function patchCollectionsViewForWindow(
 	const isCiteRow = (row: any): boolean =>
 		Boolean((row?.isCollection?.() || row?.type === 'collection') && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
 
+	let iconProto: HTMLImageElement | null = null;
 	const createWordIcon = (): HTMLImageElement => {
+		if (iconProto && typeof iconProto.cloneNode === 'function') {
+			return iconProto.cloneNode(false) as HTMLImageElement;
+		}
 		const icon = win.document.createElementNS('http://www.w3.org/1999/xhtml', 'img') as HTMLImageElement;
 		icon.src = resolvedURI;
 		icon.alt = '';
 		icon.width = 16;
 		icon.height = 16;
-		return icon;
+		iconProto = icon;
+		return typeof icon.cloneNode === 'function' ? (icon.cloneNode(false) as HTMLImageElement) : icon;
 	};
 
 	// Zotero's virtual table captures renderItem at mount time. Its captured
@@ -223,7 +229,7 @@ export function patchCollectionsViewForWindow(
 				const added = await orig.apply(this, args);
 				if (typeof added === 'number' && added > 0 && rows?.[row]?.isLibrary?.(true)) {
 					const libLevel = typeof this.getLevel === 'function' && rows === this._rows ? this.getLevel(row) : (rows[row]?.level ?? 0);
-					if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys())) {
+					if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys(), getActiveNames?.())) {
 						this._refreshRowMap?.();
 						this.tree?.invalidate?.();
 					}
@@ -239,14 +245,15 @@ export function patchCollectionsViewForWindow(
 			runtime.patch(cv, '_addSortedRow', 'collectionsView', (orig) => async function (this: any, ...args: unknown[]) {
 				const [objectType, id] = args as [string, number];
 				const activeKeys = getActiveKeys();
+				const activeNames = getActiveNames?.();
 				if (objectType === 'collection') {
 					const zotCols = (globalThis as any).Zotero?.Collections;
 					const col = zotCols?.get?.(id) || await zotCols?.getAsync?.(id);
-					if (col && !col.parentID && isCitationCollectionRef(col, activeKeys)) {
-						const inserted = insertCitationRowAbovePublications(this, col, activeKeys);
+					if (col && !col.parentID && isCitationCollectionRef(col, activeKeys, activeNames)) {
+						const inserted = insertCitationRowAbovePublications(this, col, activeKeys, activeNames);
 						if (inserted !== false) return inserted;
 						const res = await orig.apply(this, args);
-						reorderViewCollections(this, activeKeys);
+						reorderViewCollections(this, activeKeys, activeNames);
 						return res;
 					}
 				}
@@ -257,7 +264,7 @@ export function patchCollectionsViewForWindow(
 					if (alreadyMasked) {
 						alreadyMasked.depth += 1;
 						touched.push(row);
-					} else if ((row.isCollection?.() || row.type === 'collection') && isCitationCollectionRef(row.ref, activeKeys)) {
+					} else if ((row.isCollection?.() || row.type === 'collection') && isCitationCollectionRef(row.ref, activeKeys, activeNames)) {
 						const hasOwn = Object.prototype.hasOwnProperty.call(row, 'isCollection');
 						const original = row.isCollection;
 						maskRegistry.set(row, { depth: 1, hasOwn, original });

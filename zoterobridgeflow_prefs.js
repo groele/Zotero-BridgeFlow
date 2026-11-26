@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.6 - Preferences controller. */
+/* Zotero BridgeFlow v0.8.9 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -256,10 +256,12 @@
   }
   var UnifiedPrefService = class {
     cache = /* @__PURE__ */ new Map();
-    cacheWatchedKeys = /* @__PURE__ */ new Set();
+    hostObserverByKey = /* @__PURE__ */ new Map();
+    keyListeners = /* @__PURE__ */ new Map();
     observerIDs = [];
     bus;
     adapterOverride;
+    writingKey = null;
     constructor(options = {}) {
       this.bus = options.bus;
       this.adapterOverride = options.adapter;
@@ -267,25 +269,36 @@
     get adapter() {
       return this.adapterOverride ?? resolveDefaultAdapter();
     }
-    ensureCacheInvalidationObserver(key) {
-      if (this.cacheWatchedKeys.has(key)) return;
+    ensureHostObserver(key) {
+      if (this.hostObserverByKey.has(key)) return;
       const adapter = this.adapter;
       if (!adapter?.registerObserver) return;
-      this.cacheWatchedKeys.add(key);
+      const placeholder = Symbol(key);
+      this.hostObserverByKey.set(key, placeholder);
       try {
         const token = adapter.registerObserver(this.fullKey(key), () => {
           this.invalidate(key);
+          const listeners = this.keyListeners.get(key);
+          const emitBus = Boolean(this.bus && this.writingKey !== key);
+          if (listeners && listeners.size > 0 || emitBus) {
+            const next = this.get(key);
+            if (emitBus) this.bus?.emit("prefs:changed", { key, value: next });
+            if (listeners) {
+              for (const fn of [...listeners]) fn(next);
+            }
+          }
         }, true);
+        this.hostObserverByKey.set(key, token);
         this.observerIDs.push(token);
       } catch {
-        this.cacheWatchedKeys.delete(key);
+        this.hostObserverByKey.delete(key);
       }
     }
     fullKey(key) {
       return PREF_PREFIX + key;
     }
     get(key) {
-      this.ensureCacheInvalidationObserver(key);
+      this.ensureHostObserver(key);
       if (this.cache.has(key)) return this.cache.get(key);
       const raw = this.readRaw(this.fullKey(key));
       const normalized = normalizePrefValue(key, raw);
@@ -293,12 +306,16 @@
       return normalized;
     }
     set(key, value) {
-      this.ensureCacheInvalidationObserver(key);
+      this.ensureHostObserver(key);
       const normalized = normalizePrefValue(key, value);
       this.cache.set(key, normalized);
+      const prevWriting = this.writingKey;
+      this.writingKey = key;
       try {
         this.adapter?.set(this.fullKey(key), normalized, true);
       } catch {
+      } finally {
+        this.writingKey = prevWriting;
       }
       this.bus?.emit("prefs:changed", { key, value: normalized });
       return normalized;
@@ -338,29 +355,25 @@
       }
     }
     observeKeys(keys, onChange) {
-      const localTokens = [];
-      const adapter = this.adapter;
-      if (adapter?.registerObserver) {
-        for (const key of keys) {
-          const token = adapter.registerObserver(this.fullKey(key), () => {
-            this.invalidate(key);
-            const next = this.get(key);
-            this.bus?.emit("prefs:changed", { key, value: next });
-            onChange(key, next);
-          }, true);
-          this.observerIDs.push(token);
-          localTokens.push(token);
+      const entries = [];
+      for (const key of keys) {
+        const fn = (value) => onChange(key, value);
+        let set = this.keyListeners.get(key);
+        if (!set) {
+          set = /* @__PURE__ */ new Set();
+          this.keyListeners.set(key, set);
         }
+        set.add(fn);
+        entries.push([key, fn]);
+        this.ensureHostObserver(key);
       }
       return () => {
-        if (!adapter?.unregisterObserver) return;
-        for (const token of localTokens) {
-          try {
-            adapter.unregisterObserver(token);
-          } catch {
+        for (const [key, fn] of entries) {
+          const set = this.keyListeners.get(key);
+          if (set) {
+            set.delete(fn);
+            if (set.size === 0) this.keyListeners.delete(key);
           }
-          const idx = this.observerIDs.indexOf(token);
-          if (idx >= 0) this.observerIDs.splice(idx, 1);
         }
       };
     }
@@ -375,7 +388,8 @@
         }
       }
       this.observerIDs.length = 0;
-      this.cacheWatchedKeys.clear();
+      this.hostObserverByKey.clear();
+      this.keyListeners.clear();
       this.cache.clear();
     }
   };
@@ -1357,8 +1371,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.8.6" }));
-        versionEl.textContent = `v${"0.8.6"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.8.9" }));
+        versionEl.textContent = `v${"0.8.9"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");
@@ -1559,10 +1573,19 @@
       doc.l10n?.ready?.then?.(() => {
         if (!disposed) syncMenulistLabels(doc);
       });
+      let syncQueued = false;
+      const scheduleSync = () => {
+        if (disposed || syncQueued) return;
+        syncQueued = true;
+        void Promise.resolve().then(() => {
+          syncQueued = false;
+          if (!disposed) syncAll();
+        });
+      };
       if (globalThis.Zotero?.Prefs?.registerObserver) {
         const keys = Object.keys(PREF_SCHEMA).filter((k) => k !== "workspace.document");
         for (const k of keys) {
-          localObservers.push(globalThis.Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => syncAll(), true));
+          localObservers.push(globalThis.Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => scheduleSync(), true));
         }
         targetWin?.addEventListener?.("pagehide", cleanup, { once: true });
         targetWin?.addEventListener?.("unload", cleanup, { once: true });

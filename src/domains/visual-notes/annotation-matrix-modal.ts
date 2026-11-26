@@ -2,13 +2,13 @@ import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { TypedEventBus } from '../../kernel/event-bus.ts';
 import type { UnifiedClipboardService } from '../../services/clipboard-service.ts';
 import {
-	buildAnnotationMatrix,
+	buildAnnotationMatrixFromCollected,
 	renderMatrixCsv,
 	renderMatrixMarkdown,
 	saveMatrixAsZoteroNote,
 	type AnnotationMatrix,
 } from '../../services/annotation-matrix.ts';
-import { parseColorSemantics } from '../../services/annotation-utils.ts';
+import { collectItemAnnotations, parseColorSemantics } from '../../services/annotation-utils.ts';
 import {
 	ensureMatrixStyles,
 	extractQueryTerms,
@@ -17,6 +17,8 @@ import {
 	writeMatrixClipboard,
 } from './annotation-matrix-ui.ts';
 import { renderRichTitleNodes } from './gallery-icons.ts';
+
+const closeByDocument = new WeakMap<Document, () => void>();
 
 export function openAnnotationMatrixModal(options: {
 	win: Window;
@@ -30,7 +32,7 @@ export function openAnnotationMatrixModal(options: {
 	const doc = options.mountRoot?.ownerDocument || options.win.document;
 	if (!doc) return;
 	ensureMatrixStyles(doc);
-	doc.getElementById('zbf-matrix-backdrop')?.remove();
+	closeByDocument.get(doc)?.();
 
 	const hostItems = (globalThis as any).Zotero?.Items;
 	const items = [...new Set(options.itemIDs)]
@@ -43,7 +45,8 @@ export function openAnnotationMatrixModal(options: {
 	for (const [hex, lbl] of Object.entries(semantics)) {
 		if (!colorByLabel.has(lbl)) colorByLabel.set(lbl, hex);
 	}
-	const fullMatrix = buildAnnotationMatrix(items, colorJson);
+	const baseAnnotations = collectItemAnnotations(items, semantics);
+	const fullMatrix = buildAnnotationMatrixFromCollected(items, semantics, baseAnnotations);
 	const countsByCol = new Map<string, number>();
 	for (const col of fullMatrix.columns) {
 		let total = 0;
@@ -125,12 +128,23 @@ export function openAnnotationMatrixModal(options: {
 		statusEl.textContent = `当前显示 ${currentMatrix.rows.length} 篇 / ${currentMatrix.totalAnnotations} 条标注 · 已勾选 ${visibleSelected} 篇`;
 	};
 
+	let filterTimer: ReturnType<typeof setTimeout> | null = null;
+	let composing = false;
 	const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault?.(); close(); } };
-	const close = () => { doc.removeEventListener?.('keydown', onKey, true); backdrop.remove(); };
+	const close = () => {
+		if (filterTimer !== null) { clearTimeout(filterTimer); filterTimer = null; }
+		doc.removeEventListener?.('keydown', onKey, true);
+		backdrop.remove();
+		closeByDocument.delete(doc);
+	};
 
 	const renderTable = () => {
+		if (filterTimer !== null) { clearTimeout(filterTimer); filterTimer = null; }
 		clearBtn.style.display = queryInput.value ? 'inline-flex' : 'none';
-		currentMatrix = buildAnnotationMatrix(items, colorJson, { query: queryInput.value, colorLabel: activeColor });
+		currentMatrix = !queryInput.value && !activeColor ? fullMatrix : buildAnnotationMatrixFromCollected(items, semantics, baseAnnotations, {
+			query: queryInput.value,
+			colorLabel: activeColor,
+		});
 		scroll.textContent = '';
 		updateStatus();
 		if (!currentMatrix.rows.length || !currentMatrix.columns.length) {
@@ -251,12 +265,26 @@ export function openAnnotationMatrixModal(options: {
 		scroll.appendChild(table);
 	};
 
+	const scheduleFilterRender = () => {
+		clearBtn.style.display = queryInput.value ? 'inline-flex' : 'none';
+		if (filterTimer !== null) clearTimeout(filterTimer);
+		filterTimer = setTimeout(() => {
+			filterTimer = null;
+			renderTable();
+		}, 80);
+	};
 	clearBtn.addEventListener('click', () => {
+		if (filterTimer !== null) { clearTimeout(filterTimer); filterTimer = null; }
 		queryInput.value = '';
 		renderTable();
 		queryInput.focus?.();
 	});
-	queryInput.addEventListener('input', renderTable);
+	queryInput.addEventListener('compositionstart', () => { composing = true; });
+	queryInput.addEventListener('compositionend', () => { composing = false; scheduleFilterRender(); });
+	queryInput.addEventListener('input', () => {
+		clearBtn.style.display = queryInput.value ? 'inline-flex' : 'none';
+		if (!composing) scheduleFilterRender();
+	});
 	renderTable();
 
 	const foot = el(doc, 'div');
@@ -268,7 +296,10 @@ export function openAnnotationMatrixModal(options: {
 		b.type = 'button';
 		b.className = primary ? 'zbf-matrix-btn primary' : 'zbf-matrix-btn';
 		b.textContent = label;
-		b.addEventListener('click', onClick);
+		b.addEventListener('click', () => {
+			if (filterTimer !== null) renderTable();
+			onClick();
+		});
 		actions.appendChild(b);
 	};
 
@@ -307,6 +338,7 @@ export function openAnnotationMatrixModal(options: {
 	foot.append(statusEl, actions);
 	dialog.append(head, controls, scroll, foot);
 	backdrop.appendChild(dialog);
+	closeByDocument.set(doc, close);
 	doc.addEventListener?.('keydown', onKey, true);
 	closeBtn.addEventListener('click', close);
 	backdrop.addEventListener('click', (e: MouseEvent) => { if (e.target === backdrop) close(); });

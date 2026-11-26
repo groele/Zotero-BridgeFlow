@@ -2,7 +2,7 @@ import { DisposableStack } from '../../kernel/disposable.ts';
 import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { CitationSnapshotPayload, DomainModule, WordRecoverOrphansResultPayload } from '../../kernel/types.ts';
-import { deduplicateRegularItems } from '../../services/item-resolution.ts';
+import { deduplicateRegularItems, normalizeToRegularItem } from '../../services/item-resolution.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
 import type { Win32BridgeService } from '../../services/win32-bridge.ts';
 import { WordCitationCollectionManager } from './citation-collections.ts';
@@ -110,7 +110,12 @@ export class WordCiteDomainModule implements DomainModule {
 				let status: Awaited<ReturnType<DragCiteController['insertItems']>> = 'unavailable';
 				try {
 					const hostItems = (globalThis as any).Zotero?.Items;
-					const { items } = deduplicateRegularItems(itemIDs.map((id) => hostItems?.get?.(id)));
+					const ids = [...new Set(itemIDs)];
+					const loaded = hostItems?.getAsync ? await hostItems.getAsync(ids) : ids.map(id => hostItems?.get?.(id));
+					const byID = new Map((Array.isArray(loaded) ? loaded : [loaded]).filter(Boolean).map(item => [item.id, item]));
+					const regular = ids.map(id => normalizeToRegularItem(byID.get(id)));
+					if (!this.active || !regular.length || regular.some(item => !item)) throw new Error('Word selection is no longer available');
+					const { items } = deduplicateRegularItems(regular);
 					itemCount = items.length;
 					status = await this.dragCite.insertItems(items, (sessionID) => {
 						documentName = this.tracker.getAllSessions().find((session) => session.sessionID === sessionID)?.displayName || '';

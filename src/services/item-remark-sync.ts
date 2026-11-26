@@ -54,57 +54,63 @@ export function getItemBriefNote(item: any, cachedRemark = ''): string {
 
 const pendingSyncByItemID = new Map<number, Promise<boolean>>();
 
-async function performExtraSync(itemOrID: any, remark: string): Promise<boolean> {
+async function performExtraSync(item: any, remark: string): Promise<boolean> {
 	try {
-		const hostItems = (globalThis as any).Zotero?.Items;
-		let item = typeof itemOrID === 'number'
-			? (hostItems?.get?.(itemOrID) || (hostItems?.getAsync ? await hostItems.getAsync(itemOrID) : null))
-			: itemOrID;
-		if (!item || item.deleted) return false;
-		if (item.isAttachment?.() && item.parentItemID) {
-			const parent = hostItems?.get?.(item.parentItemID)
-				|| (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
-			if (parent && !parent.deleted) item = parent;
-		}
-		if (!isItemWritable(item) || !item?.isRegularItem?.() || typeof item.getField !== 'function' || typeof item.setField !== 'function') {
+		if (!item || item.deleted || !isItemWritable(item) || !item.isRegularItem?.()
+			|| typeof item.getField !== 'function' || typeof item.setField !== 'function') return false;
+		const prevExtra = String(item.getField('extra') || '');
+		const nextExtra = upsertRemarkInExtra(prevExtra, remark);
+		if (prevExtra === nextExtra) return true;
+		const save = item.saveTx ?? item.save;
+		if (typeof save !== 'function') return false;
+		item.setField('extra', nextExtra);
+		try {
+			await save.call(item);
+		} catch {
+			if (item.getField('extra') === nextExtra) item.setField('extra', prevExtra);
 			return false;
 		}
-		const targetID = Number(item.id || 0);
-		if (targetID > 0) inFlightRemarkOverrides.set(targetID, remark.replace(/[\r\n]+/g, ' ').trim());
-		try {
-			const prevExtra = String(item.getField('extra') || '');
-			const nextExtra = upsertRemarkInExtra(prevExtra, remark);
-			if (prevExtra === nextExtra) return true;
-			item.setField('extra', nextExtra);
-			if (typeof item.saveTx === 'function') {
-				await item.saveTx();
-			} else if (typeof item.save === 'function') {
-				await item.save();
-			}
-			return true;
-		} finally {
-			if (targetID > 0 && !pendingSyncByItemID.has(targetID)) {
-				inFlightRemarkOverrides.delete(targetID);
-			}
-		}
+		return true;
 	} catch {
 		return false;
 	}
 }
 
-export function syncItemRemarkToExtra(itemOrID: any, remark: string): Promise<boolean> {
-	const rawID = typeof itemOrID === 'number' ? itemOrID : Number(itemOrID?.id || 0);
-	const clean = remark.replace(/[\r\n]+/g, ' ').trim();
-	if (rawID <= 0) return performExtraSync(itemOrID, clean);
-	inFlightRemarkOverrides.set(rawID, clean);
-	const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
-	const next = prev.then(() => performExtraSync(itemOrID, clean));
-	pendingSyncByItemID.set(rawID, next);
+function getHostItem(id: number): any {
+	const items = (globalThis as any).Zotero?.Items;
+	try {
+		const item = items?.get?.(id);
+		if (item) return item;
+	} catch { /* Item may not have loaded yet. */ }
+	return items?.getAsync?.(id);
+}
+
+function enqueueRemark(item: any, remark: string): Promise<boolean> {
+	const id = Number(item?.id || 0);
+	if (!id) return performExtraSync(item, remark);
+	inFlightRemarkOverrides.set(id, remark);
+	const previous = pendingSyncByItemID.get(id) ?? Promise.resolve(true);
+	const next = previous.then(() => performExtraSync(item, remark));
+	pendingSyncByItemID.set(id, next);
 	void next.finally(() => {
-		if (pendingSyncByItemID.get(rawID) === next) {
-			pendingSyncByItemID.delete(rawID);
-			inFlightRemarkOverrides.delete(rawID);
+		if (pendingSyncByItemID.get(id) === next) {
+			pendingSyncByItemID.delete(id);
+			inFlightRemarkOverrides.delete(id);
 		}
 	});
 	return next;
+}
+
+// Preserve submission order while resolving cold IDs, without serializing saves across items.
+let resolvingTargets = Promise.resolve();
+export function syncItemRemarkToExtra(itemOrID: any, remark: string): Promise<boolean> {
+	const clean = remark.replace(/[\r\n]+/g, ' ').trim();
+	const queued = resolvingTargets.then(async () => {
+		const item = typeof itemOrID === 'number' ? await getHostItem(itemOrID) : itemOrID;
+		const target = item && !item.deleted && item.isAttachment?.() && item.parentItemID
+			? await getHostItem(item.parentItemID) : item;
+		return { saved: enqueueRemark(target, clean) };
+	});
+	resolvingTargets = queued.then(() => {}, () => {});
+	return queued.then(({ saved }) => saved, () => false);
 }

@@ -1,6 +1,7 @@
 var Zotero;
 var startupGeneration = 0;
 var activeRootURI = null;
+var activePrefPaneID = null;
 
 async function startup({ id, version, rootURI }) {
 	const generation = ++startupGeneration;
@@ -20,13 +21,17 @@ async function startup({ id, version, rootURI }) {
 			Zotero.ftl.addResourceIds(['zotero-bridgeflow.ftl']);
 			bridgeflow._ftlRegistered = true;
 		}
-		Zotero.PreferencePanes.register({
+		const panePromise = Zotero.PreferencePanes.register({
 			pluginID: id,
 			src: rootURI + 'prefs.xhtml',
 			scripts: [rootURI + 'zoterobridgeflow_prefs.js'],
 			stylesheets: [rootURI + 'settings.css'],
 			defaultXUL: true,
 		});
+		Promise.resolve(panePromise).then((paneID) => {
+			if (generation === startupGeneration && paneID) activePrefPaneID = paneID;
+			else if (paneID) Zotero.PreferencePanes?.unregister?.(paneID);
+		}).catch(() => {});
 		await bridgeflow.start();
 	} catch (error) {
 		if (generation === startupGeneration) shutdown();
@@ -53,6 +58,11 @@ function shutdown(_data, reason) {
 			const appShutdown = typeof APP_SHUTDOWN !== 'undefined' && reason === APP_SHUTDOWN;
 			if (!appShutdown) {
 				try {
+					if (activePrefPaneID) Zotero?.PreferencePanes?.unregister?.(activePrefPaneID);
+				} catch (error) {
+					Zotero?.logError?.(error);
+				}
+				try {
 					if (activeRootURI && typeof Cu !== 'undefined') Cu.unload(activeRootURI + 'zoterobridgeflow.js');
 				} catch (error) {
 					Zotero?.logError?.(error);
@@ -72,6 +82,7 @@ function shutdown(_data, reason) {
 					Zotero?.logError?.(error);
 				}
 			}
+			activePrefPaneID = null;
 			activeRootURI = null;
 		}
 	}

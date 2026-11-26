@@ -214,6 +214,11 @@ test('Phase 3: openAnnotationMatrixModal renders interactive matrix and dispatch
 	wordBtn.click();
 	assert.equal(wordRequests.length, 1);
 	assert.deepEqual(wordRequests[0].itemIDs, [300]);
+	const input = dialog.children[1].children[0].children[0];
+	input.value = 'missing annotation';
+	input.dispatch('input');
+	wordBtn.click();
+	assert.equal(wordRequests.length, 1, 'immediate Word insertion must use the latest filter');
 
 	delete globalThis.Zotero;
 });

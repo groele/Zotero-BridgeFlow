@@ -145,9 +145,10 @@ test('CslFormattingEngine + ClipboardService + CitationHistoryStore roundtrip', 
 	const clipboard = new UnifiedClipboardService(csl, bus);
 	const history = new CitationHistoryStore();
 
-	// Mock Zotero clipboard fallback
+	// Mock Zotero formatting and clipboard fallback
 	globalThis.Zotero = {
 		Utilities: { Internal: { copyTextToClipboard: () => {} } },
+		QuickCopy: { getContentFromItems: () => ({ text: 'Attention Is All You Need', html: '<i>Attention Is All You Need</i>' }) },
 	};
 
 	const copiedEvents = [];

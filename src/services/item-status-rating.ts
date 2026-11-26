@@ -67,6 +67,10 @@ export function clearStatusRatingCaches(itemIDs?: Iterable<number>): void {
 	}
 }
 
+function clearTargetItemCache(item: any, rawItem?: any): void {
+	clearStatusRatingCaches([Number(item?.id || 0), Number(rawItem?.id || 0)].filter((n) => n > 0));
+}
+
 export function isStatusTagName(tagName: string, excludedTag = '/Citations'): boolean {
 	const t = String(tagName || '').trim();
 	if (!t.startsWith('/') || t.length < 2) return false;
@@ -192,7 +196,7 @@ export async function setItemStatus(
 		}
 	}
 	if (changed) {
-		statusCache.clear();
+		clearTargetItemCache(item, rawItem);
 		await item.saveTx?.();
 	}
 	return changed;
@@ -287,7 +291,7 @@ export async function setItemRating(
 			}
 		}
 		const changed = getActiveRatingsCache().setRating(item, clamped, false, hasLegacy);
-		ratingCache.clear();
+		clearTargetItemCache(item, rawItem);
 		return changed;
 	}
 
@@ -325,7 +329,7 @@ export async function setItemRating(
 	}
 
 	if (changed) {
-		ratingCache.clear();
+		clearTargetItemCache(item, rawItem);
 		await item.saveTx?.();
 	}
 	return changed;

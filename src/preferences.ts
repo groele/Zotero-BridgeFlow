@@ -274,10 +274,20 @@ const BridgeFlowPreferences = {
 		});
 		(doc as { l10n?: { ready?: Promise<unknown> } }).l10n?.ready?.then?.(() => { if (!disposed) syncMenulistLabels(doc); });
 
+		let syncQueued = false;
+		const scheduleSync = (): void => {
+			if (disposed || syncQueued) return;
+			syncQueued = true;
+			void Promise.resolve().then(() => {
+				syncQueued = false;
+				if (!disposed) syncAll();
+			});
+		};
+
 		if ((globalThis as any).Zotero?.Prefs?.registerObserver) {
 			const keys = (Object.keys(PREF_SCHEMA) as PrefKey[]).filter((k) => k !== 'workspace.document');
 			for (const k of keys) {
-				localObservers.push((globalThis as any).Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => syncAll(), true));
+				localObservers.push((globalThis as any).Zotero.Prefs.registerObserver(PREF_PREFIX + k, () => scheduleSync(), true));
 			}
 			targetWin?.addEventListener?.('pagehide', cleanup, { once: true });
 			targetWin?.addEventListener?.('unload', cleanup, { once: true });

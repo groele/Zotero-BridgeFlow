@@ -1,4 +1,6 @@
-import { safeGetItemField } from '../../services/item-resolution.ts';
+import { extractIdentifier, MAX_CITATION_INPUT_LEN } from '../../services/citation-identifier.ts';
+export { extractIdentifier } from '../../services/citation-identifier.ts';
+import { isRegularValidItem, safeGetItemField } from '../../services/item-resolution.ts';
 
 export interface ParsedCitation {
 	raw: string;
@@ -12,24 +14,6 @@ export interface ParsedCitation {
 	doi?: string;
 	arxiv?: string;
 	authorPrefix?: string;
-}
-
-const MAX_CITATION_INPUT_LEN = 2400;
-
-export function extractIdentifier(input: string): { doi?: string; arxiv?: string } {
-	const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
-	const doiMatch = bounded.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
-	const arxivMatch =
-		bounded.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) ||
-		bounded.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
-	return {
-		doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, '').replace(/\)+$/, trailing => {
-			const opens = (doiMatch[1].match(/\(/g) || []).length;
-			const closes = (doiMatch[1].match(/\)/g) || []).length;
-			return trailing.slice(0, Math.max(0, trailing.length - Math.max(0, closes - opens)));
-		}).toLowerCase() : undefined,
-		arxiv: arxivMatch ? arxivMatch[1] : undefined,
-	};
 }
 
 export function stripAuthorPrefix(text: string): { authors?: string; rest: string } {
@@ -217,7 +201,7 @@ export async function queryPhysicalCandidates(parsed: ParsedCitation, libraryID?
 	if (scope != null) search.libraryID = scope;
 	if (parsed.doi) {
 		search.addCondition('DOI', 'is', parsed.doi);
-	} else if (parsed.arxiv && !parsed.journalText) {
+	} else if (parsed.arxiv) {
 		search.addCondition('quicksearch-everything', 'contains', parsed.arxiv.replace(/v\d+$/, ''));
 	} else {
 		search.addCondition('itemType', 'is', 'journalArticle');
@@ -243,12 +227,12 @@ function expandEndPage(first?: string, last?: string): string | undefined {
 
 export function verifyAndFilterCandidates(candidates: readonly any[], parsed: ParsedCitation): any[] {
 	const matched = candidates.filter((item) => {
-		if (!item || item.deleted || !item.isRegularItem?.()) return false;
+		if (!isRegularValidItem(item)) return false;
 		if (parsed.doi) {
 			const itemDoi = extractIdentifier(safeGetItemField(item, 'DOI')).doi;
 			return itemDoi === parsed.doi.toLowerCase();
 		}
-		if (parsed.arxiv && !parsed.journalText) {
+		if (parsed.arxiv) {
 			const [, qBase = '', qVer] = parsed.arxiv.toLowerCase().match(/^(\d{4}\.\d{4,5})(?:v(\d+))?$/) || [
 				'',
 				parsed.arxiv.toLowerCase().replace(/v\d+$/, ''),
@@ -257,17 +241,17 @@ export function verifyAndFilterCandidates(candidates: readonly any[], parsed: Pa
 			const fields = ['archiveID', 'extra', 'DOI', 'url', 'callNumber'].map((f) => safeGetItemField(item, f).toLowerCase());
 			return fields.some((val) => {
 				for (const m of val.matchAll(/(?:^|[^0-9])(\d{4}\.\d{4,5})(?:v(\d+))?(?=$|[^0-9])/g)) {
-					if (m[1] === qBase && (!qVer || !m[2] || m[2] === qVer)) return true;
+					if (m[1] === qBase && (!qVer || m[2] === qVer)) return true;
 				}
 				return false;
 			});
 		}
 		if (parsed.year) {
-			const itemYear = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).match(/\b(19|20)\d{2}\b/)?.[0];
+			const itemYear = (safeGetItemField(item, 'year') || safeGetItemField(item, 'date')).match(/\b(18|19|20)\d{2}\b/)?.[0];
 			if (!itemYear || Number(itemYear) !== parsed.year) return false;
 		}
 		const rawPages = safeGetItemField(item, 'pages').replace(/[\u2010-\u2015\u2212]/g, '-').trim();
-		const [first, last] = rawPages.split('-');
+		const [first, last] = rawPages.split('-').map(page => page.trim());
 		const normItemLast = expandEndPage(first, last);
 		const normParsedLast = expandEndPage(parsed.firstPage, parsed.lastPage);
 		if (parsed.firstPage && first !== parsed.firstPage) return false;

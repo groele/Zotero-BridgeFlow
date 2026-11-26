@@ -53,7 +53,7 @@ export async function normalizeToRegularItemAsync(item: any): Promise<any | null
 	return null;
 }
 
-export function deduplicateRegularItems(items: readonly any[], maxItems = 100): { items: any[]; truncated: boolean } {
+export function deduplicateRegularItems(items: readonly any[], maxItems = Infinity): { items: any[]; truncated: boolean } {
 	const result: any[] = [];
 	const seen = new Set<number>();
 	let truncated = false;

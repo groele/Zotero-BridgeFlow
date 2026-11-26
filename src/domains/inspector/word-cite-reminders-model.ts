@@ -59,6 +59,36 @@ export interface ReminderSectionViewModel {
 	readonly rows: readonly ReminderItemRecord[];
 }
 
+const REMINDER_FIELDS_CACHE_LIMIT = 2000;
+const reminderFieldsCache = new Map<number, { signature: string; fields: readonly ReminderFieldBadge[] | null }>();
+
+export function clearReminderFieldsCache(ids?: readonly number[]): void {
+	if (!ids) reminderFieldsCache.clear();
+	else for (const id of ids) reminderFieldsCache.delete(id);
+}
+
+function getInspectFieldsMemoized(
+	item: any,
+	zh: boolean,
+	rules: ReminderRuleConfig,
+	isCitedInWord: boolean,
+	rulesSig: string,
+): readonly ReminderFieldBadge[] | null {
+	const id = Number(item?.id || 0);
+	const signature = JSON.stringify([item?.version, item?.dateModified, isCitedInWord, rulesSig]);
+	const hit = reminderFieldsCache.get(id);
+	if (hit?.signature === signature) return hit.fields;
+	const fields = inspectItemMetadataFields(item, zh, rules, { isCitedInWord });
+	if (id > 0 && (item.version != null || item.dateModified)) {
+		if (!hit && reminderFieldsCache.size >= REMINDER_FIELDS_CACHE_LIMIT) {
+			const oldest = reminderFieldsCache.keys().next().value;
+			if (oldest !== undefined) reminderFieldsCache.delete(oldest);
+		}
+		reminderFieldsCache.set(id, { signature, fields });
+	}
+	return fields;
+}
+
 export function buildMetadataRemindersModel(options: {
 	zh: boolean;
 	snap: CitationSnapshotPayload | null;
@@ -110,8 +140,9 @@ export function buildMetadataRemindersModel(options: {
 	}
 
 	const allRecords: ReminderItemRecord[] = [];
+	const rulesSig = `${zh ? 1 : 0}:${rules.checkCreatorsYear ? 1 : 0}:${rules.checkVenue ? 1 : 0}:${rules.checkPagination ? 1 : 0}:${rules.showSuggested ? 1 : 0}:${rules.strictOnlineFirst ? 1 : 0}`;
 	for (const cand of candidates) {
-		const fields = inspectItemMetadataFields(cand.item, zh, rules, { isCitedInWord: cand.sourceKind === 'word' });
+		const fields = getInspectFieldsMemoized(cand.item, zh, rules, cand.sourceKind === 'word', rulesSig);
 		if (!fields) continue;
 		const itemID = Number(cand.item.id);
 		const { primary } = buildReminderItemKeys(cand.item);

@@ -196,9 +196,11 @@ export class CslPreviewSectionController {
 			: [];
 		const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || (s?.id && s.id === item?.id)));
 		const selected = useMulti ? paneSel : (item ? [item] : paneSel);
-		const { items, truncated } = deduplicateRegularItems(selected, maxItems);
+		const unique = deduplicateRegularItems(selected).items;
+		const items = unique.slice(0, maxItems);
+		const omitted = unique.length - items.length;
 		const nextSig = items.map((it) => `${it?.id ?? ''}:${it?.version ?? it?.dateModified ?? ''}`).join('|');
-		if (nextSig !== st.itemsSig) {
+		if (nextSig !== st.itemsSig || st.omitted !== omitted) {
 			st.itemsSig = nextSig;
 			st.renderedSig = '';
 			st.lastChangeAt = Date.now();
@@ -208,7 +210,7 @@ export class CslPreviewSectionController {
 			st.payload = null;
 		}
 		st.items = items;
-		st.omitted = truncated ? Math.max(0, deduplicateRegularItems(selected, 10_000).items.length - items.length) : 0;
+		st.omitted = omitted;
 		const enabled = items.length > 0;
 		(setEnabled || st.setEnabled)?.(enabled);
 		return enabled;

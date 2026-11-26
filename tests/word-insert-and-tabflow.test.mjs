@@ -28,6 +28,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	const deletedFields = [];
 	let activeDocArg = 'UNSET';
 	let throwOnAddCitation = false;
+	let existingField = null;
 	let skipCommand = false;
 	let cancelCommand = false;
 	let throwOnWrite = false;
@@ -69,7 +70,7 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 		}
 		async addEditCitation() {
 			if (cancelCommand) throw new Cancelled();
-			await this._session.cite(null);
+			await this._session.cite(existingField);
 			if (throwOnWrite) throw new Error('Simulated document write failure');
 			hostWrites++;
 		}
@@ -138,6 +139,10 @@ test('WordCite: transactional native Word citation insertion, getActiveDocument 
 	const failRes = await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)], { verifyCursor: false });
 	assert.equal(failRes, 'unavailable');
 	assert.equal(deletedFields.length, 1);
+	existingField = { type: 0, async delete() { deletedFields.push('existing'); } };
+	assert.equal(await insertItemsIntoWord(kernel, win32, [makeRegularItem(103)]), 'unavailable');
+	assert.deepEqual(deletedFields, ['deleted'], 'rollback must preserve fields supplied by the document');
+	existingField = null;
 	assert.equal(MockSession.prototype.cite, origCite);
 	assert.equal(appObj.getActiveDocument, origGetActive);
 

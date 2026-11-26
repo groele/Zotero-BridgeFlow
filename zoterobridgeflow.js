@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.6 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.9 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -86,6 +86,22 @@
     }
   };
 
+  // src/services/citation-identifier.ts
+  var MAX_CITATION_INPUT_LEN = 2400;
+  function extractIdentifier(input) {
+    const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
+    const doiMatch = bounded.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
+    const arxivMatch = bounded.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || bounded.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
+    return {
+      doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, "").replace(/\)+$/, (trailing) => {
+        const opens = (doiMatch[1].match(/\(/g) || []).length;
+        const closes = (doiMatch[1].match(/\)/g) || []).length;
+        return trailing.slice(0, Math.max(0, trailing.length - Math.max(0, closes - opens)));
+      }).toLowerCase() : void 0,
+      arxiv: arxivMatch ? arxivMatch[1] : void 0
+    };
+  }
+
   // src/services/item-resolution.ts
   function isItemTrashedOrDeleted(item) {
     if (!item || item.deleted || item.inTrash === true) return true;
@@ -134,7 +150,7 @@
     }
     return null;
   }
-  function deduplicateRegularItems(items, maxItems = 100) {
+  function deduplicateRegularItems(items, maxItems = Infinity) {
     const result = [];
     const seen = /* @__PURE__ */ new Set();
     let truncated = false;
@@ -411,22 +427,17 @@
   function normalizeProbe(s) {
     return stripItemTitleMarkup(s).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   }
-  function scoreLineForItem(line, item) {
-    const lowerLine = line.toLowerCase();
-    const doi = safeGetItemField(item, "DOI").trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "").toLowerCase();
-    if (doi.length >= 7 && lowerLine.includes(doi)) return 100;
-    const normLine = normalizeProbe(line);
-    const rawTitle = safeGetItemField(item, "title") || String(item?.title || "");
-    const normTitle = normalizeProbe(rawTitle);
-    if (normTitle.length >= 10 && normLine.includes(normTitle.slice(0, Math.min(normTitle.length, 42)))) {
-      return 65;
-    }
+  function describeItem(item) {
+    const doi = extractIdentifier(safeGetItemField(item, "DOI")).doi;
+    const title = normalizeProbe(safeGetItemField(item, "title") || String(item?.title || ""));
     const creator = String(item?.firstCreator || item?.getCreators?.()?.[0]?.lastName || "").trim().toLowerCase();
-    const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(19|20)\d{2}\b/)?.[0] || "";
-    const surname = creator.split(/\s+|,/)[0] || "";
-    if (surname.length >= 2 && year && lowerLine.includes(surname) && lowerLine.includes(year)) {
-      return 40;
-    }
+    const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(?:18|19|20)\d{2}\b/)?.[0];
+    return { doi, title, surname: creator.split(/[\s,]+/)[0], year };
+  }
+  function scoreLineForItem(line, normalized, doi, item) {
+    if (doi) return doi === item.doi ? 100 : 0;
+    if (item.title.length >= 10 && normalized.includes(item.title)) return 65;
+    if (item.surname.length >= 2 && item.year && line.includes(item.surname) && line.includes(item.year)) return 40;
     return 0;
   }
   var CopyHistoryBridge = class {
@@ -459,7 +470,7 @@
             const itemID = ev.itemIDs[0];
             if (!Number.isSafeInteger(itemID) || itemID <= 0) return;
             const item = globalThis.Zotero?.Items?.get?.(itemID);
-            if (item && isItemTrashedOrDeleted(item)) return;
+            if (isItemTrashedOrDeleted(item)) return;
             recordItemLine(ev.text, itemID, item);
             return;
           }
@@ -469,20 +480,23 @@
           for (const itemID of ev.itemIDs) {
             if (!Number.isSafeInteger(itemID) || itemID <= 0 || seenIDs.has(itemID)) continue;
             const item = globalThis.Zotero?.Items?.get?.(itemID);
-            if (item && isItemTrashedOrDeleted(item)) continue;
+            if (isItemTrashedOrDeleted(item)) continue;
             seenIDs.add(itemID);
-            candidates.push({ itemID, item });
+            candidates.push({ itemID, item, info: describeItem(item) });
           }
           if (!lines.length || !candidates.length) return;
           const usedLines = /* @__PURE__ */ new Set();
           const usedCands = /* @__PURE__ */ new Set();
           const scoredPairs = [];
           for (let li = 0; li < lines.length; li++) {
+            const line = lines[li].toLowerCase();
+            const normalized = normalizeProbe(line);
+            const doi = extractIdentifier(line).doi;
             let bestCi = -1;
             let bestScore = 0;
             let tied = false;
             for (let ci = 0; ci < candidates.length; ci++) {
-              const sc = scoreLineForItem(lines[li], candidates[ci].item);
+              const sc = scoreLineForItem(line, normalized, doi, candidates[ci].info);
               if (sc > bestScore) {
                 bestScore = sc;
                 bestCi = ci;
@@ -499,14 +513,6 @@
             usedLines.add(p.li);
             usedCands.add(p.ci);
             recordItemLine(lines[p.li], candidates[p.ci].itemID, candidates[p.ci].item);
-          }
-          const remLines = lines.map((_, i) => i).filter((i) => !usedLines.has(i));
-          const remCands = candidates.map((_, i) => i).filter((i) => !usedCands.has(i));
-          if (remLines.length === remCands.length && (usedLines.size === 0 || remLines.length === 1)) {
-            for (let i = 0; i < remLines.length; i++) {
-              const cand = candidates[remCands[i]];
-              recordItemLine(lines[remLines[i]], cand.itemID, cand.item);
-            }
           }
         })
       );
@@ -815,55 +821,62 @@
     }
   }
   var pendingSyncByItemID = /* @__PURE__ */ new Map();
-  async function performExtraSync(itemOrID, remark) {
+  async function performExtraSync(item, remark) {
     try {
-      const hostItems = globalThis.Zotero?.Items;
-      let item = typeof itemOrID === "number" ? hostItems?.get?.(itemOrID) || (hostItems?.getAsync ? await hostItems.getAsync(itemOrID) : null) : itemOrID;
-      if (!item || item.deleted) return false;
-      if (item.isAttachment?.() && item.parentItemID) {
-        const parent = hostItems?.get?.(item.parentItemID) || (hostItems?.getAsync ? await hostItems.getAsync(item.parentItemID) : null);
-        if (parent && !parent.deleted) item = parent;
-      }
-      if (!isItemWritable(item) || !item?.isRegularItem?.() || typeof item.getField !== "function" || typeof item.setField !== "function") {
+      if (!item || item.deleted || !isItemWritable(item) || !item.isRegularItem?.() || typeof item.getField !== "function" || typeof item.setField !== "function") return false;
+      const prevExtra = String(item.getField("extra") || "");
+      const nextExtra = upsertRemarkInExtra(prevExtra, remark);
+      if (prevExtra === nextExtra) return true;
+      const save = item.saveTx ?? item.save;
+      if (typeof save !== "function") return false;
+      item.setField("extra", nextExtra);
+      try {
+        await save.call(item);
+      } catch {
+        if (item.getField("extra") === nextExtra) item.setField("extra", prevExtra);
         return false;
       }
-      const targetID = Number(item.id || 0);
-      if (targetID > 0) inFlightRemarkOverrides.set(targetID, remark.replace(/[\r\n]+/g, " ").trim());
-      try {
-        const prevExtra = String(item.getField("extra") || "");
-        const nextExtra = upsertRemarkInExtra(prevExtra, remark);
-        if (prevExtra === nextExtra) return true;
-        item.setField("extra", nextExtra);
-        if (typeof item.saveTx === "function") {
-          await item.saveTx();
-        } else if (typeof item.save === "function") {
-          await item.save();
-        }
-        return true;
-      } finally {
-        if (targetID > 0 && !pendingSyncByItemID.has(targetID)) {
-          inFlightRemarkOverrides.delete(targetID);
-        }
-      }
+      return true;
     } catch {
       return false;
     }
   }
-  function syncItemRemarkToExtra(itemOrID, remark) {
-    const rawID = typeof itemOrID === "number" ? itemOrID : Number(itemOrID?.id || 0);
-    const clean = remark.replace(/[\r\n]+/g, " ").trim();
-    if (rawID <= 0) return performExtraSync(itemOrID, clean);
-    inFlightRemarkOverrides.set(rawID, clean);
-    const prev = pendingSyncByItemID.get(rawID) || Promise.resolve(true);
-    const next = prev.then(() => performExtraSync(itemOrID, clean));
-    pendingSyncByItemID.set(rawID, next);
+  function getHostItem(id) {
+    const items = globalThis.Zotero?.Items;
+    try {
+      const item = items?.get?.(id);
+      if (item) return item;
+    } catch {
+    }
+    return items?.getAsync?.(id);
+  }
+  function enqueueRemark(item, remark) {
+    const id = Number(item?.id || 0);
+    if (!id) return performExtraSync(item, remark);
+    inFlightRemarkOverrides.set(id, remark);
+    const previous = pendingSyncByItemID.get(id) ?? Promise.resolve(true);
+    const next = previous.then(() => performExtraSync(item, remark));
+    pendingSyncByItemID.set(id, next);
     void next.finally(() => {
-      if (pendingSyncByItemID.get(rawID) === next) {
-        pendingSyncByItemID.delete(rawID);
-        inFlightRemarkOverrides.delete(rawID);
+      if (pendingSyncByItemID.get(id) === next) {
+        pendingSyncByItemID.delete(id);
+        inFlightRemarkOverrides.delete(id);
       }
     });
     return next;
+  }
+  var resolvingTargets = Promise.resolve();
+  function syncItemRemarkToExtra(itemOrID, remark) {
+    const clean = remark.replace(/[\r\n]+/g, " ").trim();
+    const queued = resolvingTargets.then(async () => {
+      const item = typeof itemOrID === "number" ? await getHostItem(itemOrID) : itemOrID;
+      const target = item && !item.deleted && item.isAttachment?.() && item.parentItemID ? await getHostItem(item.parentItemID) : item;
+      return { saved: enqueueRemark(target, clean) };
+    });
+    resolvingTargets = queued.then(() => {
+    }, () => {
+    });
+    return queued.then(({ saved }) => saved, () => false);
   }
 
   // src/bridges/visual-notes-bridge.ts
@@ -955,20 +968,6 @@
   };
 
   // src/domains/inspector/citation-lookup-parser.ts
-  var MAX_CITATION_INPUT_LEN = 2400;
-  function extractIdentifier(input) {
-    const bounded = input.length > MAX_CITATION_INPUT_LEN ? input.slice(0, MAX_CITATION_INPUT_LEN) : input;
-    const doiMatch = bounded.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
-    const arxivMatch = bounded.match(/\b(?:arXiv:\s*|arxiv\.org\/(?:abs|pdf)\/)(\d{4}\.\d{4,5}(?:v\d+)?)\b/i) || bounded.trim().match(/^(\d{4}\.\d{4,5}(?:v\d+)?)$/i);
-    return {
-      doi: doiMatch ? doiMatch[1].replace(/[.,;]+$/, "").replace(/\)+$/, (trailing) => {
-        const opens = (doiMatch[1].match(/\(/g) || []).length;
-        const closes = (doiMatch[1].match(/\)/g) || []).length;
-        return trailing.slice(0, Math.max(0, trailing.length - Math.max(0, closes - opens)));
-      }).toLowerCase() : void 0,
-      arxiv: arxivMatch ? arxivMatch[1] : void 0
-    };
-  }
   function stripAuthorPrefix(text2) {
     const bounded = text2.length > MAX_CITATION_INPUT_LEN ? text2.slice(0, MAX_CITATION_INPUT_LEN) : text2;
     let openQuote = -1;
@@ -1129,7 +1128,7 @@
     if (scope != null) search.libraryID = scope;
     if (parsed.doi) {
       search.addCondition("DOI", "is", parsed.doi);
-    } else if (parsed.arxiv && !parsed.journalText) {
+    } else if (parsed.arxiv) {
       search.addCondition("quicksearch-everything", "contains", parsed.arxiv.replace(/v\d+$/, ""));
     } else {
       search.addCondition("itemType", "is", "journalArticle");
@@ -1150,12 +1149,12 @@
   }
   function verifyAndFilterCandidates(candidates, parsed) {
     const matched = candidates.filter((item) => {
-      if (!item || item.deleted || !item.isRegularItem?.()) return false;
+      if (!isRegularValidItem(item)) return false;
       if (parsed.doi) {
         const itemDoi = extractIdentifier(safeGetItemField(item, "DOI")).doi;
         return itemDoi === parsed.doi.toLowerCase();
       }
-      if (parsed.arxiv && !parsed.journalText) {
+      if (parsed.arxiv) {
         const [, qBase = "", qVer] = parsed.arxiv.toLowerCase().match(/^(\d{4}\.\d{4,5})(?:v(\d+))?$/) || [
           "",
           parsed.arxiv.toLowerCase().replace(/v\d+$/, ""),
@@ -1164,17 +1163,17 @@
         const fields = ["archiveID", "extra", "DOI", "url", "callNumber"].map((f) => safeGetItemField(item, f).toLowerCase());
         return fields.some((val) => {
           for (const m of val.matchAll(/(?:^|[^0-9])(\d{4}\.\d{4,5})(?:v(\d+))?(?=$|[^0-9])/g)) {
-            if (m[1] === qBase && (!qVer || !m[2] || m[2] === qVer)) return true;
+            if (m[1] === qBase && (!qVer || m[2] === qVer)) return true;
           }
           return false;
         });
       }
       if (parsed.year) {
-        const itemYear = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(19|20)\d{2}\b/)?.[0];
+        const itemYear = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).match(/\b(18|19|20)\d{2}\b/)?.[0];
         if (!itemYear || Number(itemYear) !== parsed.year) return false;
       }
       const rawPages = safeGetItemField(item, "pages").replace(/[\u2010-\u2015\u2212]/g, "-").trim();
-      const [first, last] = rawPages.split("-");
+      const [first, last] = rawPages.split("-").map((page) => page.trim());
       const normItemLast = expandEndPage(first, last);
       const normParsedLast = expandEndPage(parsed.firstPage, parsed.lastPage);
       if (parsed.firstPage && first !== parsed.firstPage) return false;
@@ -1200,7 +1199,20 @@
   }
 
   // src/domains/inspector/citation-lookup-engine.ts
-  var YEAR_REGEX = /\b(19|20)\d{2}\b/;
+  var YEAR_REGEX = /\b(1[89]\d{2}|20\d{2})\b/;
+  var LOCAL_ITEMS_CACHE_TTL_MS = 15e3;
+  var nowMs = () => typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
+  function containsStandaloneToken(haystackLower, tokenLower) {
+    if (!tokenLower) return false;
+    let pos = haystackLower.indexOf(tokenLower);
+    while (pos !== -1) {
+      const before = pos === 0 ? "" : haystackLower[pos - 1];
+      const after = pos + tokenLower.length >= haystackLower.length ? "" : haystackLower[pos + tokenLower.length];
+      if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+      pos = haystackLower.indexOf(tokenLower, pos + 1);
+    }
+    return false;
+  }
   function extractDoi(input) {
     return extractIdentifier(String(input || "")).doi || "";
   }
@@ -1210,8 +1222,12 @@
   }
   var CitationLookupEngine = class {
     history;
+    localItemsCache = /* @__PURE__ */ new Map();
     constructor(history) {
       this.history = history;
+    }
+    clearCache() {
+      this.localItemsCache.clear();
     }
     async resolveRich(rawQuery, options = {}) {
       const query = String(rawQuery || "").trim();
@@ -1223,9 +1239,9 @@
       if (options.useHistory !== false) {
         const exact = this.history.lookupExact(query, options.libraryID);
         if (exact && inScope(exact.libraryID)) {
-          const liveItem = await this.resolveLiveItem(exact);
+          const liveItem = await this.resolveLiveItem(exact, options.libraryItems);
           if (signal?.aborted) return empty;
-          if (liveItem && (!parsed?.doi || verifyAndFilterCandidates([liveItem], parsed).length) || options.libraryItems) {
+          if (liveItem && (!(parsed?.doi || parsed?.arxiv) || verifyAndFilterCandidates([liveItem], parsed).length)) {
             return {
               parsed: null,
               historyMatched: true,
@@ -1240,7 +1256,7 @@
           const seenFuzzy = /* @__PURE__ */ new Set();
           for (const rec of fuzzy) {
             if (seenFuzzy.has(rec.itemID)) continue;
-            const liveItem = await this.resolveLiveItem(rec);
+            const liveItem = await this.resolveLiveItem(rec, options.libraryItems);
             if (signal?.aborted) return empty;
             if (liveItem) {
               seenFuzzy.add(rec.itemID);
@@ -1251,9 +1267,6 @@
                 source: "history-fuzzy",
                 item: liveItem
               });
-            } else if (options.libraryItems) {
-              seenFuzzy.add(rec.itemID);
-              liveHits.push({ itemID: rec.itemID, title: rec.title, score: 85, source: "history-fuzzy" });
             }
           }
           if (liveHits.length) {
@@ -1279,61 +1292,65 @@
           };
         }
       }
-      if (parsed?.arxiv && !parsed.journalText && !parsed.doi) {
+      if (parsed?.arxiv && !parsed.doi && !options.libraryItems) {
         return { parsed, historyMatched: false, candidates: [] };
       }
-      const weighted = await this.weightedSearch(query, options.libraryItems, options.libraryID, signal);
+      const weighted = await this.weightedSearch(query, parsed, options.libraryItems, options.libraryID, signal);
       return { parsed, historyMatched: false, candidates: weighted };
     }
     async lookup(rawQuery, libraryItems) {
       const outcome = await this.resolveRich(rawQuery, { useHistory: true, libraryItems });
       return [...outcome.candidates];
     }
-    async resolveLiveItem({ itemID, itemKey, libraryID }) {
+    async resolveLiveItem({ itemID, itemKey, libraryID }, libraryItems) {
       const hostItems = globalThis.Zotero?.Items;
-      if (!hostItems) return null;
-      const item = typeof hostItems.getAsync === "function" ? await hostItems.getAsync(itemID).catch(() => null) : hostItems.get?.(itemID);
+      const item = libraryItems ? libraryItems.find((it) => it?.id === itemID) : typeof hostItems?.getAsync === "function" ? await hostItems.getAsync(itemID).catch(() => null) : hostItems?.get?.(itemID);
       if (!isRegularValidItem(item)) return null;
       if (item.libraryID != null && item.libraryID !== libraryID) return null;
       if (item.key && itemKey && item.key !== itemKey) return null;
       return item;
     }
-    async weightedSearch(query, libraryItems, libraryID, signal) {
+    async weightedSearch(query, parsed, libraryItems, libraryID, signal) {
       const candidates = libraryItems ?? await this.fetchLocalLibraryItems(libraryID);
-      const targetDoi = extractDoi(query);
+      if (signal?.aborted) return [];
+      const targetDoi = parsed?.doi;
       const targetYear = extractYear(query);
       const lowerQuery = query.toLowerCase();
       const results = [];
       const seen = /* @__PURE__ */ new Set();
-      let deadline = performance.now() + 6;
+      let deadline = nowMs() + 6;
       for (const item of candidates) {
         if (signal?.aborted) return [];
-        if (performance.now() >= deadline) {
+        if (nowMs() >= deadline) {
           await new Promise((resolve) => setTimeout(resolve, 0));
           if (signal?.aborted) return [];
-          deadline = performance.now() + 6;
+          deadline = nowMs() + 6;
         }
         if (!isRegularValidItem(item) || libraryID != null && item.libraryID != null && item.libraryID !== libraryID) continue;
         const id = Number(item.id || 0);
         if (!id || seen.has(id)) continue;
         const title = safeGetItemField(item, "title") || String(item.title || "");
         seen.add(id);
+        if (parsed?.arxiv && !targetDoi) {
+          if (verifyAndFilterCandidates([item], parsed).length) results.push({ itemID: id, title, score: 99, source: "physical-exact", item });
+          continue;
+        }
         if (targetDoi) {
           const doi = extractDoi(safeGetItemField(item, "DOI") || String(item.DOI || ""));
           if (doi === targetDoi) {
             results.push({ itemID: id, title, score: 98, source: "doi", item });
             continue;
           }
-          if (doi) continue;
+          continue;
         }
         let score = 0;
-        const year = (safeGetItemField(item, "year") || safeGetItemField(item, "date")).slice(0, 4);
+        const year = extractYear(safeGetItemField(item, "year") || safeGetItemField(item, "date"));
         if (targetYear && year === targetYear) score += 25;
         const journal = (safeGetItemField(item, "publicationTitle") || safeGetItemField(item, "journalAbbreviation")).toLowerCase();
         if (journal && journal.length >= 3 && lowerQuery.includes(journal)) score += 30;
         const pages2 = safeGetItemField(item, "pages").replace(/[\u2013\u2014]/g, "-");
-        const firstPage = pages2.split("-")[0]?.trim();
-        if (firstPage && firstPage.length >= 2 && lowerQuery.includes(firstPage)) score += 25;
+        const firstPage = pages2.split("-")[0]?.trim().toLowerCase();
+        if (firstPage && firstPage.length >= 2 && containsStandaloneToken(lowerQuery, firstPage)) score += 25;
         const creator = String(item.firstCreator || "").toLowerCase().split(",")[0]?.trim();
         if (creator && creator.length >= 2 && lowerQuery.includes(creator)) score += 20;
         if (title && title.length >= 8 && lowerQuery.includes(title.toLowerCase().slice(0, 24))) score += 45;
@@ -1347,14 +1364,20 @@
     async fetchLocalLibraryItems(libraryID) {
       const hostItems = globalThis.Zotero?.Items;
       const targetLibID = libraryID ?? globalThis.Zotero?.Libraries?.userLibraryID ?? 1;
-      if (typeof hostItems?.getAll === "function") {
-        try {
-          return await hostItems.getAll(targetLibID, true, false);
-        } catch {
-          return [];
-        }
-      }
-      return [];
+      const cached = this.localItemsCache.get(targetLibID);
+      if (cached && nowMs() < cached.expires) return cached.result;
+      if (typeof hostItems?.getAll !== "function") return [];
+      const entry = { expires: Infinity, result: Promise.resolve([]) };
+      entry.result = Promise.resolve().then(() => hostItems.getAll(targetLibID, true, false)).then((items) => {
+        if (!Array.isArray(items)) throw new TypeError("Expected library items");
+        entry.expires = nowMs() + LOCAL_ITEMS_CACHE_TTL_MS;
+        return items;
+      }).catch(() => {
+        if (this.localItemsCache.get(targetLibID) === entry) this.localItemsCache.delete(targetLibID);
+        return [];
+      });
+      this.localItemsCache.set(targetLibID, entry);
+      return entry.result;
     }
   };
 
@@ -2569,9 +2592,11 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       const paneSel = !isReader ? st.doc.defaultView?.ZoteroPane?.getSelectedItems?.() || globalThis.Zotero?.getMainWindow?.()?.ZoteroPane?.getSelectedItems?.() || [] : [];
       const useMulti = paneSel.length > 1 && (!item || paneSel.some((s) => s === item || s?.id && s.id === item?.id));
       const selected = useMulti ? paneSel : item ? [item] : paneSel;
-      const { items, truncated } = deduplicateRegularItems(selected, maxItems);
+      const unique = deduplicateRegularItems(selected).items;
+      const items = unique.slice(0, maxItems);
+      const omitted = unique.length - items.length;
       const nextSig = items.map((it) => `${it?.id ?? ""}:${it?.version ?? it?.dateModified ?? ""}`).join("|");
-      if (nextSig !== st.itemsSig) {
+      if (nextSig !== st.itemsSig || st.omitted !== omitted) {
         st.itemsSig = nextSig;
         st.renderedSig = "";
         st.lastChangeAt = Date.now();
@@ -2581,7 +2606,7 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
         st.payload = null;
       }
       st.items = items;
-      st.omitted = truncated ? Math.max(0, deduplicateRegularItems(selected, 1e4).items.length - items.length) : 0;
+      st.omitted = omitted;
       const enabled = items.length > 0;
       (setEnabled || st.setEnabled)?.(enabled);
       return enabled;
@@ -5127,6 +5152,27 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
   }
 
   // src/domains/inspector/word-cite-reminders-model.ts
+  var REMINDER_FIELDS_CACHE_LIMIT = 2e3;
+  var reminderFieldsCache = /* @__PURE__ */ new Map();
+  function clearReminderFieldsCache(ids) {
+    if (!ids) reminderFieldsCache.clear();
+    else for (const id of ids) reminderFieldsCache.delete(id);
+  }
+  function getInspectFieldsMemoized(item, zh, rules, isCitedInWord, rulesSig) {
+    const id = Number(item?.id || 0);
+    const signature = JSON.stringify([item?.version, item?.dateModified, isCitedInWord, rulesSig]);
+    const hit = reminderFieldsCache.get(id);
+    if (hit?.signature === signature) return hit.fields;
+    const fields = inspectItemMetadataFields(item, zh, rules, { isCitedInWord });
+    if (id > 0 && (item.version != null || item.dateModified)) {
+      if (!hit && reminderFieldsCache.size >= REMINDER_FIELDS_CACHE_LIMIT) {
+        const oldest = reminderFieldsCache.keys().next().value;
+        if (oldest !== void 0) reminderFieldsCache.delete(oldest);
+      }
+      reminderFieldsCache.set(id, { signature, fields });
+    }
+    return fields;
+  }
   function buildMetadataRemindersModel(options) {
     const { zh, snap, selectedItems, isIgnored, expanded, filter, rules } = options;
     if (!rules.enabled) {
@@ -5179,8 +5225,9 @@ collapsible-section:has(.zotero-viewflow-lookup-body) > .head .title {
       }
     }
     const allRecords = [];
+    const rulesSig = `${zh ? 1 : 0}:${rules.checkCreatorsYear ? 1 : 0}:${rules.checkVenue ? 1 : 0}:${rules.checkPagination ? 1 : 0}:${rules.showSuggested ? 1 : 0}:${rules.strictOnlineFirst ? 1 : 0}`;
     for (const cand of candidates) {
-      const fields = inspectItemMetadataFields(cand.item, zh, rules, { isCitedInWord: cand.sourceKind === "word" });
+      const fields = getInspectFieldsMemoized(cand.item, zh, rules, cand.sourceKind === "word", rulesSig);
       if (!fields) continue;
       const itemID = Number(cand.item.id);
       const { primary } = buildReminderItemKeys(cand.item);
@@ -6555,6 +6602,7 @@ ${REMINDERS_CARD_CSS}`;
       this.disposables.add(this.kernel.bus.on("notifier:event", (ev) => {
         if (ev.type !== "item") return;
         const numIDs = ev.ids.map((v) => Number(v)).filter((n) => n > 0);
+        clearReminderFieldsCache(numIDs.length ? numIDs : void 0);
         const relevant = !numIDs.length || numIDs.some((id) => this.snapshot?.byItemID.has(id) || [...this.states.values()].some((st) => st.lastItemIDs.includes(id) || Number(st.activeItem?.id || 0) === id));
         if (relevant) this.renderAllBodies();
       }));
@@ -6612,6 +6660,7 @@ ${REMINDERS_CARD_CSS}`;
       this.states.clear();
       this.orphanState.reset();
       this.reminderState.reset();
+      clearReminderFieldsCache();
       this.receiptOwner = void 0;
       this.pendingRequest = void 0;
       this.receipt = { text: "", tone: "none" };
@@ -6979,10 +7028,20 @@ ${REMINDERS_CARD_CSS}`;
         )
       );
       this.disposables.add(
+        this.kernel.bus.on("inspector:clear-cache", () => {
+          this.lookupEngine.clearCache();
+          clearReminderFieldsCache();
+        })
+      );
+      this.disposables.add(
         this.kernel.notifier.subscribe(["item"], ({ event, ids }) => {
-          if (!this.active || event !== "modify") return;
-          const itemIDs = ids.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
-          if (itemIDs.length) this.services.csl.invalidateItems(itemIDs);
+          if (!this.active) return;
+          const itemIDs = ids.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+          if (event === "restore" || event === "add" || event === "trash" || event === "delete") {
+            this.lookupEngine.clearCache();
+            return;
+          }
+          if (event !== "modify") return;
           void this.cslPreview.refreshModifiedItems(itemIDs);
         })
       );
@@ -6997,6 +7056,8 @@ ${REMINDERS_CARD_CSS}`;
     stop() {
       if (!this.active) return;
       this.active = false;
+      this.lookupEngine.clearCache();
+      clearReminderFieldsCache();
       this.cslPreview.unregister();
       this.lookupSection.unregister();
       this.pdfPreview.unregister();
@@ -7760,6 +7821,9 @@ ${REMINDERS_CARD_CSS}`;
       for (const k of m.keys()) if (targets.has(Number(k.split(":", 1)[0]))) m.delete(k);
     }
   }
+  function clearTargetItemCache(item, rawItem) {
+    clearStatusRatingCaches([Number(item?.id || 0), Number(rawItem?.id || 0)].filter((n) => n > 0));
+  }
   function isStatusTagName(tagName, excludedTag = "/Citations") {
     const t = String(tagName || "").trim();
     if (!t.startsWith("/") || t.length < 2) return false;
@@ -7874,7 +7938,7 @@ ${REMINDERS_CARD_CSS}`;
       }
     }
     if (changed) {
-      statusCache.clear();
+      clearTargetItemCache(item, rawItem);
       await item.saveTx?.();
     }
     return changed;
@@ -7945,7 +8009,7 @@ ${REMINDERS_CARD_CSS}`;
         }
       }
       const changed2 = getActiveRatingsCache().setRating(item, clamped, false, hasLegacy);
-      ratingCache.clear();
+      clearTargetItemCache(item, rawItem);
       return changed2;
     }
     if (!isItemWritable(item)) return false;
@@ -7977,7 +8041,7 @@ ${REMINDERS_CARD_CSS}`;
       }
     }
     if (changed) {
-      ratingCache.clear();
+      clearTargetItemCache(item, rawItem);
       await item.saveTx?.();
     }
     return changed;
@@ -8019,6 +8083,13 @@ ${REMINDERS_CARD_CSS}`;
     "5": DEFAULT_ENABLED_ANNOTATION_COLORS,
     "8": Object.keys(DEFAULT_ANNOTATION_COLORS)
   };
+  var FOUR_DIGIT_YEAR_RE = /\b(1[89]\d{2}|20\d{2})\b/;
+  function extractFourDigitYear(raw) {
+    const text2 = String(raw ?? "").trim();
+    if (!text2) return "";
+    const m = FOUR_DIGIT_YEAR_RE.exec(text2);
+    return m ? m[1] : /^\d{4}/.test(text2) ? text2.slice(0, 4) : "";
+  }
   function normalizeHexColor2(color) {
     const clean = String(color || "").trim().toLowerCase();
     if (/^#[0-9a-f]{6}$/.test(clean)) return clean;
@@ -8153,11 +8224,12 @@ ${REMINDERS_CARD_CSS}`;
     }
     if (loaded.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
     const parentID = Number(loaded[0].parentID || loaded[0].parentItemID || 0);
+    if (parentID <= 0) return { ok: false, keptID: 0, removedCount: 0 };
     const sameParent = loaded.filter((it) => Number(it.parentID || it.parentItemID || 0) === parentID);
     if (sameParent.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
     const sorted = [...sameParent].sort(compareAnnotationsByOrder);
+    if (!sorted.every((it) => isItemWritable(it))) return { ok: false, keptID: 0, removedCount: 0 };
     const primary = sorted[0];
-    if (!isItemWritable(primary)) return { ok: false, keptID: 0, removedCount: 0 };
     const rest = sorted.slice(1);
     const { mergedText, mergedComment, mergedPosition } = mergeAnnotationPayloads(sorted);
     primary.annotationText = mergedText;
@@ -8185,7 +8257,7 @@ ${REMINDERS_CARD_CSS}`;
       const itemID = Number(rawItem.id || 0);
       const itemTitle = String(rawItem.getField?.("title") || rawItem.title || `文献 #${itemID}`);
       const creator = String(rawItem.firstCreator || "").trim();
-      const year = String(rawItem.getField?.("year") || rawItem.getField?.("date") || "").slice(0, 4);
+      const year = extractFourDigitYear(rawItem.getField?.("year") || rawItem.getField?.("date"));
       const creatorYear = [creator, year].filter(Boolean).join(" ");
       const canHaveAnnotations = (it) => {
         if (!it || it.deleted || typeof it.getAnnotations !== "function") return false;
@@ -9714,21 +9786,22 @@ ${REMINDERS_CARD_CSS}`;
   }
 
   // src/services/annotation-matrix.ts
+  function compileAnnotationQuery(rawQuery) {
+    const clauses = String(rawQuery || "").toLowerCase().split("||").map((s) => s.trim()).filter(Boolean).map((clause) => clause.split("&&").map((term) => term.trim()).filter(Boolean));
+    if (!clauses.length) return () => true;
+    return (ann) => {
+      const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(" ")}`.toLowerCase();
+      return clauses.some((terms) => terms.length > 0 && terms.every((term) => hay.includes(term)));
+    };
+  }
   function matchesAnnotationQuery(ann, rawQuery) {
-    const query = String(rawQuery || "").trim().toLowerCase();
-    if (!query) return true;
-    const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(" ")}`.toLowerCase();
-    const orClauses = query.split("||").map((s) => s.trim()).filter(Boolean);
-    if (!orClauses.length) return true;
-    return orClauses.some((clause) => {
-      const andTerms = clause.split("&&").map((s) => s.trim()).filter(Boolean);
-      return andTerms.length > 0 && andTerms.every((term) => hay.includes(term));
-    });
+    return compileAnnotationQuery(rawQuery)(ann);
   }
   function filterCollectedAnnotations(list, opts = {}) {
     const wantedColor = String(opts.colorLabel || "").trim().toLowerCase();
     const wantedHex = normalizeHexColor2(wantedColor);
     const wantedTag = String(opts.tag || "").trim().toLowerCase();
+    const matches = compileAnnotationQuery(opts.query || "");
     return list.filter((ann) => {
       if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && (!wantedHex || normalizeHexColor2(ann.color) !== wantedHex)) {
         return false;
@@ -9736,13 +9809,11 @@ ${REMINDERS_CARD_CSS}`;
       if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
         return false;
       }
-      return matchesAnnotationQuery(ann, opts.query || "");
+      return matches(ann);
     });
   }
-  function buildAnnotationMatrix(items, colorLabelsJson, opts = {}) {
-    const semantics = parseColorSemantics(colorLabelsJson);
-    const all = collectItemAnnotations(items, semantics);
-    const filtered = filterCollectedAnnotations(all, opts);
+  function buildAnnotationMatrixFromCollected(items, semantics, baseAnnotations, opts = {}) {
+    const filtered = filterCollectedAnnotations(baseAnnotations, opts);
     const colOrder = [];
     const colSeen = /* @__PURE__ */ new Set();
     for (const label of Object.values(semantics)) {
@@ -9763,7 +9834,7 @@ ${REMINDERS_CARD_CSS}`;
       if (!id || raw?.deleted) continue;
       const title = String(raw.getField?.("title") || raw.title || `文献 #${id}`);
       const creator = String(raw.firstCreator || "").trim();
-      const year = String(raw.getField?.("year") || raw.getField?.("date") || "").slice(0, 4);
+      const year = extractFourDigitYear(raw.getField?.("year") || raw.getField?.("date"));
       byItem.set(id, { title, creatorYear: [creator, year].filter(Boolean).join(" "), list: [] });
     }
     for (const a of filtered) {
@@ -9776,8 +9847,8 @@ ${REMINDERS_CARD_CSS}`;
     }
     const rows = [];
     for (const [itemID, entry] of byItem.entries()) {
-      if (filtered.length > 0 && entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
-      const cells = {};
+      if (entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
+      const cells = /* @__PURE__ */ Object.create(null);
       for (const col of colOrder) cells[col] = [];
       for (const a of entry.list) {
         if (!cells[a.colorLabel]) cells[a.colorLabel] = [];
@@ -9943,11 +10014,12 @@ ${REMINDERS_CARD_CSS}`;
   }
 
   // src/domains/visual-notes/annotation-matrix-modal.ts
+  var closeByDocument = /* @__PURE__ */ new WeakMap();
   function openAnnotationMatrixModal(options) {
     const doc = options.mountRoot?.ownerDocument || options.win.document;
     if (!doc) return;
     ensureMatrixStyles(doc);
-    doc.getElementById("zbf-matrix-backdrop")?.remove();
+    closeByDocument.get(doc)?.();
     const hostItems = globalThis.Zotero?.Items;
     const items = [...new Set(options.itemIDs)].map((id) => hostItems?.get?.(id)).filter((it) => it && !it.deleted);
     const colorJson = options.prefs.get("inspector.annotations.colorLabels");
@@ -9956,7 +10028,8 @@ ${REMINDERS_CARD_CSS}`;
     for (const [hex, lbl] of Object.entries(semantics)) {
       if (!colorByLabel.has(lbl)) colorByLabel.set(lbl, hex);
     }
-    const fullMatrix = buildAnnotationMatrix(items, colorJson);
+    const baseAnnotations = collectItemAnnotations(items, semantics);
+    const fullMatrix = buildAnnotationMatrixFromCollected(items, semantics, baseAnnotations);
     const countsByCol = /* @__PURE__ */ new Map();
     for (const col of fullMatrix.columns) {
       let total = 0;
@@ -10031,6 +10104,8 @@ ${REMINDERS_CARD_CSS}`;
       const visibleSelected = currentMatrix.rows.filter((r) => selectedIDs.has(r.itemID)).length;
       statusEl.textContent = `当前显示 ${currentMatrix.rows.length} 篇 / ${currentMatrix.totalAnnotations} 条标注 · 已勾选 ${visibleSelected} 篇`;
     };
+    let filterTimer = null;
+    let composing = false;
     const onKey = (e) => {
       if (e.key === "Escape") {
         e.preventDefault?.();
@@ -10038,12 +10113,24 @@ ${REMINDERS_CARD_CSS}`;
       }
     };
     const close = () => {
+      if (filterTimer !== null) {
+        clearTimeout(filterTimer);
+        filterTimer = null;
+      }
       doc.removeEventListener?.("keydown", onKey, true);
       backdrop.remove();
+      closeByDocument.delete(doc);
     };
     const renderTable = () => {
+      if (filterTimer !== null) {
+        clearTimeout(filterTimer);
+        filterTimer = null;
+      }
       clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
-      currentMatrix = buildAnnotationMatrix(items, colorJson, { query: queryInput.value, colorLabel: activeColor });
+      currentMatrix = !queryInput.value && !activeColor ? fullMatrix : buildAnnotationMatrixFromCollected(items, semantics, baseAnnotations, {
+        query: queryInput.value,
+        colorLabel: activeColor
+      });
       scroll.textContent = "";
       updateStatus();
       if (!currentMatrix.rows.length || !currentMatrix.columns.length) {
@@ -10158,12 +10245,34 @@ ${REMINDERS_CARD_CSS}`;
       table.appendChild(tbody);
       scroll.appendChild(table);
     };
+    const scheduleFilterRender = () => {
+      clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
+      if (filterTimer !== null) clearTimeout(filterTimer);
+      filterTimer = setTimeout(() => {
+        filterTimer = null;
+        renderTable();
+      }, 80);
+    };
     clearBtn.addEventListener("click", () => {
+      if (filterTimer !== null) {
+        clearTimeout(filterTimer);
+        filterTimer = null;
+      }
       queryInput.value = "";
       renderTable();
       queryInput.focus?.();
     });
-    queryInput.addEventListener("input", renderTable);
+    queryInput.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    queryInput.addEventListener("compositionend", () => {
+      composing = false;
+      scheduleFilterRender();
+    });
+    queryInput.addEventListener("input", () => {
+      clearBtn.style.display = queryInput.value ? "inline-flex" : "none";
+      if (!composing) scheduleFilterRender();
+    });
     renderTable();
     const foot = matrixEl(doc, "div");
     foot.className = "zbf-matrix-foot";
@@ -10174,7 +10283,10 @@ ${REMINDERS_CARD_CSS}`;
       b.type = "button";
       b.className = primary ? "zbf-matrix-btn primary" : "zbf-matrix-btn";
       b.textContent = label;
-      b.addEventListener("click", onClick);
+      b.addEventListener("click", () => {
+        if (filterTimer !== null) renderTable();
+        onClick();
+      });
       actions.appendChild(b);
     };
     mkBtn("存为 Zotero 笔记", true, () => {
@@ -10220,6 +10332,7 @@ ${REMINDERS_CARD_CSS}`;
     foot.append(statusEl, actions);
     dialog.append(head, controls, scroll, foot);
     backdrop.appendChild(dialog);
+    closeByDocument.set(doc, close);
     doc.addEventListener?.("keydown", onKey, true);
     closeBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (e) => {
@@ -10333,6 +10446,10 @@ ${REMINDERS_CARD_CSS}`;
     pendingReaders = /* @__PURE__ */ new Set();
     notifierSub = null;
     active = false;
+    cachedRawLabels = null;
+    cachedSemantics = null;
+    cachedRawEnabled = null;
+    cachedEnabled = null;
     constructor(kernel) {
       this.kernel = kernel;
     }
@@ -10340,10 +10457,18 @@ ${REMINDERS_CARD_CSS}`;
       return Boolean(this.kernel.prefs.get("inspector.annotations.popupLabelsEnable"));
     }
     getSemantics() {
-      return parseColorSemantics(String(this.kernel.prefs.get("inspector.annotations.colorLabels") || ""));
+      const raw = String(this.kernel.prefs.get("inspector.annotations.colorLabels") || "");
+      if (this.cachedSemantics && this.cachedRawLabels === raw) return this.cachedSemantics;
+      this.cachedRawLabels = raw;
+      this.cachedSemantics = parseColorSemantics(raw);
+      return this.cachedSemantics;
     }
     getEnabledColors() {
-      return parseEnabledAnnotationColors(String(this.kernel.prefs.get("inspector.annotations.enabledColors") || ""));
+      const raw = String(this.kernel.prefs.get("inspector.annotations.enabledColors") || "");
+      if (this.cachedEnabled && this.cachedRawEnabled === raw) return this.cachedEnabled;
+      this.cachedRawEnabled = raw;
+      this.cachedEnabled = parseEnabledAnnotationColors(raw);
+      return this.cachedEnabled;
     }
     start() {
       if (this.active) return;
@@ -10658,7 +10783,7 @@ ${REMINDERS_CARD_CSS}`;
       if (!itemID || item?.deleted) continue;
       const title = String(item.getField?.("title") || item.title || `#${itemID}`);
       const creator = String(item.firstCreator || "").trim();
-      const year = String(item.getField?.("year") || item.getField?.("date") || "").slice(0, 4);
+      const year = extractFourDigitYear(item.getField?.("year") || item.getField?.("date"));
       const creatorYear = [creator, year].filter(Boolean).join(" ");
       const briefNote = String(getBriefNote(item) || "").trim();
       const childNotes = [];
@@ -15798,7 +15923,7 @@ ${summary}` : summary;
     cv.tree?.invalidate?.();
     return true;
   }
-  function insertCitationRowAbovePublications(cv, col, activeKeys) {
+  function insertCitationRowAbovePublications(cv, col, activeKeys, activeNames) {
     const startRow = cv?._rowMap?.["L" + col?.libraryID];
     if (startRow === void 0 || typeof cv.isContainerOpen === "function" && !cv.isContainerOpen(startRow)) {
       return false;
@@ -15819,7 +15944,7 @@ ${summary}` : summary;
             beforeRow = i;
             break;
           }
-          if ((treeRow?.isCollection?.() || treeRow?.type === "collection") && isCitationCollectionRef(treeRow.ref, activeKeys) && compareCollectionNames(treeRow.ref?.name, col.name) > 0) {
+          if ((treeRow?.isCollection?.() || treeRow?.type === "collection") && isCitationCollectionRef(treeRow.ref, activeKeys, activeNames) && compareCollectionNames(treeRow.ref?.name, col.name) > 0) {
             beforeRow = i;
             break;
           }
@@ -15845,13 +15970,18 @@ ${summary}` : summary;
     const disposers = [];
     const resolvedURI = wordIconURI || WORD_COLLECTION_DATA_URI;
     const isCiteRow = (row) => Boolean((row?.isCollection?.() || row?.type === "collection") && isCitationCollectionRef(row?.ref, getActiveKeys(), getActiveNames?.()));
+    let iconProto = null;
     const createWordIcon = () => {
+      if (iconProto && typeof iconProto.cloneNode === "function") {
+        return iconProto.cloneNode(false);
+      }
       const icon = win.document.createElementNS("http://www.w3.org/1999/xhtml", "img");
       icon.src = resolvedURI;
       icon.alt = "";
       icon.width = 16;
       icon.height = 16;
-      return icon;
+      iconProto = icon;
+      return typeof icon.cloneNode === "function" ? icon.cloneNode(false) : icon;
     };
     if (typeof cv._getIcon === "function") {
       disposers.push(runtime.patch(cv, "_getIcon", "collectionsView", (orig) => function(...args) {
@@ -15867,7 +15997,7 @@ ${summary}` : summary;
           const added = await orig.apply(this, args);
           if (typeof added === "number" && added > 0 && rows?.[row]?.isLibrary?.(true)) {
             const libLevel = typeof this.getLevel === "function" && rows === this._rows ? this.getLevel(row) : rows[row]?.level ?? 0;
-            if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys())) {
+            if (reorderCitationRowsInSlice(rows, row + 1, row + 1 + added, libLevel + 1, getActiveKeys(), getActiveNames?.())) {
               this._refreshRowMap?.();
               this.tree?.invalidate?.();
             }
@@ -15882,14 +16012,15 @@ ${summary}` : summary;
         runtime.patch(cv, "_addSortedRow", "collectionsView", (orig) => async function(...args) {
           const [objectType, id] = args;
           const activeKeys = getActiveKeys();
+          const activeNames = getActiveNames?.();
           if (objectType === "collection") {
             const zotCols = globalThis.Zotero?.Collections;
             const col = zotCols?.get?.(id) || await zotCols?.getAsync?.(id);
-            if (col && !col.parentID && isCitationCollectionRef(col, activeKeys)) {
-              const inserted = insertCitationRowAbovePublications(this, col, activeKeys);
+            if (col && !col.parentID && isCitationCollectionRef(col, activeKeys, activeNames)) {
+              const inserted = insertCitationRowAbovePublications(this, col, activeKeys, activeNames);
               if (inserted !== false) return inserted;
               const res = await orig.apply(this, args);
-              reorderViewCollections(this, activeKeys);
+              reorderViewCollections(this, activeKeys, activeNames);
               return res;
             }
           }
@@ -15900,7 +16031,7 @@ ${summary}` : summary;
             if (alreadyMasked) {
               alreadyMasked.depth += 1;
               touched.push(row);
-            } else if ((row.isCollection?.() || row.type === "collection") && isCitationCollectionRef(row.ref, activeKeys)) {
+            } else if ((row.isCollection?.() || row.type === "collection") && isCitationCollectionRef(row.ref, activeKeys, activeNames)) {
               const hasOwn = Object.prototype.hasOwnProperty.call(row, "isCollection");
               const original = row.isCollection;
               maskRegistry.set(row, { depth: 1, hasOwn, original });
@@ -16463,7 +16594,6 @@ ${summary}` : summary;
           if (activeField && activeField.type === 1) {
             citation = new integration.Citation(activeField, await activeField.unserialize(), await activeField.getNoteIndex());
           } else {
-            newField = true;
             activeField = new integration.CitationField(activeField?._field ?? activeField);
             citation = new integration.Citation(activeField);
           }
@@ -18442,7 +18572,12 @@ ${summary}` : summary;
           let status = "unavailable";
           try {
             const hostItems = globalThis.Zotero?.Items;
-            const { items } = deduplicateRegularItems(itemIDs.map((id) => hostItems?.get?.(id)));
+            const ids = [...new Set(itemIDs)];
+            const loaded = hostItems?.getAsync ? await hostItems.getAsync(ids) : ids.map((id) => hostItems?.get?.(id));
+            const byID = new Map((Array.isArray(loaded) ? loaded : [loaded]).filter(Boolean).map((item) => [item.id, item]));
+            const regular = ids.map((id) => normalizeToRegularItem(byID.get(id)));
+            if (!this.active || !regular.length || regular.some((item) => !item)) throw new Error("Word selection is no longer available");
+            const { items } = deduplicateRegularItems(regular);
             itemCount = items.length;
             status = await this.dragCite.insertItems(items, (sessionID) => {
               documentName = this.tracker.getAllSessions().find((session2) => session2.sessionID === sessionID)?.displayName || "";
@@ -21407,7 +21542,7 @@ ${summary}` : summary;
       pop.style.top = `${Math.max(8, Math.min(rawY, winH - popH - 8))}px`;
     };
     positionPopup();
-    queueMicrotask(positionPopup);
+    void Promise.resolve().then(positionPopup);
     return pop;
   }
   function addPopupButton(doc, pop, label, onClick, closePopup, options = {}) {
@@ -22374,6 +22509,9 @@ ${summary}` : summary;
     dismissOutside = (event) => {
       if (this.panelEl && !event.composedPath().includes(this.panelEl) && !event.composedPath().some((node) => node.getAttribute?.("data-action") === "search")) this.close();
     };
+    onResize = () => {
+      if (this.isOpen()) this.positionNearAnchor();
+    };
     scheduleResults(delay) {
       this.win.clearTimeout(this.timer);
       this.timer = this.win.setTimeout(() => {
@@ -22446,6 +22584,7 @@ ${summary}` : summary;
       input.focus();
       input.select();
       this.doc.addEventListener("pointerdown", this.dismissOutside, true);
+      this.win.addEventListener?.("resize", this.onResize);
       this.scheduleResults(16);
     }
     toggle(anchor) {
@@ -22454,6 +22593,7 @@ ${summary}` : summary;
     }
     close() {
       this.doc.removeEventListener("pointerdown", this.dismissOutside, true);
+      this.win.removeEventListener?.("resize", this.onResize);
       this.win.clearTimeout(this.timer);
       this.panelEl?.remove();
       this.panelEl = null;
@@ -22516,8 +22656,10 @@ ${summary}` : summary;
       if (item.id.startsWith("session:")) return "workspace";
       if (item.id.startsWith("group:")) return "folder";
       if (item.id.startsWith("closed:")) return "clock";
+      if (item.category === "citation" || item.id.startsWith("word-cite")) return "word";
       if (item.category === "command" || item.id.startsWith("cmd:")) return "layers";
       if (item.badge?.includes("虚拟")) return "virtual";
+      if (item.badge?.includes("笔记")) return "note";
       return "pdf";
     }
     renderResults(rawQuery) {
@@ -25743,10 +25885,12 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   }
   var UnifiedPrefService = class {
     cache = /* @__PURE__ */ new Map();
-    cacheWatchedKeys = /* @__PURE__ */ new Set();
+    hostObserverByKey = /* @__PURE__ */ new Map();
+    keyListeners = /* @__PURE__ */ new Map();
     observerIDs = [];
     bus;
     adapterOverride;
+    writingKey = null;
     constructor(options = {}) {
       this.bus = options.bus;
       this.adapterOverride = options.adapter;
@@ -25754,25 +25898,36 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     get adapter() {
       return this.adapterOverride ?? resolveDefaultAdapter();
     }
-    ensureCacheInvalidationObserver(key) {
-      if (this.cacheWatchedKeys.has(key)) return;
+    ensureHostObserver(key) {
+      if (this.hostObserverByKey.has(key)) return;
       const adapter = this.adapter;
       if (!adapter?.registerObserver) return;
-      this.cacheWatchedKeys.add(key);
+      const placeholder = Symbol(key);
+      this.hostObserverByKey.set(key, placeholder);
       try {
         const token = adapter.registerObserver(this.fullKey(key), () => {
           this.invalidate(key);
+          const listeners = this.keyListeners.get(key);
+          const emitBus = Boolean(this.bus && this.writingKey !== key);
+          if (listeners && listeners.size > 0 || emitBus) {
+            const next = this.get(key);
+            if (emitBus) this.bus?.emit("prefs:changed", { key, value: next });
+            if (listeners) {
+              for (const fn of [...listeners]) fn(next);
+            }
+          }
         }, true);
+        this.hostObserverByKey.set(key, token);
         this.observerIDs.push(token);
       } catch {
-        this.cacheWatchedKeys.delete(key);
+        this.hostObserverByKey.delete(key);
       }
     }
     fullKey(key) {
       return PREF_PREFIX + key;
     }
     get(key) {
-      this.ensureCacheInvalidationObserver(key);
+      this.ensureHostObserver(key);
       if (this.cache.has(key)) return this.cache.get(key);
       const raw = this.readRaw(this.fullKey(key));
       const normalized = normalizePrefValue(key, raw);
@@ -25780,12 +25935,16 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       return normalized;
     }
     set(key, value) {
-      this.ensureCacheInvalidationObserver(key);
+      this.ensureHostObserver(key);
       const normalized = normalizePrefValue(key, value);
       this.cache.set(key, normalized);
+      const prevWriting = this.writingKey;
+      this.writingKey = key;
       try {
         this.adapter?.set(this.fullKey(key), normalized, true);
       } catch {
+      } finally {
+        this.writingKey = prevWriting;
       }
       this.bus?.emit("prefs:changed", { key, value: normalized });
       return normalized;
@@ -25825,29 +25984,25 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
       }
     }
     observeKeys(keys2, onChange) {
-      const localTokens = [];
-      const adapter = this.adapter;
-      if (adapter?.registerObserver) {
-        for (const key of keys2) {
-          const token = adapter.registerObserver(this.fullKey(key), () => {
-            this.invalidate(key);
-            const next = this.get(key);
-            this.bus?.emit("prefs:changed", { key, value: next });
-            onChange(key, next);
-          }, true);
-          this.observerIDs.push(token);
-          localTokens.push(token);
+      const entries = [];
+      for (const key of keys2) {
+        const fn = (value) => onChange(key, value);
+        let set = this.keyListeners.get(key);
+        if (!set) {
+          set = /* @__PURE__ */ new Set();
+          this.keyListeners.set(key, set);
         }
+        set.add(fn);
+        entries.push([key, fn]);
+        this.ensureHostObserver(key);
       }
       return () => {
-        if (!adapter?.unregisterObserver) return;
-        for (const token of localTokens) {
-          try {
-            adapter.unregisterObserver(token);
-          } catch {
+        for (const [key, fn] of entries) {
+          const set = this.keyListeners.get(key);
+          if (set) {
+            set.delete(fn);
+            if (set.size === 0) this.keyListeners.delete(key);
           }
-          const idx = this.observerIDs.indexOf(token);
-          if (idx >= 0) this.observerIDs.splice(idx, 1);
         }
       };
     }
@@ -25862,14 +26017,15 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         }
       }
       this.observerIDs.length = 0;
-      this.cacheWatchedKeys.clear();
+      this.hostObserverByKey.clear();
+      this.keyListeners.clear();
       this.cache.clear();
     }
   };
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.8.6" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.9" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;
@@ -26128,6 +26284,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
   }
 
   // src/services/citation-history-store.ts
+  var nowMs2 = () => typeof globalThis.performance?.now === "function" ? globalThis.performance.now() : Date.now();
   function normalizeCitationKey(text2) {
     return String(text2 || "").replace(/[\u2010-\u2015\u2212]/g, "-").replace(/\s+/g, " ").trim().toLowerCase();
   }
@@ -26260,13 +26417,13 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
     }
     async searchFuzzyAsync(query, limit, libraryID, signal) {
       const search = this.rankFuzzy(query, limit, libraryID);
-      let start = performance.now();
+      let start = nowMs2();
       while (!signal?.aborted) {
         const step = search.next();
         if (step.done) return step.value;
-        if (performance.now() - start >= 6) {
+        if (nowMs2() - start >= 6) {
           await new Promise((resolve) => setTimeout(resolve, 0));
-          start = performance.now();
+          start = nowMs2();
         }
       }
       return [];
@@ -26418,9 +26575,13 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         }
       }
       const clipHelper = globalThis.Zotero?.Utilities?.Internal?.copyTextToClipboard;
-      if (typeof clipHelper === "function") {
-        clipHelper(cleanText);
-        return true;
+      if (cleanText && typeof clipHelper === "function") {
+        try {
+          clipHelper(cleanText);
+          return true;
+        } catch {
+          return false;
+        }
       }
       return false;
     }
@@ -26524,7 +26685,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
               }
             }
             try {
-              rawSetting = qc.getFormatFromURL?.(url) || "";
+              rawSetting = qc.getFormatFromURL?.(url) || host2?.Prefs?.get?.("export.quickCopy.setting") || "";
             } catch {
               rawSetting = host2?.Prefs?.get?.("export.quickCopy.setting") || "";
             }
@@ -26579,8 +26740,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
         html = res.html;
         text2 = res.text.trim();
       } else {
-        text2 = items.map((it) => String(it.getField?.("title") || it.title || "")).filter(Boolean).join("\n");
-        html = text2;
+        throw createCslPreviewError("quickcopy-unavailable", "QuickCopy formatter unavailable");
       }
       const result = { html, text: text2, styleID };
       this.setCached(key, result, items.map((it) => Number(it.id || 0)).filter((n) => n > 0));

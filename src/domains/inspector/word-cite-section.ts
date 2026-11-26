@@ -13,7 +13,7 @@ import {
 	createWordCiteBodyState, formatRecoverReceipt, OrphanSelectionState, renderWordCitePanel,
 	type OrphanDomCallbacks, type ReceiptAction, type ReceiptState, type WordCiteBodyState,
 } from './word-cite-panel-ui.ts';
-import { ReminderUiState, type ReminderItemRecord } from './word-cite-reminders-model.ts';
+import { clearReminderFieldsCache, ReminderUiState, type ReminderItemRecord } from './word-cite-reminders-model.ts';
 
 const WORD_CITE_ICON = 'item-pane-sidenav .btn[data-l10n-id="zbf-pane-word-cite-sidenav"]';
 
@@ -62,6 +62,7 @@ export class WordCiteSectionController {
 		this.disposables.add(this.kernel.bus.on('notifier:event', (ev) => {
 			if (ev.type !== 'item') return;
 			const numIDs = ev.ids.map((v) => Number(v)).filter((n) => n > 0);
+			clearReminderFieldsCache(numIDs.length ? numIDs : undefined);
 			const relevant = !numIDs.length || numIDs.some((id) =>
 				this.snapshot?.byItemID.has(id) || [...this.states.values()].some((st) => st.lastItemIDs.includes(id) || Number(st.activeItem?.id || 0) === id));
 			if (relevant) this.renderAllBodies();
@@ -118,6 +119,7 @@ export class WordCiteSectionController {
 		this.states.clear();
 		this.orphanState.reset();
 		this.reminderState.reset();
+		clearReminderFieldsCache();
 		this.receiptOwner = undefined;
 		this.pendingRequest = undefined;
 		this.receipt = { text: '', tone: 'none' };

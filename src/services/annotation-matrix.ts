@@ -1,5 +1,6 @@
 import {
 	collectItemAnnotations,
+	extractFourDigitYear,
 	normalizeHexColor,
 	parseColorSemantics,
 	type CollectedAnnotation,
@@ -24,16 +25,18 @@ export interface AnnotationFilterOptions {
 	readonly tag?: string;
 }
 
+function compileAnnotationQuery(rawQuery: string): (ann: CollectedAnnotation) => boolean {
+	const clauses = String(rawQuery || '').toLowerCase().split('||').map((s) => s.trim()).filter(Boolean)
+		.map((clause) => clause.split('&&').map((term) => term.trim()).filter(Boolean));
+	if (!clauses.length) return () => true;
+	return (ann) => {
+		const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(' ')}`.toLowerCase();
+		return clauses.some((terms) => terms.length > 0 && terms.every((term) => hay.includes(term)));
+	};
+}
+
 export function matchesAnnotationQuery(ann: CollectedAnnotation, rawQuery: string): boolean {
-	const query = String(rawQuery || '').trim().toLowerCase();
-	if (!query) return true;
-	const hay = `${ann.text} ${ann.comment} ${ann.itemTitle} ${ann.colorLabel} ${ann.tags.join(' ')}`.toLowerCase();
-	const orClauses = query.split('||').map((s) => s.trim()).filter(Boolean);
-	if (!orClauses.length) return true;
-	return orClauses.some((clause) => {
-		const andTerms = clause.split('&&').map((s) => s.trim()).filter(Boolean);
-		return andTerms.length > 0 && andTerms.every((term) => hay.includes(term));
-	});
+	return compileAnnotationQuery(rawQuery)(ann);
 }
 
 export function filterCollectedAnnotations(
@@ -43,6 +46,7 @@ export function filterCollectedAnnotations(
 	const wantedColor = String(opts.colorLabel || '').trim().toLowerCase();
 	const wantedHex = normalizeHexColor(wantedColor);
 	const wantedTag = String(opts.tag || '').trim().toLowerCase();
+	const matches = compileAnnotationQuery(opts.query || '');
 	return list.filter((ann) => {
 		if (wantedColor && ann.colorLabel.toLowerCase() !== wantedColor && (!wantedHex || normalizeHexColor(ann.color) !== wantedHex)) {
 			return false;
@@ -50,18 +54,17 @@ export function filterCollectedAnnotations(
 		if (wantedTag && !ann.tags.some((t) => t.toLowerCase() === wantedTag || t.toLowerCase().includes(wantedTag))) {
 			return false;
 		}
-		return matchesAnnotationQuery(ann, opts.query || '');
+		return matches(ann);
 	});
 }
 
-export function buildAnnotationMatrix(
+export function buildAnnotationMatrixFromCollected(
 	items: readonly any[],
-	colorLabelsJson?: string | null,
+	semantics: Readonly<Record<string, string>>,
+	baseAnnotations: readonly CollectedAnnotation[],
 	opts: AnnotationFilterOptions = {},
 ): AnnotationMatrix {
-	const semantics = parseColorSemantics(colorLabelsJson);
-	const all = collectItemAnnotations(items, semantics);
-	const filtered = filterCollectedAnnotations(all, opts);
+	const filtered = filterCollectedAnnotations(baseAnnotations, opts);
 
 	const colOrder: string[] = [];
 	const colSeen = new Set<string>();
@@ -84,7 +87,7 @@ export function buildAnnotationMatrix(
 		if (!id || raw?.deleted) continue;
 		const title = String(raw.getField?.('title') || raw.title || `文献 #${id}`);
 		const creator = String(raw.firstCreator || '').trim();
-		const year = String(raw.getField?.('year') || raw.getField?.('date') || '').slice(0, 4);
+		const year = extractFourDigitYear(raw.getField?.('year') || raw.getField?.('date'));
 		byItem.set(id, { title, creatorYear: [creator, year].filter(Boolean).join(' '), list: [] });
 	}
 	for (const a of filtered) {
@@ -98,8 +101,8 @@ export function buildAnnotationMatrix(
 
 	const rows: AnnotationMatrixRow[] = [];
 	for (const [itemID, entry] of byItem.entries()) {
-		if (filtered.length > 0 && entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
-		const cells: Record<string, CollectedAnnotation[]> = {};
+		if (entry.list.length === 0 && (opts.query || opts.colorLabel || opts.tag)) continue;
+		const cells: Record<string, CollectedAnnotation[]> = Object.create(null);
 		for (const col of colOrder) cells[col] = [];
 		for (const a of entry.list) {
 			if (!cells[a.colorLabel]) cells[a.colorLabel] = [];
@@ -109,6 +112,15 @@ export function buildAnnotationMatrix(
 	}
 
 	return { columns: colOrder, rows, totalAnnotations: filtered.length };
+}
+
+export function buildAnnotationMatrix(
+	items: readonly any[],
+	colorLabelsJson?: string | null,
+	opts: AnnotationFilterOptions = {},
+): AnnotationMatrix {
+	const semantics = parseColorSemantics(colorLabelsJson);
+	return buildAnnotationMatrixFromCollected(items, semantics, collectItemAnnotations(items, semantics), opts);
 }
 
 function formatAnnotationCellText(list: readonly CollectedAnnotation[]): string {

@@ -237,7 +237,10 @@ check('Workspace 16px content and 24px subordinate indent', () => {
 });
 check('Current Gecko APIs', () => {
 	for (const f of srcFiles) {
-		if (/\.ownerGlobal\b|\.jsm["']|Components\.utils/.test(fs.readFileSync(f, 'utf8'))) throw Error(path.basename(f));
+		const txt = fs.readFileSync(f, 'utf8');
+		if (/\.ownerGlobal\b|\.jsm["']|Components\.utils|(?<![.\w$])performance\.now\s*\(|(?<![.\w$])queueMicrotask\s*\(/.test(txt)) {
+			throw Error(path.basename(f));
+		}
 	}
 });
 check('Explicit package module and TypeScript 6+ toolchain', () => {

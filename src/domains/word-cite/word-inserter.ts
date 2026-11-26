@@ -88,7 +88,6 @@ export async function insertItemsIntoWord(
 				if (activeField && activeField.type === 1) {
 					citation = new integration.Citation(activeField, await activeField.unserialize(), await activeField.getNoteIndex());
 				} else {
-					newField = true;
 					activeField = new integration.CitationField(activeField?._field ?? activeField);
 					citation = new integration.Citation(activeField);
 				}

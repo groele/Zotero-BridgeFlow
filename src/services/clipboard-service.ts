@@ -56,9 +56,8 @@ export class UnifiedClipboardService {
 
 		// Headless/browser fallback
 		const clipHelper = (globalThis as any).Zotero?.Utilities?.Internal?.copyTextToClipboard;
-		if (typeof clipHelper === 'function') {
-			clipHelper(cleanText);
-			return true;
+		if (cleanText && typeof clipHelper === 'function') {
+			try { clipHelper(cleanText); return true; } catch { return false; }
 		}
 		return false;
 	}

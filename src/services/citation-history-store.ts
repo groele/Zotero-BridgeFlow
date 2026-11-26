@@ -19,6 +19,8 @@ export interface CitationHistoryConfig {
 	customDir?: string;
 }
 
+const nowMs = (): number => (typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now());
+
 export function normalizeCitationKey(text: string): string {
 	return String(text || '')
 		.replace(/[\u2010-\u2015\u2212]/g, '-')
@@ -165,13 +167,13 @@ export class CitationHistoryStore {
 
 	async searchFuzzyAsync(query: string, limit: number, libraryID?: number, signal?: AbortSignal): Promise<CitationHistoryRecord[]> {
 		const search = this.rankFuzzy(query, limit, libraryID);
-		let start = performance.now();
+		let start = nowMs();
 		while (!signal?.aborted) {
 			const step = search.next();
 			if (step.done) return step.value;
-			if (performance.now() - start >= 6) {
+			if (nowMs() - start >= 6) {
 				await new Promise<void>(resolve => setTimeout(resolve, 0));
-				start = performance.now();
+				start = nowMs();
 			}
 		}
 		return [];

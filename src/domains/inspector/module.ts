@@ -9,6 +9,8 @@ import { PdfFolderSectionController } from './pdf-folder-section.ts';
 import { PdfPreviewSectionController } from './pdf-preview-section.ts';
 import { WordCiteSectionController } from './word-cite-section.ts';
 
+import { clearReminderFieldsCache } from './word-cite-reminders-model.ts';
+
 export class InspectorDomainModule implements DomainModule {
 	public readonly id = 'inspector' as const;
 	public readonly enabledPref = 'modules.inspector.enable';
@@ -110,10 +112,18 @@ export class InspectorDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
+			this.kernel.bus.on('inspector:clear-cache', () => { this.lookupEngine.clearCache(); clearReminderFieldsCache(); }),
+		);
+
+		this.disposables.add(
 			this.kernel.notifier.subscribe(['item'], ({ event, ids }) => {
-				if (!this.active || event !== 'modify') return;
-				const itemIDs = ids.map((id) => Number(id)).filter((n) => Number.isFinite(n) && n > 0);
-				if (itemIDs.length) this.services.csl.invalidateItems(itemIDs);
+				if (!this.active) return;
+				const itemIDs = ids.map(Number).filter((n) => Number.isFinite(n) && n > 0);
+				if (event === 'restore' || event === 'add' || event === 'trash' || event === 'delete') {
+					this.lookupEngine.clearCache();
+					return;
+				}
+				if (event !== 'modify') return;
 				void this.cslPreview.refreshModifiedItems(itemIDs);
 			}),
 		);
@@ -131,6 +141,8 @@ export class InspectorDomainModule implements DomainModule {
 	stop(): void {
 		if (!this.active) return;
 		this.active = false;
+		this.lookupEngine.clearCache();
+		clearReminderFieldsCache();
 		this.cslPreview.unregister();
 		this.lookupSection.unregister();
 		this.pdfPreview.unregister();

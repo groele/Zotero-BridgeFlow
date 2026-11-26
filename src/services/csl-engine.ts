@@ -86,7 +86,7 @@ export class CslFormattingEngine {
 						try { url = item.getField('url', true, true) || ''; } catch { url = ''; }
 					}
 					try {
-						rawSetting = qc.getFormatFromURL?.(url) || '';
+						rawSetting = qc.getFormatFromURL?.(url) || host?.Prefs?.get?.('export.quickCopy.setting') || '';
 					} catch {
 						rawSetting = host?.Prefs?.get?.('export.quickCopy.setting') || '';
 					}
@@ -151,8 +151,7 @@ export class CslFormattingEngine {
 			html = res.html;
 			text = res.text.trim();
 		} else {
-			text = items.map((it) => String(it.getField?.('title') || it.title || '')).filter(Boolean).join('\n');
-			html = text;
+			throw createCslPreviewError('quickcopy-unavailable', 'QuickCopy formatter unavailable');
 		}
 
 		const result: CslFormatResult = { html, text, styleID };

@@ -37,6 +37,15 @@ export interface CollectedAnnotation {
 	readonly tags: readonly string[];
 }
 
+const FOUR_DIGIT_YEAR_RE = /\b(1[89]\d{2}|20\d{2})\b/;
+
+export function extractFourDigitYear(raw: unknown): string {
+	const text = String(raw ?? '').trim();
+	if (!text) return '';
+	const m = FOUR_DIGIT_YEAR_RE.exec(text);
+	return m ? m[1] : (/^\d{4}/.test(text) ? text.slice(0, 4) : '');
+}
+
 export function normalizeHexColor(color: string | null | undefined): string {
 	const clean = String(color || '').trim().toLowerCase();
 	if (/^#[0-9a-f]{6}$/.test(clean)) return clean;
@@ -203,12 +212,13 @@ export async function mergeAnnotationsByIDs(ids: readonly number[]): Promise<{
 	if (loaded.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
 
 	const parentID = Number(loaded[0].parentID || loaded[0].parentItemID || 0);
+	if (parentID <= 0) return { ok: false, keptID: 0, removedCount: 0 };
 	const sameParent = loaded.filter((it) => Number(it.parentID || it.parentItemID || 0) === parentID);
 	if (sameParent.length < 2) return { ok: false, keptID: 0, removedCount: 0 };
 
 	const sorted = [...sameParent].sort(compareAnnotationsByOrder);
+	if (!sorted.every((it) => isItemWritable(it))) return { ok: false, keptID: 0, removedCount: 0 };
 	const primary = sorted[0];
-	if (!isItemWritable(primary)) return { ok: false, keptID: 0, removedCount: 0 };
 	const rest = sorted.slice(1);
 	const { mergedText, mergedComment, mergedPosition } = mergeAnnotationPayloads(sorted);
 
@@ -243,7 +253,7 @@ export function collectItemAnnotations(
 		const itemID = Number(rawItem.id || 0);
 		const itemTitle = String(rawItem.getField?.('title') || rawItem.title || `文献 #${itemID}`);
 		const creator = String(rawItem.firstCreator || '').trim();
-		const year = String(rawItem.getField?.('year') || rawItem.getField?.('date') || '').slice(0, 4);
+		const year = extractFourDigitYear(rawItem.getField?.('year') || rawItem.getField?.('date'));
 		const creatorYear = [creator, year].filter(Boolean).join(' ');
 
 		const canHaveAnnotations = (it: any): boolean => {

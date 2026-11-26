@@ -24,6 +24,9 @@ export class WorkspaceSpotlightPanel {
 		if (this.panelEl && !event.composedPath().includes(this.panelEl)
 			&& !event.composedPath().some(node => (node as Element).getAttribute?.('data-action') === 'search')) this.close();
 	};
+	private readonly onResize = () => {
+		if (this.isOpen()) this.positionNearAnchor();
+	};
 
 	private scheduleResults(delay: number): void {
 		this.win.clearTimeout(this.timer);
@@ -108,6 +111,7 @@ export class WorkspaceSpotlightPanel {
 		input.focus();
 		input.select();
 		this.doc.addEventListener('pointerdown', this.dismissOutside, true);
+		this.win.addEventListener?.('resize', this.onResize);
 		this.scheduleResults(16);
 	}
 
@@ -118,6 +122,7 @@ export class WorkspaceSpotlightPanel {
 
 	close(): void {
 		this.doc.removeEventListener('pointerdown', this.dismissOutside, true);
+		this.win.removeEventListener?.('resize', this.onResize);
 		this.win.clearTimeout(this.timer);
 		this.panelEl?.remove();
 		this.panelEl = null;
@@ -188,8 +193,10 @@ export class WorkspaceSpotlightPanel {
 		if (item.id.startsWith('session:')) return 'workspace';
 		if (item.id.startsWith('group:')) return 'folder';
 		if (item.id.startsWith('closed:')) return 'clock';
+		if (item.category === 'citation' || item.id.startsWith('word-cite')) return 'word';
 		if (item.category === 'command' || item.id.startsWith('cmd:')) return 'layers';
 		if (item.badge?.includes('虚拟')) return 'virtual';
+		if (item.badge?.includes('笔记')) return 'note';
 		return 'pdf';
 	}
 

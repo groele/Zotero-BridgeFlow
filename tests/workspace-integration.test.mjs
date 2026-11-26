@@ -154,7 +154,7 @@ test('cross-domain fusion: shared primary item field cache, multi-item copy hist
 				id,
 				libraryID: 1,
 				key: `KEY_${id}`,
-				getField: (f) => (f === 'title' ? `Paper Title #${id}` : ''),
+				getField: (f) => (f === 'title' ? (id === 801 ? 'Valley hall effect in MoS2' : 'Ferroelectric gate tuning in WS2') : ''),
 			}),
 		},
 	};
