@@ -182,10 +182,7 @@ export class VisualNotesDomainModule implements DomainModule {
 		);
 
 		this.disposables.add(
-			this.kernel.bus.on('visual-notes:reading-updated', () => {
-				// 15s reading ticks only update progress bars/heatmaps; never wipe annotation caches or tear down open Gallery covers.
-				if (this.active) this.titleHeatmap.refreshWindows();
-			}),
+			this.kernel.bus.on('visual-notes:reading-updated', () => this.refreshLibraryViews(undefined, true)),
 		);
 
 		this.disposables.add(
@@ -243,6 +240,7 @@ export class VisualNotesDomainModule implements DomainModule {
 				try { (globalThis as any).Zotero?.ItemTreeManager?.refreshColumns?.(); } catch { /* ignore */ }
 			}
 			this.titleHeatmap.refreshWindows();
+			this.galleryBoard.refreshWindows(true);
 			return;
 		}
 		if (this.refreshTimer !== null) {

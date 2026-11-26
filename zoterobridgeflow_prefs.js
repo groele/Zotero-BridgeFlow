@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.2 - Preferences controller. */
+/* Zotero BridgeFlow v0.8.4 - Preferences controller. */
 "use strict";
 (() => {
   // src/kernel/pref-schema.ts
@@ -1000,6 +1000,7 @@
   var MAX_COVER_BYTES = 4 * 1024 * 1024;
   var memCoverCache = /* @__PURE__ */ new Map();
   var memCacheSize = 0;
+  var rejectedDiskCovers = /* @__PURE__ */ new Map();
   var failedRetryAt = /* @__PURE__ */ new Map();
   var configuredCoverCacheDir = "";
   var sweepingPromise = null;
@@ -1029,6 +1030,7 @@
     memCoverCache.clear();
     memCacheSize = 0;
     failedRetryAt.clear();
+    rejectedDiskCovers.clear();
     for (const job of activeJobs.values()) job.controller.abort();
     activeJobs.clear();
     clearing = (async () => {
@@ -1355,8 +1357,8 @@
       prefs.seedDefaults();
       const versionEl = doc.getElementById("zbf-version-badge");
       if (versionEl) {
-        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.8.2" }));
-        versionEl.textContent = `v${"0.8.2"}`;
+        versionEl.setAttribute("data-l10n-args", JSON.stringify({ version: "0.8.4" }));
+        versionEl.textContent = `v${"0.8.4"}`;
       }
       const brandIcon = doc.querySelector(".zbf-brand-icon");
       const rootURI = String(doc.defaultView?.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || globalThis.Zotero?.zoterobridgeflow?.kernel?.info?.rootURI || "");

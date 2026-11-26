@@ -18,7 +18,7 @@ export function getGallerySourceSnapshot(win: Window): GallerySourceSnapshot {
 	const searchText = typeof pane?.getSearchFilterBoxValue === 'function' ? pane.getSearchFilterBoxValue() : '';
 	const context = `${colRow?.id ?? colRow?.type ?? 'root'}|${view?.sortColumnId ?? ''}|${view?.sortDirection ?? ''}|${searchText ?? ''}`;
 	const ids: number[] = [];
-	const rowCount = Math.min(Number(view?.rowCount || 0), 5000);
+	const rowCount = Number.isSafeInteger(view?.rowCount) ? view.rowCount : 0;
 	for (let i = 0; i < rowCount; i++) {
 		const ref = view?.getRow?.(i)?.ref;
 		const id = Number(ref?.id || 0);
@@ -110,6 +110,7 @@ export function createZoteroPaneGalleryAdapter(win: Window): ZoteroPaneGalleryAd
 		boundCollectionsView = nextCols;
 		boundProvider = nextProv;
 		if (snapshot === undefined) snapshot = getGallerySourceSnapshot(win);
+		else scheduleSourceCheck();
 
 		if (nextItems) {
 			cleanups.push(wrapObjectMethods(nextItems, [

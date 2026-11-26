@@ -114,7 +114,7 @@ export function extractGalleryCards(win: Window, deps: GalleryDependencies): { c
 	const zh = deps.zh ?? Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 	const view = (win as any)?.ZoteroPane?.itemsView;
 	const hostItems = (globalThis as any).Zotero?.Items;
-	const rowCount = Math.min(Number(view?.rowCount || 0), 5000);
+	const rowCount = Number.isSafeInteger(view?.rowCount) ? view.rowCount : 0;
 	const seen = new Set<number>();
 	const rawItems: any[] = [];
 	const cards: GalleryCardModel[] = [];

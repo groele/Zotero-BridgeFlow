@@ -44,6 +44,8 @@ export const GALLERY_BOARD_CSS = `
 .zbf-gal-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 4px rgba(15,23,42,0.1); }
 
 /* Viewport, Virtualized Masonry Grid & Soft Pastel Kanban Swimlanes */
+.zbf-gal-status:not(:empty) { padding: 4px 12px; }
+.zbf-gal-cover-img[hidden] { display: none; }
 .zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; overflow-anchor: none; }
 .zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-items: start; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
 .zbf-gal-masonry-col { display: flex; flex-direction: column; gap: 11px; min-width: 0; }

@@ -218,6 +218,7 @@ export function renderGalleryInlineFeed(opts: {
 	kernel: PluginKernel;
 	dataSource?: VisualNotesDataSource;
 	onMutated: () => void;
+	onStatus: (message: string) => void;
 }): { viewport: HTMLElement; count: number } {
 	const { doc, win, zh, rawItems, query, kernel, dataSource } = opts;
 	ensureCollectionHubStyles(doc);
@@ -237,7 +238,7 @@ export function renderGalleryInlineFeed(opts: {
 			syncExtra: Boolean(kernel.prefs.get('workspace.syncRemarkToExtra')),
 			dataSource, terms, zh,
 			onRemarkMutated: opts.onMutated,
-			onStatus: () => {},
+			onStatus: opts.onStatus,
 			onOpenItem: (itemID) => kernel.bus.emit('workspace:open-item-request', { itemID, preferExistingTab: true }),
 		});
 	} else {

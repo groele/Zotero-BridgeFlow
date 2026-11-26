@@ -58,6 +58,7 @@ import {
 	moveGalleryKeys,
 } from '../src/domains/visual-notes/gallery-height-index.ts';
 import {
+	getGallerySourceSnapshot,
 	createGalleryVisibilityGuard,
 	sameGallerySourceSnapshot,
 } from '../src/domains/visual-notes/gallery-pane-adapter.ts';
@@ -768,4 +769,15 @@ test('a board refresh restores horizontal position and surviving columns by key'
 	assert.equal(restore(fresh), true);
 	assert.equal(fresh.querySelector().scrollLeft, 325);
 	assert.deepEqual(fresh.querySelectorAll().map(c => c.querySelector().scrollTop), [0, 540]);
+});
+
+test('gallery collection snapshots and cards include changes past row 5000', () => {
+	const rows = Array.from({ length: 5105 }, (_, n) => ({ id: n + 1, isRegularItem: () => true }));
+	const win = { ZoteroPane: { itemsView: { rowCount: rows.length, getRow: i => ({ ref: rows[i] }) } } };
+	const before = getGallerySourceSnapshot(win);
+	const { cards } = extractGalleryCards(win, { zh: false, getBriefNote: () => '', getReadProgress: () => undefined });
+	assert.equal(cards.length, rows.length);
+	assert.equal(cards.at(-1).itemID, 5105);
+	rows[5104] = { id: 6100, isRegularItem: () => true };
+	assert.equal(sameGallerySourceSnapshot(before, getGallerySourceSnapshot(win)), false);
 });

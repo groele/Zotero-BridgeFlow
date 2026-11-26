@@ -1,4 +1,4 @@
-/* Zotero BridgeFlow v0.8.2 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
+/* Zotero BridgeFlow v0.8.4 - Unified Reading Workspace, Inspector & Word Citation Tracking for Zotero 10-12. */
 "use strict";
 (() => {
   // src/kernel/disposable.ts
@@ -9256,6 +9256,7 @@ ${REMINDERS_CARD_CSS}`;
   var memCacheSize = 0;
   var touchedAt = /* @__PURE__ */ new Map();
   var writingPaths = /* @__PURE__ */ new Set();
+  var rejectedDiskCovers = /* @__PURE__ */ new Map();
   var failedRetryAt = /* @__PURE__ */ new Map();
   var configuredCoverCacheDir = "";
   var lastSweepAt = 0;
@@ -9287,6 +9288,12 @@ ${REMINDERS_CARD_CSS}`;
       if (!oldest) break;
       removeMemCover(oldest);
     }
+  }
+  function rejectGalleryPdfCover(attID, url) {
+    const key = `${attID}:${TARGET_COVER_WIDTH}`;
+    if (memCoverCache.get(key) !== url) return;
+    removeMemCover(key);
+    setBounded(rejectedDiskCovers, key, true);
   }
   function getCachedPdfCoverSync(attID, width = TARGET_COVER_WIDTH) {
     const key = `${attID}:${width}`;
@@ -9443,7 +9450,7 @@ ${REMINDERS_CARD_CSS}`;
         const sig = controller.signal;
         const cached = await ioQueue(async () => {
           const hint2 = await locateAttachmentPdf(attID, width);
-          const cover = hint2 && !sig.aborted ? await readDiskEnvelope(hint2.key) : null;
+          const cover = hint2 && !sig.aborted && !rejectedDiskCovers.has(jobKey) ? await readDiskEnvelope(hint2.key) : null;
           return { hint: hint2, cover };
         }, sig, rank);
         if (!cached || sig.aborted) return null;
@@ -10716,6 +10723,8 @@ ${REMINDERS_CARD_CSS}`;
 .zbf-gal-seg-btn[data-active="true"] { background: light-dark(#ffffff, #334155); color: light-dark(#0f172a, #ffffff); font-weight: 600; box-shadow: 0 1px 4px rgba(15,23,42,0.1); }
 
 /* Viewport, Virtualized Masonry Grid & Soft Pastel Kanban Swimlanes */
+.zbf-gal-status:not(:empty) { padding: 4px 12px; }
+.zbf-gal-cover-img[hidden] { display: none; }
 .zbf-gal-viewport { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 12px 18px; overflow-anchor: none; }
 .zbf-gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--zbf-card-width, 220px)), 1fr)); gap: 11px; align-items: start; align-content: start; animation: zbfGalFadeIn 0.2s cubic-bezier(0.22,1,0.36,1); }
 .zbf-gal-masonry-col { display: flex; flex-direction: column; gap: 11px; min-width: 0; }
@@ -11444,7 +11453,7 @@ ${REMINDERS_CARD_CSS}`;
         if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
         writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
         opts.onRemarkMutated?.();
-        const saved = await dataSource?.persistRemarks?.();
+        const saved = await dataSource?.persistRemarks?.().catch(() => false);
         opts.onStatus(saved ? zh ? "✓ 简记已保存至 brief-notes.json" : "✓ Brief note saved" : zh ? "简记未能确认写入磁盘。" : "Brief note could not be confirmed on disk.");
       };
       briefInput.addEventListener("blur", commitBrief);
@@ -12061,7 +12070,7 @@ ${REMINDERS_CARD_CSS}`;
     const zh = deps.zh ?? Boolean(globalThis.Zotero?.locale?.startsWith?.("zh"));
     const view = win?.ZoteroPane?.itemsView;
     const hostItems = globalThis.Zotero?.Items;
-    const rowCount = Math.min(Number(view?.rowCount || 0), 5e3);
+    const rowCount = Number.isSafeInteger(view?.rowCount) ? view.rowCount : 0;
     const seen = /* @__PURE__ */ new Set();
     const rawItems = [];
     const cards = [];
@@ -12304,6 +12313,12 @@ ${REMINDERS_CARD_CSS}`;
       }
       right.appendChild(modeSeg);
     }
+    if (opts.contentTab === "notes") {
+      const status = galEl(doc, "span");
+      status.className = "zbf-gal-status";
+      status.setAttribute("role", "status");
+      left.appendChild(status);
+    }
     bar.append(left, right);
     return bar;
   }
@@ -12344,22 +12359,8 @@ ${REMINDERS_CARD_CSS}`;
         cover.appendChild(fb);
       }
     };
-    if (card.pdfAttachmentID > 0) {
-      cover.setAttribute("data-pdf-att-id", String(card.pdfAttachmentID));
-      const syncUrl = getCachedPdfCoverSync(card.pdfAttachmentID);
-      if (syncUrl) {
-        const img = galEl(doc, "img");
-        img.className = "zbf-gal-cover-img";
-        img.decoding = "async";
-        img.src = syncUrl;
-        img.setAttribute("data-loaded", "true");
-        cover.appendChild(img);
-      } else {
-        renderFallbackInside();
-      }
-    } else {
-      renderFallbackInside();
-    }
+    if (card.pdfAttachmentID > 0) cover.setAttribute("data-pdf-att-id", String(card.pdfAttachmentID));
+    renderFallbackInside();
     const rateFloat = galEl(doc, "div");
     rateFloat.className = "zbf-gal-rate-float";
     let currentRating = card.rating;
@@ -12513,7 +12514,7 @@ ${REMINDERS_CARD_CSS}`;
     const searchText = typeof pane?.getSearchFilterBoxValue === "function" ? pane.getSearchFilterBoxValue() : "";
     const context = `${colRow?.id ?? colRow?.type ?? "root"}|${view?.sortColumnId ?? ""}|${view?.sortDirection ?? ""}|${searchText ?? ""}`;
     const ids = [];
-    const rowCount = Math.min(Number(view?.rowCount || 0), 5e3);
+    const rowCount = Number.isSafeInteger(view?.rowCount) ? view.rowCount : 0;
     for (let i = 0; i < rowCount; i++) {
       const ref = view?.getRow?.(i)?.ref;
       const id = Number(ref?.id || 0);
@@ -12601,6 +12602,7 @@ ${REMINDERS_CARD_CSS}`;
       boundCollectionsView = nextCols;
       boundProvider = nextProv;
       if (snapshot === void 0) snapshot = getGallerySourceSnapshot(win);
+      else scheduleSourceCheck();
       if (nextItems) {
         cleanups.push(wrapObjectMethods(nextItems, [
           "refresh",
@@ -12826,21 +12828,6 @@ ${REMINDERS_CARD_CSS}`;
   }
 
   // src/domains/visual-notes/gallery-cover-hydrator.ts
-  function applyCoverUrl(coverEl, doc, url) {
-    if (!coverEl.isConnected) return;
-    const existing = coverEl.querySelector(".zbf-gal-cover-img");
-    if (existing) {
-      if (existing.src !== url) existing.src = url;
-      return;
-    }
-    coverEl.querySelector(".zbf-gal-cover-abstract, .zbf-gal-cover-fallback")?.remove();
-    const img = galEl(doc, "img");
-    img.className = "zbf-gal-cover-img";
-    img.decoding = "async";
-    img.src = url;
-    img.setAttribute("data-loaded", "true");
-    coverEl.insertBefore(img, coverEl.firstChild);
-  }
   function createViewportCoverHydrator(viewport, doc) {
     const tasks = /* @__PURE__ */ new Map();
     const tracked = /* @__PURE__ */ new Set();
@@ -12854,17 +12841,12 @@ ${REMINDERS_CARD_CSS}`;
         ctrl.abort();
       }
     };
+    const retried = /* @__PURE__ */ new WeakSet();
     const startCard = (card) => {
-      if (disposed || tasks.has(card)) return;
-      const coverEl = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
-      if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return;
-      const attID = Number(coverEl.getAttribute("data-pdf-att-id") || 0);
-      if (!attID) return;
-      const mem = getCachedPdfCoverSync(attID);
-      if (mem) {
-        applyCoverUrl(coverEl, doc, mem);
-        return;
-      }
+      if (disposed || tasks.has(card) || !card.isConnected) return;
+      const cover = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
+      const attID = Number(cover?.dataset.pdfAttId);
+      if (!cover || !attID || cover.querySelector(".zbf-gal-cover-img")) return;
       const ctrl = makeAbortController(doc.defaultView);
       tasks.set(card, ctrl);
       void requestGalleryPdfCover({
@@ -12874,22 +12856,29 @@ ${REMINDERS_CARD_CSS}`;
         priority: () => priorities.get(card) ?? 1
       }).then((url) => {
         if (tasks.get(card) === ctrl) tasks.delete(card);
-        if (!disposed && !ctrl.signal.aborted && url) applyCoverUrl(coverEl, doc, url);
+        if (!url || disposed || ctrl.signal.aborted || !cover.isConnected) return;
+        const img = galEl(doc, "img");
+        img.className = "zbf-gal-cover-img";
+        img.decoding = "async";
+        img.hidden = true;
+        img.addEventListener("load", () => {
+          if (disposed || !cover.isConnected) return;
+          cover.querySelector(".zbf-gal-cover-abstract, .zbf-gal-cover-fallback")?.remove();
+          img.hidden = false;
+          img.setAttribute("data-loaded", "true");
+        }, { once: true });
+        img.addEventListener("error", () => {
+          img.remove();
+          rejectGalleryPdfCover(attID, url);
+          if (disposed || !tracked.has(card) || retried.has(card)) return;
+          retried.add(card);
+          startCard(card);
+        }, { once: true });
+        cover.prepend(img);
+        img.src = url;
       }).catch(() => {
         if (tasks.get(card) === ctrl) tasks.delete(card);
       });
-    };
-    const trySyncCover = (card) => {
-      const coverEl = card.querySelector(".zbf-gal-cover[data-pdf-att-id]");
-      if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return true;
-      const attID = Number(coverEl.getAttribute("data-pdf-att-id") || 0);
-      if (!attID) return true;
-      const mem = getCachedPdfCoverSync(attID);
-      if (mem) {
-        applyCoverUrl(coverEl, doc, mem);
-        return true;
-      }
-      return false;
     };
     const ensureObserver = () => {
       if (observer || !viewport.isConnected) return observer;
@@ -12919,7 +12908,7 @@ ${REMINDERS_CARD_CSS}`;
     return {
       observeCard(card) {
         if (disposed) return;
-        if (trySyncCover(card)) return;
+        if (!card.querySelector(".zbf-gal-cover[data-pdf-att-id]")) return;
         tracked.add(card);
         const obs = ensureObserver();
         if (obs && card.isConnected) obs.observe(card);
@@ -12929,7 +12918,7 @@ ${REMINDERS_CARD_CSS}`;
         if (disposed) return;
         const obs = ensureObserver();
         for (const c of tracked) {
-          if (!c.isConnected || trySyncCover(c)) continue;
+          if (!c.isConnected) continue;
           if (!obs) startCard(c);
         }
       },
@@ -13549,8 +13538,7 @@ ${REMINDERS_CARD_CSS}`;
         terms,
         zh,
         onRemarkMutated: opts.onMutated,
-        onStatus: () => {
-        },
+        onStatus: opts.onStatus,
         onOpenItem: (itemID) => kernel.bus.emit("workspace:open-item-request", { itemID, preferExistingTab: true })
       });
     } else {
@@ -13639,7 +13627,7 @@ ${REMINDERS_CARD_CSS}`;
       const adapter = createZoteroPaneGalleryAdapter(st.win);
       st.paneAdapter = adapter;
       adapter.onRefresh(() => {
-        if (st.open && !st.win.closed) this.renderPanel(st);
+        if (st.open && !st.win.closed) this.renderPanel(st, true);
       });
       adapter.onSelection(() => {
         if (!st.open || st.contentTab !== "items") return;
@@ -13680,10 +13668,6 @@ ${REMINDERS_CARD_CSS}`;
     detachWindow(win) {
       const st = this.states.get(win);
       if (!st) return;
-      if (st.queryTimer !== null) {
-        clearTimeout(st.queryTimer);
-        st.queryTimer = null;
-      }
       this.setGalleryOpen(st, false);
       st.visibilityGuard?.destroy();
       st.visibilityGuard = null;
@@ -13696,16 +13680,21 @@ ${REMINDERS_CARD_CSS}`;
     }
     sync(windows) {
       for (const win of windows) {
-        if (!this.states.has(win)) this.attachWindow(win);
+        if (!this.states.has(win)) {
+          this.attachWindow(win);
+          continue;
+        }
         const st = this.states.get(win);
         if (st) this.syncWindow(st);
       }
     }
-    refreshWindows() {
+    refreshWindows(readingOnly = false) {
       for (const st of this.states.values()) {
+        if (!st.open) continue;
+        if (readingOnly && (st.contentTab !== "items" || st.sortField !== "readTime" && !(st.mode === "board" && st.groupBy === "readState"))) continue;
         const active = st.win.document?.activeElement;
         const typingInPanel = Boolean(active && typeof active.closest === "function" && st.panel?.contains(active.closest("input,textarea")));
-        if (st.open && !typingInPanel) this.renderPanel(st);
+        if (!typingInPanel || active?.matches(".zbf-gal-search")) this.renderPanel(st, true);
       }
     }
     toggleWindowGallery(win, mode) {
@@ -13745,10 +13734,16 @@ ${REMINDERS_CARD_CSS}`;
       st.open = nextOpen;
       st.btnGallery?.setAttribute("aria-pressed", String(nextOpen));
       if (!nextOpen) {
+        if (st.queryTimer !== null) {
+          clearTimeout(st.queryTimer);
+          st.queryTimer = null;
+        }
         st.paneAdapter?.destroy();
         st.paneAdapter = null;
         this.disposeViewport(st);
         st.visibilityGuard?.setEnabled(false);
+        st.panel?.replaceChildren();
+        st.measurements.clear();
         return;
       }
       const itemsPane = doc.getElementById("zotero-items-pane");
@@ -13902,7 +13897,11 @@ ${REMINDERS_CARD_CSS}`;
           query: st.query,
           kernel: this.kernel,
           dataSource: this.dataSource,
-          onMutated: () => this.onMutated()
+          onMutated: () => this.onMutated(),
+          onStatus: (message) => {
+            const status = panel.querySelector(".zbf-gal-status");
+            if (status) status.textContent = message;
+          }
         });
         bodyViewport = res.viewport;
         displayCount = res.count;
@@ -13951,6 +13950,12 @@ ${REMINDERS_CARD_CSS}`;
             }, 110);
           }
         }));
+        if (st.contentTab === "notes") {
+          const status = galEl(doc, "div");
+          status.className = "zbf-gal-status";
+          status.setAttribute("role", "status");
+          panel.appendChild(status);
+        }
         panel.appendChild(bodyViewport);
       }
       st.layout?.refresh();
@@ -15240,9 +15245,7 @@ ${summary}` : summary;
         })
       );
       this.disposables.add(
-        this.kernel.bus.on("visual-notes:reading-updated", () => {
-          if (this.active) this.titleHeatmap.refreshWindows();
-        })
+        this.kernel.bus.on("visual-notes:reading-updated", () => this.refreshLibraryViews(void 0, true))
       );
       this.disposables.add(
         this.kernel.notifier.subscribe(["item"], ({ event, ids }) => {
@@ -15301,6 +15304,7 @@ ${summary}` : summary;
           }
         }
         this.titleHeatmap.refreshWindows();
+        this.galleryBoard.refreshWindows(true);
         return;
       }
       if (this.refreshTimer !== null) {
@@ -25549,7 +25553,7 @@ button.zbf-sb-group-head:hover { background: var(--zbf-hover); color: var(--zbf-
 
   // src/kernel/plugin-kernel.ts
   var PluginKernel = class {
-    info = { id: "bridgeflow@groele", version: true ? "0.8.2" : "", rootURI: "" };
+    info = { id: "bridgeflow@groele", version: true ? "0.8.4" : "", rootURI: "" };
     logger = new KernelLogger();
     bus;
     prefs;

@@ -1,5 +1,4 @@
 import { setItemRating, type RatingStorageLocation } from '../../services/item-status-rating.ts';
-import { getCachedPdfCoverSync } from '../../services/pdf-cover-service.ts';
 import type {
 	GalleryCardModel,
 	GalleryContentTab,
@@ -133,6 +132,12 @@ export function renderGalleryTopBar(opts: {
 		right.appendChild(modeSeg);
 	}
 
+	if (opts.contentTab === 'notes') {
+		const status = galEl(doc, 'span');
+		status.className = 'zbf-gal-status';
+		status.setAttribute('role', 'status');
+		left.appendChild(status);
+	}
 	bar.append(left, right);
 	return bar;
 }
@@ -189,22 +194,8 @@ export function renderGalleryCardElement(opts: {
 		}
 	};
 
-	if (card.pdfAttachmentID > 0) {
-		cover.setAttribute('data-pdf-att-id', String(card.pdfAttachmentID));
-		const syncUrl = getCachedPdfCoverSync(card.pdfAttachmentID);
-		if (syncUrl) {
-			const img = galEl(doc, 'img');
-			img.className = 'zbf-gal-cover-img';
-			img.decoding = 'async';
-			img.src = syncUrl;
-			img.setAttribute('data-loaded', 'true');
-			cover.appendChild(img);
-		} else {
-			renderFallbackInside();
-		}
-	} else {
-		renderFallbackInside();
-	}
+	if (card.pdfAttachmentID > 0) cover.setAttribute('data-pdf-att-id', String(card.pdfAttachmentID));
+	renderFallbackInside();
 
 	const rateFloat = galEl(doc, 'div');
 	rateFloat.className = 'zbf-gal-rate-float';

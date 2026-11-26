@@ -1,27 +1,11 @@
 import {
-	getCachedPdfCoverSync,
+	rejectGalleryPdfCover,
 	makeAbortController,
 	notifyGalleryCoverScroll,
 	requestGalleryPdfCover,
 } from '../../services/pdf-cover-service.ts';
 import { createToolbarArt } from './gallery-icons.ts';
 import { galEl } from './gallery-styles.ts';
-
-function applyCoverUrl(coverEl: HTMLElement, doc: Document, url: string): void {
-	if (!coverEl.isConnected) return;
-	const existing = coverEl.querySelector('.zbf-gal-cover-img') as HTMLImageElement | null;
-	if (existing) {
-		if (existing.src !== url) existing.src = url;
-		return;
-	}
-	coverEl.querySelector('.zbf-gal-cover-abstract, .zbf-gal-cover-fallback')?.remove();
-	const img = galEl(doc, 'img');
-	img.className = 'zbf-gal-cover-img';
-	img.decoding = 'async';
-	img.src = url;
-	img.setAttribute('data-loaded', 'true');
-	coverEl.insertBefore(img, coverEl.firstChild);
-}
 
 export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document) {
 	const tasks = new Map<HTMLElement, AbortController>();
@@ -38,39 +22,43 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 		}
 	};
 
+	const retried = new WeakSet<HTMLElement>();
 	const startCard = (card: HTMLElement) => {
-		if (disposed || tasks.has(card)) return;
-		const coverEl = card.querySelector('.zbf-gal-cover[data-pdf-att-id]') as HTMLElement | null;
-		if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return;
-		const attID = Number(coverEl.getAttribute('data-pdf-att-id') || 0);
-		if (!attID) return;
-		const mem = getCachedPdfCoverSync(attID);
-		if (mem) { applyCoverUrl(coverEl, doc, mem); return; }
+		if (disposed || tasks.has(card) || !card.isConnected) return;
+		const cover = card.querySelector<HTMLElement>('.zbf-gal-cover[data-pdf-att-id]');
+		const attID = Number(cover?.dataset.pdfAttId);
+		if (!cover || !attID || cover.querySelector('.zbf-gal-cover-img')) return;
 
 		const ctrl = makeAbortController(doc.defaultView);
 		tasks.set(card, ctrl);
-
 		void requestGalleryPdfCover({
-			attID,
-			doc,
-			signal: ctrl.signal,
+			attID, doc, signal: ctrl.signal,
 			priority: () => priorities.get(card) ?? 1,
 		}).then((url) => {
 			if (tasks.get(card) === ctrl) tasks.delete(card);
-			if (!disposed && !ctrl.signal.aborted && url) applyCoverUrl(coverEl, doc, url);
+			if (!url || disposed || ctrl.signal.aborted || !cover.isConnected) return;
+			const img = galEl(doc, 'img');
+			img.className = 'zbf-gal-cover-img';
+			img.decoding = 'async';
+			img.hidden = true;
+			img.addEventListener('load', () => {
+				if (disposed || !cover.isConnected) return;
+				cover.querySelector('.zbf-gal-cover-abstract, .zbf-gal-cover-fallback')?.remove();
+				img.hidden = false;
+				img.setAttribute('data-loaded', 'true');
+			}, { once: true });
+			img.addEventListener('error', () => {
+				img.remove();
+				rejectGalleryPdfCover(attID, url);
+				if (disposed || !tracked.has(card) || retried.has(card)) return;
+				retried.add(card);
+				startCard(card);
+			}, { once: true });
+			cover.prepend(img);
+			img.src = url;
 		}).catch(() => {
 			if (tasks.get(card) === ctrl) tasks.delete(card);
 		});
-	};
-
-	const trySyncCover = (card: HTMLElement): boolean => {
-		const coverEl = card.querySelector('.zbf-gal-cover[data-pdf-att-id]') as HTMLElement | null;
-		if (!coverEl || coverEl.querySelector('img[data-loaded="true"]')) return true;
-		const attID = Number(coverEl.getAttribute('data-pdf-att-id') || 0);
-		if (!attID) return true;
-		const mem = getCachedPdfCoverSync(attID);
-		if (mem) { applyCoverUrl(coverEl, doc, mem); return true; }
-		return false;
 	};
 
 	const ensureObserver = (): IntersectionObserver | null => {
@@ -106,7 +94,7 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 	return {
 		observeCard(card: HTMLElement) {
 			if (disposed) return;
-			if (trySyncCover(card)) return;
+			if (!card.querySelector('.zbf-gal-cover[data-pdf-att-id]')) return;
 			tracked.add(card);
 			const obs = ensureObserver();
 			if (obs && card.isConnected) obs.observe(card);
@@ -116,7 +104,7 @@ export function createViewportCoverHydrator(viewport: HTMLElement, doc: Document
 			if (disposed) return;
 			const obs = ensureObserver();
 			for (const c of tracked) {
-				if (!c.isConnected || trySyncCover(c)) continue;
+				if (!c.isConnected) continue;
 				if (!obs) startCard(c);
 			}
 		},

@@ -70,7 +70,7 @@ export class GalleryBoardController {
 		const adapter = createZoteroPaneGalleryAdapter(st.win);
 		st.paneAdapter = adapter;
 		adapter.onRefresh(() => {
-			if (st.open && !st.win.closed) this.renderPanel(st);
+			if (st.open && !st.win.closed) this.renderPanel(st, true);
 		});
 		adapter.onSelection(() => {
 			if (!st.open || st.contentTab !== 'items') return;
@@ -112,7 +112,6 @@ export class GalleryBoardController {
 	detachWindow(win: Window): void {
 		const st = this.states.get(win);
 		if (!st) return;
-		if (st.queryTimer !== null) { clearTimeout(st.queryTimer); st.queryTimer = null; }
 		this.setGalleryOpen(st, false);
 		st.visibilityGuard?.destroy();
 		st.visibilityGuard = null;
@@ -127,17 +126,19 @@ export class GalleryBoardController {
 
 	sync(windows: Iterable<Window>): void {
 		for (const win of windows) {
-			if (!this.states.has(win)) this.attachWindow(win);
+			if (!this.states.has(win)) { this.attachWindow(win); continue; }
 			const st = this.states.get(win);
 			if (st) this.syncWindow(st);
 		}
 	}
 
-	refreshWindows(): void {
+	refreshWindows(readingOnly = false): void {
 		for (const st of this.states.values()) {
+			if (!st.open) continue;
+			if (readingOnly && (st.contentTab !== 'items' || (st.sortField !== 'readTime' && !(st.mode === 'board' && st.groupBy === 'readState')))) continue;
 			const active = st.win.document?.activeElement as Element | null;
 			const typingInPanel = Boolean(active && typeof active.closest === 'function' && st.panel?.contains(active.closest('input,textarea')));
-			if (st.open && !typingInPanel) this.renderPanel(st);
+			if (!typingInPanel || active?.matches('.zbf-gal-search')) this.renderPanel(st, true);
 		}
 	}
 
@@ -176,10 +177,13 @@ export class GalleryBoardController {
 		st.btnGallery?.setAttribute('aria-pressed', String(nextOpen));
 
 		if (!nextOpen) {
+			if (st.queryTimer !== null) { clearTimeout(st.queryTimer); st.queryTimer = null; }
 			st.paneAdapter?.destroy();
 			st.paneAdapter = null;
 			this.disposeViewport(st);
 			st.visibilityGuard?.setEnabled(false);
+			st.panel?.replaceChildren();
+			st.measurements.clear();
 			return;
 		}
 
@@ -311,6 +315,10 @@ export class GalleryBoardController {
 				doc, win: st.win, zh, tab: st.contentTab, selection: st.readingSelection,
 				rawItems, query: st.query, kernel: this.kernel, dataSource: this.dataSource,
 				onMutated: () => this.onMutated(),
+				onStatus: (message) => {
+					const status = panel.querySelector('.zbf-gal-status');
+					if (status) status.textContent = message;
+				},
 			});
 			bodyViewport = res.viewport;
 			displayCount = res.count;
@@ -336,6 +344,12 @@ export class GalleryBoardController {
 					st.queryTimer = setTimeout(() => { st.queryTimer = null; if (st.open) this.renderPanel(st, true); }, 110);
 				},
 			}));
+			if (st.contentTab === 'notes') {
+				const status = galEl(doc, 'div');
+				status.className = 'zbf-gal-status';
+				status.setAttribute('role', 'status');
+				panel.appendChild(status);
+			}
 			panel.appendChild(bodyViewport);
 		}
 		st.layout?.refresh();

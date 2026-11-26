@@ -296,7 +296,7 @@ export function renderHubNotesList(opts: {
 			if (nextVal === readItemRemarkWithFallback(entry.item, dataSource)) return;
 			writeItemRemarkWithSync(entry.item, nextVal, syncExtra, dataSource);
 			opts.onRemarkMutated?.();
-			const saved = await dataSource?.persistRemarks?.();
+			const saved = await dataSource?.persistRemarks?.().catch(() => false);
 			opts.onStatus(saved
 				? (zh ? '✓ 简记已保存至 brief-notes.json' : '✓ Brief note saved')
 				: (zh ? '简记未能确认写入磁盘。' : 'Brief note could not be confirmed on disk.'));

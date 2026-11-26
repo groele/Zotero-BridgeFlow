@@ -27,6 +27,7 @@ const memCoverCache = new Map<string, string>();
 let memCacheSize = 0;
 const touchedAt = new Map<string, number>();
 const writingPaths = new Set<string>();
+const rejectedDiskCovers = new Map<string, true>();
 const failedRetryAt = new Map<string, number>();
 let configuredCoverCacheDir = '';
 let lastSweepAt = 0;
@@ -62,6 +63,13 @@ function setMemLru(attID: number, width: number, url: string): void {
 		if (!oldest) break;
 		removeMemCover(oldest);
 	}
+}
+
+export function rejectGalleryPdfCover(attID: number, url: string): void {
+	const key = `${attID}:${TARGET_COVER_WIDTH}`;
+	if (memCoverCache.get(key) !== url) return;
+	removeMemCover(key);
+	setBounded(rejectedDiskCovers, key, true);
 }
 
 export function getCachedPdfCoverSync(attID: number, width = TARGET_COVER_WIDTH): string | null {
@@ -225,7 +233,7 @@ export function requestGalleryPdfCover(opts: {
 			const sig = controller.signal;
 			const cached = await ioQueue(async () => {
 				const hint = await locateAttachmentPdf(attID, width);
-				const cover = hint && !sig.aborted ? await readDiskEnvelope(hint.key) : null;
+				const cover = hint && !sig.aborted && !rejectedDiskCovers.has(jobKey) ? await readDiskEnvelope(hint.key) : null;
 				return { hint, cover };
 			}, sig, rank);
 			if (!cached || sig.aborted) return null;
@@ -308,6 +316,7 @@ export function clearPdfCoverCache(customDir = ''): Promise<boolean> {
 	memCoverCache.clear();
 	memCacheSize = 0;
 	failedRetryAt.clear();
+	rejectedDiskCovers.clear();
 	for (const job of activeJobs.values()) job.controller.abort();
 	activeJobs.clear();
 	clearing = (async () => {
