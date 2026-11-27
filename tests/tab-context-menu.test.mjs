@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { WorkspaceTabContextMenu } from '../src/domains/workspace/tabs/tab-context-menu.ts';
-import { resolveNativeTabFromElement } from '../src/domains/workspace/workspace-ui.ts';
+import { resolveNativeTabFromElement, WorkspaceWindowUI } from '../src/domains/workspace/workspace-ui.ts';
 
 function makeMockPrefs(overrides = {}) {
 	const map = new Map(Object.entries({
@@ -288,4 +288,92 @@ test('resolveNativeTabFromElement matches Zotero native tab elements by attr, id
 	assert.equal(resolveNativeTabFromElement(win, tabA, tracked)?.tabID, 'reader-a');
 	assert.equal(resolveNativeTabFromElement(win, tabB, tracked)?.tabID, 'reader-b');
 	assert.equal(resolveNativeTabFromElement(win, tabByIndex, tracked)?.tabID, 'reader-b');
+});
+
+test('WorkspaceWindowUI binds native tab contextmenu in capture phase and skips interception when top horizontal bar is disabled', () => {
+	let capturedListener = null;
+	let capturedOpts = null;
+	const tabBarEl = {
+		addEventListener(type, fn, opts) {
+			if (type === 'contextmenu') {
+				capturedListener = fn;
+				capturedOpts = opts;
+			}
+		},
+		toggleAttribute() {},
+		removeAttribute() {},
+	};
+	const doc = {
+		head: { appendChild() {} },
+		documentElement: { appendChild() {} },
+		getElementById: (id) => (id === 'tab-bar-container' ? tabBarEl : null),
+		createElementNS: (_ns, tag) => makeMockElement(tag, doc),
+		addEventListener() {},
+		removeEventListener() {},
+		querySelector: () => null,
+		querySelectorAll: () => [],
+	};
+	const prefValues = {
+		'workspace.enableHorizontalGroups': false,
+		'workspace.enableTabContextMenu': true,
+		'workspace.enableVerticalSidebar': false,
+		'workspace.enableSpotlight': false,
+	};
+	const prefs = { get: (k) => prefValues[k] };
+	const store = {
+		state: { groups: [], remarkModes: {}, collapsed: [], pinned: [], sleeping: [], virtualMembers: {}, selectedKeys: [] },
+		isCollapsed: () => false,
+	};
+	const trackedTab = { key: '1:A', tabID: 'reader-a', itemID: 11, title: 'Paper A', shortTitle: 'Paper A', filename: 'a.pdf', virtual: false };
+	const tabs = { buildTrackedTabs: () => [trackedTab] };
+	const win = {
+		document: doc,
+		AbortController: globalThis.AbortController,
+		addEventListener() {},
+		removeEventListener() {},
+		setTimeout: () => 1,
+		clearTimeout() {},
+		Zotero_Tabs: { _tabs: [{ id: 'reader-a', type: 'reader', data: { itemID: 11 } }] },
+	};
+	doc.defaultView = win;
+
+	const ui = new WorkspaceWindowUI(win, prefs, store, tabs, { query: () => [] });
+	let openedCount = 0;
+	ui.tabMenu.openTabMenu = () => { openedCount += 1; };
+
+	assert.equal(typeof capturedListener, 'function');
+	assert.equal(capturedOpts?.capture, true, 'must intercept in capture phase before native Zotero popup opens');
+
+	const nativeTabEl = {
+		id: 'tab-reader-a',
+		getAttribute: (k) => (k === 'data-tab-id' ? 'reader-a' : null),
+		closest: (sel) => (sel.includes('.tabs-wrapper .tab') ? nativeTabEl : null),
+	};
+	const makeContextEvent = () => {
+		const calls = { prevent: 0, stop: 0, stopImm: 0 };
+		return {
+			ev: {
+				target: nativeTabEl,
+				preventDefault() { calls.prevent += 1; },
+				stopPropagation() { calls.stop += 1; },
+				stopImmediatePropagation() { calls.stopImm += 1; },
+			},
+			calls,
+		};
+	};
+
+	// 1. Top horizontal bar disabled -> do NOT intercept native tab contextmenu
+	const first = makeContextEvent();
+	capturedListener(first.ev);
+	assert.equal(openedCount, 0);
+	assert.deepEqual(first.calls, { prevent: 0, stop: 0, stopImm: 0 });
+
+	// 2. Top horizontal bar enabled -> suppress native menu completely and open BridgeFlow menu once
+	prefValues['workspace.enableHorizontalGroups'] = true;
+	const second = makeContextEvent();
+	capturedListener(second.ev);
+	assert.equal(openedCount, 1);
+	assert.deepEqual(second.calls, { prevent: 1, stop: 1, stopImm: 1 });
+
+	ui.destroy();
 });

@@ -191,7 +191,11 @@ export class WorkspaceWindowUI {
 		const tabBar = this.doc.getElementById('tab-bar-container');
 		if (!tabBar) return;
 		tabBar.addEventListener('contextmenu', (ev: Event) => {
-			if (this.destroyed || !this.prefs.get('workspace.enableTabContextMenu')) return;
+			if (
+				this.destroyed
+				|| !this.prefs.get('workspace.enableHorizontalGroups')
+				|| !this.prefs.get('workspace.enableTabContextMenu')
+			) return;
 			const target = ev.target as Element | null;
 			if (!target || typeof target.closest !== 'function') return;
 			if (target.closest('#zbf-inline, #zbf-toolbar-actions')) return;
@@ -201,8 +205,9 @@ export class WorkspaceWindowUI {
 			if (!tracked) return;
 			ev.preventDefault();
 			ev.stopPropagation();
+			ev.stopImmediatePropagation?.();
 			this.tabMenu?.openTabMenu(nativeTabEl, tracked, ev as MouseEvent);
-		}, { signal: this.lifetime.signal });
+		}, { capture: true, signal: this.lifetime.signal });
 	}
 
 	private attachObservers(): void {
