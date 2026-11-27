@@ -4,7 +4,7 @@
 
 # Zotero BridgeFlow（桥引）
 
-> 当前版本：**1.1.1** · 兼容范围：**Zotero `10.0` ~ `12.*`**（已实测验证：`10.0.8`）· 协议：**AGPL-3.0-or-later**
+> 当前版本：**1.1.2** · 兼容范围：**Zotero `10.0` ~ `12.*`**（已实测验证：`10.0.8`）· 协议：**AGPL-3.0-or-later**
 
 </div>
 
@@ -107,7 +107,7 @@
 
 - **五层微内核与子域模块化结构**：`bootstrap.js` ➔ `src/kernel/` ➔ `src/services/` ➔ `src/domains/`（`workspace/{store,tabs,topbar,sidebar,reader,spotlight,styles}`、`visual-notes/{columns,gallery,hub,reader}`、`inspector/{csl-preview,lookup,pdf,word-panel}`、`word-cite/{ipc,orphan,governance}`，4 个独立子域禁止直接横向导入）➔ `src/bridges/`，设置页 `src/preferences.ts` + `src/prefs/` 仅依赖 `kernel` 与 `services`。
 - **技术栈**：TypeScript `6.0.3`（`strict: true` / `tsc --noEmit`）、esbuild `0.28.2`（`minifyIdentifiers: false` 保持符号与栈帧可读，内联 CSS 与无用空白/注释无损折叠）、Valibot `1.5.0`。
-- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、Bridge 隔离与 `runtime.patch` 宿主围栏、EventBus 零僵尸事件、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **17 项静态守卫**、单元测试与真实本机 Zotero 宿主契约冒烟脚本（`npm run smoke:host`）。
+- **架构与质量守卫**（`npm test` 强制前置执行）：包含单文件 `<= 360` 行上限、零 `@ts-ignore`/`@ts-nocheck`、五层依赖边界、Bridge 隔离与 `runtime.patch` 宿主围栏、EventBus 零僵尸事件、全链路 8 处版本号对齐、全库合法 CSS `font:` 简写校验、`en-US` ↔ `zh-CN` Fluent 键值完全对称与 `prefs.xhtml` 全量 `data-l10n-id` 存在性校验、`prefs.xhtml` 零硬编码中文、Zotero `10.0 ~ 12.*` API 合规等 **19 项静态守卫**、单元测试与真实本机 Zotero 宿主契约冒烟脚本（`npm run smoke:host`）。
 
 环境要求：Node.js `>= 22.14`、PowerShell（用于打包 `.xpi`）。
 
@@ -121,13 +121,13 @@ npm run build:xpi
 
 在「Word 引用」设置中，引用列默认仅在顶层条目显示。开启子条目显示后，优先显示子条目自身的引用，缺失时沿用父条目。
 
-在「工作区」设置中，可以选择是否在附件版本菜单中包含网页快照和优先显示文件名。选择其他版本会在当前阅读器标签页内直接原位切换，不会新建额外标签页或窗口。
+在「工作区」设置中，可以选择是否在附件版本菜单中包含网页快照和优先显示文件名。展开版本菜单与悬停候选附件时会在当前标签容器内静默预挂载目标视图，并维持最多 2 个兄弟版本的热驻留休眠栈（`docShellIsActive = false`），使正文与补充材料之间的来回切换达到毫秒级瞬切并完整保留各自阅读页码与缩放比例，不会新建额外标签页或窗口。
 
-## 安装包完整性校验 (`v1.1.1`)
+## 安装包完整性校验 (`v1.1.2`)
 
-- 文件名：`Zotero-BridgeFlow-1.1.1.xpi`（`304,222` 字节，19 个条目，确定性构建）
-- SHA-256：`EE8753E8169328A530CD1173F9AA83402420D60F704AC8DE29280230A023F42F`
-- SHA-512：`B0CB46D0ADF8C0D67760DB5CC4C463F77B33A87D7FE08C3B5B787E0AA0891D5BD7AC83F2D9EBA55FDE9B54A1B7C425757A0C92083FFA5800BF7D64C06CD72356`
+- 文件名：`Zotero-BridgeFlow-1.1.2.xpi`（`306,482` 字节，19 个条目，确定性构建）
+- SHA-256：`EA83711693D416B8B0C7C7C45A42F3D41B9BFB715B294DE6295EB7EA4AD607DE`
+- SHA-512：`401C0A20D92732F2B1AB1C666AC4962F3E53BB227361CEEE84A5F79853D8CBD24BEA31554CFF9DBC36FB33B07B98EB8EAF85B4E7E6EE0F1F7F6DDA82A4F73B83`
 
 ---
 

@@ -1,6 +1,7 @@
 import { createWorkspaceElement } from './workspace-elements.ts';
 import type { UnifiedPrefService } from '../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../kernel/types.ts';
+import { getHostTabs, getReaderPrimaryDocument } from '../../services/host/index.ts';
 import type { TrackedTab } from './types.ts';
 import { WorkspaceHorizontalBar } from './topbar/horizontal-bar.ts';
 import { WorkspaceToolbarActions } from './topbar/horizontal-toolbar.ts';
@@ -134,14 +135,12 @@ export class WorkspaceWindowUI {
 
 	private bindOpenReaderDocs(): void {
 		if (!this.lifetime) return;
-		const nativeTabs: any[] = (this.win as any).Zotero_Tabs?._tabs ?? [];
+		const nativeTabs = getHostTabs(this.win);
 		const openIds = new Set<string>();
 		for (const tab of nativeTabs) {
 			if (!tab?.id || tab.type === 'library') continue;
 			openIds.add(tab.id);
-			if (this.boundReaderTabIDs.has(tab.id)) continue;
-			const iframeDoc = (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.id)
-				?._internalReader?._primaryView?._iframeWindow?.document as Document | undefined;
+			const iframeDoc = getReaderPrimaryDocument((globalThis as any).Zotero?.Reader?.getByTabID?.(tab.id)) ?? undefined;
 			if (!iframeDoc) continue;
 			this.boundReaderTabIDs.add(tab.id);
 			if (this.boundReaderDocs.has(iframeDoc)) continue;
@@ -265,8 +264,7 @@ export function resolveNativeTabFromElement(
 	}
 
 	const doc = win.document;
-	const nativeTabs: Array<{ id?: string; title?: string; pinned?: boolean }> =
-		Array.isArray((win as any).Zotero_Tabs?._tabs) ? (win as any).Zotero_Tabs._tabs : [];
+	const nativeTabs = getHostTabs(win);
 	const isPinnedEl = Boolean(tabEl.closest?.('.pinned-tabs'));
 	const containerSel = isPinnedEl ? '#tab-bar-container .pinned-tabs .tab' : '#tab-bar-container .tabs-wrapper .tab';
 	const siblingTabs = doc?.querySelectorAll ? Array.from(doc.querySelectorAll(containerSel)) : [];

@@ -1,6 +1,6 @@
 {
   "name": "zotero-bridgeflow",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Zotero BridgeFlow (桥引) — Unified reading workspace, citation preview & reverse lookup, and Microsoft Word citation tracking for Zotero 10-12.",
   "private": true,
   "type": "module",

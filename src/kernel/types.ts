@@ -146,8 +146,6 @@ export interface BridgeFlowEventMap {
 	'workspace:reader-neighbors-updated': ReaderNeighborsPayload;
 	'workspace:reader-neighbors-query': { readonly win?: Window };
 	'visual-notes:open-matrix': { readonly win: Window; readonly title: string; readonly itemIDs: readonly number[] };
-	'visual-notes:open-hub': { readonly win: Window; readonly initialTab?: 'annotations' | 'notes' };
-	'visual-notes:toggle-gallery': { readonly win: Window; readonly mode?: 'gallery' | 'board' };
 	'word:insert-items-request': { readonly itemIDs: readonly number[]; readonly win?: Window; readonly requestId?: string };
 	'word:insert-result': WordInsertResultPayload;
 	'word:refresh-request': { readonly sessionID?: string; readonly requestId?: string; readonly win?: Window };
@@ -157,7 +155,6 @@ export interface BridgeFlowEventMap {
 	'word:select-collection-request': { readonly sessionID?: string; readonly win?: Window };
 	'word:recover-orphans-request': { readonly sessionID?: string; readonly keys?: readonly string[]; readonly requestId?: string; readonly source?: 'panel' | 'spotlight'; readonly win?: Window };
 	'word:recover-orphans-result': WordRecoverOrphansResultPayload;
-	'inspector:lookup-clipboard': { readonly win?: Window };
 	'inspector:clear-cache': { readonly target: 'memory' | 'disk' | 'all' };
 }
 

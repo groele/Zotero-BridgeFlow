@@ -1,3 +1,4 @@
+import { getHostTabs } from './host/index.ts';
 import { filterCollectedAnnotations, matchesAnnotationQuery } from './annotation-matrix.ts';
 import { collectItemAnnotations, extractFourDigitYear, parseColorSemantics, type CollectedAnnotation } from './annotation-utils.ts';
 
@@ -105,7 +106,7 @@ export function resolveHubScopeItems(win: Window, mode: HubScopeMode, zh = true)
 
 	if (mode === 'tabs') {
 		const hostItems = (globalThis as any).Zotero?.Items;
-		for (const t of (win as any)?.Zotero_Tabs?._tabs || []) {
+		for (const t of getHostTabs(win)) {
 			const id = Number(t?.data?.itemID || 0);
 			const resolved = id > 0 ? hostItems?.get?.(id) : null;
 			if (resolved) push(resolved);

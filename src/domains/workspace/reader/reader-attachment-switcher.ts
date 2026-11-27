@@ -1,19 +1,13 @@
-import { showAttachmentInReaderTab } from '../../../services/reader-tab-navigation.ts';
+import { getEffectiveReaderTabID, getHostTabs, getReaderDocument, scanPendingReaders } from '../../../services/host/host-queries.ts';
+import { clearWarmReaderDecks, prestageAttachmentInReaderTab, showAttachmentInReaderTab } from '../../../services/reader-tab-navigation.ts';
 import { collectOpenAttIDs, resolveOwnerWindow } from './reader-owner-window.ts';
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 import {
-	buildSwitcherButtonDom,
-	createSectionWrapper,
-	ensureSwitcherStyleSheet,
-	openSiblingAttachmentMenu,
-	READER_ATT_BACKDROP_ID,
-	READER_ATT_BTN_CLASS,
-	READER_ATT_MENU_ID,
-	READER_ATT_STYLE_ID,
-	resolveSiblingAttachments,
-	type SiblingAttachmentEntry,
+	buildSwitcherButtonDom, createSectionWrapper, ensureSwitcherStyleSheet, openSiblingAttachmentMenu,
+	READER_ATT_BACKDROP_ID, READER_ATT_BTN_CLASS, READER_ATT_MENU_ID, READER_ATT_STYLE_ID,
+	resolveSiblingAttachments, type SiblingAttachmentEntry,
 } from './reader-attachment-switcher-ui.ts';
 
 interface ReaderSlot {
@@ -25,6 +19,7 @@ interface ReaderSlot {
 	labelEl: HTMLSpanElement;
 	parentID: number;
 	items: SiblingAttachmentEntry[];
+	dirty: boolean;
 }
 
 export class ReaderAttachmentSwitcher {
@@ -32,6 +27,7 @@ export class ReaderAttachmentSwitcher {
 	private readonly store: WorkspaceStateStore;
 	private readonly slots = new Map<Document, ReaderSlot>();
 	private readonly pendingReaders = new WeakSet<object>();
+	private readonly warmedAttachmentIDs = new Set<number>();
 	private unregisterToolbar: Disposable | null = null;
 	private unsubNotifier: Disposable | null = null;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,23 +72,28 @@ export class ReaderAttachmentSwitcher {
 		this.unregisterToolbar?.();
 		this.unregisterToolbar = null;
 		this.unmountAll();
+		clearWarmReaderDecks();
 	}
 
 	syncPref(): void {
 		if (!this.active) return;
 		if (!this.isEnabled()) { this.unmountAll(); return; }
 		this.pruneClosedSlots();
-		for (const slot of this.slots.values()) this.refreshSlot(slot);
+		for (const slot of this.slots.values()) {
+			slot.dirty = true;
+			this.refreshSlot(slot);
+		}
 		this.scanOpenReaders();
 	}
 
 	mountReaderToolbar(reader: any, doc: Document, append?: (...els: Element[]) => void): void {
 		if (!this.active || !this.isEnabled() || !reader || !doc) return;
 		this.pruneClosedSlots();
-		const documentKey = reader._iframeWindow?.document ?? doc;
+		const documentKey = getReaderDocument(reader) ?? doc;
 		const existing = this.slots.get(documentKey);
 		if (existing && existing.wrap.isConnected !== false) {
 			existing.reader = reader;
+			existing.dirty = true;
 			this.refreshSlot(existing);
 			return;
 		}
@@ -118,7 +119,7 @@ export class ReaderAttachmentSwitcher {
 			}
 		}
 
-		const slot: ReaderSlot = { reader, doc, wrap, sectionWrap, btn, labelEl, parentID: 0, items: [] };
+		const slot: ReaderSlot = { reader, doc, wrap, sectionWrap, btn, labelEl, parentID: 0, items: [], dirty: true };
 		btn.addEventListener('click', (ev) => {
 			ev.preventDefault();
 			ev.stopPropagation();
@@ -151,24 +152,15 @@ export class ReaderAttachmentSwitcher {
 	}
 
 	private scanOpenReaders(): void {
-		const readers: any[] = (globalThis as any).Zotero?.Reader?._readers || [];
-		for (const reader of readers) {
-			if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
-			const doc = reader._iframeWindow?.document as Document | undefined;
-			if (doc && this.slots.get(doc)?.wrap.isConnected) continue;
-			if (doc?.querySelector?.('.toolbar .custom-sections')) {
+		scanPendingReaders(
+			this.pendingReaders,
+			() => this.active && this.isEnabled(),
+			(doc) => Boolean(doc.querySelector?.('.toolbar .custom-sections')),
+			(reader, doc) => {
+				if (this.slots.get(doc)?.wrap.isConnected) return;
 				this.mountReaderToolbar(reader, doc);
-			} else if (!this.pendingReaders.has(reader)) {
-				this.pendingReaders.add(reader);
-				const waitReady = reader._waitForReader?.() ?? reader._initPromise ?? Promise.resolve();
-				void Promise.resolve(waitReady).then(() => {
-					this.pendingReaders.delete(reader);
-					if (!this.active || !this.isEnabled() || reader._isTabClosed) return;
-					const readyDoc = reader._iframeWindow?.document as Document | undefined;
-					if (readyDoc?.querySelector?.('.toolbar .custom-sections')) this.mountReaderToolbar(reader, readyDoc);
-				}).catch(() => { this.pendingReaders.delete(reader); });
-			}
-		}
+			},
+		);
 	}
 
 	private scheduleRefresh(delayMs: number): void {
@@ -186,7 +178,10 @@ export class ReaderAttachmentSwitcher {
 				}
 				if (this.refreshAll || affected.size) for (const slot of this.slots.values()) {
 					if (this.refreshAll || affected.has(slot.parentID) || affected.has(Number(slot.reader?.itemID))
-						|| slot.items.some(item => affected.has(item.id))) this.refreshSlot(slot);
+						|| slot.items.some(item => affected.has(item.id))) {
+						slot.dirty = true;
+						this.refreshSlot(slot);
+					}
 				}
 				if (this.scanRequested) this.scanOpenReaders();
 			}
@@ -206,20 +201,38 @@ export class ReaderAttachmentSwitcher {
 		if (sec && sec.childElementCount <= 1) sec.hidden = hidden;
 	}
 
-	private refreshSlot(slot: ReaderSlot): void {
+	private refreshSlot(slot: ReaderSlot, force = false): void {
 		if (!this.isEnabled()) { this.syncSlotVisibility(slot, true); return; }
 		const attID = Number(slot.reader?.itemID || 0);
-		const includeSnapshots = Boolean(this.kernel.prefs.get('workspace.readerSwitcherIncludeSnapshots'));
-		const { parentID, items } = resolveSiblingAttachments(attID, includeSnapshots);
-		slot.parentID = parentID;
-		slot.items = items;
-		if (!slot.reader.tabID || items.length < 2) { this.syncSlotVisibility(slot, true); return; }
+		if (force || slot.dirty || !slot.items.length) {
+			const includeSnapshots = Boolean(this.kernel.prefs.get('workspace.readerSwitcherIncludeSnapshots'));
+			const { parentID, items } = resolveSiblingAttachments(attID, includeSnapshots);
+			slot.parentID = parentID;
+			slot.items = items;
+			slot.dirty = false;
+		}
+		if (!getEffectiveReaderTabID(slot.reader) || slot.items.length < 2) { this.syncSlotVisibility(slot, true); return; }
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
-		slot.labelEl.textContent = zh ? `共 ${items.length} 个版本` : `${items.length} versions`;
+		slot.labelEl.textContent = zh ? `共 ${slot.items.length} 个版本` : `${slot.items.length} versions`;
 		slot.btn.title = zh
-			? `切换当前文献的其他附件版本（共 ${items.length} 个）`
-			: `Switch attachment version (${items.length} total)`;
+			? `切换当前文献的其他附件版本（共 ${slot.items.length} 个）`
+			: `Switch attachment version (${slot.items.length} total)`;
 		this.syncSlotVisibility(slot, false);
+	}
+
+	private warmAttachmentItem(itemID: number): void {
+		if (!itemID || this.warmedAttachmentIDs.has(itemID)) return;
+		this.warmedAttachmentIDs.add(itemID);
+		if (this.warmedAttachmentIDs.size > 200) this.warmedAttachmentIDs.clear();
+		const zotero = (globalThis as any).Zotero;
+		const item = zotero?.Items?.get?.(itemID);
+		if (!item) return;
+		try {
+			const lib = zotero?.Libraries?.get?.(item.libraryID);
+			void lib?.waitForDataLoad?.('item')?.catch?.(() => {});
+			void item.fileExists?.()?.catch?.(() => {});
+			item.getAnnotations?.();
+		} catch { /* best-effort read-only warmup */ }
 	}
 
 	private toggleMenu(slot: ReaderSlot): void {
@@ -230,17 +243,30 @@ export class ReaderAttachmentSwitcher {
 		if (slot.items.length < 2) return;
 		const zh = Boolean((globalThis as any).Zotero?.locale?.startsWith?.('zh'));
 		const curAttID = Number(slot.reader?.itemID || 0);
+		const tabID = getEffectiveReaderTabID(slot.reader);
+		const hostWin = resolveOwnerWindow(slot.reader);
+		const openAttIDs = collectOpenAttIDs(slot.reader);
+		const firstAlt = slot.items.find((i) => i.id !== curAttID && i.readerCapable && !openAttIDs.has(i.id));
+		if (firstAlt && tabID) {
+			this.warmAttachmentItem(firstAlt.id);
+			void prestageAttachmentInReaderTab(hostWin, firstAlt.id, tabID);
+		}
 		const readerFrame = slot.reader?._iframe || (slot.doc.defaultView as any)?.frameElement || null;
 		this.closeActiveMenu = openSiblingAttachmentMenu({
 			doc: slot.doc,
-			hostWin: resolveOwnerWindow(slot.reader),
+			hostWin,
 			readerFrame,
 			anchorBtn: slot.btn,
 			items: slot.items,
 			currentAttID: curAttID,
 			useFilename: this.kernel.prefs.get('workspace.readerSwitcherUseFilename'),
-			openAttIDs: collectOpenAttIDs(slot.reader),
+			openAttIDs,
 			zh,
+			onHover: (entry) => {
+				if (!entry.readerCapable) return;
+				this.warmAttachmentItem(entry.id);
+				if (tabID && !openAttIDs.has(entry.id)) void prestageAttachmentInReaderTab(hostWin, entry.id, tabID);
+			},
 			onSelect: (entry) => {
 				void this.switchToAttachment(slot.reader, slot.parentID, entry);
 			},
@@ -265,8 +291,7 @@ export class ReaderAttachmentSwitcher {
 		const applyStoreHandoff = () => {
 			if (handoffDone) return;
 			handoffDone = true;
-			const openTabs: any[] = Array.isArray((owner as any)?.Zotero_Tabs?._tabs) ? (owner as any).Zotero_Tabs._tabs : [];
-			const currentStillOpen = openTabs.some((t) => Number(t?.data?.itemID || 0) === currentAttID);
+			const currentStillOpen = getHostTabs(owner).some((t) => Number(t?.data?.itemID || 0) === currentAttID);
 			this.store.setSleeping(targetKey, false);
 			this.store.removeVirtualMember(targetKey);
 			if (groupId && !this.store.groupOfKey(targetKey)) {
@@ -283,9 +308,13 @@ export class ReaderAttachmentSwitcher {
 				this.store.setPinned(currentKey, false);
 			}
 		};
-		if (!await showAttachmentInReaderTab(owner, target.id, reader.tabID, undefined, applyStoreHandoff)) return false;
+		const tabID = String(reader.tabID);
+		if (!await showAttachmentInReaderTab(owner, target.id, tabID, undefined, applyStoreHandoff, { keepWarm: true })) return false;
 		applyStoreHandoff();
 		this.pruneClosedSlots();
+		const activeDoc = getReaderDocument((globalThis as any).Zotero?.Reader?.getByTabID?.(tabID));
+		const activeSlot = activeDoc ? this.slots.get(activeDoc) : undefined;
+		if (activeSlot) this.refreshSlot(activeSlot);
 		return true;
 	}
 

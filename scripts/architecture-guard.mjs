@@ -279,23 +279,50 @@ check('Host runtime.patch fence (host adapters & Word IPC only)', () => {
 	if (violations.length) throw new Error(`Unfenced runtime.patch outside host adapters: ${violations.join(', ')}`);
 });
 
-// 17. EventBus closure: zero dead event definitions in BridgeFlowEventMap
-check('EventBus zero dead event definitions', () => {
+// 17. EventBus closure: zero dead or half-open event definitions in BridgeFlowEventMap
+check('EventBus zero dead/half-open event definitions', () => {
 	const typesTxt = fs.readFileSync(path.join(root, 'src/kernel/types.ts'), 'utf8');
 	const mapMatch = typesTxt.match(/export interface BridgeFlowEventMap \{([\s\S]*?)\n\}/);
 	if (!mapMatch) throw new Error('BridgeFlowEventMap not found');
 	const eventNames = [...mapMatch[1].matchAll(/'([a-z0-9:-]+)'\s*:/g)].map((m) => m[1]);
+	const oneWayAllowlist = new Set(['prefs:changed']);
 	const corpus = srcFiles
 		.filter((f) => !f.endsWith(`${path.sep}types.ts`))
 		.map((f) => fs.readFileSync(f, 'utf8'))
 		.join('\n');
-	const dead = eventNames.filter((ev) => {
+	const broken = eventNames.filter((ev) => {
 		const esc = ev.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 		const hasEmit = new RegExp(`emit\\(\\s*['"]${esc}['"]`).test(corpus);
 		const hasOn = new RegExp(`\\.on\\(\\s*['"]${esc}['"]`).test(corpus);
-		return !hasEmit && !hasOn;
+		if (oneWayAllowlist.has(ev)) return !hasEmit;
+		return !hasEmit || !hasOn;
 	});
-	if (dead.length) throw new Error(`Dead EventBus definitions: ${dead.join(', ')}`);
+	if (broken.length) throw new Error(`Dead or half-open EventBus definitions: ${broken.join(', ')}`);
+});
+
+// 18. Zotero 11+ compatibility: ban removed singular ZoteroPane APIs
+check('Forbid singular ZoteroPane.getSelectedLibraryID / getSelectedCollection', () => {
+	const hits = [];
+	for (const f of srcFiles) {
+		const txt = fs.readFileSync(f, 'utf8');
+		if (/\bgetSelectedLibraryID\s*\(|\bgetSelectedCollection\s*\(/.test(txt)) {
+			hits.push(path.relative(root, f));
+		}
+	}
+	if (hits.length) throw new Error(`Removed singular ZoteroPane APIs found in: ${hits.join(', ')}`);
+});
+
+// 19. Host private property fence: reader/tab internals must stay inside src/services/host/
+check('Host private property fence (reader/tab internals only in src/services/host/)', () => {
+	const privateHostRe = /\.(?:_tabs|_readers|_internalReader|_iframeWindow|_waitForReader|_initPromise|_recentlyClosedTabs|_window)\b/;
+	const hits = [];
+	for (const f of srcFiles) {
+		const rel = path.relative(path.join(root, 'src'), f).replace(/\\/g, '/');
+		if (rel.startsWith('services/host/')) continue;
+		const txt = fs.readFileSync(f, 'utf8');
+		if (privateHostRe.test(txt)) hits.push(rel);
+	}
+	if (hits.length) throw new Error(`Direct reader/tab private host access outside src/services/host/: ${hits.join(', ')}`);
 });
 
 console.log(`\nArchitecture guard summary: ${passed} passed, ${failures.length} failed.`);

@@ -1,5 +1,6 @@
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
+import { resolveActivePaneLibraryID } from '../../../services/host/index.ts';
 import { locateItemInZoteroLibrary, resolvePdfAttachments } from '../../../services/item-resolution.ts';
 import { normalizePanePosition } from '../../../services/pane-positioner.ts';
 import type { ServiceContainer } from '../../../services/service-container.ts';
@@ -10,15 +11,7 @@ import {
 import { clearLookupResult, ensureViewFlowStyles, setLookupL10n } from '../csl-preview/inspector-styles.ts';
 
 function resolveActiveLibraryID(pane: any): number | undefined {
-	const multi = pane?.getSelectedLibraryIDs?.()?.[0];
-	if (typeof multi === 'number' && multi > 0) return multi;
-	try {
-		const single = pane?.getSelectedLibraryID?.();
-		if (typeof single === 'number' && single > 0) return single;
-	} catch { /* ignore */ }
-	const rowLib = pane?.getCollectionTreeRow?.()?.ref?.libraryID;
-	if (typeof rowLib === 'number' && rowLib > 0) return rowLib;
-	return (globalThis as any).Zotero?.Libraries?.userLibraryID;
+	return resolveActivePaneLibraryID(pane);
 }
 
 export class CitationLookupSectionController {

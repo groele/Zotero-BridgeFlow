@@ -1,4 +1,5 @@
 import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
+import { getHostTabs } from '../../../services/host/index.ts';
 import { getCachedPrimaryItemFields, normalizeToRegularItem, stripItemTitleMarkup } from '../../../services/item-resolution.ts';
 import { disambiguateSameParentTabs, resolvePrimaryCollectionName } from './tab-actions-helpers.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
@@ -55,7 +56,7 @@ function describe(key: string, itemID: number, type: string, fallbackTitle: stri
 // Membership is durable. A member becomes virtual whenever its reader is absent
 // from this window, irrespective of which UI closed it or when Zotero notifies us.
 export function projectWorkspaceTabs(win: Window, store: WorkspaceStateStore, prefs: UnifiedPrefService): TrackedTab[] {
-	const native: NativeTab[] = (win as Window & { Zotero_Tabs?: { _tabs?: NativeTab[] } }).Zotero_Tabs?._tabs ?? [];
+	const native: NativeTab[] = getHostTabs(win);
 	const live = new Set<string>();
 	const rows: TrackedTab[] = [];
 	const groups = new Map<string, string>();

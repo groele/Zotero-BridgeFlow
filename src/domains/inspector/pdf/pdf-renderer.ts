@@ -1,3 +1,4 @@
+import { findHostTab } from '../../../services/host/index.ts';
 import { showAttachmentInReaderTab } from '../../../services/reader-tab-navigation.ts';
 import {
 	formatCompactPdfOptionLabel,
@@ -148,7 +149,7 @@ export async function resolveSameItemPdfContext(item: any, win?: Window | null):
 		const selectedTabID = String(targetWin?.Zotero_Tabs?.selectedID || '');
 		const readerAttID = Number(
 			hostZotero?.Reader?.getByTabID?.(selectedTabID)?.itemID
-			|| targetWin?.Zotero_Tabs?._tabs?.find?.((t: any) => t?.id === selectedTabID)?.data?.itemID
+			|| findHostTab(targetWin, selectedTabID)?.data?.itemID
 			|| 0,
 		);
 		if (readerAttID > 0 && entries.some((entry) => entry.id === readerAttID)) {

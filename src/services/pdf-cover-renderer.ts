@@ -1,3 +1,4 @@
+import { getReaderPrimaryWindow } from './host/index.ts';
 import { makeAbortController } from './pdf-cover-queue.ts';
 import { getSharedPdfJsSync, PDFJS_CMAP_URL, PDFJS_FONT_URL } from './pdfjs-loader.ts';
 
@@ -139,7 +140,7 @@ export async function renderAttachmentPreviewCover(
 		}, signal);
 		if (status !== 'success') return false;
 
-		const getViewWin = () => unwrapWindow(preview?._reader?._internalReader?._primaryView?._iframeWindow);
+		const getViewWin = () => unwrapWindow(getReaderPrimaryWindow(preview?._reader));
 		pdfDocument = await pollPreviewValue(() => getViewWin()?.PDFViewerApplication?.pdfDocument ?? undefined, signal);
 		trackDoc(pdfDocument);
 		if (pdfDocument.loadingParams) pdfDocument.loadingParams.disableAutoFetch = true;
@@ -186,7 +187,7 @@ export async function renderAttachmentPreviewCover(
 		const cleanupCtrl = makeAbortController(ownerDocument.defaultView);
 		const cleanupTimer = setTimeout(() => cleanupCtrl.abort(), 2500);
 		try {
-			const app = unwrapWindow(preview?._reader?._internalReader?._primaryView?._iframeWindow)?.PDFViewerApplication;
+			const app = unwrapWindow(getReaderPrimaryWindow(preview?._reader))?.PDFViewerApplication;
 			for (const viewer of [app?.pdfViewer, app?.pdfThumbnailViewer]) {
 				if (viewer?.forceRendering) viewer.forceRendering = () => false;
 			}

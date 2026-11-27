@@ -1,5 +1,6 @@
 import type { PluginKernel } from '../../../kernel/plugin-kernel.ts';
 import type { Disposable } from '../../../kernel/types.ts';
+import { scanPendingReaders } from '../../../services/host/host-queries.ts';
 import {
 	DEFAULT_ANNOTATION_COLORS,
 	normalizeHexColor,
@@ -256,24 +257,12 @@ export class ReaderPopupLabelsController {
 	}
 
 	private scanOpenReaders(): void {
-		const readers: any[] = (globalThis as any).Zotero?.Reader?._readers || [];
-		for (const reader of readers) {
-			if (!reader || reader._isTabClosed || reader._isUninitialized) continue;
-			const doc = reader._iframeWindow?.document as Document | undefined;
-			if (doc?.body) {
-				this.attachReaderDoc(doc);
-			} else if (!this.pendingReaders.has(reader)) {
-				this.pendingReaders.add(reader);
-				const waitReady = reader._waitForReader?.() ?? reader._initPromise ?? Promise.resolve();
-				void Promise.resolve(waitReady).then(() => {
-					this.pendingReaders.delete(reader);
-					if (this.active && this.isEnabled() && !reader._isTabClosed) {
-						const readyDoc = reader._iframeWindow?.document as Document | undefined;
-						if (readyDoc?.body) this.attachReaderDoc(readyDoc);
-					}
-				}).catch(() => { this.pendingReaders.delete(reader); });
-			}
-		}
+		scanPendingReaders(
+			this.pendingReaders,
+			() => this.active && this.isEnabled(),
+			(doc) => Boolean(doc.body),
+			(_reader, doc) => this.attachReaderDoc(doc),
+		);
 	}
 
 	private pruneClosedDocs(): void {

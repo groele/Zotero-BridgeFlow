@@ -1,3 +1,4 @@
+import { openAttachmentReaderTab } from '../../../services/host/index.ts';
 import { formatReadingDuration, type TabReadingProgress } from '../../../services/reading-stats.ts';
 
 export const VISUAL_COL_STYLE_ID = 'zbf-visual-col-style';
@@ -193,28 +194,7 @@ export async function openItemPdfAtPage(item: any, pageNumber?: number, annotati
 	}
 	const locArg = Object.keys(location).length ? location : undefined;
 
-	try {
-		const opened = await readerApi.open(att.id, locArg, { openInWindow: false });
-		const instance = opened || readerApi._readers?.find?.((r: any) => Number(r?.itemID) === Number(att.id) && !r?._isTabClosed);
-		if (instance) {
-			if (instance.tabID) {
-				const targetWin = instance._window || zotero?.getMainWindow?.();
-				targetWin?.Zotero_Tabs?.select?.(instance.tabID, true);
-			}
-			if (locArg) {
-				await Promise.resolve(instance._initPromise ?? instance._waitForReader?.()).catch(() => {});
-				try { await instance.navigate?.(locArg); } catch { /* ignore */ }
-			}
-		}
-		return true;
-	} catch {
-		try {
-			await readerApi.open(att.id, undefined, { openInWindow: false });
-			return true;
-		} catch {
-			return false;
-		}
-	}
+	return openAttachmentReaderTab(Number(att.id), locArg);
 }
 
 export function mountAnchoredPopover(win: Window, anchor: HTMLElement, pop: HTMLElement, key: string): () => void {

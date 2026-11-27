@@ -60,7 +60,7 @@ export class WorkspaceHorizontalBar {
 		const enabled = this.prefs.get('workspace.enableHorizontalGroups') && !compactTop;
 		if (!enabled) {
 			tabBar.toggleAttribute('data-zbf-inline', compactTop);
-			this.inlineEl?.setAttribute('hidden', 'true');
+			if (this.inlineEl) this.inlineEl.hidden = true;
 			return;
 		}
 
@@ -78,7 +78,7 @@ export class WorkspaceHorizontalBar {
 			inner.insertBefore(inline, inner.querySelector('.tabs-wrapper'));
 			this.inlineEl = inline;
 		}
-		this.inlineEl.removeAttribute('hidden');
+		this.inlineEl.hidden = false;
 		const selectedID = String((this.win as any).Zotero_Tabs?.selectedID || '');
 		const compactMode = this.prefs.get('workspace.horizontalTabCompactMode');
 		const gKey = this.store.state.groups.map((g) => `${g.id}:${g.name}:${g.color}`).join(',');

@@ -1,3 +1,4 @@
+import { readReaderPageMetricsByTabID } from '../../../services/host/index.ts';
 import { formatReadingProgress as sharedFormatReadingProgress } from '../../../services/reading-stats.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 
@@ -12,23 +13,7 @@ export interface ReadingTrackOptions {
 }
 
 export function readReaderPageMetrics(tabID: string): { page: number; total: number } {
-	const reader: any = (globalThis as any).Zotero?.Reader?.getByTabID?.(tabID);
-	const internalReader = reader?._internalReader;
-	const viewStats = internalReader?._state?.primaryViewStats || reader?.state?.primaryViewStats;
-	const viewState = internalReader?._state?.primaryViewState || reader?.state?.primaryViewState;
-	const pdfApp = internalReader?._primaryView?._iframeWindow?.PDFViewerApplication
-		|| reader?._iframeWindow?.PDFViewerApplication;
-	const rawPageIndex = viewStats?.pageIndex ?? viewState?.pageIndex ?? reader?.state?.pageIndex;
-	const page = Number(pdfApp?.page || (rawPageIndex != null ? Number(rawPageIndex) + 1 : 0)) || 0;
-	const total = Number(
-		viewStats?.pagesCount
-		|| pdfApp?.pagesCount
-		|| pdfApp?.pdfDocument?.numPages
-		|| internalReader?._primaryView?._pagesCount
-		|| internalReader?._pdfDocument?.numPages
-		|| reader?.pagesCount
-		|| 0,
-	) || 0;
+	const { page, total } = readReaderPageMetricsByTabID(tabID);
 	return { page, total };
 }
 

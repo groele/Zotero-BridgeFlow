@@ -3,6 +3,7 @@ import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
 import type { CitationBadgeInfo } from '../../../kernel/types.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 import { buildReadingHeatmapBuckets, formatReadingDuration, formatReadingProgress } from '../../../services/reading-stats.ts';
+import { readReaderPageMetricsByTabID } from '../../../services/host/index.ts';
 import type { TrackedTab } from '../types.ts';
 
 export function formatRelativeTimeZh(ts: number): string {
@@ -111,13 +112,9 @@ export class WorkspaceHoverCard {
 			const rel = formatRelativeTimeZh(tab.lastViewedAt);
 			if (rel) statusParts.push(`上次阅读：${rel}`);
 
-			const reader = !tab.virtual && tab.tabID ? (globalThis as any).Zotero?.Reader?.getByTabID?.(tab.tabID) : null;
-			const ir = reader?._internalReader;
-			const app = ir?._primaryView?._iframeWindow?.PDFViewerApplication;
-			const pageIdx = typeof app?.page === 'number' && app.page > 0
-				? app.page - 1
-				: (ir?._state?.primaryViewStats?.pageIndex ?? ir?._state?.primaryViewState?.pageIndex ?? reader?.state?.pageIndex);
-			const numPages = app?.pagesCount || ir?._state?.primaryViewStats?.pagesCount || reader?._internalReader?._pdfDocument?.numPages || reader?.pagesCount;
+			const { pageIndex: pageIdx, total: numPages } = !tab.virtual && tab.tabID
+				? readReaderPageMetricsByTabID(tab.tabID)
+				: { pageIndex: null, total: 0 };
 			const prog = formatReadingProgress(storedProg);
 			if (typeof pageIdx === 'number' && pageIdx >= 0) {
 				const total = typeof numPages === 'number' && numPages > 0 ? numPages : (storedProg?.totalPages || 0);

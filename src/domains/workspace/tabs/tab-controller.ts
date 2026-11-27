@@ -4,6 +4,7 @@ import type { TypedEventBus } from '../../../kernel/event-bus.ts';
 import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
 import type { OpenItemRequestPayload } from '../../../kernel/types.ts';
 import type { UnifiedClipboardService } from '../../../services/clipboard-service.ts';
+import { getHostTabs } from '../../../services/host/index.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 import {
 	autoGroupTrackedByCollection,
@@ -178,7 +179,7 @@ export class WorkspaceTabController {
 	moveTabRelative(win: Window, draggedTabID: string, targetTabID: string, after: boolean): boolean {
 		const tabsApi = (win as any).Zotero_Tabs;
 		if (!tabsApi?.move) return false;
-		const ids: string[] = (Array.isArray(tabsApi._tabs) ? tabsApi._tabs : []).map((t: any) => String(t?.id || ''));
+		const ids: string[] = getHostTabs(win).map((t) => String(t?.id || ''));
 		const targetIdx = computeTabMoveTarget(ids, draggedTabID, targetTabID, after);
 		if (targetIdx < 0) return false;
 		tabsApi.move(draggedTabID, targetIdx);

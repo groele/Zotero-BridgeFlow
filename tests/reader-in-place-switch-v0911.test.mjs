@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { showAttachmentInReaderTab } from '../src/services/reader-tab-navigation.ts';
+import {
+	clearWarmReaderDecks,
+	prestageAttachmentInReaderTab,
+	showAttachmentInReaderTab,
+} from '../src/services/reader-tab-navigation.ts';
 import { PluginKernel } from '../src/kernel/plugin-kernel.ts';
 import { WorkspaceStateStore } from '../src/domains/workspace/store/state-store.ts';
 import { ReaderAttachmentSwitcher } from '../src/domains/workspace/reader/reader-attachment-switcher.ts';
@@ -14,6 +18,8 @@ function makeDomNode(tag, id = '', className = '') {
 		localName: tag.toLowerCase(),
 		id,
 		className,
+		hidden: false,
+		style: {},
 		textContent: '',
 		children: [],
 		parentNode: null,
@@ -360,6 +366,141 @@ test('v0.9.11 ReaderAttachmentSwitcher hands off group position and pin state at
 		assert.equal(store.isPinned('item:101'), false);
 		kernel.shutdown();
 	} finally {
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('in-place attachment swap reveals new reader immediately after _initPromise without blocking on slow _primaryView.initializedPromise', async () => {
+	const prevZotero = globalThis.Zotero;
+	const h = createHostHarness();
+	globalThis.Zotero = h.zotero;
+	try {
+		const neverInitializedView = new Promise(() => {});
+		const timeline = [];
+		const origRename = h.owner.Zotero_Tabs.rename;
+		h.owner.Zotero_Tabs.rename = async (id) => {
+			timeline.push('rename:start');
+			await new Promise((r) => setTimeout(r, 20));
+			await origRename(id);
+			timeline.push('rename:end');
+		};
+		const origAddContext = h.owner.ZoteroContextPane.context._addItemContext;
+		h.owner.ZoteroContextPane.context._addItemContext = async (id, itemID) => {
+			timeline.push('context:start');
+			await new Promise((r) => setTimeout(r, 20));
+			await origAddContext(id, itemID);
+			timeline.push('context:end');
+		};
+		const origOpen = h.zotero.Reader.open;
+		h.zotero.Reader.open = async (itemID, loc, opts) => {
+			const r = await origOpen(itemID, loc, opts);
+			r._internalReader = { _primaryView: { initializedPromise: neverInitializedView } };
+			const origLayout = r._updateLayout.bind(r);
+			r._updateLayout = () => { timeline.push('layout'); origLayout(); };
+			return r;
+		};
+
+		const startedAt = Date.now();
+		const ok = await Promise.race([
+			showAttachmentInReaderTab(h.owner, 201, 'tab-1'),
+			new Promise((_, reject) => setTimeout(() => reject(new Error('stalled on initializedPromise')), 500)),
+		]);
+		assert.equal(ok, true);
+		assert.ok(Date.now() - startedAt < 250, 'swap must not stall waiting on _primaryView.initializedPromise');
+		assert.equal(h.oldIframe.isConnected, false, 'old browser removed immediately upon _initPromise');
+		assert.equal(h.root.children.filter((c) => c.localName === 'style').length, 0);
+		assert.equal(timeline[0], 'layout', 'layout/focus runs before background rename + contextPane sync');
+		assert.ok(
+			timeline.indexOf('context:start') < timeline.indexOf('rename:end'),
+			'rename and contextPane sync run concurrently instead of serially',
+		);
+	} finally {
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('in-tab warm reader deck & pre-staging enable zero-reopen instant switching, in-flight join, LRU cap, and clean disposal', async () => {
+	const prevZotero = globalThis.Zotero;
+	const h = createHostHarness();
+	globalThis.Zotero = h.zotero;
+	try {
+		// Add siblings 103 & 104 under parent 100 to test LRU cap (MAX_PARKED_PER_TAB = 2)
+		const itemsMap = new Map([
+			[100, { id: 100, getAttachments: () => [101, 102, 103, 104] }],
+			[101, { id: 101, version: 1, parentID: 100, parentItemID: 100, attachmentContentType: 'application/pdf', attachmentFilename: 'main.pdf', getField: () => 'Main Paper', getAnnotations: () => [{ id: 9001, version: 1 }] }],
+			[102, { id: 102, version: 1, parentID: 100, parentItemID: 100, attachmentContentType: 'application/pdf', attachmentFilename: 'si.pdf', getField: () => 'Supporting Info', getAnnotations: () => [] }],
+			[103, { id: 103, version: 1, parentID: 100, parentItemID: 100, attachmentContentType: 'application/pdf', attachmentFilename: 'si2.pdf', getField: () => 'Extended Data', getAnnotations: () => [] }],
+			[104, { id: 104, version: 1, parentID: 100, parentItemID: 100, attachmentContentType: 'application/pdf', attachmentFilename: 'si3.pdf', getField: () => 'Peer Review File', getAnnotations: () => [] }],
+		]);
+		h.zotero.Items.get = (id) => itemsMap.get(Number(id)) || null;
+		let oldLayouts = 0;
+		h.oldReader._updateLayout = () => { oldLayouts++; };
+
+		// 1. Menu-open prestage loads 102 invisibly while 101 stays active in Zotero.Reader._readers
+		const prestaged = await prestageAttachmentInReaderTab(h.owner, 102, 'tab-1');
+		assert.equal(prestaged, true);
+		assert.equal(h.nativeTabs.length, 1);
+		assert.equal(h.readers.length, 1, 'pre-staged reader must not pollute active Zotero.Reader._readers');
+		assert.equal(h.zotero.Reader.getByTabID('tab-1'), h.oldReader);
+		const reader102 = h.createdReaders[0];
+		assert.equal(reader102._iframe.hidden, true);
+		assert.equal(reader102._iframe.docShellIsActive, false, 'parked browser hibernates docShell at 0% CPU');
+
+		// 2. First user switch 101 -> 102 hits pre-staged warm reader with ZERO additional Reader.open calls!
+		const openCallsBefore = h.events.filter((e) => e.startsWith('reader.open:')).length;
+		const okTo102 = await showAttachmentInReaderTab(h.owner, 102, 'tab-1', undefined, undefined, { keepWarm: true });
+		assert.equal(okTo102, true);
+		assert.equal(h.events.filter((e) => e.startsWith('reader.open:')).length, openCallsBefore, 'zero Reader.open on warm hit');
+		assert.equal(h.zotero.Reader.getByTabID('tab-1'), reader102);
+		assert.equal(reader102._iframe.hidden, false);
+		assert.equal(h.oldIframe.hidden, true, '101 is parked warm in DOM rather than destroyed');
+		assert.equal(h.getOldStats().oldReaderUninit, 0, '101 kept alive for instant return');
+
+		// 3. Switching back 102 -> 101 reuses original 101 instance with ZERO Reader.open calls!
+		const okBack101 = await showAttachmentInReaderTab(h.owner, 101, 'tab-1', undefined, undefined, { keepWarm: true });
+		assert.equal(okBack101, true);
+		assert.equal(h.events.filter((e) => e.startsWith('reader.open:')).length, openCallsBefore, 'zero Reader.open on return switch');
+		assert.equal(h.zotero.Reader.getByTabID('tab-1'), h.oldReader);
+		assert.equal(h.oldIframe.hidden, false);
+		assert.equal(reader102._iframe.hidden, true);
+
+		// 4. In-flight prestage join: user clicks 103 while prestage of 103 is still mid-load -> only 1 Reader.open total!
+		let release103;
+		h.setNextInitController(({ resolveInit }) => { release103 = resolveInit; });
+		const prestage103 = prestageAttachmentInReaderTab(h.owner, 103, 'tab-1');
+		await new Promise((r) => setTimeout(r, 5));
+		const click103 = showAttachmentInReaderTab(h.owner, 103, 'tab-1', undefined, undefined, { keepWarm: true });
+		release103();
+		const [preOk, clickOk] = await Promise.all([prestage103, click103]);
+		assert.equal(preOk, true);
+		assert.equal(clickOk, true);
+		assert.equal(
+			h.events.filter((e) => e.startsWith('reader.open:103:')).length,
+			1,
+			'clicking while prestage is in-flight joins the existing load instead of double-opening',
+		);
+		h.setNextInitController(null);
+
+		// 5. LRU eviction: parked currently holds [102, 101]; switching to 104 parks 103 and evicts oldest (102)
+		const okTo104 = await showAttachmentInReaderTab(h.owner, 104, 'tab-1', undefined, undefined, { keepWarm: true });
+		assert.equal(okTo104, true);
+		assert.equal(reader102.uninitCalls, 1, 'oldest parked reader evicted when exceeding MAX_PARKED_PER_TAB=2');
+		assert.equal(reader102._iframe, null);
+
+		// 6. Stale signature invalidation: external annotation edit on parked 101 forces clean reload instead of stale view
+		itemsMap.get(101).version = 2;
+		const okReload101 = await showAttachmentInReaderTab(h.owner, 101, 'tab-1', undefined, undefined, { keepWarm: true });
+		assert.equal(okReload101, true);
+		assert.equal(h.getOldStats().oldReaderUninit, 1, 'stale parked 101 disposed on version bump');
+
+		// 7. Closing the tab disposes active + all remaining parked readers cleanly
+		const reader103 = h.createdReaders[1];
+		const reader104 = h.createdReaders[2];
+		h.tabRow.onClose();
+		assert.equal(reader103.uninitCalls, 1);
+		assert.equal(reader104.uninitCalls, 1);
+	} finally {
+		clearWarmReaderDecks();
 		globalThis.Zotero = prevZotero;
 	}
 });

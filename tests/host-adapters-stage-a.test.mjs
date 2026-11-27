@@ -2,11 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { NativeRuntime } from '../src/kernel/native-runtime.ts';
 import {
+	findHostTab,
 	formatCapabilitiesSummary,
+	getHostRecentlyClosedTabs,
+	getHostTabs,
+	isHostTabBusy,
+	openAttachmentReaderTab,
 	patchCollectionsViewHooks,
 	patchItemsViewRenderCell,
 	probeHostCapabilities,
+	readReaderPageMetricsByTabID,
 	ReaderTabAdapter,
+	resolveActivePaneLibraryID,
+	scanPendingReaders,
 	showAttachmentInReaderTab,
 } from '../src/services/host/index.ts';
 
@@ -314,6 +322,87 @@ test('ReaderTabAdapter degrades cleanly when host ignores tabID or rejects tabID
 		assert.equal(openAttempts, 1, 'corrupt PDF init rejection must NOT retry without tabID');
 		assert.equal(uninitCalled, 1);
 		assert.deepEqual(tabs.map((t) => t.id), ['tab-fallback-3']);
+	} finally {
+		globalThis.Zotero = prevZotero;
+	}
+});
+
+test('host-queries centralizes tab/reader metrics, busy state, library resolution, pending scans, and attachment opening', async () => {
+	const prevZotero = globalThis.Zotero;
+	try {
+		let selectedArgs = null;
+		let navigatedLoc = null;
+		let deferredResolve = null;
+		const deferredWait = new Promise((res) => { deferredResolve = res; });
+		const readyDoc = { body: { children: [1] } };
+		const lateDoc = { body: { children: [1] } };
+		const readyReader = {
+			tabID: 't-ready',
+			_isTabClosed: false,
+			_iframeWindow: { document: readyDoc, PDFViewerApplication: { page: 5, pagesCount: 18 } },
+			_internalReader: { hasUnsavedChanges: false },
+		};
+		const lateReader = {
+			tabID: 't-late',
+			_isTabClosed: false,
+			_iframeWindow: { document: null },
+			_waitForReader: () => deferredWait,
+		};
+		const win = {
+			closed: false,
+			Zotero_Tabs: {
+				_tabs: [
+					{ id: 't-ready', type: 'reader', data: { itemID: 201 } },
+					{ id: 't-busy', type: 'reader', audioStatus: { active: true, paused: false }, data: { itemID: 202 } },
+				],
+				_history: [{ id: 'closed-1', data: { itemID: 301 } }],
+				select: (...args) => { selectedArgs = args; },
+			},
+		};
+		globalThis.Zotero = {
+			Libraries: { userLibraryID: 1 },
+			getMainWindow: () => win,
+			getMainWindows: () => [win],
+			Reader: {
+				_readers: [readyReader, lateReader],
+				getByTabID: (id) => (id === 't-ready' ? readyReader : null),
+				open: async (attID, locArg) => ({
+					tabID: 't-ready',
+					itemID: attID,
+					_window: win,
+					_initPromise: Promise.resolve(),
+					navigate: async (loc) => { navigatedLoc = loc ?? locArg; },
+				}),
+			},
+		};
+
+		assert.equal(getHostTabs(win).length, 2);
+		assert.equal(findHostTab(win, 't-busy')?.data?.itemID, 202);
+		assert.equal(findHostTab(win, 'missing'), null);
+		assert.equal(getHostRecentlyClosedTabs(win)[0]?.data?.itemID, 301);
+
+		const metrics = readReaderPageMetricsByTabID('t-ready');
+		assert.deepEqual(metrics, { page: 5, total: 18, pageIndex: 4 });
+		assert.equal(isHostTabBusy(win, 't-busy'), true);
+		assert.equal(isHostTabBusy(win, 't-ready'), false);
+
+		assert.equal(resolveActivePaneLibraryID({ getSelectedLibraryIDs: () => [7] }), 7);
+		assert.equal(resolveActivePaneLibraryID({ getCollectionTreeRow: () => ({ ref: { libraryID: 9 } }) }), 9);
+		assert.equal(resolveActivePaneLibraryID({}), 1);
+
+		const pending = new WeakSet();
+		const readyLog = [];
+		scanPendingReaders(pending, () => true, (doc) => Boolean(doc?.body), (r) => readyLog.push(r.tabID));
+		assert.deepEqual(readyLog, ['t-ready']);
+		lateReader._iframeWindow.document = lateDoc;
+		deferredResolve();
+		await new Promise((res) => setTimeout(res, 10));
+		assert.deepEqual(readyLog, ['t-ready', 't-late']);
+
+		const opened = await openAttachmentReaderTab(201, { pageIndex: 2 });
+		assert.equal(opened, true);
+		assert.deepEqual(selectedArgs, ['t-ready', true]);
+		assert.deepEqual(navigatedLoc, { pageIndex: 2 });
 	} finally {
 		globalThis.Zotero = prevZotero;
 	}

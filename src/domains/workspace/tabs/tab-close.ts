@@ -1,13 +1,11 @@
 import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
+import { isHostTabBusy } from '../../../services/host/index.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 import { buildVirtualMetaFromTracked, type ClosedTabRecord } from './tab-actions-helpers.ts';
 import type { TabCloseOptions, TrackedTab } from '../types.ts';
 
 export function isTabBusy(win: Window, id: string): boolean {
-	const native = (win as any).Zotero_Tabs?._tabs?.find((tab: any) => tab.id === id);
-	const reader = (globalThis as any).Zotero?.Reader?.getByTabID?.(id);
-	return Boolean((native?.audioStatus?.active && !native.audioStatus.paused) || native?.data?.soundPlaying ||
-		reader?.soundPlaying || reader?._internalReader?.hasUnsavedChanges);
+	return isHostTabBusy(win, id);
 }
 
 export async function closeWorkspaceTabs(

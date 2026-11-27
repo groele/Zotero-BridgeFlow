@@ -50,7 +50,7 @@ export class BridgeFlowApp {
 
 	async start(): Promise<void> {
 		if (this.kernel.isDisposed) return;
-		await Promise.all([this.services.init(), this.workspace.store.initDiskCache()]);
+		await Promise.all([this.services.init(), this.workspace.initPersistence()]);
 		if (this.kernel.isDisposed) return;
 		void sweepBridgeFlowCacheDirectory(this.kernel.prefs.get('inspector.lookup.cacheDirectory'));
 		await this.kernel.start();
@@ -70,7 +70,7 @@ export class BridgeFlowApp {
 
 	shutdown(): void {
 		this.kernel.shutdown();
-		this.workspace.store.notesCache.flushPending(this.workspace.store.state);
+		this.workspace.flushPendingNotes();
 		this.services.dispose();
 	}
 }

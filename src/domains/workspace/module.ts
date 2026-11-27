@@ -83,10 +83,6 @@ export class WorkspaceDomainModule implements DomainModule {
 		this.disposables.add(this.store.onChange((change) => { if (change !== 'reading') this.queueRefresh(); }));
 		this.disposables.add(this.kernel.prefs.observeKeys([...WATCHED_WORKSPACE_PREFS], () => this.refreshAllWindows()));
 		this.disposables.add(this.kernel.prefs.observeKeys(['workspace.enableReaderAttachmentSwitcher', 'workspace.readerSwitcherIncludeSnapshots'], () => this.attachmentSwitcher.syncPref()));
-		this.disposables.add(this.kernel.bus.on('inspector:lookup-clipboard', ({ win }) => {
-			const targetWin = win || this.getTargetWindow();
-			if (targetWin && this.active) this.windows.get(targetWin)?.openSpotlightWithQuery('');
-		}));
 		this.disposables.add(this.kernel.bus.on('workspace:groups-query', () => {
 			if (this.active) this.emitGroupSummaries(true);
 		}));
@@ -158,6 +154,14 @@ export class WorkspaceDomainModule implements DomainModule {
 	}
 
 	isActive(): boolean { return this.active; }
+
+	async initPersistence(): Promise<void> {
+		await this.store.initDiskCache();
+	}
+
+	flushPendingNotes(): void {
+		this.store.notesCache.flushPending(this.store.state);
+	}
 
 	onMainWindowLoad(win: Window): void {
 		if (!this.active || this.windows.has(win)) return;

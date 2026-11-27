@@ -1,3 +1,4 @@
+import { getHostRecentlyClosedTabs, getHostTabs } from '../../../services/host/index.ts';
 import {
 	formatCreatorYear as sharedFormatCreatorYear,
 	locateItemInZoteroLibrary,
@@ -65,7 +66,7 @@ export async function openItemAttachmentOrNote(
 
 		const key = `item:${target.id}`;
 		const altKey = `item:${item.id}`;
-		const nativeTabs: any[] = Array.isArray((win as any).Zotero_Tabs?._tabs) ? (win as any).Zotero_Tabs._tabs : [];
+		const nativeTabs = getHostTabs(win);
 		const existing = nativeTabs.find((t) => Number(t?.data?.itemID || 0) === target.id);
 
 		if (existing) {
@@ -231,7 +232,7 @@ export function collectRecentlyClosed(
 		out.push(rec);
 	};
 	for (let i = localStack.length - 1; i >= 0; i--) push(localStack[i]);
-	const nativeClosed: any[] = (win as any).Zotero_Tabs?._recentlyClosedTabs || [];
+	const nativeClosed = getHostRecentlyClosedTabs(win);
 	for (let i = nativeClosed.length - 1; i >= 0; i--) {
 		const tab = nativeClosed[i];
 		const itemID = Number(tab?.data?.itemID || 0);

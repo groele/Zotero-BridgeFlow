@@ -30,6 +30,7 @@ export interface AttachmentMenuOptions {
 	openAttIDs: ReadonlySet<number>;
 	zh: boolean;
 	useFilename?: boolean;
+	onHover?: (entry: SiblingAttachmentEntry) => void;
 	onSelect: (entry: SiblingAttachmentEntry) => void;
 	onClose: () => void;
 }
@@ -97,6 +98,8 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 			if (i === focusIdx) { btn.setAttribute('data-focused', 'true'); btn.focus?.(); }
 			else btn.removeAttribute('data-focused');
 		});
+		const focusedEntry = items[focusIdx];
+		if (focusedEntry && focusedEntry.id !== currentAttID) opts.onHover?.(focusedEntry);
 	};
 
 	const hint = zh ? '在当前标签页内切换' : 'Switch in the current tab';
@@ -146,6 +149,7 @@ export function openSiblingAttachmentMenu(opts: AttachmentMenuOptions): () => vo
 				if (i === idx) b.setAttribute('data-focused', 'true');
 				else b.removeAttribute('data-focused');
 			});
+			if (entry.id !== currentAttID) opts.onHover?.(entry);
 		});
 		rowEls.push(row);
 		menu.appendChild(row);

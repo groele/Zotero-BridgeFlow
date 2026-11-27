@@ -1,6 +1,7 @@
 import type { CommandRegistry } from '../../../kernel/command-registry.ts';
 import type { UnifiedPrefService } from '../../../kernel/pref-service.ts';
 import type { Disposable, SpotlightItemResult, SpotlightProvider } from '../../../kernel/types.ts';
+import { getHostTabs } from '../../../services/host/index.ts';
 import { stripItemTitleMarkup } from '../../../services/item-resolution.ts';
 import type { WorkspaceStateStore } from '../store/state-store.ts';
 import type { WorkspaceTabController } from '../tabs/tab-controller.ts';
@@ -68,8 +69,7 @@ export class WorkspaceSpotlightEngine {
 		}
 		// Read titles already shown by the host. Projecting full workspace tabs also
 		// visits virtual members and fetches library metadata for each window.
-		const nativeTabs: { id: string; type: string; title?: string; data?: { itemID?: number } }[] =
-			(win as any).Zotero_Tabs?._tabs || [];
+		const nativeTabs = getHostTabs(win);
 		const viewedAt = (tab: (typeof nativeTabs)[number]) => this.store.state.lastViewedAt?.[
 			tab.data?.itemID ? 'item:' + tab.data.itemID : 'tab:' + tab.id] || 0;
 		const source = tabList ? [...nativeTabs].sort((a, b) => viewedAt(b) - viewedAt(a)) : nativeTabs;

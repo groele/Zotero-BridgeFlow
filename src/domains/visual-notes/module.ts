@@ -5,6 +5,7 @@ import { DisposableStack } from '../../kernel/disposable.ts';
 import { tLocale } from '../../kernel/locale.ts';
 import type { PluginKernel } from '../../kernel/plugin-kernel.ts';
 import type { DomainModule } from '../../kernel/types.ts';
+import { getHostTabs } from '../../services/host/index.ts';
 import { syncNativeStatusTagDots } from '../../services/item-status-rating.ts';
 import { invalidatePdfCover } from '../../services/pdf-cover-service.ts';
 import type { ServiceContainer } from '../../services/service-container.ts';
@@ -162,8 +163,6 @@ export class VisualNotesDomainModule implements DomainModule {
 		}));
 
 		this.disposables.add(this.kernel.bus.on('visual-notes:open-matrix', ({ win, title, itemIDs }) => { this.openMatrixModal(win, title, itemIDs); }));
-		this.disposables.add(this.kernel.bus.on('visual-notes:open-hub', ({ win, initialTab }) => { if (this.active) this.openCollectionHub(win, initialTab); }));
-		this.disposables.add(this.kernel.bus.on('visual-notes:toggle-gallery', ({ win, mode }) => { this.toggleGalleryBoard(win, mode); }));
 
 		this.disposables.add(
 			this.kernel.notifier.subscribe(['item', 'tab'], ({ event, type, ids }) => {
@@ -294,7 +293,7 @@ export class VisualNotesDomainModule implements DomainModule {
 		};
 		const selected = (win as any).ZoteroPane?.getSelectedItems?.() || [];
 		for (const item of selected) pushItem(item);
-		const tabs: any[] = (win as any).Zotero_Tabs?._tabs || [];
+		const tabs = getHostTabs(win);
 		const hostItems = (globalThis as any).Zotero?.Items;
 		for (const t of tabs) {
 			const itemID = Number(t?.data?.itemID || 0);
