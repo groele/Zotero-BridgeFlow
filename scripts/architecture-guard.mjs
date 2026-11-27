@@ -251,17 +251,20 @@ check('Explicit package module and TypeScript 6+ toolchain', () => {
 	if (pkg.type !== 'module' || Number.parseInt(pkg.devDependencies.typescript) < 6) throw Error('Unsupported build configuration');
 });
 
-// 15. Bridge isolation: forbid penetrating domain internal .store. / .tracker. or store imports
-check('Bridge isolation (no direct .store. / .tracker. penetration)', () => {
+// 15. Bridge isolation: forbid importing concrete domains/* modules or penetrating internal .store. / .tracker.
+check('Bridge isolation (Port-only constructors, zero domains/* imports or .store./.tracker. penetration)', () => {
 	const violations = [];
 	const bridgeFiles = srcFiles.filter((f) => /[\\/]bridges[\\/]/.test(f));
 	for (const f of bridgeFiles) {
 		const txt = fs.readFileSync(f, 'utf8');
+		if (/from\s+['"][^'"]*domains\//.test(txt)) {
+			violations.push(`${path.relative(root, f)} (imports concrete domains/* instead of kernel/services Port types)`);
+		}
 		if (/\.store\.|\.tracker\.|domains\/[^'"]+\/store\//.test(txt)) {
-			violations.push(path.relative(root, f));
+			violations.push(`${path.relative(root, f)} (penetrates .store. / .tracker.)`);
 		}
 	}
-	if (violations.length) throw new Error(`Bridge domain penetration found in: ${violations.join(', ')}`);
+	if (violations.length) throw new Error(`Bridge domain coupling found in: ${violations.join('; ')}`);
 });
 
 // 16. Host monkey-patch fence: runtime.patch must stay within src/services/host/ or Word IPC integration

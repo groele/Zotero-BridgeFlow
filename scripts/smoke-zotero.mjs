@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -358,9 +358,113 @@ function readAddonId() {
 	}
 }
 
-export function runHeadlessLaunchSmoke(binaryPath, timeoutMs = 12000) {
+const RETRYABLE_RM_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES']);
+
+function delayMs(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function removeDirWithRetry(
+	dirPath,
+	{
+		maxAttempts = 8,
+		baseDelayMs = 150,
+		rmSyncFn = fs.rmSync,
+		sleepFn = delayMs,
+	} = {},
+) {
+	let lastError = null;
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		try {
+			rmSyncFn(dirPath, { recursive: true, force: true });
+			return { removed: true, attempts: attempt, warning: null };
+		} catch (err) {
+			lastError = err;
+			const code = err?.code;
+			if (code === 'ENOENT') {
+				return { removed: true, attempts: attempt, warning: null };
+			}
+			if (!RETRYABLE_RM_CODES.has(code) || attempt === maxAttempts) {
+				break;
+			}
+			await sleepFn(Math.min(1200, baseDelayMs * attempt));
+		}
+	}
+	return {
+		removed: false,
+		attempts: maxAttempts,
+		warning: lastError ? `Failed to remove temp profile (${lastError.code || 'ERR'}): ${lastError.message}` : null,
+	};
+}
+
+export function terminateProcessTree(
+	child,
+	{
+		platform = process.platform,
+		spawnSyncFn = spawnSync,
+		killFn = process.kill,
+	} = {},
+) {
+	if (!child || !child.pid) return false;
+	if (platform === 'win32') {
+		try {
+			const res = spawnSyncFn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+				stdio: 'ignore',
+				windowsHide: true,
+				timeout: 5000,
+			});
+			if (res && res.status === 0) return true;
+		} catch { /* fall back to child.kill */ }
+		try {
+			child.kill('SIGKILL');
+			return true;
+		} catch {
+			return false;
+		}
+	}
+	try {
+		killFn(-child.pid, 'SIGKILL');
+		return true;
+	} catch {
+		try {
+			child.kill('SIGKILL');
+			return true;
+		} catch {
+			return false;
+		}
+	}
+}
+
+export async function runHeadlessLaunchSmoke(
+	binaryPath,
+	timeoutMs = 12000,
+	options = {},
+) {
 	const addonId = readAddonId();
 	const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zotero-bridgeflow-smoke-'));
+	const platform = options.platform ?? process.platform;
+	const spawnArgs =
+		typeof options.buildArgs === 'function'
+			? options.buildArgs(profileDir)
+			: ['-profile', profileDir, '-headless', '-no-remote', '-ZoteroDebugText'];
+
+	let child = null;
+	let timedOut = false;
+	let treeKilled = false;
+	let spawnError = null;
+	let exitCode = null;
+	let signal = null;
+	const chunks = [];
+	const maxLogBytes = 32_768;
+	let collectedBytes = 0;
+
+	const pushChunk = (chunk) => {
+		if (collectedBytes >= maxLogBytes) return;
+		const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+		chunks.push(text);
+		collectedBytes += text.length;
+	};
+
 	try {
 		const extDir = path.join(profileDir, 'extensions');
 		fs.mkdirSync(extDir, { recursive: true });
@@ -376,40 +480,80 @@ export function runHeadlessLaunchSmoke(binaryPath, timeoutMs = 12000) {
 			'utf8',
 		);
 
-		const result = spawnSync(
-			binaryPath,
-			['-profile', profileDir, '-headless', '-no-remote', '-ZoteroDebugText'],
-			{
-				timeout: timeoutMs,
-				encoding: 'utf8',
-				windowsHide: true,
-			},
-		);
+		await new Promise((resolve) => {
+			let settled = false;
+			let timer = null;
+			let killWaitTimer = null;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				if (timer !== null) clearTimeout(timer);
+				if (killWaitTimer !== null) clearTimeout(killWaitTimer);
+				resolve();
+			};
 
-		const timedOut = Boolean(result.error && result.error.code === 'ETIMEDOUT');
-		const combinedOutput = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
-		const ok = timedOut || result.status === 0;
+			try {
+				child = spawn(binaryPath, spawnArgs, {
+					stdio: ['ignore', 'pipe', 'pipe'],
+					windowsHide: true,
+					detached: platform !== 'win32',
+				});
+			} catch (err) {
+				spawnError = err;
+				finish();
+				return;
+			}
 
+			child.stdout?.on('data', pushChunk);
+			child.stderr?.on('data', pushChunk);
+			child.on('error', (err) => {
+				spawnError = err;
+				finish();
+			});
+			child.on('close', (code, sig) => {
+				exitCode = code;
+				signal = sig;
+				finish();
+			});
+
+			timer = setTimeout(() => {
+				timedOut = true;
+				treeKilled = terminateProcessTree(child, { platform });
+				// Wait briefly for OS handles to flush after killing the process tree.
+				killWaitTimer = setTimeout(finish, 3000);
+			}, timeoutMs);
+		});
+
+		const combinedOutput = chunks.join('').trim();
+		const ok = !spawnError && (timedOut || exitCode === 0);
+
+		const cleanup = await removeDirWithRetry(profileDir, options.cleanupOptions);
 		return {
 			ok,
 			timedOut,
-			exitCode: result.status,
-			signal: result.signal,
-			error: result.error ? result.error.message : null,
+			treeKilled,
+			exitCode,
+			signal,
+			error: spawnError ? spawnError.message : null,
+			cleanupRemoved: cleanup.removed,
+			cleanupAttempts: cleanup.attempts,
+			cleanupWarning: cleanup.warning,
 			logExcerpt: combinedOutput.slice(0, 1000),
 		};
-	} finally {
-		fs.rmSync(profileDir, { recursive: true, force: true });
+	} catch (err) {
+		await removeDirWithRetry(profileDir, options.cleanupOptions);
+		throw err;
 	}
 }
 
-function parseCliArgs(argv) {
+export function parseCliArgs(argv) {
 	const args = {
 		checkOnly: false,
 		json: false,
 		requireHost: false,
 		launch: false,
 		timeoutMs: 12000,
+		zoteroBin: null,
 	};
 	for (const token of argv) {
 		if (token === '--check-only') args.checkOnly = true;
@@ -419,18 +563,21 @@ function parseCliArgs(argv) {
 		else if (token.startsWith('--timeout=')) {
 			const parsed = Number.parseInt(token.slice('--timeout='.length), 10);
 			if (Number.isFinite(parsed) && parsed > 0) args.timeoutMs = parsed;
+		} else if (token.startsWith('--zotero-bin=')) {
+			const val = token.slice('--zotero-bin='.length).trim();
+			if (val) args.zoteroBin = val;
 		}
 	}
 	if (args.checkOnly) args.launch = false;
 	return args;
 }
 
-function runCli() {
+async function runCli() {
 	const args = parseCliArgs(process.argv.slice(2));
-	const binaryPath = detectZoteroBinary();
+	const binaryPath = detectZoteroBinary(args.zoteroBin ?? process.env.ZOTERO_PLUGIN_ZOTERO_BIN_PATH);
 
 	if (!binaryPath) {
-		const message = 'Zotero binary not found (set ZOTERO_PLUGIN_ZOTERO_BIN_PATH to override)';
+		const message = 'Zotero binary not found (set --zotero-bin=<path> or ZOTERO_PLUGIN_ZOTERO_BIN_PATH to override)';
 		if (args.json) {
 			console.log(JSON.stringify({ status: args.requireHost ? 'fail' : 'skip', message }, null, 2));
 		} else if (args.requireHost) {
@@ -462,7 +609,7 @@ function runCli() {
 
 	let launchReport = null;
 	if (args.launch) {
-		launchReport = runHeadlessLaunchSmoke(paths.binaryPath, args.timeoutMs);
+		launchReport = await runHeadlessLaunchSmoke(paths.binaryPath, args.timeoutMs);
 	}
 
 	const overallOk = report.ok && (!launchReport || launchReport.ok);
@@ -508,9 +655,10 @@ function runCli() {
 	if (launchReport) {
 		const launchTag = launchReport.ok ? '[PASS]' : '[FAIL]';
 		const launchDetail = launchReport.timedOut
-			? `alive through ${args.timeoutMs}ms smoke window`
-			: `exit=${launchReport.exitCode}`;
+			? `alive through ${args.timeoutMs}ms smoke window (treeKilled=${launchReport.treeKilled}, cleaned=${launchReport.cleanupRemoved})`
+			: `exit=${launchReport.exitCode} (cleaned=${launchReport.cleanupRemoved})`;
 		console.log(`${launchTag} ${'headlessLaunch'.padEnd(14)} isolated profile (${launchDetail})`);
+		if (launchReport.cleanupWarning) console.warn(`[WARN] ${launchReport.cleanupWarning}`);
 	}
 
 	console.log('');
@@ -521,5 +669,5 @@ function runCli() {
 const isDirectExecution =
 	process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
 if (isDirectExecution) {
-	runCli();
+	void runCli();
 }

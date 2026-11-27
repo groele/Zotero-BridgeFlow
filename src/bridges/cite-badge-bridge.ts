@@ -1,7 +1,9 @@
-import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
+import type { WorkspacePort } from '../kernel/domain-ports.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule, CitationBadgeInfo, CitationSnapshotPayload } from '../kernel/types.ts';
+
+export type CiteBadgeWorkspacePort = Pick<WorkspacePort, 'setCitationBadges'>;
 
 /**
  * Bridge 2: Word Citation State -> Workspace Sidebar Live Ordinal Badges.
@@ -13,9 +15,9 @@ export class CiteBadgeBridge implements BridgeModule {
 	private lastSnapshot: CitationSnapshotPayload | null = null;
 
 	private readonly kernel: PluginKernel;
-	private readonly workspace: WorkspaceDomainModule;
+	private readonly workspace?: CiteBadgeWorkspacePort;
 
-	constructor(kernel: PluginKernel, workspace: WorkspaceDomainModule) {
+	constructor(kernel: PluginKernel, workspace?: CiteBadgeWorkspacePort) {
 		this.kernel = kernel;
 		this.workspace = workspace;
 	}
@@ -55,6 +57,6 @@ export class CiteBadgeBridge implements BridgeModule {
 	private applyBadges(badges: ReadonlyMap<number, CitationBadgeInfo>): void {
 		const port = this.kernel.ports.get('workspace');
 		if (port) port.setCitationBadges(badges);
-		else this.workspace.setCitationBadges(badges);
+		else this.workspace?.setCitationBadges(badges);
 	}
 }

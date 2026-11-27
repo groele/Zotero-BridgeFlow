@@ -1,4 +1,4 @@
-import type { VisualNotesDomainModule } from '../domains/visual-notes/module.ts';
+import type { VisualNotesPort } from '../kernel/domain-ports.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule, Disposable } from '../kernel/types.ts';
 import { syncItemRemarkToExtra } from '../services/item-remark-sync.ts';
@@ -6,7 +6,12 @@ import {
 	resolveReadingNotesFacade,
 	type ReadingNotesFacadeProvider,
 	type SharedReadingNotesFacade,
+	type VisualNotesDataSource,
 } from '../services/shared-reading-notes.ts';
+
+export type VisualNotesBridgeTarget = Pick<VisualNotesPort, 'refreshLibraryViews'> & {
+	setDataSource(source?: VisualNotesDataSource): void;
+};
 
 export class VisualNotesBridge implements BridgeModule {
 	public readonly id = 'visual-notes-bridge';
@@ -14,7 +19,7 @@ export class VisualNotesBridge implements BridgeModule {
 
 	private readonly kernel: PluginKernel;
 	private readonly workspace: ReadingNotesFacadeProvider;
-	private readonly visualNotes: VisualNotesDomainModule;
+	private readonly visualNotes: VisualNotesBridgeTarget;
 	private disposeFacadeListener: Disposable | null = null;
 	private readingRevision = 1;
 	private remarksRevision = 1;
@@ -23,7 +28,7 @@ export class VisualNotesBridge implements BridgeModule {
 	constructor(
 		kernel: PluginKernel,
 		workspace: ReadingNotesFacadeProvider,
-		visualNotes: VisualNotesDomainModule,
+		visualNotes: VisualNotesBridgeTarget,
 	) {
 		this.kernel = kernel;
 		this.workspace = workspace;

@@ -1,13 +1,16 @@
-import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
+import type { WordCitePort, WorkspacePort } from '../kernel/domain-ports.ts';
 import { tLocale } from '../kernel/locale.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule, CitationBadgeInfo, CitationSnapshotPayload, SpotlightItemResult } from '../kernel/types.ts';
 import { getCachedPrimaryItemFields } from '../services/item-resolution.ts';
 
-export interface WordSnapshotSource {
-	getSnapshot?(): CitationSnapshotPayload | null;
-}
+export type SpotlightWorkspacePort = Pick<
+	WorkspacePort,
+	'registerSpotlightProvider' | 'focusOrOpenItem' | 'groupOpenTabsByItemIDs'
+>;
+
+export type WordSnapshotSource = Partial<Pick<WordCitePort, 'getSnapshot'>>;
 
 function matchesCmdQuery(rawTerm: string, title: string, subtitle: string, keywords: string): boolean {
 	const clean = rawTerm.replace(/^>\s*/, '').trim().toLowerCase();
@@ -28,12 +31,12 @@ export class SpotlightFusionBridge implements BridgeModule {
 
 	private readonly disposables = new DisposableStack();
 	private readonly kernel: PluginKernel;
-	private readonly workspace: WorkspaceDomainModule;
+	private readonly workspace?: SpotlightWorkspacePort;
 	private readonly wordCite?: WordSnapshotSource;
 	private latestSnapshot: CitationSnapshotPayload | null = null;
 	private sortedByMap = new WeakMap<ReadonlyMap<number, CitationBadgeInfo>, Array<[number, CitationBadgeInfo]>>();
 
-	constructor(kernel: PluginKernel, workspace: WorkspaceDomainModule, wordCite?: WordSnapshotSource) {
+	constructor(kernel: PluginKernel, workspace?: SpotlightWorkspacePort, wordCite?: WordSnapshotSource) {
 		this.kernel = kernel;
 		this.workspace = workspace;
 		this.wordCite = wordCite;
@@ -68,13 +71,11 @@ export class SpotlightFusionBridge implements BridgeModule {
 			this.kernel.bus.emit('word:snapshot-query', { requester: this.id });
 		}
 
-		const workspacePort = this.kernel.ports.get('workspace');
-		const registerProvider = workspacePort
-			? workspacePort.registerSpotlightProvider.bind(workspacePort)
-			: this.workspace.registerSpotlightProvider.bind(this.workspace);
+		const workspacePort = this.kernel.ports.get('workspace') ?? this.workspace;
+		if (!workspacePort) return;
 
 		this.disposables.add(
-			registerProvider({
+			workspacePort.registerSpotlightProvider({
 				id: 'bridgeflow-cross-domain',
 				priority: 80,
 				query: (term: string, win: Window, mode?: 'commands'): readonly SpotlightItemResult[] => {
@@ -110,9 +111,8 @@ export class SpotlightFusionBridge implements BridgeModule {
 									subtitle: sub || activeDocName,
 									badge: `Word [${info.ordinal}]`,
 									action: () => {
-										const ws = this.kernel.ports.get('workspace');
+										const ws = this.kernel.ports.get('workspace') ?? this.workspace;
 										if (ws) void ws.focusOrOpenItem({ itemID, preferExistingTab: true }, win);
-										else void this.workspace.focusOrOpenItem({ itemID, preferExistingTab: true }, win);
 									},
 								});
 								if (out.length >= 8) break;
@@ -176,10 +176,9 @@ export class SpotlightFusionBridge implements BridgeModule {
 								subtitle: groupSub,
 								badge: 'WORD',
 								action: () => {
-									const ws = this.kernel.ports.get('workspace');
+									const ws = this.kernel.ports.get('workspace') ?? this.workspace;
 									const ids = [...activeByItem.keys()];
-									if (ws) ws.groupOpenTabsByItemIDs(activeDocName, ids, win);
-									else this.workspace.groupOpenTabsByItemIDs(activeDocName, ids, win);
+									ws?.groupOpenTabsByItemIDs(activeDocName, ids, win);
 								},
 							});
 						}

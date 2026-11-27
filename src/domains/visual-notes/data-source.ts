@@ -1,5 +1,5 @@
 import { isRegularValidItem } from '../../services/item-resolution.ts';
-import type { TabReadingProgress } from '../../services/reading-stats.ts';
+import type { VisualNotesDataSource } from '../../services/shared-reading-notes.ts';
 import {
 	clearItemRemarkLocalSuppression,
 	getItemBriefNote,
@@ -7,14 +7,7 @@ import {
 	syncItemRemarkToExtra,
 } from '../../services/item-remark-sync.ts';
 
-export interface VisualNotesDataSource {
-	getReadingProgress(itemID: number): TabReadingProgress | undefined;
-	getReadingRevision?(): number;
-	getRemark(itemID: number): string;
-	getRemarksRevision?(): number;
-	setRemark(itemID: number, remark: string, skipExtraObserver?: boolean): void;
-	persistRemarks?(): Promise<boolean>;
-}
+export type { VisualNotesDataSource };
 
 export function resolveParentItemID(item: any): number {
 	if (!item) return 0;

@@ -1,6 +1,6 @@
 {
   "name": "zotero-bridgeflow",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Zotero BridgeFlow (桥引) — Unified reading workspace, citation preview & reverse lookup, and Microsoft Word citation tracking for Zotero 10-12.",
   "private": true,
   "type": "module",
@@ -22,7 +22,7 @@
     "test:syntax": "node --check bootstrap.js && node --check zoterobridgeflow.js && node --check zoterobridgeflow_prefs.js",
     "test:unit": "node --test-concurrency=1 --experimental-strip-types --test tests/*.test.*",
     "smoke:host": "node scripts/smoke-zotero.mjs --check-only",
-    "test": "npm run build:bundle && npm run guard && npm run test:syntax && npm run test:unit"
+    "test": "npm run build:bundle && npm run guard && npm run test:syntax && npm run test:unit && npm run smoke:host"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

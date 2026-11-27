@@ -1,11 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import zlib from 'node:zlib';
 import {
 	HOST_CONTRACTS,
 	detectZoteroBinary,
 	getRequiredOmniEntryNames,
+	parseCliArgs,
 	readZipEntries,
+	removeDirWithRetry,
+	runHeadlessLaunchSmoke,
+	terminateProcessTree,
 	verifyZoteroOmniContracts,
 } from '../scripts/smoke-zotero.mjs';
 
@@ -284,4 +289,92 @@ test('detectZoteroBinary resolves env override and cross-platform defaults', () 
 		'/usr/lib/zotero/zotero',
 	);
 	assert.equal(detectZoteroBinary('', 'linux', fakeExists([])), null);
+});
+
+test('removeDirWithRetry retries transient Windows EBUSY/EPERM locks and degrades gracefully if permanently locked', async () => {
+	let calls = 0;
+	const delays = [];
+	const ok = await removeDirWithRetry('C:\\fake\\profile', {
+		maxAttempts: 5,
+		baseDelayMs: 50,
+		sleepFn: async (ms) => { delays.push(ms); },
+		rmSyncFn: () => {
+			calls++;
+			if (calls < 3) {
+				const err = new Error('resource busy or locked');
+				err.code = calls === 1 ? 'EBUSY' : 'EPERM';
+				throw err;
+			}
+		},
+	});
+	assert.equal(ok.removed, true);
+	assert.equal(ok.attempts, 3);
+	assert.equal(ok.warning, null);
+	assert.deepEqual(delays, [50, 100]);
+
+	let failCalls = 0;
+	const stuck = await removeDirWithRetry('C:\\fake\\locked', {
+		maxAttempts: 3,
+		baseDelayMs: 10,
+		sleepFn: async () => {},
+		rmSyncFn: () => {
+			failCalls++;
+			const err = new Error('locked by AV');
+			err.code = 'EBUSY';
+			throw err;
+		},
+	});
+	assert.equal(failCalls, 3);
+	assert.equal(stuck.removed, false);
+	assert.match(stuck.warning, /EBUSY/);
+});
+
+test('terminateProcessTree invokes taskkill /T /F on Windows and negative-PID kill on POSIX', () => {
+	const winCalls = [];
+	const winRes = terminateProcessTree(
+		{ pid: 4321, kill() { winCalls.push('fallback-kill'); } },
+		{
+			platform: 'win32',
+			spawnSyncFn: (cmd, args) => { winCalls.push([cmd, ...args]); return { status: 0 }; },
+		},
+	);
+	assert.equal(winRes, true);
+	assert.deepEqual(winCalls, [['taskkill', '/PID', '4321', '/T', '/F']]);
+
+	const posixCalls = [];
+	const posixRes = terminateProcessTree(
+		{ pid: 9876, kill() { posixCalls.push('fallback-kill'); } },
+		{
+			platform: 'linux',
+			killFn: (pid, sig) => { posixCalls.push([pid, sig]); },
+		},
+	);
+	assert.equal(posixRes, true);
+	assert.deepEqual(posixCalls, [[-9876, 'SIGKILL']]);
+});
+
+test('runHeadlessLaunchSmoke kills long-running child tree on timeout and removes temp profile cleanly', async () => {
+	let capturedProfile = '';
+	const res = await runHeadlessLaunchSmoke(process.execPath, 350, {
+		buildArgs: (profileDir) => {
+			capturedProfile = profileDir;
+			return ['-e', 'console.log("smoke-ready"); setInterval(() => {}, 1000);'];
+		},
+	});
+	assert.equal(res.ok, true);
+	assert.equal(res.timedOut, true);
+	assert.equal(res.treeKilled, true);
+	assert.equal(res.cleanupRemoved, true);
+	assert.equal(res.cleanupWarning, null);
+	assert.equal(fs.existsSync(capturedProfile), false, 'temp profile directory must be deleted after kill');
+	assert.match(res.logExcerpt, /smoke-ready/);
+});
+
+test('parseCliArgs supports --zotero-bin override for Zotero 11/12 testing', () => {
+	const parsed = parseCliArgs(['--check-only', '--require-host', '--zotero-bin=D:\\Zotero11\\zotero.exe', '--timeout=9000']);
+	assert.equal(parsed.checkOnly, true);
+	assert.equal(parsed.requireHost, true);
+	assert.equal(parsed.launch, false);
+	assert.equal(parsed.zoteroBin, 'D:\\Zotero11\\zotero.exe');
+	assert.equal(parsed.timeoutMs, 9000);
 });

@@ -1,7 +1,11 @@
-import type { WorkspaceDomainModule } from '../domains/workspace/module.ts';
 import { DisposableStack } from '../kernel/disposable.ts';
+import type { WorkspacePort } from '../kernel/domain-ports.ts';
 import type { PluginKernel } from '../kernel/plugin-kernel.ts';
 import type { BridgeModule } from '../kernel/types.ts';
+
+export type LookupWorkspacePort = Pick<WorkspacePort, 'focusOrOpenItem'> & {
+	isActive?(): boolean;
+};
 
 /**
  * Bridge 4: Reverse Lookup / PDF Compare -> Smart Workspace Tab Focus or Grouped Open.
@@ -12,9 +16,9 @@ export class LookupWorkspaceBridge implements BridgeModule {
 	private readonly disposables = new DisposableStack();
 
 	private readonly kernel: PluginKernel;
-	private readonly workspace: WorkspaceDomainModule;
+	private readonly workspace?: LookupWorkspacePort;
 
-	constructor(kernel: PluginKernel, workspace: WorkspaceDomainModule) {
+	constructor(kernel: PluginKernel, workspace?: LookupWorkspacePort) {
 		this.kernel = kernel;
 		this.workspace = workspace;
 	}
@@ -30,7 +34,7 @@ export class LookupWorkspaceBridge implements BridgeModule {
 				const port = this.kernel.ports.get('workspace');
 				if (port) {
 					await port.focusOrOpenItem(payload);
-				} else if (this.workspace.isActive()) {
+				} else if (this.workspace && (this.workspace.isActive?.() ?? true)) {
 					await this.workspace.focusOrOpenItem(payload);
 				}
 			}),

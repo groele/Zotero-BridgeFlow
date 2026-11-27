@@ -1,6 +1,15 @@
 import type { Disposable } from '../kernel/types.ts';
 import type { TabReadingProgress } from './reading-stats.ts';
 
+export interface VisualNotesDataSource {
+	getReadingProgress(itemID: number): TabReadingProgress | undefined;
+	getReadingRevision?(): number;
+	getRemark(itemID: number): string;
+	getRemarksRevision?(): number;
+	setRemark(itemID: number, remark: string, skipExtraObserver?: boolean): void;
+	persistRemarks?(): Promise<boolean>;
+}
+
 export type ReadingNotesChangeKind = 'reading' | 'notes' | 'notes-local-clear' | 'import';
 
 export interface ReadingNotesChangeEvent {
